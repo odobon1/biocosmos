@@ -1,17 +1,9 @@
 from pygbif import species
-import pickle
+
+from utils import read_pickle, write_pickle, dirpath_repo_oli
 
 import pdb
 
-
-def write_pickle(obj, picklepath):
-    with open(picklepath, "wb") as f:
-        pickle.dump(obj, f)
-
-def read_pickle(picklepath):
-    with open(picklepath, "rb") as f:
-        obj = pickle.load(f)
-    return obj
 
 def get_tax_metadata_species(sci_name):
 
@@ -119,9 +111,9 @@ def get_tax_metadata(img_dir_names, verbose=False):
 
 def main():
 
-    img_dirs = read_pickle("metadata/img_dirs/known.pkl")
+    img_dirs = read_pickle(dirpath_repo_oli / "tax_tree/metadata/img_dirs/known.pkl")
     metadata = get_tax_metadata(img_dirs, verbose=True)
-    write_pickle(metadata, "metadata/tax/gbif.pkl")
+    write_pickle(metadata, dirpath_repo_oli / "tax_tree/metadata/tax/gbif.pkl")
 
 if __name__ == "__main__":
     main()

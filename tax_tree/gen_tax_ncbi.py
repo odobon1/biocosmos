@@ -1,22 +1,13 @@
 from Bio import Entrez
 import sys
 import time
-import pickle
 from tqdm import tqdm
 
+from utils import read_pickle, write_pickle, dirpath_repo_oli
 
 Entrez.email = "odobon2@gmail.com"
 Entrez.api_key = "310aae4d36e96379c856bde5db7b7e5d6209"
 
-
-def read_pickle(picklepath):
-    with open(picklepath, "rb") as f:
-        obj = pickle.load(f)
-    return obj
-
-def write_pickle(obj, picklepath):
-    with open(picklepath, "wb") as f:
-        pickle.dump(obj, f)
 
 # searches for species in genus
 def species_search(genus_tax_id, species_epithet):
@@ -299,9 +290,9 @@ def get_tax_metadata(img_dirs):
 
 def main():
 
-    img_dirs = read_pickle("metadata/img_dir/known.pkl")
+    img_dirs = read_pickle(dirpath_repo_oli / "tax_tree/metadata/img_dirs/known.pkl")
     metadata = get_tax_metadata(img_dirs)
-    write_pickle(metadata, "metadata/tax/ncbi.pkl")
+    write_pickle(metadata, dirpath_repo_oli / "tax_tree/metadata/tax/ncbi.pkl")
 
 if __name__ == "__main__":
     main()

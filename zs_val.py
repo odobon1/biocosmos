@@ -77,8 +77,8 @@ class CLIPWrapper:
     def zero_shot_classify(self, imgs, zs_labels):
         """
         Args:
-        - imgs -------- Tensor(B, C, H, W)
-        - zs_labels --- list of raw labels to be used for zero-shot classification (let's call this length Z ~ number of zero-shot labels)
+        - imgs [Tensor(B, C, H, W)]
+        - zs_labels [list] ------------ Raw labels to be used for zero-shot classification (let's call this length Z ~ number of zero-shot labels)
         """
 
         imgs = imgs.to(self.device)

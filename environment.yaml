@@ -1,0 +1,23 @@
+name: biocosmos_oli
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - accelerate
+  - biopython
+  - pandas
+  - pillow
+  - pygbif
+  - python=3.10
+  - pytorch=2.5.1
+  - pytorch-cuda=12.1
+  - torchvision=0.20.1
+  - tqdm
+  - requests
+  - pip
+  - pip:
+    - transformers
+    - datasets
+    - open_clip_torch

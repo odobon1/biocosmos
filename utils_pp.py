@@ -42,7 +42,7 @@ def compute_rank_dists_chunked(tax_vecs_b, chunk_size=1024):
     Can adjust `chunk_size` to trade off speed vs. memory usage ~ memory usage scales as O(chunk_size x B x L) instead of O(B^2 x L)
 
     This can easily be adapted for parallelization across multiple workers or devices
-    Maybe could modify such that computations aren't all duplicated e.g. only need to compute the upper or lower triangle bc rank_dists matrix is symmetric
+    Maybe could modify such that computations aren't all duplicated i.e. only need to compute the upper or lower triangle bc rank_dists matrix is symmetric
     """
     B, L = tax_vecs_b.shape
     rank_dists = torch.empty((B, B), dtype=torch.int16, device=tax_vecs_b.device)

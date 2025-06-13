@@ -7,16 +7,16 @@ Takes metadata/tax/nymph structure and generates 1. base_labels/nymph_sci and 2.
 from utils import dirpaths, read_pickle, write_pickle
 
 
-metadata_nymph = read_pickle(dirpaths["repo_oli"] / "metadata/tax/nymph.pkl")
+tax_nymph = read_pickle(dirpaths["repo_oli"] / "metadata/tax/nymph.pkl")
 
 base_labels_nymph_sci = {}
 base_labels_nymph_tax = {}
 
-for s in metadata_nymph["found"].keys():
+for s in tax_nymph["found"].keys():
 
-    tax = metadata_nymph["found"][s]["tax"]
+    tax_s = tax_nymph["found"][s]["tax"]
 
-    sci_name = f"{tax['genus'].capitalize()} {tax['species']}"
+    sci_name = f"{tax_s['genus'].capitalize()} {tax_s['species']}"
     tax_name = f"Animalia Arthropoda Insecta Lepidoptera Nymphalidae {sci_name}"
 
     base_labels_nymph_sci[s] = sci_name

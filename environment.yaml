@@ -6,7 +6,9 @@ channels:
   - defaults
 dependencies:
   - accelerate
+  - bidict
   - biopython
+  - ipykernel
   - pandas
   - pillow
   - pygbif

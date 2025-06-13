@@ -12,6 +12,8 @@ from tqdm import tqdm
 from transformers import CLIPProcessor, CLIPModel
 import open_clip
 
+from utils import dirpaths
+
 import pdb
 
 torch.set_printoptions(profile="full")
@@ -153,7 +155,7 @@ def main():
 
     model = CLIPWrapper(CLIP_TYPE, device)
 
-    base_dir        = Path("VLM4Bio/datasets")
+    base_dir        = dirpaths["vlm4bio"]
     # group           = "Fish"
     group           = "Bird"
     # group           = "Butterfly"

@@ -1,16 +1,20 @@
+"""
+Must be run on HiPerGator
+"""
+
 import os
 import glob
 import pandas as pd
 from tqdm import tqdm
 
-from utils import dirpath_biocosmos, read_pickle, write_pickle
+from utils import dirpaths, read_pickle, write_pickle
 
 
-img_dirs = read_pickle(dirpath_biocosmos / "odobon3.gatech/biocosmos/tax_tree/metadata/img_dirs/known.pkl")
+img_dirs = read_pickle(dirpaths["biocosmos"] / "odobon3.gatech/biocosmos/metadata/img_dirs/known.pkl")
 
-dirpath_img_dirs = dirpath_biocosmos / "data/datasets/nymphalidae_whole_specimen-v240606/images"
+dirpath_img_dirs = dirpaths["biocosmos"] / "data/datasets/nymphalidae_whole_specimen-v240606/images"
 
-filepath_metadata_og = dirpath_biocosmos / "data/datasets/nymphalidae_whole_specimen-v240606/metadata/data_meta-nymphalidae_whole_specimen-v240606.csv"
+filepath_metadata_og = dirpaths["biocosmos"] / "data/datasets/nymphalidae_whole_specimen-v240606/metadata/data_meta-nymphalidae_whole_specimen-v240606.csv"
 df_metadata_og = pd.read_csv(filepath_metadata_og)
 
 species_metadata_og = df_metadata_og["species"].unique().tolist()
@@ -59,4 +63,4 @@ for s in tqdm(img_dirs):
         
         metadata["missing"].add(s)
 
-write_pickle(metadata, dirpath_biocosmos / "odobon3.gatech/biocosmos/tax_tree/metadata/tax/butterflies_test.pkl")
+write_pickle(metadata, dirpaths["biocosmos"] / "odobon3.gatech/biocosmos/metadata/tax/nymph.pkl")

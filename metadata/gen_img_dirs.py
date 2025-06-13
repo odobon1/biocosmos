@@ -1,6 +1,10 @@
+"""
+Must be run on HiPerGator
+"""
+
 import os
 
-from utils import dirpath_biocosmos, read_pickle, write_pickle
+from utils import dirpaths, read_pickle, write_pickle
 
 
 non_alpha_valids = ["polygonia_c-aureum", "polygonia_c-album", "nymphalis_l-album"]
@@ -18,7 +22,7 @@ def is_odd(img_dir):
         
     return False
 
-dirpath_img_dirs = dirpath_biocosmos / "data/datasets/nymphalidae_whole_specimen-v240606/images"
+dirpath_img_dirs = dirpaths["biocosmos"] / "data/datasets/nymphalidae_whole_specimen-v240606/images"
 img_dirs = [img_dir for img_dir in os.listdir(dirpath_img_dirs)]
 
 img_dirs_known = []
@@ -32,6 +36,6 @@ for img_dir in img_dirs:
     else:
         img_dirs_known.append(img_dir)
         
-write_pickle(img_dirs, dirpath_biocosmos / "odobon3.gatech/biocosmos/tax_tree/metadata/img_dirs/test/all.pkl")
-write_pickle(img_dirs_known, dirpath_biocosmos / "odobon3.gatech/biocosmos/tax_tree/metadata/img_dirs/test/known.pkl")
-write_pickle(img_dirs_unknown, dirpath_biocosmos / "odobon3.gatech/biocosmos/tax_tree/metadata/img_dirs/test/unknown.pkl")
+write_pickle(img_dirs, dirpaths["biocosmos"] / "odobon3.gatech/biocosmos/metadata/img_dirs/all.pkl")
+write_pickle(img_dirs_known, dirpaths["biocosmos"] / "odobon3.gatech/biocosmos/metadata/img_dirs/known.pkl")
+write_pickle(img_dirs_unknown, dirpaths["biocosmos"] / "odobon3.gatech/biocosmos/metadata/img_dirs/unknown.pkl")

@@ -3,7 +3,7 @@ import sys
 import time
 from tqdm import tqdm
 
-from utils import read_pickle, write_pickle, dirpath_repo_oli
+from utils import read_pickle, write_pickle, dirpaths
 
 Entrez.email = "odobon2@gmail.com"
 Entrez.api_key = "310aae4d36e96379c856bde5db7b7e5d6209"
@@ -290,9 +290,9 @@ def get_tax_metadata(img_dirs):
 
 def main():
 
-    img_dirs = read_pickle(dirpath_repo_oli / "tax_tree/metadata/img_dirs/known.pkl")
+    img_dirs = read_pickle(dirpaths["repo_oli"] / "metadata/img_dirs/known.pkl")
     metadata = get_tax_metadata(img_dirs)
-    write_pickle(metadata, dirpath_repo_oli / "tax_tree/metadata/tax/ncbi.pkl")
+    write_pickle(metadata, dirpaths["repo_oli"] / "metadata/tax/ncbi.pkl")
 
 if __name__ == "__main__":
     main()

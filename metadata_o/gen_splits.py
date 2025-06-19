@@ -5,13 +5,15 @@ import os
 from utils import paths, read_pickle, write_pickle
 from utils_ingestion import strat_splits
 
+import pdb
+
 
 # config params
 PCT_EVAL = 0.2
 PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 VERBOSE_OOD_SAMPLE_CHECK = False
-SPLIT_NAME = "D"
-ALLOW_OVERWRITES = False
+SPLIT_NAME = "A"
+ALLOW_OVERWRITES = True
 
 dirpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
 dirpath_figs = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
@@ -19,6 +21,7 @@ dirpath_figs = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
 if os.path.isdir(dirpath_splits) and not ALLOW_OVERWRITES:
     error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
     raise ValueError(error_msg)
+print(F"SPLIT_NAME: {SPLIT_NAME}")
 
 pct_ood_eval = pct_id_eval = PCT_EVAL / 2  # OOD splits: pct_splits
 
@@ -65,14 +68,14 @@ sid_2_skeys:
 
 count_g = Counter(genera)
 
-count_2_classes_g = defaultdict(list)  # count_2_classes OOD splits
+n_insts_2_classes_g = defaultdict(list)  # n_insts_2_classes OOD splits
 for genus, count in count_g.items():
-    count_2_classes_g[count].append(genus)
+    n_insts_2_classes_g[count].append(genus)
 
 """
-`count_2_classes_*` structure:
+`n_insts_2_classes_*` structure:
 
-count_2_classes_g (OOD):
+n_insts_2_classes_g (OOD):
 {
     1 : [genus0, genus1, genus2, ...],
     2 : [...],
@@ -80,7 +83,7 @@ count_2_classes_g (OOD):
     ...
 }
 
-count_2_classes_s (ID):
+n_insts_2_classes_s (ID):
 {
     1 : [sid0, sid1, sid2, ...],
     2 : [...],
@@ -99,7 +102,7 @@ while not close_enough:
         n_classes=n_genera, 
         n_draws=n_sids_ood_eval, 
         pct_splits=pct_ood_eval, 
-        count_2_classes=count_2_classes_g, 
+        n_insts_2_classes=n_insts_2_classes_g, 
         class_2_insts=genus_2_sids, 
         insts=sids,
     )
@@ -144,42 +147,42 @@ print("OOD Split Complete!")
 
 print("Constructing ID Split...")
 
-sids_id_singles = set()
+sids_id_singles = set() # species id's with 1 sample i.e. singletons
 for sid in sids_id:
     if n_samps_dict[sid] == 1:
         sids_id_singles.add(sid)
         
-sids_rem = sids_id - sids_id_singles  # species id's with 2+ samples
+sids_id_multis = sids_id - sids_id_singles  # species id's with 2+ samples
 
-n_sids_rem = len(sids_rem)  # ID splits: n_classes
+n_sids_id_multis = len(sids_id_multis)  # ID splits: n_classes
 n_samps_id_eval = n_samps_eval - (n_samps_ood_val + n_samps_ood_test)  # ID splits: n_draws
 
-count_2_classes_s = defaultdict(list)  # ID splits: count_2_classes
-for sid in sids_rem:
+n_insts_2_classes_s = defaultdict(list)  # ID splits: n_insts_2_classes
+for sid in sids_id_multis:
     count = n_samps_dict[sid]
-    count_2_classes_s[count].append(sid)
+    n_insts_2_classes_s[count].append(sid)
 
 pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID splits: pct_splits (10 / 90)
 
 sid_2_skeys = defaultdict(list)  # ID splits: class_2_insts
 skeys = set()  # ID splits: insts
-for sid in sids_rem:
+for sid in sids_id_multis:
     for sidx in range(n_samps_dict[sid]):
         skey = (sid, sidx)
         sid_2_skeys[sid].append(skey)
         skeys.add(skey)
 
 skeys_train, skeys_id_val, skeys_id_test = strat_splits(
-    n_classes=n_sids_rem, 
+    n_classes=n_sids_id_multis, 
     n_draws=n_samps_id_eval, 
     pct_splits=pct_rem_id_eval, 
-    count_2_classes=count_2_classes_s, 
+    n_insts_2_classes=n_insts_2_classes_s, 
     class_2_insts=sid_2_skeys, 
     insts=skeys,
 )
 
-skeys_singles = set((sid, 0) for sid in sids_id_singles)
-skeys_train.update(skeys_singles)
+skeys_id_singles = set((sid, 0) for sid in sids_id_singles)
+skeys_train.update(skeys_id_singles)
 
 print("ID Split Complete!")
 
@@ -196,8 +199,9 @@ write_pickle(skeys_ood_val, dirpath_splits / "ood_val.pkl")
 write_pickle(skeys_ood_test, dirpath_splits / "ood_test.pkl")
 
 # ANALYSIS + PLOTTING
+# maybe isolate plotting / table generation to another file
 
-def plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale=None, marker="", linestyle="-", alpha=1.0):
+def plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale=None, marker="", markersize=6, markeredgewidth=0.5, linestyle="-", alpha=1.0):
     """
     Args:
     - n_insts_pc [List(int)] -------- Number of instances per class (sorted?)
@@ -219,14 +223,24 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
 
     x  = range(len(data[0]))
 
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(16, 6))
 
     if ema:
         for i in range(len(data)):
             data[i] = compute_ema(data[i])
 
     for i in range(len(data)):
-        plt.plot(x, data[i], color=colors[i], label=labels[i], marker=marker, linestyle=linestyle, alpha=alpha)
+        plt.plot(
+            x, 
+            data[i], 
+            color=colors[i], 
+            label=labels[i], 
+            marker=marker, 
+            markersize=markersize, 
+            markeredgewidth=markeredgewidth, 
+            linestyle=linestyle, 
+            alpha=alpha
+        )
 
     plt.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.7)
 
@@ -242,7 +256,7 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig(filepath, dpi=150, bbox_inches="tight")
+    plt.savefig(filepath, dpi=300, bbox_inches="tight")
 
 # OOD SPLIT DISTRIBUTION PLOTTING
 
@@ -284,13 +298,19 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath)
 
 title = "OOD Split Distribution (Log-Scale)"
 filepath = str(dirpath_figs / "distribution_ood_log.png")
-plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale="symlog", marker=".", linestyle="", alpha=0.2)
+plot_split_distribution(
+    data, labels, colors, 
+    title, x_label, y_label, 
+    filepath, 
+    ema=False, scale="symlog", 
+    marker="|", markersize=6, markeredgewidth=1.0, linestyle="", alpha=1.0,
+)
 
 title = "OOD Split Distribution (Log-Scale + Smoothed)"
 filepath = str(dirpath_figs / "distribution_ood_log_smooth.png")
 plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, scale="log")
 
-# ID SPLIT DISTRIBUTION PLOTTING
+# ID SPLIT DISTRIBUTION PLOTTING (singletons omitted)
 
 """
 `sid_tups` structure:
@@ -298,21 +318,24 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath,
 (sid, n_skeys, n_skeys_train, n_skeys_id_val, n_skeys_id_test)
 
 ^ sorted on n_skeys and then sid (alphabetical)
+
+***** Think this is all I need for the n-shot analysis / data structure organization *****
 """
 
 sid_tups = []
-for sid in sid_2_skeys.keys():
-    n_skeys_s = len(sid_2_skeys[sid])
-    n_skeys_s_train, n_skeys_s_id_val, n_skeys_s_id_test = 0, 0, 0
+for sid in sids_id_multis:
+    n_skeys = n_samps_dict[sid]
+    n_skeys_train, n_skeys_id_val, n_skeys_id_test = 0, 0, 0
     for skey in sid_2_skeys[sid]:
+        # check which split the sample landed in
         if skey in skeys_train:
-            n_skeys_s_train += 1
+            n_skeys_train += 1
         elif skey in skeys_id_val:
-            n_skeys_s_id_val += 1
+            n_skeys_id_val += 1
         elif skey in skeys_id_test:
-            n_skeys_s_id_test += 1
+            n_skeys_id_test += 1
 
-    sid_tups.append((sid, n_skeys_s, n_skeys_s_train, n_skeys_s_id_val, n_skeys_s_id_test))
+    sid_tups.append((sid, n_skeys, n_skeys_train, n_skeys_id_val, n_skeys_id_test))
 
 sid_tups.sort(key=lambda t: (t[1], t[0]), reverse=True)
 
@@ -330,7 +353,12 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath)
 
 title = "ID Split Distribution (Log-Scale)"
 filepath = str(dirpath_figs / "distribution_id_log.png")
-plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale="symlog", marker="o", linestyle="", alpha=0.1)
+plot_split_distribution(
+    data, labels, colors, 
+    title, x_label, y_label, 
+    filepath, 
+    ema=False, scale="symlog", 
+    marker="|", markersize=6, markeredgewidth=0.5, linestyle="", alpha=1.0)
 
 title = "ID Split Distribution (Log-Scale + Smoothed)"
 filepath = str(dirpath_figs / "distribution_id_log_smooth.png")

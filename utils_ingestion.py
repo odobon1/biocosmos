@@ -2,16 +2,21 @@ from sklearn.model_selection import train_test_split
 import random
 import copy
 
+import pdb
 
-def strat_splits(n_classes, n_draws, count_2_classes, pct_splits, class_2_insts, insts):
+
+def strat_splits(n_classes, n_draws, pct_splits, count_2_classes, class_2_insts, insts):
     """
     Args:
     - n_classes (n_genera)
     - n_draws (n_sids_ood_eval)
-    - count_2_classes
     - pct_splits (pct_ood_eval) -- percentage for val/test, evenly distributed between both e.g. 10% = 5% val, 5% test
+    - count_2_classes
     - class_2_insts (genus_2_sids) -- dictionary mapping classes [str] to lists of instances [List(str)]
     - insts -- set of instances e.g. set of species ids (whole dataset)
+
+    Returns
+    - [(set(insts), set(insts), set(insts)] --- Train, Val, Test
     """
 
     def compute_class_hits(n_draws, n_classes):

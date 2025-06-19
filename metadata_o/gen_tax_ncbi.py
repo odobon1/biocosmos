@@ -3,7 +3,7 @@ import sys
 import time
 from tqdm import tqdm
 
-from utils import read_pickle, write_pickle, dirpaths
+from utils import read_pickle, write_pickle, paths
 
 Entrez.email = "odobon2@gmail.com"
 Entrez.api_key = "310aae4d36e96379c856bde5db7b7e5d6209"
@@ -266,33 +266,33 @@ def get_tax_metadata_species(genus, species_epithet):
         print(f"Error retrieving taxonomy data: {e}")
         return [], meta
     
-def get_tax_metadata(img_dirs):
+def get_tax_metadata(sids):
     
     metadata = {
         "found" : {},
         "missing" : set(),
     }
 
-    for img_dir in tqdm(img_dirs):
+    for sid in tqdm(sids):
 
-        genus, species_epithet = img_dir.split("_")
+        genus, species_epithet = sid.split("_")
         tax, meta = get_tax_metadata_species(genus, species_epithet)
 
         if tax:
-            metadata["found"][img_dir] = {
+            metadata["found"][sid] = {
                 "tax" : tax, 
                 "meta" : meta
             }
         else:
-            metadata["missing"].add(img_dir)
+            metadata["missing"].add(sid)
 
     return metadata
 
 def main():
 
-    img_dirs = read_pickle(dirpaths["repo_oli"] / "metadata/img_dirs/known.pkl")
-    metadata = get_tax_metadata(img_dirs)
-    write_pickle(metadata, dirpaths["repo_oli"] / "metadata/tax/ncbi.pkl")
+    sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+    metadata = get_tax_metadata(sids)
+    write_pickle(metadata, paths["metadata_o"] / "tax/ncbi.pkl")
 
 if __name__ == "__main__":
     main()

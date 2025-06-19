@@ -2,27 +2,28 @@ from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import os
 
-from utils import dirpaths, read_pickle, write_pickle
+from utils import paths, read_pickle, write_pickle
 from utils_ingestion import strat_splits
 
 
 # config params
 PCT_EVAL = 0.2
-PCT_OOD_CLOSE_ENOUGH = 0.001
+PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 VERBOSE_OOD_SAMPLE_CHECK = False
 SPLIT_NAME = "D"
+ALLOW_OVERWRITES = False
 
-dirpath_splits = dirpaths["repo_oli"] / f"metadata/splits/{SPLIT_NAME}"
-dirpath_figs = dirpaths["repo_oli"] / f"figures/splits/{SPLIT_NAME}"
+dirpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
+dirpath_figs = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
 
-if os.path.isdir(dirpath_splits):
+if os.path.isdir(dirpath_splits) and not ALLOW_OVERWRITES:
     error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
     raise ValueError(error_msg)
 
-pct_ood_eval = pct_id_eval = PCT_EVAL / 2
+pct_ood_eval = pct_id_eval = PCT_EVAL / 2  # OOD splits: pct_splits
 
-tax_nymph = read_pickle(dirpaths["repo_oli"] / "metadata/tax/nymph.pkl")
-sids = set(tax_nymph["found"].keys())
+tax_nymph = read_pickle(paths["metadata_o"] / "tax/nymph.pkl")
+sids = set(tax_nymph["found"].keys())  # OOD splits: insts
 n_sids = len(sids)
 n_sids_ood_eval = round(n_sids * pct_ood_eval)
 
@@ -33,16 +34,16 @@ for sid in sids:
     n_samps_dict[sid] = n_samps_s
     n_samps += n_samps_s
 
-n_samps_eval = round(n_samps * PCT_EVAL)
+n_samps_eval = round(n_samps * PCT_EVAL)  # OOD splits: n_draws
 
 genera = []
-genus_2_sids = defaultdict(list)
+genus_2_sids = defaultdict(list)  # OOD splits: class_2_insts
 for sid in sids:
     genus = tax_nymph["found"][sid]["tax"]["genus"]
     genera.append(genus)
     genus_2_sids[genus].append(sid)
 
-n_genera = len(set(genera))
+n_genera = len(set(genera))  # OOD splits: n_classes
 
 """
 `genus_2_sids` & `sid_2_skeys` structure (class_2_insts):
@@ -64,7 +65,7 @@ sid_2_skeys:
 
 count_g = Counter(genera)
 
-count_2_classes_g = defaultdict(list)
+count_2_classes_g = defaultdict(list)  # count_2_classes OOD splits
 for genus, count in count_g.items():
     count_2_classes_g[count].append(genus)
 
@@ -97,8 +98,8 @@ while not close_enough:
     sids_id, sids_ood_val, sids_ood_test = strat_splits(
         n_classes=n_genera, 
         n_draws=n_sids_ood_eval, 
-        count_2_classes=count_2_classes_g, 
         pct_splits=pct_ood_eval, 
+        count_2_classes=count_2_classes_g, 
         class_2_insts=genus_2_sids, 
         insts=sids,
     )
@@ -148,20 +149,20 @@ for sid in sids_id:
     if n_samps_dict[sid] == 1:
         sids_id_singles.add(sid)
         
-sids_rem = sids_id - sids_id_singles
+sids_rem = sids_id - sids_id_singles  # species id's with 2+ samples
 
-n_sids_rem = len(sids_rem)  # n_classes
-n_samps_id_eval = n_samps_eval - (n_samps_ood_val + n_samps_ood_test)  # n_draws
+n_sids_rem = len(sids_rem)  # ID splits: n_classes
+n_samps_id_eval = n_samps_eval - (n_samps_ood_val + n_samps_ood_test)  # ID splits: n_draws
 
-count_2_classes_s = defaultdict(list)  # count_2_classes
+count_2_classes_s = defaultdict(list)  # ID splits: count_2_classes
 for sid in sids_rem:
     count = n_samps_dict[sid]
     count_2_classes_s[count].append(sid)
 
-pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # pct_splits (10 / 90)
+pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID splits: pct_splits (10 / 90)
 
-sid_2_skeys = defaultdict(list)  # class_2_insts
-skeys = set()  # insts
+sid_2_skeys = defaultdict(list)  # ID splits: class_2_insts
+skeys = set()  # ID splits: insts
 for sid in sids_rem:
     for sidx in range(n_samps_dict[sid]):
         skey = (sid, sidx)
@@ -171,8 +172,8 @@ for sid in sids_rem:
 skeys_train, skeys_id_val, skeys_id_test = strat_splits(
     n_classes=n_sids_rem, 
     n_draws=n_samps_id_eval, 
-    count_2_classes=count_2_classes_s, 
     pct_splits=pct_rem_id_eval, 
+    count_2_classes=count_2_classes_s, 
     class_2_insts=sid_2_skeys, 
     insts=skeys,
 )
@@ -185,8 +186,8 @@ print("ID Split Complete!")
 # SAVE SPLITS TO FILE
 
 # create dirs (after splits have been generated so that dirs aren't created if the run is terminated early)
-os.makedirs(dirpath_splits)
-os.makedirs(dirpath_figs)
+os.makedirs(dirpath_splits, exist_ok=True)
+os.makedirs(dirpath_figs, exist_ok=True)
 
 write_pickle(skeys_train, dirpath_splits / "train.pkl")
 write_pickle(skeys_id_val, dirpath_splits / "id_val.pkl")
@@ -196,7 +197,7 @@ write_pickle(skeys_ood_test, dirpath_splits / "ood_test.pkl")
 
 # ANALYSIS + PLOTTING
 
-def plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, log=False):
+def plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale=None, marker="", linestyle="-", alpha=1.0):
     """
     Args:
     - n_insts_pc [List(int)] -------- Number of instances per class (sorted?)
@@ -204,7 +205,7 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
     - n_insts_pc_eval [List(int)] --- Number of instances per class split out for eval
     - filepath [str] ---------------- Filepath to save plot to
     - ema [bool] -------------------- Whether to apply exponential moving average
-    - log [bool] -------------------- Whether to plot y-axis on log-scale
+    - scale [None or str] ----------- None, "log", "symlog"
     """
 
     def compute_ema(vals, alpha_ema=0.99):
@@ -225,7 +226,7 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
             data[i] = compute_ema(data[i])
 
     for i in range(len(data)):
-        plt.plot(x, data[i], color=colors[i], label=labels[i])
+        plt.plot(x, data[i], color=colors[i], label=labels[i], marker=marker, linestyle=linestyle, alpha=alpha)
 
     plt.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.7)
 
@@ -233,14 +234,17 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
     plt.xlabel(x_label, fontsize=14, fontweight="bold")
     plt.ylabel(y_label, fontsize=14, fontweight="bold")
 
-    if log:
-        plt.yscale('log')
+    if scale == "log":
+        plt.yscale("log")
+    elif scale == "symlog":
+        plt.yscale("symlog", linthresh=1.5)
+
     plt.legend()
 
     plt.tight_layout()
     plt.savefig(filepath, dpi=150, bbox_inches="tight")
 
-# OOD PLOTTING
+# OOD SPLIT DISTRIBUTION PLOTTING
 
 """
 `genus_tups` structure:
@@ -278,11 +282,15 @@ y_label = "Num. Species"
 filepath = str(dirpath_figs / "distribution_ood.png")
 plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath)
 
-title = "OOD Split Distribution (Log-Scale + Smoothed)"
+title = "OOD Split Distribution (Log-Scale)"
 filepath = str(dirpath_figs / "distribution_ood_log.png")
-plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, log=True)
+plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale="symlog", marker=".", linestyle="", alpha=0.2)
 
-# ID PLOTTING
+title = "OOD Split Distribution (Log-Scale + Smoothed)"
+filepath = str(dirpath_figs / "distribution_ood_log_smooth.png")
+plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, scale="log")
+
+# ID SPLIT DISTRIBUTION PLOTTING
 
 """
 `sid_tups` structure:
@@ -320,20 +328,24 @@ y_label = "Num. Samples"
 filepath = str(dirpath_figs / "distribution_id.png")
 plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath)
 
-title = "ID Split Distribution (Log-Scale + Smoothed)"
+title = "ID Split Distribution (Log-Scale)"
 filepath = str(dirpath_figs / "distribution_id_log.png")
-plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, log=True)
+plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale="symlog", marker="o", linestyle="", alpha=0.1)
+
+title = "ID Split Distribution (Log-Scale + Smoothed)"
+filepath = str(dirpath_figs / "distribution_id_log_smooth.png")
+plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, scale="log")
 
 # STATS TABLE
 
 col_labels = ["Split", "Num. Species", "Num. Samples"]
 data = [
-    ["Train", f"{len(sids_id):,} ({round(100 * len(sids_id) / n_sids, 3)}%)", f"{len(skeys_train):,} ({round(100 * len(skeys_train) / n_samps, 3)}%)"],
-    ["ID Val", f"{len(sids_id):,} ({round(100 * len(sids_id) / n_sids, 3)}%)", f"{len(skeys_id_val):,} ({round(100 * len(skeys_id_val) / n_samps, 3)}%)"],
-    ["ID Test", f"{len(sids_id):,} ({round(100 * len(sids_id) / n_sids, 3)}%)", f"{len(skeys_id_test):,} ({round(100 * len(skeys_id_test) / n_samps, 3)}%)"],
-    ["OOD Val", f"{len(sids_ood_val):,} ({round(100 * len(sids_ood_val) / n_sids, 3)}%)", f"{n_samps_ood_val:,} ({round(100 * n_samps_ood_val / n_samps, 3)}%)"],
-    ["OOD Test", f"{len(sids_ood_test):,} ({round(100 * len(sids_ood_test) / n_sids, 3)}%)", f"{n_samps_ood_test:,} ({round(100 * n_samps_ood_test / n_samps, 3)}%)"],
-    ["Whole Dataset", f"{n_sids:,} (100.0%)", f"{n_samps:,} (100.0%)"],
+    ["Train", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_train):,} ({100 * len(skeys_train) / n_samps:.2f}%)"],
+    ["ID Val", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_id_val):,} ({100 * len(skeys_id_val) / n_samps:.2f}%)"],
+    ["ID Test", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_id_test):,} ({100 * len(skeys_id_test) / n_samps:.2f}%)"],
+    ["OOD Val", f"{len(sids_ood_val):,} ({100 * len(sids_ood_val) / n_sids:.2f}%)", f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps:.2f}%)"],
+    ["OOD Test", f"{len(sids_ood_test):,} ({100 * len(sids_ood_test) / n_sids:.2f}%)", f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps:.2f}%)"],
+    ["Whole Dataset", f"{n_sids:,} (100.00%)", f"{n_samps:,} (100.00%)"],
 ]
 
 fig, ax = plt.subplots(figsize=(5, 2))

@@ -1,4 +1,4 @@
-name: biocosmos_oli
+name: biocosmos_o
 channels:
   - pytorch
   - nvidia
@@ -9,6 +9,7 @@ dependencies:
   - bidict
   - biopython
   - ipykernel
+  - numpy
   - pandas
   - pillow
   - pygbif

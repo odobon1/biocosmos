@@ -1,6 +1,6 @@
 from pygbif import species
 
-from utils import read_pickle, write_pickle, dirpaths
+from utils import read_pickle, write_pickle, paths
 
 import pdb
 
@@ -21,7 +21,7 @@ def get_tax_metadata_species(sci_name):
     
     return result
 
-def get_tax_metadata(img_dir_names, verbose=False):
+def get_tax_metadata(sids, verbose=False):
     """
     List["<genus>_<species>"] --> pygbif metadata dictionary
     """
@@ -41,14 +41,14 @@ def get_tax_metadata(img_dir_names, verbose=False):
 
     ranks = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 
-    for idx, img_dir_name in enumerate(img_dir_names):
+    for idx, sid in enumerate(sids):
 
         if verbose:
             print("------------------------------")
             print(idx)
-            print(img_dir_name)
+            print(sid)
 
-        genus, species_epithet = img_dir_name.split("_")
+        genus, species_epithet = sid.split("_")
         genus = genus.capitalize()
         sci_name = f"{genus} {species_epithet}"
         result = get_tax_metadata_species(sci_name)
@@ -79,9 +79,9 @@ def get_tax_metadata(img_dir_names, verbose=False):
             }
 
             if partial:
-                metadata["partial"][img_dir_name] = species_metadata
+                metadata["partial"][sid] = species_metadata
             else:
-                metadata["found"][img_dir_name] = species_metadata
+                metadata["found"][sid] = species_metadata
 
             if verbose:
                 if partial:
@@ -105,15 +105,15 @@ def get_tax_metadata(img_dir_names, verbose=False):
         else:
             if verbose:
                 print("SPECIES NOT FOUND")
-            metadata["missing"].add(img_dir_name)
+            metadata["missing"].add(sid)
 
     return metadata
 
 def main():
 
-    img_dirs = read_pickle(dirpaths["repo_oli"] / "metadata/img_dirs/known.pkl")
-    metadata = get_tax_metadata(img_dirs, verbose=True)
-    write_pickle(metadata, dirpaths["repo_oli"] / "metadata/tax/gbif.pkl")
+    sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+    metadata = get_tax_metadata(sids, verbose=True)
+    write_pickle(metadata, paths["metadata_o"] / "tax/gbif.pkl")
 
 if __name__ == "__main__":
     main()

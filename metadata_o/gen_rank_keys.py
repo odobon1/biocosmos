@@ -4,7 +4,7 @@ Takes metadata/tax/nymph structure and produces metadata/rank_keys/nymph structu
 
 from bidict import bidict
 
-from utils import dirpaths, read_pickle, write_pickle
+from utils import paths, read_pickle, write_pickle
 
 
 rank_keys_nymph = {
@@ -12,15 +12,15 @@ rank_keys_nymph = {
     "species" : bidict(),
 }
 
-tax_nymph = read_pickle(dirpaths["repo_oli"] / "metadata/tax/nymph.pkl")
+tax_nymph = read_pickle(paths["metadata_o"] / "tax/nymph.pkl")
 
 genus_strs = []
 species_strs = []
 
-for s in tax_nymph["found"].keys():
+for sid in tax_nymph["found"].keys():
 
-    genus = tax_nymph["found"][s]["tax"]["genus"]
-    species = tax_nymph["found"][s]["tax"]["species"]
+    genus = tax_nymph["found"][sid]["tax"]["genus"]
+    species = tax_nymph["found"][sid]["tax"]["species"]
 
     if genus not in genus_strs:
         genus_strs.append(genus)
@@ -39,4 +39,4 @@ def generate_rank_keys(rank_keys, rank, rank_strs):
 generate_rank_keys(rank_keys_nymph, "genus", genus_strs)
 generate_rank_keys(rank_keys_nymph, "species", species_strs)
 
-write_pickle(rank_keys_nymph, dirpaths["repo_oli"] / "metadata/rank_keys/nymph.pkl")
+write_pickle(rank_keys_nymph, paths["metadata_o"] / "rank_keys/nymph.pkl")

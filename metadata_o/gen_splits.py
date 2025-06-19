@@ -366,14 +366,62 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath,
 
 # STATS TABLE
 
-col_labels = ["Split", "Num. Species", "Num. Samples"]
+
+write_pickle(skeys_train, dirpath_splits / "train.pkl")
+write_pickle(skeys_id_val, dirpath_splits / "id_val.pkl")
+write_pickle(skeys_id_test, dirpath_splits / "id_test.pkl")
+write_pickle(skeys_ood_val, dirpath_splits / "ood_val.pkl")
+write_pickle(skeys_ood_test, dirpath_splits / "ood_test.pkl")
+
+
+n_sids_id = len(sids_id)
+n_sids_ood_val = len(sids_ood_val)
+n_sids_ood_test = len(sids_ood_test)
+
+sids_id_val, _ = zip(*skeys_id_val)
+n_sids_id_val = len(set(sids_id_val))
+
+sids_id_test, _ = zip(*skeys_id_test)
+n_sids_id_test = len(set(sids_id_test))
+
+pdb.set_trace()
+
+col_labels = [
+    "Split", 
+    "Num. Species", 
+    "Num. Samples",
+]
 data = [
-    ["Train", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_train):,} ({100 * len(skeys_train) / n_samps:.2f}%)"],
-    ["ID Val", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_id_val):,} ({100 * len(skeys_id_val) / n_samps:.2f}%)"],
-    ["ID Test", f"{len(sids_id):,} ({100 * len(sids_id) / n_sids:.2f}%)", f"{len(skeys_id_test):,} ({100 * len(skeys_id_test) / n_samps:.2f}%)"],
-    ["OOD Val", f"{len(sids_ood_val):,} ({100 * len(sids_ood_val) / n_sids:.2f}%)", f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps:.2f}%)"],
-    ["OOD Test", f"{len(sids_ood_test):,} ({100 * len(sids_ood_test) / n_sids:.2f}%)", f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps:.2f}%)"],
-    ["Whole Dataset", f"{n_sids:,} (100.00%)", f"{n_samps:,} (100.00%)"],
+    [
+        "Train", 
+        f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)", 
+        f"{len(skeys_train):,} ({100 * len(skeys_train) / n_samps:.2f}%)",
+    ],
+    [
+        "ID Val", 
+        f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)", 
+        f"{len(skeys_id_val):,} ({100 * len(skeys_id_val) / n_samps:.2f}%)"
+    ],
+    [
+        "ID Test", 
+        f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)", 
+        f"{len(skeys_id_test):,} ({100 * len(skeys_id_test) / n_samps:.2f}%)"
+    ],
+    [
+        "OOD Val", 
+        f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)", 
+        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps:.2f}%)"
+    ],
+    [
+        "OOD Test", 
+        f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)", 
+        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps:.2f}%)"
+    ],
+    [
+        "Whole Dataset", 
+        f"{n_sids:,} (100.00%)", 
+        f"{n_samps:,} (100.00%)"
+    ],
 ]
 
 fig, ax = plt.subplots(figsize=(5, 2))

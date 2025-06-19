@@ -239,7 +239,7 @@ def plot_split_distribution(data, labels, colors, title, x_label, y_label, filep
             markersize=markersize, 
             markeredgewidth=markeredgewidth, 
             linestyle=linestyle, 
-            alpha=alpha
+            alpha=alpha,
         )
 
     plt.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.7)
@@ -358,7 +358,8 @@ plot_split_distribution(
     title, x_label, y_label, 
     filepath, 
     ema=False, scale="symlog", 
-    marker="|", markersize=6, markeredgewidth=0.5, linestyle="", alpha=1.0)
+    marker="|", markersize=6, markeredgewidth=0.5, linestyle="", alpha=1.0,
+)
 
 title = "ID Split Distribution (Log-Scale + Smoothed)"
 filepath = str(dirpath_figs / "distribution_id_log_smooth.png")
@@ -387,34 +388,34 @@ col_labels = [
 ]
 data = [
     [
-        "Train", 
-        f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)", 
+        "Train",
+        f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)",
         f"{len(skeys_train):,} ({100 * n_skeys_train / n_samps_total:.2f}%)",
     ],
     [
-        "ID Val", 
-        f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)", 
-        f"{len(skeys_id_val):,} ({100 * n_skeys_id_val / n_samps_total:.2f}%)"
+        "ID Val",
+        f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)",
+        f"{len(skeys_id_val):,} ({100 * n_skeys_id_val / n_samps_total:.2f}%)",
     ],
     [
-        "ID Test", 
-        f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)", 
-        f"{len(skeys_id_test):,} ({100 * n_skeys_id_test / n_samps_total:.2f}%)"
+        "ID Test",
+        f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)",
+        f"{len(skeys_id_test):,} ({100 * n_skeys_id_test / n_samps_total:.2f}%)",
     ],
     [
-        "OOD Val", 
-        f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)", 
-        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps_total:.2f}%)"
+        "OOD Val",
+        f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)",
+        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps_total:.2f}%)",
     ],
     [
-        "OOD Test", 
-        f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)", 
-        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps_total:.2f}%)"
+        "OOD Test",
+        f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)",
+        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps_total:.2f}%)",
     ],
     [
-        "Whole Dataset", 
-        f"{n_sids:,} (100.00%)", 
-        f"{n_samps_total:,} (100.00%)"
+        "Whole Dataset",
+        f"{n_sids:,} (100.00%)",
+        f"{n_samps_total:,} (100.00%)",
     ],
 ]
 
@@ -424,7 +425,7 @@ tbl = ax.table(
     cellText=data,
     colLabels=col_labels,
     cellLoc="center",
-    loc="center"
+    loc="center",
 )
 
 for col_idx, _ in enumerate(col_labels):

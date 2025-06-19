@@ -31,13 +31,13 @@ n_sids = len(sids)
 n_sids_ood_eval = round(n_sids * pct_ood_eval)
 
 n_samps_dict = {}
-n_samps = 0
+n_samps_total = 0
 for sid in sids:
-    n_samps_s = tax_nymph["found"][sid]["meta"]["num_imgs"]
-    n_samps_dict[sid] = n_samps_s
-    n_samps += n_samps_s
+    n_samps_sid = tax_nymph["found"][sid]["meta"]["num_imgs"]
+    n_samps_dict[sid] = n_samps_sid
+    n_samps_total += n_samps_sid
 
-n_samps_eval = round(n_samps * PCT_EVAL)  # OOD splits: n_draws
+n_samps_eval = round(n_samps_total * PCT_EVAL)  # OOD splits: n_draws
 
 genera = []
 genus_2_sids = defaultdict(list)  # OOD splits: class_2_insts
@@ -111,15 +111,15 @@ while not close_enough:
 
     n_samps_ood_val = 0
     for sid in sids_ood_val:
-        n_samps_s = n_samps_dict[sid]
-        n_samps_ood_val += n_samps_s
-    pct_samps_ood_val = n_samps_ood_val / n_samps
+        n_samps_sid = n_samps_dict[sid]
+        n_samps_ood_val += n_samps_sid
+    pct_samps_ood_val = n_samps_ood_val / n_samps_total
 
     n_samps_ood_test = 0
     for sid in sids_ood_test:
-        n_samps_s = n_samps_dict[sid]
-        n_samps_ood_test += n_samps_s
-    pct_samps_ood_test = n_samps_ood_test / n_samps
+        n_samps_sid = n_samps_dict[sid]
+        n_samps_ood_test += n_samps_sid
+    pct_samps_ood_test = n_samps_ood_test / n_samps_total
 
     if VERBOSE_OOD_SAMPLE_CHECK:
         print("------------------------")
@@ -366,14 +366,6 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath,
 
 # STATS TABLE
 
-
-write_pickle(skeys_train, dirpath_splits / "train.pkl")
-write_pickle(skeys_id_val, dirpath_splits / "id_val.pkl")
-write_pickle(skeys_id_test, dirpath_splits / "id_test.pkl")
-write_pickle(skeys_ood_val, dirpath_splits / "ood_val.pkl")
-write_pickle(skeys_ood_test, dirpath_splits / "ood_test.pkl")
-
-
 n_sids_id = len(sids_id)
 n_sids_ood_val = len(sids_ood_val)
 n_sids_ood_test = len(sids_ood_test)
@@ -384,7 +376,9 @@ n_sids_id_val = len(set(sids_id_val))
 sids_id_test, _ = zip(*skeys_id_test)
 n_sids_id_test = len(set(sids_id_test))
 
-pdb.set_trace()
+n_skeys_train = len(skeys_train)
+n_skeys_id_val = len(skeys_id_val)
+n_skeys_id_test = len(skeys_id_test)
 
 col_labels = [
     "Split", 
@@ -395,32 +389,32 @@ data = [
     [
         "Train", 
         f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)", 
-        f"{len(skeys_train):,} ({100 * len(skeys_train) / n_samps:.2f}%)",
+        f"{len(skeys_train):,} ({100 * n_skeys_train / n_samps_total:.2f}%)",
     ],
     [
         "ID Val", 
         f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)", 
-        f"{len(skeys_id_val):,} ({100 * len(skeys_id_val) / n_samps:.2f}%)"
+        f"{len(skeys_id_val):,} ({100 * n_skeys_id_val / n_samps_total:.2f}%)"
     ],
     [
         "ID Test", 
         f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)", 
-        f"{len(skeys_id_test):,} ({100 * len(skeys_id_test) / n_samps:.2f}%)"
+        f"{len(skeys_id_test):,} ({100 * n_skeys_id_test / n_samps_total:.2f}%)"
     ],
     [
         "OOD Val", 
         f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)", 
-        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps:.2f}%)"
+        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps_total:.2f}%)"
     ],
     [
         "OOD Test", 
         f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)", 
-        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps:.2f}%)"
+        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps_total:.2f}%)"
     ],
     [
         "Whole Dataset", 
         f"{n_sids:,} (100.00%)", 
-        f"{n_samps:,} (100.00%)"
+        f"{n_samps_total:,} (100.00%)"
     ],
 ]
 

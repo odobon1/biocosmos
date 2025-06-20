@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import os
+import bisect
 
 from utils import paths, read_pickle, write_pickle
 from utils_ingestion import strat_splits
@@ -9,11 +10,11 @@ import pdb
 
 
 # config params
-PCT_EVAL = 0.2
-PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
+PCT_EVAL = 0.3
+PCT_OOD_CLOSE_ENOUGH = 0.0001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 VERBOSE_OOD_SAMPLE_CHECK = False
-SPLIT_NAME = "A"
-ALLOW_OVERWRITES = True
+SPLIT_NAME = "D"
+ALLOW_OVERWRITES = False
 
 dirpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
 dirpath_figs = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
@@ -21,7 +22,7 @@ dirpath_figs = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
 if os.path.isdir(dirpath_splits) and not ALLOW_OVERWRITES:
     error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
     raise ValueError(error_msg)
-print(F"SPLIT_NAME: {SPLIT_NAME}")
+print(F"SPLIT_NAME: '{SPLIT_NAME}'")
 
 pct_ood_eval = pct_id_eval = PCT_EVAL / 2  # OOD splits: pct_splits
 
@@ -49,7 +50,7 @@ for sid in sids:
 n_genera = len(set(genera))  # OOD splits: n_classes
 
 """
-`genus_2_sids` & `sid_2_skeys` structure (class_2_insts):
+`genus_2_sids` & `sid_2_skeys_id_multis` structure (class_2_insts):
 
 genus_2_sids:
 {
@@ -58,7 +59,7 @@ genus_2_sids:
     ...
 }
 
-sid_2_skeys:
+sid_2_skeys_id_multis:
 {
     sid0 : [skey0, skey1, skey2, ...],
     sid1 : [...],
@@ -164,29 +165,137 @@ for sid in sids_id_multis:
 
 pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID splits: pct_splits (10 / 90)
 
-sid_2_skeys = defaultdict(list)  # ID splits: class_2_insts
-skeys = set()  # ID splits: insts
-for sid in sids_id_multis:
+sid_2_skeys_id_multis = defaultdict(list)  # ID splits: class_2_insts
+sid_2_skeys_id = defaultdict(list)  # used for n-shot tracking
+skeys_id_multis = set()  # ID splits: insts
+
+for sid in sids_id:
     for sidx in range(n_samps_dict[sid]):
         skey = (sid, sidx)
-        sid_2_skeys[sid].append(skey)
-        skeys.add(skey)
+        sid_2_skeys_id[sid].append(skey)
+        if sid in sids_id_multis:
+            sid_2_skeys_id_multis[sid].append(skey)
+            skeys_id_multis.add(skey)
 
-skeys_train, skeys_id_val, skeys_id_test = strat_splits(
+skeys_train_multis, skeys_id_val, skeys_id_test = strat_splits(
     n_classes=n_sids_id_multis, 
     n_draws=n_samps_id_eval, 
     pct_splits=pct_rem_id_eval, 
     n_insts_2_classes=n_insts_2_classes_s, 
-    class_2_insts=sid_2_skeys, 
-    insts=skeys,
+    class_2_insts=sid_2_skeys_id_multis, 
+    insts=skeys_id_multis,
 )
 
 skeys_id_singles = set((sid, 0) for sid in sids_id_singles)
-skeys_train.update(skeys_id_singles)
+skeys_train = skeys_train_multis.union(skeys_id_singles)
 
 print("ID Split Complete!")
 
-# SAVE SPLITS TO FILE
+# N-SHOT TRACKING
+
+print("Constructing n-shot tracking structures...")
+
+skeys_id = set()
+skeys_id |= skeys_train
+skeys_id |= skeys_id_val
+skeys_id |= skeys_id_test
+
+def find_range_index(upper_bounds, n):
+    assert isinstance(n, int), f"n must be an int, got {type(n).__name__}"
+    if n <= 0:
+        raise ValueError(f"find_range_index -- n = {n}")
+
+    return bisect.bisect_left(upper_bounds, n)
+
+# config params
+# nst_names = ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
+# upper_bounds_nst = [1, 2, 3, 4, 5, 10, 20, 50, 100]  # divides n-shot space into len(upper_bounds_nst) + 1 buckets, last bucket is if n is greater than the last upper bound
+nst_names = ["1-20", "21-100", "101-500", "501+"]
+upper_bounds_nst = [20, 100, 500]
+
+assert len(nst_names) == len(upper_bounds_nst) + 1, f"len(nst_names) ({len(nst_names)}) != len(upper_bounds_nst) + 1 ({len(upper_bounds_nst)})"
+
+"""
+n-shot tracking data structures
+
+`n_shot_tracker` structure:
+~ [List] Edition ~
+(for assembly)
+
+n_shot_tracker = [
+    {
+        "train" : set(skeys),
+        "id_val" : set(skeys),
+        "id_test" : set(skeys),
+    },
+    {...}.
+    ...
+]
+
+`id_eval_nshot` structure:
+~ [Dict] Edition ~
+(for saving to file)
+
+id_eval_nshot = {
+    "names" : nst_names (it's a list),
+    "buckets" : {
+        nst_name0 : {
+            "id_val" : set(skeys),
+            "id_test" : set(skeys),
+        }.
+        nst_name1 : {
+            ...
+        },
+        ...
+    },
+}
+
+"""
+
+n_shot_tracker = []
+
+for name in nst_names:
+    nst_bucket = {
+        "train" : set(),
+        "id_val" : set(),
+        "id_test" : set(),
+    }
+    n_shot_tracker.append(nst_bucket)
+
+for sid in sids_id:
+
+    sid_skeys_train = set()
+    sid_skeys_val = set()
+    sid_skeys_test = set()
+
+    n_skeys = n_samps_dict[sid]
+    n_skeys_train, n_skeys_id_val, n_skeys_id_test = 0, 0, 0
+    for skey in sid_2_skeys_id[sid]:
+        # check which split the sample landed in
+        if skey in skeys_train:
+            n_skeys_train += 1
+            sid_skeys_train.add(skey)
+        elif skey in skeys_id_val:
+            n_skeys_id_val += 1
+            sid_skeys_val.add(skey)
+        elif skey in skeys_id_test:
+            n_skeys_id_test += 1
+            sid_skeys_test.add(skey)
+
+    if n_skeys != n_skeys_train + n_skeys_id_val + n_skeys_id_test:
+        print("PROBLEM")
+        print(f"{n_skeys} {n_skeys_train} {n_skeys_id_val} {n_skeys_id_test}")
+
+    idx_nst_bucket = find_range_index(upper_bounds_nst, n_skeys_train)
+    n_shot_tracker[idx_nst_bucket]["train"].update(sid_skeys_train)
+    n_shot_tracker[idx_nst_bucket]["id_val"].update(sid_skeys_val)
+    n_shot_tracker[idx_nst_bucket]["id_test"].update(sid_skeys_test)
+
+print("n-shot tracking complete!")
+
+# SAVE SPLITS AND N-SHOT TRACKING TO FILE (all are sets of skeys)
+
+print("Saving Stuff...")
 
 # create dirs (after splits have been generated so that dirs aren't created if the run is terminated early)
 os.makedirs(dirpath_splits, exist_ok=True)
@@ -198,8 +307,26 @@ write_pickle(skeys_id_test, dirpath_splits / "id_test.pkl")
 write_pickle(skeys_ood_val, dirpath_splits / "ood_val.pkl")
 write_pickle(skeys_ood_test, dirpath_splits / "ood_test.pkl")
 
+# [List] Edition --> [Dict] Edition
+id_eval_nshot = {
+    "names" : nst_names,  # just to preserve ordering of the names if needed
+    "buckets" : {
+        name : {
+            "id_val" : bucket["id_val"],
+            "id_test" : bucket["id_test"],
+        }
+        for name, bucket in zip(nst_names, n_shot_tracker)
+    },
+}
+
+write_pickle(id_eval_nshot, dirpath_splits / f"id_eval_nshot.pkl")
+
+print("Saved!")
+
 # ANALYSIS + PLOTTING
-# maybe isolate plotting / table generation to another file
+# maybe isolate plotting / table generation to another file -- might be a little harder with the n-shot tracking, but still probably possible
+
+print("Plotting stuff...")
 
 def plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=False, scale=None, marker="", markersize=6, markeredgewidth=0.5, linestyle="-", alpha=1.0):
     """
@@ -318,15 +445,13 @@ plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath,
 (sid, n_skeys, n_skeys_train, n_skeys_id_val, n_skeys_id_test)
 
 ^ sorted on n_skeys and then sid (alphabetical)
-
-***** Think this is all I need for the n-shot analysis / data structure organization *****
 """
 
 sid_tups = []
-for sid in sids_id_multis:
+for sid in sids_id_multis:  # ID singletons omitted from plotting (they are all in train)
     n_skeys = n_samps_dict[sid]
     n_skeys_train, n_skeys_id_val, n_skeys_id_test = 0, 0, 0
-    for skey in sid_2_skeys[sid]:
+    for skey in sid_2_skeys_id_multis[sid]:
         # check which split the sample landed in
         if skey in skeys_train:
             n_skeys_train += 1
@@ -365,7 +490,11 @@ title = "ID Split Distribution (Log-Scale + Smoothed)"
 filepath = str(dirpath_figs / "distribution_id_log_smooth.png")
 plot_split_distribution(data, labels, colors, title, x_label, y_label, filepath, ema=True, scale="log")
 
-# STATS TABLE
+print("Plotting Complete!")
+
+# SPLIT STATS TABLE
+
+print("Generating Stats Tables...")
 
 n_sids_id = len(sids_id)
 n_sids_ood_val = len(sids_ood_val)
@@ -381,42 +510,14 @@ n_skeys_train = len(skeys_train)
 n_skeys_id_val = len(skeys_id_val)
 n_skeys_id_test = len(skeys_id_test)
 
-col_labels = [
-    "Split", 
-    "Num. Species", 
-    "Num. Samples",
-]
+col_labels = ["Split", "Num. Species", "Num. Samples"]
 data = [
-    [
-        "Train",
-        f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)",
-        f"{len(skeys_train):,} ({100 * n_skeys_train / n_samps_total:.2f}%)",
-    ],
-    [
-        "ID Val",
-        f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)",
-        f"{len(skeys_id_val):,} ({100 * n_skeys_id_val / n_samps_total:.2f}%)",
-    ],
-    [
-        "ID Test",
-        f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)",
-        f"{len(skeys_id_test):,} ({100 * n_skeys_id_test / n_samps_total:.2f}%)",
-    ],
-    [
-        "OOD Val",
-        f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)",
-        f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps_total:.2f}%)",
-    ],
-    [
-        "OOD Test",
-        f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)",
-        f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps_total:.2f}%)",
-    ],
-    [
-        "Whole Dataset",
-        f"{n_sids:,} (100.00%)",
-        f"{n_samps_total:,} (100.00%)",
-    ],
+    ["Train",         f"{n_sids_id:,} ({100 * n_sids_id / n_sids:.2f}%)",             f"{n_skeys_train:,} ({100 * n_skeys_train / n_samps_total:.2f}%)"],
+    ["ID Val",        f"{n_sids_id_val:,} ({100 * n_sids_id_val / n_sids:.2f}%)",     f"{n_skeys_id_val:,} ({100 * n_skeys_id_val / n_samps_total:.2f}%)"],
+    ["ID Test",       f"{n_sids_id_test:,} ({100 * n_sids_id_test / n_sids:.2f}%)",   f"{n_skeys_id_test:,} ({100 * n_skeys_id_test / n_samps_total:.2f}%)"],
+    ["OOD Val",       f"{n_sids_ood_val:,} ({100 * n_sids_ood_val / n_sids:.2f}%)",   f"{n_samps_ood_val:,} ({100 * n_samps_ood_val / n_samps_total:.2f}%)"],
+    ["OOD Test",      f"{n_sids_ood_test:,} ({100 * n_sids_ood_test / n_sids:.2f}%)", f"{n_samps_ood_test:,} ({100 * n_samps_ood_test / n_samps_total:.2f}%)"],
+    ["Whole Dataset", f"{n_sids:,} (100.00%)",                                        f"{n_samps_total:,} (100.00%)"],
 ]
 
 fig, ax = plt.subplots(figsize=(5, 2))
@@ -433,4 +534,68 @@ for col_idx, _ in enumerate(col_labels):
     cell.get_text().set_fontweight("bold")
 
 plt.title("Split Stats", fontweight="bold", pad=-5)
-plt.savefig(str(dirpath_figs / "split_stats.png"), dpi=150, bbox_inches="tight")
+plt.savefig(str(dirpath_figs / "stats_splits.png"), dpi=150, bbox_inches="tight")
+
+# N-SHOT TRACKING STATS TABLES
+
+n_shot_col_names = [f"({name})-shot" for name in id_eval_nshot["names"]]
+
+# construct cell values
+row_values_id_val = ["ID Val"]
+row_values_id_test = ["ID Test"]
+for name in id_eval_nshot["names"]:
+    bucket_skeys_set_id_val = id_eval_nshot["buckets"][name]["id_val"]
+    bucket_skeys_set_id_test = id_eval_nshot["buckets"][name]["id_test"]
+
+    num_samps_val = len(bucket_skeys_set_id_val)
+    sids, _ = zip(*bucket_skeys_set_id_val)
+    n_species_val = len(set(sids))
+    row_values_id_val.append(f"{num_samps_val:,} ({n_species_val})")
+
+    num_samps_test = len(bucket_skeys_set_id_test)
+    sids, _ = zip(*bucket_skeys_set_id_test)
+    n_species_test = len(set(sids))
+    row_values_id_test.append(f"{num_samps_test:,} ({n_species_test:,})")
+
+col_labels = ["Split"] + n_shot_col_names
+
+data = [
+    row_values_id_val,
+    row_values_id_test,
+]
+
+fig, ax = plt.subplots(figsize=(5, 2))
+ax.axis("off")
+
+col_width = 0.20  # config param
+col_widths = [col_width] * len(col_labels)
+
+tbl = ax.table(
+    cellText=data,
+    colLabels=col_labels,
+    cellLoc="center",
+    loc="center",
+    colWidths=col_widths,
+)
+
+# tbl.scale(1.5, 1.0)
+
+for col_idx, _ in enumerate(col_labels):
+    cell = tbl[0, col_idx]
+    cell.get_text().set_fontweight("bold")
+
+# fontsize
+tbl.auto_set_font_size(False)
+tbl.set_fontsize(5)  # config param
+
+# thin out grid lines
+for (i, j), cell in tbl.get_celld().items():
+    cell.set_linewidth(0.5)
+
+fontsize_title = 8  # config param
+
+# plt.title("n-shot Bucket Stats: [Num. Samples (Num. Species)]", fontsize=10, fontweight="bold", pad=0)
+plt.title("n-shot Bucket Stats: [Num. Samples (Num. Species)]", fontsize=fontsize_title, fontweight="bold", y=0.70)
+plt.savefig(str(dirpath_figs / "stats_nshot.png"), dpi=300, bbox_inches="tight")
+
+print("Stats Tables Complete! Have a nice day!")

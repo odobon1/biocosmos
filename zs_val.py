@@ -11,10 +11,12 @@ from pathlib import Path
 from tqdm import tqdm
 from transformers import CLIPProcessor, CLIPModel
 import open_clip
+from collections import Counter
 
-from utils import paths
+from utils import paths, read_pickle, write_pickle
 
 import pdb
+
 
 torch.set_printoptions(profile="full")
 pd.set_option("display.max_columns", None)
@@ -24,13 +26,13 @@ pd.set_option("display.max_colwidth", None)
 
 
 # config params
-PRELOAD_IMAGES = True  # preload all images into memory -- be careful with RAM usage, if you exceed available memory you'll hit swapping and slow everything down
-BATCH_SIZE     = 128
-CLIP_TYPE      = "openai"
-# CLIP_TYPE      = "bioclip"
-N_SAMPS        = 2_000  # number of samples to run inference on
-NUM_WORKERS    = 4  # adjust to CPU cores
-
+CLIP_TYPE       = "bioclip"  # "openai" / "bioclip"
+CACHED_IMGS     = False  # preload, preprocess, cache all images into memory -- be careful with RAM usage, if you exceed available memory you'll hit swapping and slow everything down
+BATCH_SIZE      = 512
+NUM_WORKERS     = 4  # adjust to CPU cores
+SPLIT_NAME      = "D"
+LABEL_TYPE      = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
+LABEL_BASE_TYPE = "tax"  # "tax" / "sci"
 
 class CLIPWrapper:
 
@@ -52,13 +54,13 @@ class CLIPWrapper:
             self.img_pp = lambda imgs: preprocessor.image_processor(
                     images=[imgs],
                     return_tensors="pt",
-                )["pixel_values"][0]
+            )["pixel_values"][0]
 
             # batch text tokenization
             self.txt_pp = lambda txts: preprocessor.tokenizer(
                 text=txts,
                 return_tensors="pt",
-                padding=True
+                padding=True,
             ).to(device)
 
         elif clip_type == "bioclip":
@@ -76,15 +78,15 @@ class CLIPWrapper:
 
             raise ValueError(f"{clip_type} specified for clip_type, must be 'openai' or 'bioclip'")
 
-    def zero_shot_classify(self, imgs, zs_labels):
+    def img2txt_classify(self, imgs, labels):
         """
         Args:
-        - imgs [Tensor(B, C, H, W)]
-        - zs_labels [list] ------------ Raw labels to be used for zero-shot classification (let's call this length Z ~ number of zero-shot labels)
+        - imgs [Tensor(B, C, H, W)] --- The images
+        - labels [list(str)] ---------- Raw labels to be used for image-to-text classification
         """
 
         imgs = imgs.to(self.device)
-        zs_label_tokens = self.txt_pp(zs_labels)
+        zs_label_tokens = self.txt_pp(labels)
 
         with torch.no_grad():
             if self.type == "openai":
@@ -102,51 +104,63 @@ class CLIPWrapper:
 
         idxs_pred   = probs.argmax(dim=-1)
         scores      = probs[torch.arange(len(idxs_pred)), idxs_pred].tolist()
-        label_preds = [zs_labels[i] for i in idxs_pred.tolist()]
+        label_preds = [labels[i] for i in idxs_pred.tolist()]
 
         return label_preds, scores
 
 class ImageTextDataset(Dataset):
+    """
+    PyTorch requirements for custom Dataset:
+    - Inheritance from torch.utils.data.Dataset
+    - Implementations of:
+        - __len__(self) --> int
+        - __getitem__(self, idx) --> sample
+    - Everything else is up to you!
+    """
 
-    def __init__(self, df_data, dirpath_imgs, zs_labels, img_pp, preload=False):
+    def __init__(self, index_labels, index_rfpaths_imgs, dpath_imgs, img_pp, cached_imgs=False):
+        
+        self.index_labels       = index_labels
+        self.index_rfpaths_imgs = index_rfpaths_imgs
+        self.dpath_imgs         = dpath_imgs
+        self.img_pp             = img_pp
+        self.cached_imgs        = cached_imgs
 
-        self.df           = df_data.reset_index(drop=True)  # reset_index() so row idx's are (0, 1, 2, ...) for __getitem__() indexing, drop=True prevents old indices being added to DF as "index" col
-        self.dirpath_imgs = dirpath_imgs
-        self.zs_labels    = zs_labels
-        self.img_pp       = img_pp
-        self.preload      = preload
+        self.n_samples = len(self.index_labels)
 
-        if preload:
+        if self.cached_imgs:
             # load all images into memory (as preprocessed tensors)
             self.imgs_mem = []
-            for filename in tqdm(self.df["fileNameAsDelivered"], desc="Preloading Images"):
-                img   = Image.open(self.dirpath_imgs / filename).convert("RGB")
+            for rfpath in tqdm(self.index_rfpaths_imgs, desc="Preloading, Preprocessing, Caching Images"):
+                img   = Image.open(self.dpath_imgs / rfpath).convert("RGB")
                 img_t = self.img_pp(img)
                 self.imgs_mem.append(img_t)
 
     def __len__(self):
-        return len(self.df)
+        return self.n_samples
     
-    # gets called in the background on indices of batch N+1 while GPU (and main process) are busy running zero_shot_classify() on batch N
+    # gets called in the background on indices of batch N+1 while GPU (and main process) are busy running img2txt_classify() on batch N
     def __getitem__(self, idx):
-        row   = self.df.iloc[idx]
-        label = row["scientificName"]
+        """
+        idx --> sample (preprocessed image, label)
+        Returns transformed image and label
+        """
+        label = self.index_labels[idx]
 
-        if self.preload:
+        if self.cached_imgs:
             img_t = self.imgs_mem[idx]
         else:
             # load + preprocess image
-
-            # pdb.set_trace()
-
-            img   = Image.open(self.dirpath_imgs / row["fileNameAsDelivered"]).convert("RGB")
+            img   = Image.open(self.dpath_imgs / self.index_rfpaths_imgs[idx]).convert("RGB")
             img_t = self.img_pp(img)
         
         return img_t, label
 
-# collate_fn takes list of individual samples from Dataset and merges them into a single batch
-# augmentation can be done here methinks
 def collate_fn(batch):
+    """
+    collate_fn takes list of individual samples from Dataset and merges them into a single batch
+    augmentation can be done here methinks
+    """
     imgs, txts = zip(*batch)
     imgs = torch.stack(imgs, dim=0)  # --- Tensor(B, C, H, W)
     return imgs, list(txts)
@@ -154,29 +168,45 @@ def collate_fn(batch):
 def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+
+    print(
+        f"({device})",
+        f"Split ------------- {SPLIT_NAME}",
+        f"CLIP-type --------- {CLIP_TYPE}",
+        f"Label Type -------- {LABEL_TYPE}",
+        f"Label Base Type --- {LABEL_BASE_TYPE}",
+        sep="\n"
+    )
+    print()
 
     model = CLIPWrapper(CLIP_TYPE, device)
 
-    base_dir        = paths["vlm4bio"]
-    # group           = "Fish"
-    group           = "Bird"
-    # group           = "Butterfly"
-    dirpath_imgs_g  = base_dir / group / "images"
-    filepath_meta_g = base_dir / group / "metadata" / "metadata_10k.csv"
+    # GET DATASET INDEXES (LABELS + RELATIVE FILEPATHS TO IMAGES)
 
-    # get labels
-    df_meta_g = pd.read_csv(filepath_meta_g)
-    zs_labels = sorted(df_meta_g["scientificName"].dropna().unique())
+    data_index = read_pickle(paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/id_val.pkl")
 
-    df_meta_g_test = df_meta_g[:N_SAMPS]
+    if LABEL_TYPE == "bioclip":
+        label_prepending = "a photo of "  # BioCLIP-style prepending
+    elif LABEL_TYPE == "openai":
+        label_prepending = "a photo of a "  # OpenAI CLIP-style prepending
+    elif LABEL_TYPE == "base":
+        label_prepending = ""  # no prepending
+
+    if LABEL_BASE_TYPE == "sci":
+        labels_base_index = data_index["base_labels_sci"]
+    elif LABEL_BASE_TYPE == "tax":
+        labels_base_index = data_index["base_labels_tax"]
+
+    # reminder: make sure this prepending step doesn't happen every val cycle
+    index_labels = [label_prepending + labels_base_index[i] for i in range(len(labels_base_index))]
+    index_rfpaths_imgs = data_index["rfpaths"]
 
     dataset = ImageTextDataset(
-        df_data=df_meta_g_test,
-        dirpath_imgs=dirpath_imgs_g,
-        zs_labels=zs_labels,
+        index_labels=index_labels,
+        index_rfpaths_imgs=index_rfpaths_imgs,
+        dpath_imgs=paths["nymph"] / "images",
         img_pp=model.img_pp,
-        preload=PRELOAD_IMAGES,
+        cached_imgs=CACHED_IMGS,
     )
 
     loader = DataLoader(
@@ -184,20 +214,33 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=NUM_WORKERS,
-        pin_memory=True,  # speeds up host --> GPU copies
+        pin_memory=True,  # speeds up host --> GPU copies (True)
         collate_fn=collate_fn,
     )
 
+    labels = list(set(index_labels))
+
+    n_labels = len(labels)
+    n_samps = len(dataset)
+    counter_labels = Counter(index_labels)
+    _, n_maj = counter_labels.most_common(1)[0]
+    print(
+        f"Num. Labels ------------------------------- {n_labels:,}",
+        f"Expected Precision@1 Random Selection ----- {100 * 1 / n_labels:.2f}% ({n_samps / n_labels:.2f}/{n_samps:,})",
+        f"Expected Precision@1 Majority Selection --- {100 * n_maj / n_samps:.2f}% ({n_maj}/{n_samps:,})",
+        sep="\n"
+    )
+    print()
+
     # validation loop
     n_correct = 0
-    for imgs, labels_targ in tqdm(loader, desc="Zero-Shot Eval"):
-        labels_pred, _ = model.zero_shot_classify(imgs, zs_labels)
+    for imgs, labels_targ in tqdm(loader, desc="Image-to-Text Classification Eval"):
+        labels_pred, _ = model.img2txt_classify(imgs, labels)
         n_correct += sum(p == t for p, t in zip(labels_pred, labels_targ))
 
     # performance computation
-    accuracy = n_correct / N_SAMPS
-    print(f"Correct: {n_correct}/{N_SAMPS}")
-    print(f"Accuracy: {accuracy:.2%}")
+    prec1 = n_correct / n_samps
+    print(f"Precision@1: {prec1:.2%} ({n_correct}/{n_samps})")
 
 if __name__ == "__main__":
     main()

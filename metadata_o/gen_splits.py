@@ -1,3 +1,7 @@
+"""
+Want to be able to run this one independently to generate more splits on the fly (i.e. not deeply integrated into the entire ingestion pipeline)
+"""
+
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import os
@@ -10,7 +14,7 @@ import pdb
 
 
 # config params
-PCT_EVAL = 0.3
+PCT_EVAL = 0.05
 PCT_OOD_CLOSE_ENOUGH = 0.0001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 VERBOSE_OOD_SAMPLE_CHECK = False
 SPLIT_NAME = "D"

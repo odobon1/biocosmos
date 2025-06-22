@@ -47,7 +47,7 @@ for sid in tqdm(sids):
         metadata["found"][sid] = {
             "tax" : {
                 "subfamily" : df_metadata_sid["subfamily"].iloc[0],
-                "genus" : df_metadata_sid["genus"].iloc[0],
+                "genus" : df_metadata_sid["species"].iloc[0].split("_")[0],
                 "species" : df_metadata_sid["species"].iloc[0].split("_")[-1],
             },
             "meta" : {

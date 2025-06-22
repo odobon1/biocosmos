@@ -86,21 +86,21 @@ class CLIPWrapper:
         """
 
         imgs = imgs.to(self.device)
-        zs_label_tokens = self.txt_pp(labels)
+        label_tokens = self.txt_pp(labels)
 
         with torch.no_grad():
             if self.type == "openai":
-                img_feats = self.clip.get_image_features(pixel_values=imgs)
-                txt_feats = self.clip.get_text_features(**zs_label_tokens)
+                img_embs = self.clip.get_image_features(pixel_values=imgs)
+                txt_embs = self.clip.get_text_features(**label_tokens)
             else:  # BioCLIP
-                img_feats = self.clip.encode_image(imgs)
-                txt_feats = self.clip.encode_text(zs_label_tokens)
+                img_embs = self.clip.encode_image(imgs)
+                txt_embs = self.clip.encode_text(label_tokens)
 
         # cosine similarity + softmax
-        img_feats = F.normalize(img_feats, dim=-1)
-        txt_feats = F.normalize(txt_feats, dim=-1)
-        logits    = img_feats @ txt_feats.T
-        probs     = logits.softmax(dim=-1)
+        img_embs = F.normalize(img_embs, dim=-1)  # --- Tensor(B, D) ~ D for dim. embeddings
+        txt_embs = F.normalize(txt_embs, dim=-1)  # --- Tensor(L, D) ~ L for number of labels/classes
+        logits   = img_embs @ txt_embs.T
+        probs    = logits.softmax(dim=-1)
 
         idxs_pred   = probs.argmax(dim=-1)
         scores      = probs[torch.arange(len(idxs_pred)), idxs_pred].tolist()
@@ -212,35 +212,42 @@ def main():
     loader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
-        shuffle=True,
+        shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=True,  # speeds up host --> GPU copies (True)
         collate_fn=collate_fn,
     )
 
-    labels = list(set(index_labels))
+    # reminder: make sure this sort doesn't happen every validation run
+    labels = sorted(set(index_labels))
 
     n_labels = len(labels)
     n_samps = len(dataset)
     counter_labels = Counter(index_labels)
     _, n_maj = counter_labels.most_common(1)[0]
     print(
-        f"Num. Labels ------------------------------- {n_labels:,}",
-        f"Expected Precision@1 Random Selection ----- {100 * 1 / n_labels:.2f}% ({n_samps / n_labels:.2f}/{n_samps:,})",
-        f"Expected Precision@1 Majority Selection --- {100 * n_maj / n_samps:.2f}% ({n_maj}/{n_samps:,})",
+        f"Num. Labels ------------------------ {n_labels:,}",
+        f"Expected Prec@1 Random Selection --- {100 * 1 / n_labels:.2f}% ({n_samps / n_labels:.2f}/{n_samps:,})",
+        f"Prec@1 Majority Selection ---------- {100 * n_maj / n_samps:.2f}% ({n_maj}/{n_samps:,})",
         sep="\n"
     )
     print()
 
     # validation loop
     n_correct = 0
-    for imgs, labels_targ in tqdm(loader, desc="Image-to-Text Classification Eval"):
+    for idx_b, (imgs, labels_targ) in enumerate(tqdm(loader, desc="Image-to-Text Eval (ID)", leave=False), start=1):
+
         labels_pred, _ = model.img2txt_classify(imgs, labels)
-        n_correct += sum(p == t for p, t in zip(labels_pred, labels_targ))
+        n_correct_b = sum(p == t for p, t in zip(labels_pred, labels_targ))
+        n_correct += n_correct_b
+        
+        prec1_b = n_correct_b / BATCH_SIZE
+        tqdm.write(f" Batch {idx_b:3d} --- Prec@1: {prec1_b:.2%} ({n_correct_b}/{BATCH_SIZE})")
+
 
     # performance computation
     prec1 = n_correct / n_samps
-    print(f"Precision@1: {prec1:.2%} ({n_correct}/{n_samps})")
+    print(f"\nOverall Prec@1: {prec1:.2%} ({n_correct}/{n_samps})")
 
 if __name__ == "__main__":
     main()

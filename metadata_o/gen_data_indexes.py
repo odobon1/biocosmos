@@ -20,10 +20,6 @@ else:
 # load species id's
 sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
 
-# load base labels
-base_labels_sci = read_pickle(paths["metadata_o"] / f"base_labels/nymph_sci.pkl")
-base_labels_tax = read_pickle(paths["metadata_o"] / f"base_labels/nymph_tax.pkl")
-
 """
 `img_ptrs` structure:
 
@@ -42,7 +38,7 @@ img_ptrs = {
 
 img_ptrs = {}
 
-# iterate through dir paths, fetch filenames, assign to indexes, add to img_ptrs structure
+# iterate through sids, fetch image filenames, assign to indexes, add to img_ptrs structure
 for sid in tqdm(sids):
     
     img_ptrs[sid] = {}
@@ -58,25 +54,19 @@ for sid in tqdm(sids):
 for split in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
 
     data_index = {
+        "sids" : [],
         "rfpaths" : [],
-        "base_labels_sci" : [],
-        "base_labels_tax" : [],
     }
 
     skeys_split = read_pickle(paths["metadata_o"] / f"splits/{SPLIT_NAME}/{split}.pkl")
 
     for skey in skeys_split:
-
         sid = skey[0]
         sidx = skey[1]
 
+        data_index["sids"].append(sid)
+
         rfpath = img_ptrs[sid][sidx]
-
-        base_label_sci = base_labels_sci[sid]
-        base_label_tax = base_labels_tax[sid]
-
         data_index["rfpaths"].append(rfpath)
-        data_index["base_labels_sci"].append(base_label_sci)
-        data_index["base_labels_tax"].append(base_label_tax)
 
     write_pickle(data_index, paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/{split}.pkl")

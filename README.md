@@ -24,7 +24,7 @@ Produces:
 Run in any order:
 `python -m metadata_o.gen_base_labels_nymph`
 `python -m metadata_o.gen_rank_keys`
-`python -m metadata_o.gen_splits`
+`python -m metadata_o.gen_splits` (set split params first)
 Requires:
 - metadata_o/tax/nymph
 Produces:
@@ -33,3 +33,10 @@ Produces:
 - metadata_o/rank_keys/nymph
 - metadata_o/splits/*
 - figures/splits/*
+
+4. Generate Data Indexes
+`python -m metadata_o.gen_data_indexes` (designate split first)
+Requires:
+- metadata_o/splits/<SPLIT_NAME>/
+Produces:
+- metadata_o/data_indexes/<SPLIT_NAME>/

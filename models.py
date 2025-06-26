@@ -96,7 +96,7 @@ class CLIPWrapper:
         probs    = logits.softmax(dim=-1)
 
         pred_idxs       = probs.argmax(dim=-1)
-        scores           = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()
+        scores          = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()
         pred_labels_enc = [labels_enc[i] for i in pred_idxs.tolist()]
 
         return pred_labels_enc, scores

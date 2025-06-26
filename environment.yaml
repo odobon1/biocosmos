@@ -9,7 +9,6 @@ dependencies:
   - accelerate
   - bidict
   - biopython
-  - faiss-gpu
   - ipykernel
   - numpy
   - pandas
@@ -19,7 +18,6 @@ dependencies:
   - pytorch-cuda=12.1
   - scikit-learn
   - torchvision=0.20.1
-  - torchmetrics
   - tqdm
   - requests
   - pip

@@ -1,22 +1,14 @@
 import torch
-# monkey-patch modeling_utils safety check
-import transformers.modeling_utils as _mu
-_mu.check_torch_load_is_safe = lambda *args, **kwargs: None
-
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from PIL import Image
-from pathlib import Path
 from tqdm import tqdm
-from transformers import CLIPProcessor, CLIPModel
-import open_clip
 from collections import Counter
 import time
 
 from utils import paths, read_pickle, write_pickle
 from models import CLIPWrapper
-from utils_eval import compute_map_img2img
+from utils_eval import compute_map_img2img, compute_map_txt2img
 
 import pdb
 
@@ -30,10 +22,10 @@ pd.set_option("display.max_colwidth", None)
 
 # config params
 CLIP_TYPE       = "bioclip"  # "openai" / "bioclip"
-CACHED_IMGS     = False  # preload, preprocess, cache all images into memory -- be careful with RAM usage, if you exceed available memory you'll hit swapping and slow everything down
+CACHED_IMGS     = False  # preload, preprocess, cache all images into memory
 BATCH_SIZE      = 512
 NUM_WORKERS     = 4  # adjust to CPU cores
-SPLIT_NAME      = "A"
+SPLIT_NAME      = "D"
 LABEL_TYPE      = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
 LABEL_BASE_TYPE = "tax"  # "tax" / "sci"
 
@@ -146,7 +138,7 @@ def main():
         shuffle=True,
         num_workers=NUM_WORKERS,
         pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
-        prefetch_factor=2,  # how many batches each worker will load in advance -- higher prefetch_factor increases throughput, higher RAM cost ~ only takes effect when num_workers > 0
+        prefetch_factor=2,  # how many batches each worker will load in advance; higher prefetch_factor increases throughput, higher RAM cost; only takes effect when num_workers > 0
         collate_fn=collate_fn,
     )
 
@@ -169,20 +161,21 @@ def main():
 
     time_start = time.time()
 
-    # for img2img eval
-    img_embs_all = []
-    labels_all = []
+    # for img2img and txt2img eval
+    embs_imgs_all = []
+    labels_enc_imgs_all = []
+
+    embs_labels = model.embed_texts(labels)  # --- Tensor(L, D)
 
     # eval loop
     n_correct = 0
     for idx_b, (imgs, targ_labels_enc) in enumerate(tqdm(loader, desc="Image-to-Text Eval (ID)", leave=False), start=1):
 
         embs_imgs = model.embed_images(imgs)  # ---- Tensor(B, D)
-        embs_lbls = model.embed_texts(labels)  # --- Tensor(L, D)  ***** EMBED LABELS ONCE AND INDEX INTO THAT TENSOR IF POSSIBLE, WILL BE FASTER *****
-        pred_labels_enc, _ = model.img2txt_classify(embs_imgs, embs_lbls, labels_enc)
+        pred_labels_enc, _ = model.img2txt_classify(embs_imgs, embs_labels, labels_enc)
 
-        img_embs_all.append(embs_imgs.cpu())
-        labels_all.append(torch.tensor(targ_labels_enc, dtype=torch.long))
+        embs_imgs_all.append(embs_imgs.cpu())
+        labels_enc_imgs_all.append(torch.tensor(targ_labels_enc, dtype=torch.long))
 
         n_correct_b = sum(p == t for p, t in zip(pred_labels_enc, targ_labels_enc))
         n_correct += n_correct_b
@@ -195,14 +188,37 @@ def main():
     prec1 = n_correct / n_samps
     print(f"\nImage-to-text Classification Precision@1 --- {prec1:.2%} ({n_correct}/{n_samps})")
 
+    time_end = time.time()
+    time_elapsed_img2txt = time_end - time_start
+
+    # prepare image embedding and label encoding tensors for img2img and txt2img mAP computation
+    embs_imgs_all = torch.cat(embs_imgs_all, dim=0)  # --------------- Tensor(Q, D)
+    labels_enc_imgs_all = torch.cat(labels_enc_imgs_all, dim=0)  # --- Tensor(Q)
+
+    time_start = time.time()
+
     # img2img mAP computation
-    img_embs_all = torch.cat(img_embs_all, dim=0)  # --- Tensor(Q, D)
-    labels_all = torch.cat(labels_all, dim=0)  # ------- Tensor(Q)
-    map_img2img = compute_map_img2img(img_embs_all, labels_all)
+    map_img2img = compute_map_img2img(embs_imgs_all, labels_enc_imgs_all)
     print(f"Image-to-image Retrieval mAP --------------- {map_img2img:.4f}")
 
     time_end = time.time()
-    print(f"Time Elapsed: {time_end - time_start:.2f} s")
+    time_elapsed_img2img = time_end - time_start
+    time_start = time.time()
+
+    # txt2img mAP computation
+    map_txt2img = compute_map_txt2img(embs_labels.cpu(), torch.tensor(labels_enc), embs_imgs_all, labels_enc_imgs_all)
+    print(f"Text-to-image Retrieval mAP ---------------- {map_txt2img:.4f}")
+
+    time_end = time.time()
+    time_elapsed_txt2img = time_end - time_start
+
+    print(
+        f"Elapsed Time:",
+        f"img2txt --- {time_elapsed_img2txt:.2f} (s)",
+        f"img2img --- {time_elapsed_img2img:.2f} (s)",
+        f"txt2img --- {time_elapsed_txt2img:.2f} (s)",
+        sep="\n"
+    )
 
 if __name__ == "__main__":
     main()

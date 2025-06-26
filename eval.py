@@ -21,15 +21,15 @@ pd.set_option("display.max_colwidth", None)
 
 
 # config params
-CLIP_TYPE       = "bioclip"  # "openai" / "bioclip"
-CACHED_IMGS     = False  # preload, preprocess, cache all images into memory
-BATCH_SIZE      = 512
-NUM_WORKERS     = 4  # adjust to CPU cores
-SPLIT_NAME      = "D"
-LABEL_TYPE      = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
-LABEL_BASE_TYPE = "tax"  # "tax" / "sci"
+CLIP_TYPE      = "bioclip"  # "openai" / "bioclip"
+CACHED_IMGS    = False  # preload, preprocess, cache all images into memory
+BATCH_SIZE     = 512
+NUM_WORKERS    = 4  # adjust to CPU cores
+SPLIT_NAME     = "D"
+TEXT_TYPE      = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
+TEXT_BASE_TYPE = "tax"  # "tax" / "sci"
 
-class ImageTextDataset(Dataset):
+class ImageDataset(Dataset):
     """
     PyTorch requirements for custom Dataset:
     - Inheritance from torch.utils.data.Dataset
@@ -39,15 +39,15 @@ class ImageTextDataset(Dataset):
     - Everything else is up to you!
     """
 
-    def __init__(self, index_labels_enc, index_rfpaths_imgs, dpath_imgs, img_pp, cached_imgs=False):
+    def __init__(self, index_imgs_class_enc, index_rfpaths_imgs, dpath_imgs, img_pp, cached_imgs=False):
         
-        self.index_labels_enc   = index_labels_enc
-        self.index_rfpaths_imgs = index_rfpaths_imgs
-        self.dpath_imgs         = dpath_imgs
-        self.img_pp             = img_pp
-        self.cached_imgs        = cached_imgs
+        self.index_imgs_class_enc = index_imgs_class_enc
+        self.index_rfpaths_imgs   = index_rfpaths_imgs
+        self.dpath_imgs           = dpath_imgs
+        self.img_pp               = img_pp
+        self.cached_imgs          = cached_imgs
 
-        self.n_samples = len(self.index_labels_enc)
+        self.n_samples = len(self.index_imgs_class_enc)
 
         if self.cached_imgs:
             # load all images into memory (as preprocessed tensors)
@@ -63,10 +63,10 @@ class ImageTextDataset(Dataset):
     # gets called in the background on indices of batch N+1 while GPU (and main process) are busy running img2txt_classify() on batch N
     def __getitem__(self, idx):
         """
-        idx --> sample (preprocessed image, label/class encoding)
-        Returns transformed image and label
+        Returns transformed image and class encoding.
+        idx --> sample (preprocessed image, class encoding)
         """
-        label_enc = self.index_labels_enc[idx]
+        class_enc = self.index_imgs_class_enc[idx]
 
         if self.cached_imgs:
             img_t = self.imgs_mem[idx]
@@ -75,17 +75,17 @@ class ImageTextDataset(Dataset):
             img   = Image.open(self.dpath_imgs / self.index_rfpaths_imgs[idx]).convert("RGB")
             img_t = self.img_pp(img)
         
-        return img_t, label_enc
+        return img_t, class_enc
 
 def collate_fn(batch):
     """
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
     augmentation can be done here methinks
     """
-    imgs, labels_enc = zip(*batch)
+    imgs, classes_enc = zip(*batch)
 
     imgs = torch.stack(imgs, dim=0)  # --- Tensor(B, C, H, W)
-    return imgs, list(labels_enc)
+    return imgs, list(classes_enc)
 
 def main():
 
@@ -93,39 +93,39 @@ def main():
 
     print(
         f"({device})",
-        f"Split ------------- {SPLIT_NAME}",
-        f"CLIP-type --------- {CLIP_TYPE}",
-        f"Label Type -------- {LABEL_TYPE}",
-        f"Label Base Type --- {LABEL_BASE_TYPE}",
+        f"Split ------------ {SPLIT_NAME}",
+        f"CLIP-type -------- {CLIP_TYPE}",
+        f"Text Type -------- {TEXT_TYPE}",
+        f"Text Base Type --- {TEXT_BASE_TYPE}",
         sep="\n"
     )
     print()
 
     model = CLIPWrapper(CLIP_TYPE, device)
 
-    # GET DATASET INDEXES (LABELS + LABEL ENCODINGS + RELATIVE FILEPATHS TO IMAGES)
+    # GET DATASET INDEXES (RELATIVE FILEPATHS TO IMAGES + CLASS ENCODINGS)
 
     data_index      = read_pickle(paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/id_val.pkl")
     rank_keys_nymph = read_pickle(paths["metadata_o"] / "rank_keys/nymph.pkl")
 
-    index_rfpaths_imgs = data_index["rfpaths"]
-    index_sids         = data_index["sids"]
-    index_labels_enc   = [rank_keys_nymph["species"][sid] for sid in index_sids]
+    index_rfpaths_imgs   = data_index["rfpaths"]
+    index_imgs_sids      = data_index["sids"]
+    index_imgs_class_enc = [rank_keys_nymph["species"][sid] for sid in index_imgs_sids]
 
-    if LABEL_BASE_TYPE == "sci":
-        labels_base = read_pickle(paths["metadata_o"] / f"base_labels/nymph_sci.pkl")
-    elif LABEL_BASE_TYPE == "tax":
-        labels_base = read_pickle(paths["metadata_o"] / f"base_labels/nymph_tax.pkl")
+    if TEXT_BASE_TYPE == "sci":
+        texts_base = read_pickle(paths["metadata_o"] / f"base_labels/nymph_sci.pkl")
+    elif TEXT_BASE_TYPE == "tax":
+        texts_base = read_pickle(paths["metadata_o"] / f"base_labels/nymph_tax.pkl")
 
-    if LABEL_TYPE == "bioclip":
-        label_prepending = "a photo of "  # BioCLIP-style prepending
-    elif LABEL_TYPE == "openai":
-        label_prepending = "a photo of a "  # OpenAI CLIP-style prepending
-    elif LABEL_TYPE == "base":
-        label_prepending = ""  # no prepending
+    if TEXT_TYPE == "bioclip":
+        texts_prepending = "a photo of "  # BioCLIP-style prepending
+    elif TEXT_TYPE == "openai":
+        texts_prepending = "a photo of a "  # OpenAI CLIP-style prepending
+    elif TEXT_TYPE == "base":
+        texts_prepending = ""  # no prepending
 
-    dataset = ImageTextDataset(
-        index_labels_enc=index_labels_enc,
+    dataset = ImageDataset(
+        index_imgs_class_enc=index_imgs_class_enc,
         index_rfpaths_imgs=index_rfpaths_imgs,
         dpath_imgs=paths["nymph"] / "images",
         img_pp=model.img_pp,
@@ -143,17 +143,17 @@ def main():
     )
 
     # reminder: make sure this sort doesn't happen every validation run
-    sids = sorted(set(index_sids))  # i.e. "classes"
-    labels = [label_prepending + labels_base[sid] for sid in sids]
-    labels_enc = [rank_keys_nymph["species"][sid] for sid in sids]
+    sids        = sorted(set(index_imgs_sids))  # i.e. "classes"
+    texts       = [texts_prepending + texts_base[sid] for sid in sids]
+    classes_enc = [rank_keys_nymph["species"][sid] for sid in sids]
 
-    n_labels = len(labels)
+    n_classes = len(sids)
     n_samps = len(dataset)
-    counter_labels = Counter(index_labels_enc)
-    _, n_maj = counter_labels.most_common(1)[0]
+    counter_classes = Counter(index_imgs_class_enc)
+    _, n_maj = counter_classes.most_common(1)[0]
     print(
-        f"Num. Labels ------------------------ {n_labels:,}",
-        f"Expected Prec@1 Random Selection --- {100 * 1 / n_labels:.2f}% ({n_samps / n_labels:.2f}/{n_samps:,})",
+        f"Num. Classes ----------------------- {n_classes:,}",
+        f"Expected Prec@1 Random Selection --- {100 * 1 / n_classes:.2f}% ({n_samps / n_classes:.2f}/{n_samps:,})",
         f"Prec@1 Majority Selection ---------- {100 * n_maj / n_samps:.2f}% ({n_maj}/{n_samps:,})",
         sep="\n"
     )
@@ -162,25 +162,25 @@ def main():
     time_start = time.time()
 
     # for img2img and txt2img eval
-    embs_imgs_all = []
-    labels_enc_imgs_all = []
+    embs_imgs_all        = []
+    classes_enc_imgs_all = []
 
-    embs_labels = model.embed_texts(labels)  # --- Tensor(L, D)
+    embs_txts = model.embed_texts(texts)  # --- Tensor(L, D)
 
     # eval loop
     n_correct = 0
-    for idx_b, (imgs, targ_labels_enc) in enumerate(tqdm(loader, desc="Image-to-Text Eval (ID)", leave=False), start=1):
+    for idx_b, (imgs_b, targ_classes_enc_b) in enumerate(tqdm(loader, desc="Image-to-Text Eval (ID)", leave=False), start=1):
 
-        embs_imgs = model.embed_images(imgs)  # ---- Tensor(B, D)
-        pred_labels_enc, _ = model.img2txt_classify(embs_imgs, embs_labels, labels_enc)
+        embs_imgs_b = model.embed_images(imgs_b)  # ---- Tensor(B, D)
+        pred_classes_enc_b, _ = model.img2txt_classify(embs_imgs_b, embs_txts, classes_enc)
 
-        embs_imgs_all.append(embs_imgs.cpu())
-        labels_enc_imgs_all.append(torch.tensor(targ_labels_enc, dtype=torch.long))
+        embs_imgs_all.append(embs_imgs_b.cpu())
+        classes_enc_imgs_all.append(torch.tensor(targ_classes_enc_b, dtype=torch.long))
 
-        n_correct_b = sum(p == t for p, t in zip(pred_labels_enc, targ_labels_enc))
+        n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_b, targ_classes_enc_b))
         n_correct += n_correct_b
 
-        B = len(imgs)
+        B = len(imgs_b)
         prec1_b = n_correct_b / B
         tqdm.write(f" Batch {idx_b:3d} --- Prec@1: {prec1_b:.2%} ({n_correct_b}/{B:,})")
 
@@ -191,14 +191,14 @@ def main():
     time_end = time.time()
     time_elapsed_img2txt = time_end - time_start
 
-    # prepare image embedding and label encoding tensors for img2img and txt2img mAP computation
+    # prepare image embedding and class encoding tensors for img2img and txt2img mAP computation
     embs_imgs_all = torch.cat(embs_imgs_all, dim=0)  # --------------- Tensor(Q, D)
-    labels_enc_imgs_all = torch.cat(labels_enc_imgs_all, dim=0)  # --- Tensor(Q)
+    classes_enc_imgs_all = torch.cat(classes_enc_imgs_all, dim=0)  # --- Tensor(Q)
 
     time_start = time.time()
 
     # img2img mAP computation
-    map_img2img = compute_map_img2img(embs_imgs_all, labels_enc_imgs_all)
+    map_img2img = compute_map_img2img(embs_imgs_all, classes_enc_imgs_all)
     print(f"Image-to-image Retrieval mAP --------------- {map_img2img:.4f}")
 
     time_end = time.time()
@@ -206,7 +206,7 @@ def main():
     time_start = time.time()
 
     # txt2img mAP computation
-    map_txt2img = compute_map_txt2img(embs_labels.cpu(), torch.tensor(labels_enc), embs_imgs_all, labels_enc_imgs_all)
+    map_txt2img = compute_map_txt2img(embs_txts.cpu(), torch.tensor(classes_enc), embs_imgs_all, classes_enc_imgs_all)
     print(f"Text-to-image Retrieval mAP ---------------- {map_txt2img:.4f}")
 
     time_end = time.time()

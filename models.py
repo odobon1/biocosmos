@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from transformers import CLIPProcessor, CLIPModel
 import open_clip
 
+import pdb
+
 
 class CLIPWrapper:
 
@@ -50,53 +52,55 @@ class CLIPWrapper:
 
         else:
 
-            raise ValueError(f"{clip_type} specified for clip_type, must be 'openai' or 'bioclip'")
+            raise ValueError(f"'{clip_type}' specified for clip_type, must be 'openai' or 'bioclip'")
 
-    def embed_images(self, imgs):
+    def embed_images(self, imgs_b):
         """
         Args:
-        - imgs [Tensor(B, C, H, W)] --- Batch of images
+        - imgs_b --- [Tensor(B, C, H, W)] --- Batch of images
         """
-        imgs = imgs.to(self.device)
+
+        imgs_b = imgs_b.to(self.device)
         with torch.no_grad():
             if self.type == "openai":
-                img_embs = self.clip.get_image_features(pixel_values=imgs)
-            else:  # BioCLIP
-                img_embs = self.clip.encode_image(imgs)
+                embs_imgs_b = self.clip.get_image_features(pixel_values=imgs_b)
+            elif self.type == "bioclip":
+                embs_imgs_b = self.clip.encode_image(imgs_b)
 
-        return img_embs
+        return embs_imgs_b
 
-    def embed_texts(self, labels):
+    def embed_texts(self, txts_b):
         """
         Args:
-        - labels [list(str)] --- Labels/Classes (raw labels to be used for image-to-text classification in this case)
+        - txts_b --- [list(str)] --- Batch of texts
         """
-        label_tokens = self.txt_pp(labels)  # --------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
+
+        tokens_txts_b = self.txt_pp(txts_b)  # --------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
 
         with torch.no_grad():
             if self.type == "openai":
-                txt_embs = self.clip.get_text_features(**label_tokens)
-            else:  # BioCLIP
-                txt_embs = self.clip.encode_text(label_tokens)
+                embs_txts_b = self.clip.get_text_features(**tokens_txts_b)
+            elif self.type == "bioclip":
+                embs_txts_b = self.clip.encode_text(tokens_txts_b)
 
-        return txt_embs
+        return embs_txts_b
 
-    def img2txt_classify(self, embs_images, embs_labels, labels_enc):
+    def img2txt_classify(self, embs_imgs_b, embs_txts, classes_enc_txts):
         """
         Args:
-        - embs_images [Tensor(B, D)] --- Batch of image embeddings (D for dim. embeddings)
-        - embs_labels [Tensor(L, D)] --- Label embeddings
-        - labels_enc [list(int)] ------- Batch of label/class encodings
+        - embs_imgs_b -------- [Tensor(B, D)] --- Batch of image embeddings (D for dim. embeddings)
+        - embs_txts ---------- [Tensor(L, D)] --- Text embeddings
+        - classes_enc_txts --- [list(int)] ------ Text class encodings
         """
 
         # cosine similarity + softmax
-        img_embs = F.normalize(embs_images, dim=-1)  # --- Tensor(B, D) ~ D for dim. embeddings
-        txt_embs = F.normalize(embs_labels, dim=-1)  # --- Tensor(L, D)
-        logits   = img_embs @ txt_embs.T
-        probs    = logits.softmax(dim=-1)
+        embs_imgs = F.normalize(embs_imgs_b, dim=-1)  # --- Tensor(B, D) ~ D for dim. embeddings
+        embs_txts = F.normalize(embs_txts, dim=-1)  # ----- Tensor(L, D)
+        logits    = embs_imgs @ embs_txts.T
+        probs     = logits.softmax(dim=-1)
 
-        pred_idxs       = probs.argmax(dim=-1)
-        scores          = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()
-        pred_labels_enc = [labels_enc[i] for i in pred_idxs.tolist()]
+        pred_idxs             = probs.argmax(dim=-1)
+        scores                = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()
+        pred_classes_enc_txts = [classes_enc_txts[i] for i in pred_idxs.tolist()]
 
-        return pred_labels_enc, scores
+        return pred_classes_enc_txts, scores

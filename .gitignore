@@ -4,8 +4,8 @@ metadata_o/__pycache__/
 figures/splits/*
 !figures/splits/.gitkeep
 
-metadata_o/base_labels/*
-!metadata_o/base_labels/.gitkeep
+metadata_o/base_texts/*
+!metadata_o/base_texts/.gitkeep
 
 metadata_o/data_indexes/*
 !metadata_o/data_indexes/.gitkeep

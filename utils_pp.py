@@ -6,10 +6,10 @@ def compute_rank_dists(tax_vecs_b):
     Computes rank distance between every pair of taxonomy-encoding vectors (e.g. same species = 0, same genus = 1, etc.)
 
     Args:
-    - tax_vecs_b [Tensor(B, L)] --- Batch of taxonomy-encoding vectors (L = tree depth considered)
+    - tax_vecs_b --- [Tensor(B, L)] --- Batch of taxonomy-encoding vectors (L = tree depth considered)
 
     Returns:
-        [Tensor(B, B)] ------------ Tensor where entry (i, j) represents the rank at which vectors i and j differ
+    - [Tensor(B, B)] ------------------ Tensor where entry (i, j) represents the rank at which vectors i and j differ
     """
     B, L = tax_vecs_b.shape
     

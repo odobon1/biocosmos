@@ -15,11 +15,11 @@ def species_search(genus_tax_id, species_epithet):
     Search for a specific species within a genus using NCBI taxonomy links.
     
     Args:
-        - genus_tax_id [str] --- genus taxonomy ID
-        - species_name [str] --- species epithet to search for
+    - genus_tax_id --- [str] --- genus taxonomy ID
+    - species_name --- [str] --- species epithet to search for
         
     Returns:
-        [dict] --- Taxonomy record for the species if found, None otherwise
+    - [dict] ------------------- Taxonomy record for the species if found, None otherwise
     """
     try:
         # get all species in genus
@@ -79,8 +79,8 @@ def get_tax_metadata_species(genus, species_epithet):
     Includes synonym searching and species-level resolution.
     
     Args:
-        - genus [str]
-        - species_epithet [str]
+    - genus ------------- [str]
+    - species_epithet --- [str]
     """
 
     meta = {

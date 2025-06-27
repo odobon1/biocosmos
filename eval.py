@@ -1,13 +1,11 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
 import pandas as pd
-from PIL import Image
 from tqdm import tqdm
-from collections import Counter
 import time
 
 from utils import paths, read_pickle, write_pickle
 from models import CLIPWrapper
+from utils_data import spawn_dataloader
 from utils_eval import compute_map_img2img, compute_map_txt2img
 
 import pdb
@@ -29,63 +27,6 @@ SPLIT_NAME      = "D"
 TEXT_PREPENDING = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
 TEXT_BASE       = "tax"  # "tax" / "sci"
 
-class ImageDataset(Dataset):
-    """
-    PyTorch requirements for custom Dataset:
-    - Inheritance from torch.utils.data.Dataset
-    - Implementations of:
-        - __len__(self) --> int
-        - __getitem__(self, idx) --> sample
-    - Everything else is up to you!
-    """
-
-    def __init__(self, index_imgs_class_enc, index_imgs_rfpaths, dpath_imgs, img_pp, cached_imgs=False):
-        
-        self.index_imgs_class_enc = index_imgs_class_enc
-        self.index_imgs_rfpaths   = index_imgs_rfpaths
-        self.dpath_imgs           = dpath_imgs
-        self.img_pp               = img_pp
-        self.cached_imgs          = cached_imgs
-
-        self.n_samples = len(self.index_imgs_class_enc)
-
-        if self.cached_imgs:
-            # load all images into memory (as preprocessed tensors)
-            self.imgs_mem = []
-            for rfpath in tqdm(self.index_imgs_rfpaths, desc="Preloading, Preprocessing, Caching Images"):
-                img   = Image.open(self.dpath_imgs / rfpath).convert("RGB")
-                img_t = self.img_pp(img)
-                self.imgs_mem.append(img_t)
-
-    def __len__(self):
-        return self.n_samples
-    
-    # gets called in the background on indices of batch N+1 while GPU (and main process) are busy running img2txt_classify() on batch N
-    def __getitem__(self, idx):
-        """
-        Returns transformed image and class encoding.
-        idx --> sample (preprocessed image, class encoding)
-        """
-        class_enc = self.index_imgs_class_enc[idx]
-
-        if self.cached_imgs:
-            img_t = self.imgs_mem[idx]
-        else:
-            # load + preprocess image
-            img   = Image.open(self.dpath_imgs / self.index_imgs_rfpaths[idx]).convert("RGB")
-            img_t = self.img_pp(img)
-        
-        return img_t, class_enc
-
-def collate_fn(batch):
-    """
-    collate_fn takes list of individual samples from Dataset and merges them into a single batch
-    augmentation can be done here methinks
-    """
-    imgs_b, classes_enc_imgs_b = zip(*batch)
-
-    imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
-    return imgs_b, list(classes_enc_imgs_b)
 
 def main():
 
@@ -103,7 +44,7 @@ def main():
 
     model = CLIPWrapper(CLIP_TYPE, device)
 
-    # GET DATASET INDEXES (RELATIVE FILEPATHS TO IMAGES + CLASS ENCODINGS)
+    # GET DATA INDEXES (RELATIVE FILEPATHS TO IMAGES + CLASS ENCODINGS)
 
     data_index      = read_pickle(paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/id_val.pkl")
     rank_keys_nymph = read_pickle(paths["metadata_o"] / "rank_keys/nymph.pkl")
@@ -124,22 +65,17 @@ def main():
     elif TEXT_PREPENDING == "base":
         texts_prepending = ""  # no prepending
 
-    dataset = ImageDataset(
+    loader = spawn_dataloader(
         index_imgs_class_enc=index_imgs_class_enc,
         index_imgs_rfpaths=index_imgs_rfpaths,
         dpath_imgs=paths["nymph"] / "images",
         img_pp=model.img_pp,
         cached_imgs=CACHED_IMGS,
-    )
-
-    loader = DataLoader(
-        dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=NUM_WORKERS,
-        pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
-        prefetch_factor=2,  # how many batches each worker will load in advance; higher prefetch_factor increases throughput, higher RAM cost; only takes effect when num_workers > 0
-        collate_fn=collate_fn,
+        pin_memory=True,
+        prefetch_factor=2,
     )
 
     # reminder: make sure this sort doesn't happen every validation run
@@ -147,17 +83,7 @@ def main():
     texts            = [texts_prepending + texts_base[sid] for sid in sids]
     classes_enc_txts = [rank_keys_nymph["species"][sid] for sid in sids]
 
-    n_classes       = len(sids)
-    n_samps         = len(dataset)
-    counter_classes = Counter(index_imgs_class_enc)
-    _, n_maj        = counter_classes.most_common(1)[0]
-    print(
-        f"Num. Classes ----------------------- {n_classes:,}",
-        f"Expected Prec@1 Random Selection --- {1 / n_classes:.2%} ({n_samps / n_classes:.2f}/{n_samps:,})",
-        f"Prec@1 Majority Selection ---------- {n_maj / n_samps:.2%} ({n_maj}/{n_samps:,})",
-        sep="\n"
-    )
-    print()
+    # EVAL
 
     time_start = time.time()
 
@@ -167,7 +93,6 @@ def main():
 
     embs_txts = model.embed_texts(texts)  # ----------- Tensor(L, D)
 
-    # eval loop
     n_correct = 0
     for idx_b, (imgs_b, targ_classes_enc_b) in enumerate(tqdm(loader, desc="Image-to-Text Eval (ID)", leave=False), start=1):
 
@@ -185,7 +110,8 @@ def main():
         tqdm.write(f" Batch {idx_b:3d} --- Prec@1: {prec1_b:.2%} ({n_correct_b}/{B:,})")
 
     # img2txt precision@1 computation
-    prec1 = n_correct / n_samps
+    n_samps = len(loader.dataset)
+    prec1   = n_correct / n_samps
     print(f"\nImage-to-text Classification Precision@1 --- {prec1:.2%} ({n_correct}/{n_samps})")
 
     time_end = time.time()

@@ -24,8 +24,6 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
 
     Q = embs_imgs.size(0)  # num. queries
     N = Q - 1  # num. corpus-samples
-
-    embs_imgs = F.normalize(embs_imgs, dim=1)
     
     # full similarity matrix
     sim = embs_imgs @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, Q)
@@ -68,9 +66,6 @@ def compute_map_txt2img(embs_txts, classes_enc_txts, embs_imgs, classes_enc_imgs
     """
     
     N = embs_imgs.size(0)  # num. corpus-samples
-
-    embs_txts = F.normalize(embs_txts, dim=1)
-    embs_imgs = F.normalize(embs_imgs, dim=1)
 
     # full similarity matrix
     sim = embs_txts @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, N)
@@ -158,6 +153,9 @@ class EvaluationPipeline:
                 classes_enc_imgs.append(torch.tensor(targ_classes_enc_b, dtype=torch.long))
 
             if "img2txt" in self.modes:
+                """
+                maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
+                """
                 pred_classes_enc_txts_b, _ = model.img2txt_classify(embs_imgs_b, embs_txts, self.index_txts_class_enc)
 
                 n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))

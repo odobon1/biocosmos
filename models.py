@@ -56,34 +56,45 @@ class CLIPWrapper:
 
     def embed_images(self, imgs_b):
         """
+        Runs batch of images through image encoder and returns batch of unit-length embeddings.
+
         Args:
         - imgs_b --- [Tensor(B, C, H, W)] --- Batch of images
         """
 
         imgs_b = imgs_b.to(self.device)
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.clip.training):
             if self.type == "openai":
                 embs_imgs_b = self.clip.get_image_features(pixel_values=imgs_b)
             elif self.type == "bioclip":
                 embs_imgs_b = self.clip.encode_image(imgs_b)
 
+        embs_imgs_b = F.normalize(embs_imgs_b, dim=1)
+
         return embs_imgs_b
 
-    def embed_texts(self, txts_b):
+    def embed_texts(self, txts):
         """
+        Runs texts through text encoder and returns unit-length embeddings.
+
         Args:
-        - txts_b --- [list(str)] --- Batch of texts
+        - txts --- [list(str)] --- List of texts of length L
+
+        Returns:
+        - [Tensor(L, D)] --------- Text embeddings
         """
 
-        tokens_txts_b = self.txt_pp(txts_b)  # --------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
+        tokens_txts = self.txt_pp(txts)  # ------------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
 
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.clip.training):
             if self.type == "openai":
-                embs_txts_b = self.clip.get_text_features(**tokens_txts_b)
+                embs_txts = self.clip.get_text_features(**tokens_txts)
             elif self.type == "bioclip":
-                embs_txts_b = self.clip.encode_text(tokens_txts_b)
+                embs_txts = self.clip.encode_text(tokens_txts)
 
-        return embs_txts_b
+        embs_txts = F.normalize(embs_txts, dim=1)  # --- Tensor(L, D)
+
+        return embs_txts
 
     def img2txt_classify(self, embs_imgs_b, embs_txts, classes_enc_txts):
         """
@@ -93,11 +104,8 @@ class CLIPWrapper:
         - classes_enc_txts --- [list(int)] ------ Text class encodings
         """
 
-        # cosine similarity + softmax
-        embs_imgs = F.normalize(embs_imgs_b, dim=-1)  # --- Tensor(B, D) ~ D for dim. embeddings
-        embs_txts = F.normalize(embs_txts, dim=-1)  # ----- Tensor(L, D)
-        logits    = embs_imgs @ embs_txts.T
-        probs     = logits.softmax(dim=-1)
+        logits = embs_imgs_b @ embs_txts.T
+        probs  = logits.softmax(dim=-1)
 
         pred_idxs             = probs.argmax(dim=-1)
         scores                = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()

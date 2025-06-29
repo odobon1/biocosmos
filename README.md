@@ -2,7 +2,7 @@ All files must be executed from the top-level e.g.
 `python -m metadata_o.gen_tax_gbif`
 
 
-`metadata_o` data structure generation:
+`metadata_o/` data structure generation:
 
 1. Generate Species ID's
 `python -m metadata_o.gen_species_ids`

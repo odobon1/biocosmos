@@ -21,3 +21,5 @@ metadata_o/splits/*
 
 metadata_o/tax/*
 !metadata_o/tax/.gitkeep
+
+useful_gadgets.ipynb

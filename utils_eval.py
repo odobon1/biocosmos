@@ -95,58 +95,59 @@ class EvaluationPipeline:
             split_name, 
             text_base_type, 
             text_prep_type,
-            model,
+            img_pp,
             cached_imgs,
             batch_size,
-            shuffle,
             num_workers,
-            pin_memory,
             prefetch_factor,
             modes=["img2txt", "img2img", "txt2img"],
         ):
 
         self.modes = modes
 
-        index_imgs_class_enc, index_imgs_rfpaths, index_txts_sids = spawn_indexes_imgs(
+        index_imgs_class_enc, index_imgs_rfpaths, sid_2_class_enc = spawn_indexes_imgs(
             split_type=split_type,
             split_name=split_name,
         )
         self.index_txts, self.index_txts_class_enc = spawn_indexes_txts(
-            index_txts_sids=index_txts_sids,
-            text_base_type=text_base_type,
-            text_prep_type=text_prep_type,
+            sid_2_class_enc=sid_2_class_enc,
+            text_base_type =text_base_type,
+            text_prep_type =text_prep_type,
         )
 
         self.loader = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
-            index_imgs_rfpaths=index_imgs_rfpaths,
-            img_pp=model.img_pp,
-            cached_imgs=cached_imgs,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            prefetch_factor=prefetch_factor,
+            index_imgs_rfpaths  =index_imgs_rfpaths,
+            img_pp              =img_pp,
+            cached_imgs         =cached_imgs,
+            batch_size          =batch_size,
+            shuffle             =False,
+            num_workers         =num_workers,
+            prefetch_factor     =prefetch_factor,
+            index_txts=self.index_txts,
+            index_txts_class_enc=self.index_txts_class_enc,
         )
 
-    def eval(self, model):
-
-        # return structures
-        eval_scores = {}
-        eval_times = {}
-
+    def evaluate(self, modelw):
         time_start = time.time()
+
+        modelw.model.eval()
+
+        # return structure
+        eval_scores = {}
 
         if "img2img" in self.modes or "txt2img" in self.modes:
             embs_imgs        = []
             classes_enc_imgs = []
 
-        embs_txts = model.embed_texts(self.index_txts)  # --- Tensor(L, D)
+        if "img2txt" in self.modes or "txt2img" in self.modes:
+            embs_txts = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
 
         n_correct = 0
-        for imgs_b, targ_classes_enc_b in tqdm(self.loader, desc="Image-to-Text Eval (ID)", leave=False):
+        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc="Image-to-Text Eval (ID)", leave=False):
+            imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
-            embs_imgs_b = model.embed_images(imgs_b)  # --- Tensor(B, D)
+            embs_imgs_b = modelw.embed_images(imgs_b)  # --- Tensor(B, D)
 
             if "img2img" in self.modes or "txt2img" in self.modes:
                 embs_imgs.append(embs_imgs_b.cpu())
@@ -156,21 +157,17 @@ class EvaluationPipeline:
                 """
                 maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
                 """
-                pred_classes_enc_txts_b, _ = model.img2txt_classify(embs_imgs_b, embs_txts, self.index_txts_class_enc)
+                pred_classes_enc_txts_b, _ = modelw.img2txt_classify(embs_imgs_b, embs_txts, self.index_txts_class_enc)
 
                 n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))
                 n_correct += n_correct_b
 
         if "img2txt" in self.modes:
             # img2txt precision@1 computation
-            n_samps = len(self.loader.dataset)
-            prec1_img2txt   = n_correct / n_samps
-            
-            time_end = time.time()
-            time_elapsed_img2txt = time_end - time_start
+            n_samps       = len(self.loader.dataset)
+            prec1_img2txt = n_correct / n_samps
 
             eval_scores["img2txt_prec1"] = prec1_img2txt
-            eval_times["img2txt"] = time_elapsed_img2txt
 
         if "img2img" in self.modes or "txt2img" in self.modes:
             # prepare image embedding and class encoding tensors for img2img and txt2img mAP computation
@@ -178,25 +175,16 @@ class EvaluationPipeline:
             classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)
 
         if "img2img" in self.modes:
-            time_start = time.time()
-
-            map_img2img = compute_map_img2img(embs_imgs, classes_enc_imgs)
-
-            time_end = time.time()
-            time_elapsed_img2img = time_end - time_start
-
+            map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
             eval_scores["img2img_map"] = map_img2img
-            eval_times["img2img"] = time_elapsed_img2img
 
         if "txt2img" in self.modes:
-            time_start = time.time()
-
-            map_txt2img = compute_map_txt2img(embs_txts.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
-
-            time_end = time.time()
-            time_elapsed_txt2img = time_end - time_start
-
+            map_txt2img                = compute_map_txt2img(embs_txts.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
             eval_scores["txt2img_map"] = map_txt2img
-            eval_times["txt2img"] = time_elapsed_txt2img
 
-        return eval_scores, eval_times
+        modelw.model.train()
+
+        time_end = time.time()
+        time_elapsed = time_end - time_start
+
+        return eval_scores, time_elapsed

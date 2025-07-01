@@ -37,24 +37,22 @@ def main():
         sep="\n"
     )
 
-    model = CLIPWrapper(CLIP_TYPE, device)
+    modelw = CLIPWrapper(CLIP_TYPE, device)
 
     id_val_pipe = EvaluationPipeline(
-        split_type="id_val", 
-        split_name=SPLIT_NAME, 
-        text_base_type=TEXT_BASE_TYPE, 
-        text_prep_type=TEXT_PREP_TYPE,
-        model=model,
-        cached_imgs=CACHED_IMGS,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=True,
+        split_type     ="id_val", 
+        split_name     =SPLIT_NAME, 
+        text_base_type =TEXT_BASE_TYPE, 
+        text_prep_type =TEXT_PREP_TYPE,
+        img_pp         =modelw.img_pp,
+        cached_imgs    =CACHED_IMGS,
+        batch_size     =BATCH_SIZE,
+        num_workers    =NUM_WORKERS,
         prefetch_factor=2,
-        modes=["img2txt", "img2img", "txt2img"],
+        modes          =["img2txt", "img2img", "txt2img"],
     )
 
-    eval_scores, eval_times = id_val_pipe.eval(model)
+    eval_scores, time_elapsed_val = id_val_pipe.evaluate(modelw)
 
     print(
         f"",
@@ -62,10 +60,7 @@ def main():
         f"img2img mAP ------ {eval_scores['img2img_map']:.4f}",
         f"txt2img mAP ------ {eval_scores['txt2img_map']:.4f}",
         f"",
-        f"Elapsed Time:",
-        f"img2txt --- {eval_times['img2txt']:.2f} (s)",
-        f"img2img --- {eval_times['img2img']:.2f} (s)",
-        f"txt2img --- {eval_times['txt2img']:.2f} (s)",
+        f"Elapsed Time: {time_elapsed_val:.2f} (s)",
         sep="\n"
     )
 

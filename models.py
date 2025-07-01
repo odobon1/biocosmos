@@ -21,8 +21,8 @@ class CLIPWrapper:
 
             model_name   = "openai/clip-vit-base-patch32"
             preprocessor = CLIPProcessor.from_pretrained(model_name, use_fast=True)
-            self.clip    = CLIPModel.from_pretrained(model_name).to(device)
-            self.clip.eval()
+            self.model   = CLIPModel.from_pretrained(model_name).to(device)
+            self.model.eval()
 
             # per-sample image transform - runs in each DataLoader worker (when num_workers > 0) so I/O (disk read) and CPU work (resize, normalize, to-tensor) 
             # happen in parallel across multiple processes -- enables fully parallelized transforms, overlap with GPU compute, easy to cache in RAM if desired, 
@@ -41,9 +41,9 @@ class CLIPWrapper:
 
         elif clip_type == "bioclip":
 
-            self.clip, _, self.img_pp = open_clip.create_model_and_transforms("hf-hub:imageomics/bioclip")
-            self.clip.to(device)
-            self.clip.eval()
+            self.model, _, self.img_pp = open_clip.create_model_and_transforms("hf-hub:imageomics/bioclip")
+            self.model.to(device)
+            self.model.eval()
 
             tokenizer = open_clip.get_tokenizer("hf-hub:imageomics/bioclip")
 
@@ -62,12 +62,11 @@ class CLIPWrapper:
         - imgs_b --- [Tensor(B, C, H, W)] --- Batch of images
         """
 
-        imgs_b = imgs_b.to(self.device)
-        with torch.set_grad_enabled(self.clip.training):
+        with torch.set_grad_enabled(self.model.training):
             if self.type == "openai":
-                embs_imgs_b = self.clip.get_image_features(pixel_values=imgs_b)
+                embs_imgs_b = self.model.get_image_features(pixel_values=imgs_b)
             elif self.type == "bioclip":
-                embs_imgs_b = self.clip.encode_image(imgs_b)
+                embs_imgs_b = self.model.encode_image(imgs_b)
 
         embs_imgs_b = F.normalize(embs_imgs_b, dim=1)
 
@@ -78,19 +77,19 @@ class CLIPWrapper:
         Runs texts through text encoder and returns unit-length embeddings.
 
         Args:
-        - txts --- [list(str)] --- List of texts of length L
+        - txts --- [np.array(str)] --- Array of texts of length L
 
         Returns:
-        - [Tensor(L, D)] --------- Text embeddings
+        - [Tensor(L, D)] ------------- Text embeddings
         """
 
         tokens_txts = self.txt_pp(txts)  # ------------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
 
-        with torch.set_grad_enabled(self.clip.training):
+        with torch.set_grad_enabled(self.model.training):
             if self.type == "openai":
-                embs_txts = self.clip.get_text_features(**tokens_txts)
+                embs_txts = self.model.get_text_features(**tokens_txts)
             elif self.type == "bioclip":
-                embs_txts = self.clip.encode_text(tokens_txts)
+                embs_txts = self.model.encode_text(tokens_txts)
 
         embs_txts = F.normalize(embs_txts, dim=1)  # --- Tensor(L, D)
 

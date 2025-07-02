@@ -58,17 +58,6 @@ class ImageTextDataset(Dataset):
         
         return img_t, class_enc, text
 
-# class Collater:
-#     """
-#     acting as collate_fn
-#     """
-#     def __init__(self, class_enc_2_text):
-#         self.class_enc_2_text = class_enc_2_text
-#     def __call__(self, batch):
-#         imgs_b, class_encs_b = zip(*batch)
-#         imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
-#         return imgs_b, class_encs_b
-
 def collate_fn(batch):
     """
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
@@ -137,6 +126,7 @@ def spawn_dataloader(
         prefetch_factor,
         index_txts,
         index_txts_class_enc,
+        drop_last,
     ):
     """
 
@@ -151,6 +141,7 @@ def spawn_dataloader(
     - prefetch_factor -------- [int] ----------------------------------------- How many batches each worker will load in advance;
                                                                                Higher prefetch_factor increases throughput, higher RAM cost;
                                                                                Only takes effect when num_workers > 0
+    - drop_last -------------- [bool] ---------------------------------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
     """
 
     class_enc_2_text = dict(zip(index_txts_class_enc, index_txts))  # these are currently all numpy types (both the ints and the strings) -- this might be a problem
@@ -171,7 +162,7 @@ def spawn_dataloader(
         pin_memory     =True,  # (True) speeds up host --> GPU copies, higher RAM cost
         prefetch_factor=prefetch_factor,
         collate_fn     =collate_fn,
-        drop_last      =False,  # whether to drop that last, partial batch
+        drop_last      =drop_last,
     )
 
     return loader

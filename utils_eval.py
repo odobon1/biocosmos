@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast
 import time
 from tqdm import tqdm
 
@@ -127,11 +128,11 @@ class EvaluationPipeline:
             prefetch_factor     =prefetch_factor,
             index_txts=self.index_txts,
             index_txts_class_enc=self.index_txts_class_enc,
+            drop_last=False,
         )
 
     def evaluate(self, modelw):
         time_start = time.time()
-
         modelw.model.eval()
 
         # return structure
@@ -142,13 +143,15 @@ class EvaluationPipeline:
             classes_enc_imgs = []
 
         if "img2txt" in self.modes or "txt2img" in self.modes:
-            embs_txts = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
+            with torch.no_grad(), autocast(device_type=modelw.device.type):
+                embs_txts = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
 
         n_correct = 0
-        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc=f"Image-to-Text Eval ({self.split_type})", leave=False):
+        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc=f"Eval ({self.split_type})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
-            embs_imgs_b = modelw.embed_images(imgs_b)  # --- Tensor(B, D)
+            with torch.no_grad(), autocast(device_type=modelw.device.type):
+                embs_imgs_b = modelw.embed_images(imgs_b)  # --------- Tensor(B, D)
 
             if "img2img" in self.modes or "txt2img" in self.modes:
                 embs_imgs.append(embs_imgs_b.cpu())

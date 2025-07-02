@@ -1,5 +1,9 @@
 import pickle
 from pathlib import Path
+import random
+import os
+import numpy as np
+import torch
 
 
 # config params
@@ -38,6 +42,19 @@ elif MACHINE == "hpg":
         "nymph_2" : dpath_nymph_2,
         "nymph_2_metadata" : fpath_nymph_2_metadata,
     }
+
+def seed_libs(seed):
+    if seed is not None:
+        random.seed(seed)
+        os.putenv("PYTHONHASHSEED", str(seed))
+        np.random.seed(seed)
+
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
+        torch.backends.cudnn.benchmark     = False  # (False) trades speed for reproducibility (default is False)
 
 def write_pickle(obj, picklepath):
     with open(picklepath, "wb") as f:

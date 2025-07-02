@@ -103,7 +103,8 @@ class EvaluationPipeline:
             modes=["img2txt", "img2img", "txt2img"],
         ):
 
-        self.modes = modes
+        self.split_type = split_type
+        self.modes      = modes
 
         index_imgs_class_enc, index_imgs_rfpaths, sid_2_class_enc = spawn_indexes_imgs(
             split_type=split_type,
@@ -144,7 +145,7 @@ class EvaluationPipeline:
             embs_txts = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
 
         n_correct = 0
-        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc="Image-to-Text Eval (ID)", leave=False):
+        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc=f"Image-to-Text Eval ({self.split_type})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
             embs_imgs_b = modelw.embed_images(imgs_b)  # --- Tensor(B, D)

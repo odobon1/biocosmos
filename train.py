@@ -12,7 +12,7 @@ import pdb
 # config params
 CLIP_TYPE        = "bioclip"  # "openai" / "bioclip"
 CACHED_IMGS      = False  # preload, preprocess, cache all images into memory
-BATCH_SIZE_TRAIN = 256
+BATCH_SIZE_TRAIN = 1024
 BATCH_SIZE_VAL   = 256
 NUM_WORKERS      = 4  # adjust to CPU cores
 SPLIT_NAME       = "D"
@@ -22,30 +22,44 @@ TEXT_BASE_TYPE   = "tax"  # "tax" / "sci"
 N_EPOCHS = 100
 
 
-def train_pipeline(modelw, loader_train, id_val_pipe, device, n_epochs, lr):
+def train_pipeline(modelw, loader_train, id_val_pipe, ood_val_pipe, device, n_epochs, lr):
     optimizer = torch.optim.AdamW(modelw.model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
 
     val_scores = {
-        "img2txt_prec1" : [],
-        "img2img_map" : [],
-        "txt2img_map" : [],
+        "id_img2txt_prec1" : [],
+        "id_img2img_map" : [],
+        "id_txt2img_map" : [],
+        "ood_img2txt_prec1" : [],
+        "ood_img2img_map" : [],
+        "ood_txt2img_map" : [],
     }
     
-    eval_scores, time_elapsed_val = id_val_pipe.evaluate(modelw)
+    id_val_scores, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
+    val_scores["id_img2txt_prec1"].append(id_val_scores["img2txt_prec1"])
+    val_scores["id_img2img_map"].append(id_val_scores["img2img_map"])
+    val_scores["id_txt2img_map"].append(id_val_scores["txt2img_map"])
 
-    val_scores["img2txt_prec1"].append(eval_scores["img2txt_prec1"])
-    val_scores["img2img_map"].append(eval_scores["img2img_map"])
-    val_scores["txt2img_map"].append(eval_scores["txt2img_map"])
+    ood_val_scores, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
+    val_scores["ood_img2txt_prec1"].append(ood_val_scores["img2txt_prec1"])
+    val_scores["ood_img2img_map"].append(ood_val_scores["img2img_map"])
+    val_scores["ood_txt2img_map"].append(ood_val_scores["txt2img_map"])
 
     print(
         f"==========================================",
         f"Out-of-box Performance",
-        f"img2txt Prec@1 --- {eval_scores['img2txt_prec1']:.2%}",
-        f"img2img mAP ------ {eval_scores['img2img_map']:.4f}",
-        f"txt2img mAP ------ {eval_scores['txt2img_map']:.4f}",
-        f"",
-        f"Elapsed Time (val): {time_elapsed_val:.2f} (s)",
+        f"------------------------------------------",
+        f"~ ID ~",
+        f"img2txt Prec@1 --- {id_val_scores['img2txt_prec1']:.2%}",
+        f"img2img mAP ------ {id_val_scores['img2img_map']:.4f}",
+        f"txt2img mAP ------ {id_val_scores['txt2img_map']:.4f}",
+        f"Elapsed Time: {time_elapsed_id_val:.2f} (s)",
+        f"------------------------------------------",
+        f"~ OOD ~",
+        f"img2txt Prec@1 --- {ood_val_scores['img2txt_prec1']:.2%}",
+        f"img2img mAP ------ {ood_val_scores['img2img_map']:.4f}",
+        f"txt2img mAP ------ {ood_val_scores['txt2img_map']:.4f}",
+        f"Elapsed Time: {time_elapsed_ood_val:.2f} (s)",
         sep="\n"
     )
 
@@ -78,26 +92,37 @@ def train_pipeline(modelw, loader_train, id_val_pipe, device, n_epochs, lr):
 
         # VALIDATION
 
-        eval_scores, time_elapsed_val = id_val_pipe.evaluate(modelw)
+        id_val_scores, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
+        val_scores["id_img2txt_prec1"].append(id_val_scores["img2txt_prec1"])
+        val_scores["id_img2img_map"].append(id_val_scores["img2img_map"])
+        val_scores["id_txt2img_map"].append(id_val_scores["txt2img_map"])
 
-        val_scores["img2txt_prec1"].append(eval_scores["img2txt_prec1"])
-        val_scores["img2img_map"].append(eval_scores["img2img_map"])
-        val_scores["txt2img_map"].append(eval_scores["txt2img_map"])
+        ood_val_scores, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
+        val_scores["ood_img2txt_prec1"].append(ood_val_scores["img2txt_prec1"])
+        val_scores["ood_img2img_map"].append(ood_val_scores["img2img_map"])
+        val_scores["ood_txt2img_map"].append(ood_val_scores["txt2img_map"])
 
         print(
             f"==========================================",
             f"Epoch {idx_epoch}",
-            f"img2txt Prec@1 --- {eval_scores['img2txt_prec1']:.2%}",
-            f"img2img mAP ------ {eval_scores['img2img_map']:.4f}",
-            f"txt2img mAP ------ {eval_scores['txt2img_map']:.4f}",
-            f"",
-            f"Elapsed Time (val): {time_elapsed_val:.2f} (s)",
+            f"------------------------------------------",
+            f"~ ID ~",
+            f"img2txt Prec@1 --- {id_val_scores['img2txt_prec1']:.2%}",
+            f"img2img mAP ------ {id_val_scores['img2img_map']:.4f}",
+            f"txt2img mAP ------ {id_val_scores['txt2img_map']:.4f}",
+            f"Elapsed Time: {time_elapsed_id_val:.2f} (s)",
+            f"------------------------------------------",
+            f"~ OOD ~",
+            f"img2txt Prec@1 --- {ood_val_scores['img2txt_prec1']:.2%}",
+            f"img2img mAP ------ {ood_val_scores['img2img_map']:.4f}",
+            f"txt2img mAP ------ {ood_val_scores['txt2img_map']:.4f}",
+            f"Elapsed Time: {time_elapsed_ood_val:.2f} (s)",
             sep="\n"
         )
 
     # plot validation curve
     plt.figure()
-    plt.plot(range(0, n_epochs + 1), val_scores["img2txt_prec1"])
+    plt.plot(range(0, n_epochs + 1), val_scores["id_img2txt_prec1"])
     plt.xlabel("Epoch")
     plt.ylabel("Validation Accuracy")
     plt.title("CLIP Fine-Tuning Validation Curve")
@@ -111,8 +136,8 @@ def main():
     modelw = CLIPWrapper(CLIP_TYPE, device)
 
     index_imgs_class_enc_train, index_imgs_rfpaths_train, sid_2_class_enc_train = spawn_indexes_imgs(
-        split_type="id_test",  # using id_test as "train" rn for dev (just bc it's smaller)
-        # split_type="train",
+        # split_type="id_test",  # using id_test as "train" rn for dev (just bc it's smaller)
+        split_type="train",
         split_name=SPLIT_NAME,
     )
     index_txts_train, index_txts_class_enc_train = spawn_indexes_txts(
@@ -146,10 +171,24 @@ def main():
         modes          =["img2txt", "img2img", "txt2img"],
     )
 
+    ood_val_pipe = EvaluationPipeline(
+        split_type     ="ood_val", 
+        split_name     =SPLIT_NAME, 
+        text_base_type =TEXT_BASE_TYPE, 
+        text_prep_type =TEXT_PREP_TYPE,
+        img_pp         =modelw.img_pp,
+        cached_imgs    =CACHED_IMGS,
+        batch_size     =BATCH_SIZE_VAL,
+        num_workers    =NUM_WORKERS,
+        prefetch_factor=2,
+        modes          =["img2txt", "img2img", "txt2img"],
+    )
+
     train_pipeline(
         modelw, 
         loader_train, 
         id_val_pipe, 
+        ood_val_pipe, 
         device, 
         n_epochs=N_EPOCHS, 
         lr=1e-6,

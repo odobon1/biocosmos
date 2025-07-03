@@ -56,9 +56,10 @@ def main():
 
     print(
         f"",
-        f"img2txt Prec@1 --- {eval_scores['img2txt_prec1']:.2%}",
-        f"img2img mAP ------ {eval_scores['img2img_map']:.4f}",
-        f"txt2img mAP ------ {eval_scores['txt2img_map']:.4f}",
+        f"img2txt Prec@1 ----- {eval_scores['img2txt_prec1']:.2%}",
+        f"img2txt mAP (RR) --- {eval_scores['img2txt_map']:.4f}",
+        f"img2img mAP -------- {eval_scores['img2img_map']:.4f}",
+        f"txt2img mAP -------- {eval_scores['txt2img_map']:.4f}",
         f"",
         f"Elapsed Time: {time_elapsed_val:.2f} (s)",
         sep="\n"

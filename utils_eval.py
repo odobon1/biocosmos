@@ -51,31 +51,32 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
 
     return map_score
 
-def compute_map_txt2img(embs_txts, classes_enc_txts, embs_imgs, classes_enc_imgs):
+def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, classes_enc_cands):
     """
-    Vectorized mAP for evaluating text-to-image retrieval.
+    Originally: Vectorized mAP for evaluating text-to-image retrieval.
+    Now: Generalized such that it can also be used for computing mAP (RR) for image-to-text retrieval.
     Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
     
     Args:
-    - embs_txts ---------- [Tensor(Q, D)] --- Text embeddings
-    - classes_enc_txts --- [Tensor(Q)] ------ Text class encodings (corresponding to text embeddings)
-    - embs_imgs ---------- [Tensor(N, D)] --- Image embeddings
-    - classes_enc_imgs --- [Tensor(N)] ------ Image class encodings (corresponding to image embeddings)
+    - embs_queries ---------- [Tensor(Q, D)] --- Query embeddings
+    - classes_enc_queries --- [Tensor(Q)] ------ Query class encodings (corresponding to query embeddings)
+    - embs_cands ------------ [Tensor(N, D)] --- Candidate embeddings
+    - classes_enc_cands ----- [Tensor(N)] ------ Candidate class encodings (corresponding to candidate embeddings)
 
     Returns:
-    - [float] ------------------------------- Mean Average Precision (mAP) over all text queries
+    - [float] ---------------------------------- Mean Average Precision (mAP) over all queries
     """
     
-    N = embs_imgs.size(0)  # num. corpus-samples
+    N = embs_cands.size(0)  # num. candidate-samples
 
     # full similarity matrix
-    sim = embs_txts @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, N)
+    sim = embs_queries @ embs_cands.t()  # -------------------------------------------------- Tensor(Q, N)
 
     # get top-N neighbors per query (all of them)
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
 
-    # positives mask / boolean relevance mask (True wherever the query-text class matches the corpus-image class)
-    pos_mask = classes_enc_txts.unsqueeze(1) == classes_enc_imgs[idxs]  # ------------------- Tensor(Q, N)
+    # positives mask / boolean relevance mask (True wherever the query class matches the corpus class)
+    pos_mask = classes_enc_queries.unsqueeze(1) == classes_enc_cands[idxs]  # --------------- Tensor(Q, N)
 
     ranks    = torch.arange(1, N+1, device=sim.device)  # ----------------------------------- Tensor(N)
     cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision @ each rank --- Tensor(Q, N)
@@ -166,6 +167,10 @@ class EvaluationPipeline:
                 n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))
                 n_correct += n_correct_b
 
+        # prepare image embedding and class encoding tensors for mAP computation
+        embs_imgs        = torch.cat(embs_imgs, dim=0)  # ---------- Tensor(Q, D)
+        classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)
+
         if "img2txt" in self.modes:
             # img2txt precision@1 computation
             n_samps       = len(self.loader.dataset)
@@ -173,17 +178,16 @@ class EvaluationPipeline:
 
             eval_scores["img2txt_prec1"] = prec1_img2txt
 
-        if "img2img" in self.modes or "txt2img" in self.modes:
-            # prepare image embedding and class encoding tensors for img2img and txt2img mAP computation
-            embs_imgs        = torch.cat(embs_imgs, dim=0)  # ---------- Tensor(Q, D)
-            classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)
+            # img2txt mAP (RR) computation
+            map_img2txt                = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts.cpu(), torch.tensor(self.index_txts_class_enc))
+            eval_scores["img2txt_map"] = map_img2txt
 
         if "img2img" in self.modes:
             map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
             eval_scores["img2img_map"] = map_img2img
 
         if "txt2img" in self.modes:
-            map_txt2img                = compute_map_txt2img(embs_txts.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
+            map_txt2img                = compute_map_cross_modal(embs_txts.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
             eval_scores["txt2img_map"] = map_txt2img
 
         modelw.model.train()

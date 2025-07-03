@@ -15,19 +15,23 @@ import pdb
 # config params
 CLIP_TYPE        = "bioclip"  # "openai" / "bioclip"
 CACHED_IMGS      = False  # preload, preprocess, cache all images into memory
-BATCH_SIZE_TRAIN = 1024
-BATCH_SIZE_VAL   = 256
+BATCH_SIZE_TRAIN = 64
+BATCH_SIZE_VAL   = 2048
 NUM_WORKERS      = 4  # adjust to CPU cores
 SPLIT_NAME       = "D"
 TEXT_PREP_TYPE   = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
 TEXT_BASE_TYPE   = "tax"  # "tax" / "sci"
 
-N_EPOCHS = 100
-SEED     = 42
-MP_TRAIN = True  # whether mixed precision is used for training
+N_EPOCHS                 = 100
+SEED                     = 42
+MP_TRAIN                 = True  # whether mixed precision is used for training
+DROP_PARTIAL_BATCH_TRAIN = True
 
 
-def print_val(header, id_val_scores, ood_val_scores, time_elapsed_id_val, time_elapsed_ood_val, loss_train=None, time_elapsed_train=None):
+print(f"Batch Size (Train): {BATCH_SIZE_TRAIN:,}")
+
+
+def print_val(header, score_composite, scores_id_val, scores_ood_val, time_elapsed_id_val, time_elapsed_ood_val, loss_train=None, time_elapsed_train=None):
 
     print(
         f"==========================================",
@@ -45,15 +49,19 @@ def print_val(header, id_val_scores, ood_val_scores, time_elapsed_id_val, time_e
 
     print(
         f"------------------------------------------",
+        f"composite -------------- {score_composite:.4f}",
+        f"------------------------------------------",
         f"~ ID ~",
-        f"img2txt Prec@1 --------- {id_val_scores['img2txt_prec1']:.2%}",
-        f"img2img mAP ------------ {id_val_scores['img2img_map']:.4f}",
-        f"txt2img mAP ------------ {id_val_scores['txt2img_map']:.4f}",
+        f"img2txt Prec@1 --------- {scores_id_val['img2txt_prec1']:.2%}",
+        f"img2txt mAP (RR) ------- {scores_id_val['img2txt_map']:.4f}",
+        f"img2img mAP ------------ {scores_id_val['img2img_map']:.4f}",
+        f"txt2img mAP ------------ {scores_id_val['txt2img_map']:.4f}",
         f"------------------------------------------",
         f"~ OOD ~",
-        f"img2txt Prec@1 --------- {ood_val_scores['img2txt_prec1']:.2%}",
-        f"img2img mAP ------------ {ood_val_scores['img2img_map']:.4f}",
-        f"txt2img mAP ------------ {ood_val_scores['txt2img_map']:.4f}",
+        f"img2txt Prec@1 --------- {scores_ood_val['img2txt_prec1']:.2%}",
+        f"img2txt mAP (RR) ------- {scores_ood_val['img2txt_map']:.4f}",
+        f"img2img mAP ------------ {scores_ood_val['img2img_map']:.4f}",
+        f"txt2img mAP ------------ {scores_ood_val['txt2img_map']:.4f}",
         f"------------------------------------------",
         f"Elapsed Time (Val) ----- {time_elapsed_id_val + time_elapsed_ood_val:.2f} (s)",
         sep="\n"
@@ -67,29 +75,43 @@ def train_pipeline(modelw, loader_train, id_val_pipe, ood_val_pipe, device, n_ep
     if MP_TRAIN:
         scaler = GradScaler()
 
-    val_scores = {
+    scores_val_tracker = {
         "id_img2txt_prec1" : [],
+        "id_img2txt_map" : [],
         "id_img2img_map" : [],
         "id_txt2img_map" : [],
         "ood_img2txt_prec1" : [],
+        "ood_img2txt_map" : [],
         "ood_img2img_map" : [],
         "ood_txt2img_map" : [],
+        "composite" : [],
     }
     
-    id_val_scores, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
-    val_scores["id_img2txt_prec1"].append(id_val_scores["img2txt_prec1"])
-    val_scores["id_img2img_map"].append(id_val_scores["img2img_map"])
-    val_scores["id_txt2img_map"].append(id_val_scores["txt2img_map"])
+    scores_id_val, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
+    scores_val_tracker["id_img2txt_prec1"].append(scores_id_val["img2txt_prec1"])
+    scores_val_tracker["id_img2txt_map"].append(scores_id_val["img2txt_map"])
+    scores_val_tracker["id_img2img_map"].append(scores_id_val["img2img_map"])
+    scores_val_tracker["id_txt2img_map"].append(scores_id_val["txt2img_map"])
 
-    ood_val_scores, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
-    val_scores["ood_img2txt_prec1"].append(ood_val_scores["img2txt_prec1"])
-    val_scores["ood_img2img_map"].append(ood_val_scores["img2img_map"])
-    val_scores["ood_txt2img_map"].append(ood_val_scores["txt2img_map"])
+    scores_ood_val, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
+    scores_val_tracker["ood_img2txt_prec1"].append(scores_ood_val["img2txt_prec1"])
+    scores_val_tracker["ood_img2txt_map"].append(scores_ood_val["img2txt_map"])
+    scores_val_tracker["ood_img2img_map"].append(scores_ood_val["img2img_map"])
+    scores_val_tracker["ood_txt2img_map"].append(scores_ood_val["txt2img_map"])
+
+    score_composite = (scores_id_val["img2txt_map"] + \
+                 scores_id_val["img2img_map"] + \
+                 scores_id_val["txt2img_map"] + \
+                 scores_ood_val["img2txt_map"] + \
+                 scores_ood_val["img2img_map"] + \
+                 scores_ood_val["txt2img_map"]) / 6
+    scores_val_tracker["composite"].append(score_composite)
 
     print_val(
         "Out-of-box Performance", 
-        id_val_scores, 
-        ood_val_scores, 
+        score_composite,
+        scores_id_val, 
+        scores_ood_val, 
         time_elapsed_id_val, 
         time_elapsed_ood_val,
     )
@@ -120,10 +142,10 @@ def train_pipeline(modelw, loader_train, id_val_pipe, ood_val_pipe, device, n_ep
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                embs_imgs = modelw.embed_images(imgs_b)  # -------------------------- Tensor(B, D)
-                embs_txts = modelw.embed_texts(texts_b)  # -------------------------- Tensor(B, D)
+                embs_imgs = modelw.embed_images(imgs_b)  # ------------------------------ Tensor(B, D)
+                embs_txts = modelw.embed_texts(texts_b)  # ------------------------------ Tensor(B, D)
 
-                sim = embs_imgs @ embs_txts.T * modelw.model.logit_scale.exp()  # --- Tensor(B, B) --- logits
+                sim = embs_imgs @ embs_txts.T * modelw.model.logit_scale.exp()  # ------- Tensor(B, B) --- logits
 
                 loss_i2t_b = criterion(sim, targets)
                 loss_t2i_b = criterion(sim.T, targets)
@@ -132,29 +154,44 @@ def train_pipeline(modelw, loader_train, id_val_pipe, ood_val_pipe, device, n_ep
                 loss_b.backward()
                 optimizer.step()
 
-            loss_total_train += loss_b.item() * imgs_b.size(0)
+            with torch.no_grad():
+                loss_total_train += loss_b.detach().item() * imgs_b.size(0)
 
-        loss_epoch_train = loss_total_train / len(loader_train.dataset)
+        # compute avg. train loss per sample
+        if DROP_PARTIAL_BATCH_TRAIN:
+            num_full_batches = len(loader_train.dataset) // BATCH_SIZE_TRAIN
+            loss_epoch_train = loss_total_train / (num_full_batches * BATCH_SIZE_TRAIN)
+        else:
+            loss_epoch_train = loss_total_train / len(loader_train.dataset)
 
         time_end_train = time.time()
         time_elapsed_train = time_end_train - time_start_train
 
         # VALIDATION
 
-        id_val_scores, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
-        val_scores["id_img2txt_prec1"].append(id_val_scores["img2txt_prec1"])
-        val_scores["id_img2img_map"].append(id_val_scores["img2img_map"])
-        val_scores["id_txt2img_map"].append(id_val_scores["txt2img_map"])
+        scores_id_val, time_elapsed_id_val = id_val_pipe.evaluate(modelw)
+        scores_val_tracker["id_img2txt_prec1"].append(scores_id_val["img2txt_prec1"])
+        scores_val_tracker["id_img2img_map"].append(scores_id_val["img2img_map"])
+        scores_val_tracker["id_txt2img_map"].append(scores_id_val["txt2img_map"])
 
-        ood_val_scores, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
-        val_scores["ood_img2txt_prec1"].append(ood_val_scores["img2txt_prec1"])
-        val_scores["ood_img2img_map"].append(ood_val_scores["img2img_map"])
-        val_scores["ood_txt2img_map"].append(ood_val_scores["txt2img_map"])
+        scores_ood_val, time_elapsed_ood_val = ood_val_pipe.evaluate(modelw)
+        scores_val_tracker["ood_img2txt_prec1"].append(scores_ood_val["img2txt_prec1"])
+        scores_val_tracker["ood_img2img_map"].append(scores_ood_val["img2img_map"])
+        scores_val_tracker["ood_txt2img_map"].append(scores_ood_val["txt2img_map"])
+
+        score_composite = (scores_id_val["img2txt_map"] + \
+                    scores_id_val["img2img_map"] + \
+                    scores_id_val["txt2img_map"] + \
+                    scores_ood_val["img2txt_map"] + \
+                    scores_ood_val["img2img_map"] + \
+                    scores_ood_val["txt2img_map"]) / 6
+        scores_val_tracker["composite"].append(score_composite)
 
         print_val(
             f"Epoch {idx_epoch}", 
-            id_val_scores, 
-            ood_val_scores, 
+            score_composite,
+            scores_id_val, 
+            scores_ood_val, 
             time_elapsed_id_val, 
             time_elapsed_ood_val, 
             loss_train=loss_epoch_train,
@@ -163,14 +200,14 @@ def train_pipeline(modelw, loader_train, id_val_pipe, ood_val_pipe, device, n_ep
 
     # plot validation curve
     plt.figure()
-    plt.plot(range(0, n_epochs + 1), val_scores["id_img2txt_prec1"])
+    plt.plot(range(0, n_epochs + 1), scores_val_tracker["id_img2txt_prec1"])
     plt.xlabel("Epoch")
     plt.ylabel("Validation Accuracy")
     plt.title("CLIP Fine-Tuning Validation Curve")
     plt.grid(True)
     plt.show()
 
-    return val_scores
+    return scores_val_tracker
 
 def main():
     seed_libs(SEED)
@@ -198,7 +235,7 @@ def main():
         prefetch_factor     =2,
         index_txts=index_txts_train,
         index_txts_class_enc=index_txts_class_enc_train,
-        drop_last=False,
+        drop_last=DROP_PARTIAL_BATCH_TRAIN,
     )
 
     id_val_pipe = EvaluationPipeline(

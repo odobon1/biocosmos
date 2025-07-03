@@ -1,6 +1,6 @@
 import torch
 
-from utils_eval import compute_map_txt2img
+from utils_eval import compute_map_cross_modal
 
 import pdb
 
@@ -77,5 +77,5 @@ embs_txts = torch.tensor([
 classes_enc_txts = torch.tensor([0, 1, 2])
 
 
-map_score = compute_map_txt2img(embs_txts, classes_enc_txts, embs_imgs, classes_enc_imgs)
+map_score = compute_map_cross_modal(embs_txts, classes_enc_txts, embs_imgs, classes_enc_imgs)
 print(f"mAP: {map_score:.4f}")

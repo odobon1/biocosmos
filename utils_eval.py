@@ -127,9 +127,12 @@ class EvaluationPipeline:
             shuffle             =False,
             num_workers         =num_workers,
             prefetch_factor     =prefetch_factor,
-            index_txts=self.index_txts,
-            index_txts_class_enc=self.index_txts_class_enc,
+            index_txts_sci=self.index_txts,
+            index_txts_class_enc_sci=self.index_txts_class_enc,
+            index_txts_tax=self.index_txts,
+            index_txts_class_enc_tax=self.index_txts_class_enc,
             drop_last=False,
+            text_train=text_base_type,
         )
 
     def evaluate(self, modelw):
@@ -179,8 +182,8 @@ class EvaluationPipeline:
             eval_scores["img2txt_prec1"] = prec1_img2txt
 
             # img2txt mAP (RR) computation
-            map_img2txt                = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts.cpu(), torch.tensor(self.index_txts_class_enc))
-            eval_scores["img2txt_map"] = map_img2txt
+            map_img2txt               = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts.cpu(), torch.tensor(self.index_txts_class_enc))
+            eval_scores["img2txt_rr"] = map_img2txt  # mean average precision (mAP) is identical to reciprocal rank (RR) in this context
 
         if "img2img" in self.modes:
             map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
@@ -196,3 +199,140 @@ class EvaluationPipeline:
         time_elapsed = time_end - time_start
 
         return eval_scores, time_elapsed
+
+class ValidationPipeline:
+
+    def __init__(
+            self,
+            split_name,
+            text_base_type,
+            text_prep_type,
+            img_pp,
+            cached_imgs,
+            batch_size,
+            num_workers,
+            prefetch_factor,
+            header_tag=None,
+        ):
+
+        self.header_tag = header_tag
+
+        self.best_score_comp = None
+        self.best_score_comp_img2img = None
+
+        self.id_val_pipe = EvaluationPipeline(
+            split_type     ="id_val",
+            split_name     =split_name,
+            text_base_type =text_base_type,
+            text_prep_type =text_prep_type,
+            img_pp         =img_pp,
+            cached_imgs    =cached_imgs,
+            batch_size     =batch_size,
+            num_workers    =num_workers,
+            prefetch_factor=prefetch_factor,
+            modes          =["img2txt", "img2img", "txt2img"],
+        )
+
+        self.ood_val_pipe = EvaluationPipeline(
+            split_type     ="ood_val",
+            split_name     =split_name,
+            text_base_type =text_base_type,
+            text_prep_type =text_prep_type,
+            img_pp         =img_pp,
+            cached_imgs    =cached_imgs,
+            batch_size     =batch_size,
+            num_workers    =num_workers,
+            prefetch_factor=prefetch_factor,
+            modes          =["img2txt", "img2img", "txt2img"],
+        )
+
+        self.scores_tracker = {
+            "id_img2txt_prec1" :  [],
+            "id_img2txt_rr" :     [],
+            "id_img2img_map" :    [],
+            "id_txt2img_map" :    [],
+            "ood_img2txt_prec1" : [],
+            "ood_img2txt_rr" :    [],
+            "ood_img2img_map" :   [],
+            "ood_txt2img_map" :   [],
+            "comp" :              [],
+            "comp_img2img" :      [],
+        }
+
+    def evaluate(self, modelw, verbose=True):
+        """
+        `is_best` param in the return will dictate when models are saved (early stopping)
+        """
+
+        scores_id_val, time_elapsed_id_val = self.id_val_pipe.evaluate(modelw)
+        scores_ood_val, time_elapsed_ood_val = self.ood_val_pipe.evaluate(modelw)
+
+        score_comp = (scores_id_val["img2txt_rr"] + \
+                      scores_id_val["img2img_map"] + \
+                      scores_id_val["txt2img_map"] + \
+                      scores_ood_val["img2txt_rr"] + \
+                      scores_ood_val["img2img_map"] + \
+                      scores_ood_val["txt2img_map"]) / 6
+        score_comp_img2img = (scores_id_val["img2img_map"] + scores_ood_val["img2img_map"]) / 2
+
+        is_best_comp, is_best_img2img = self.check_bests(score_comp, score_comp_img2img)
+
+        scores_val = {
+            "id_img2txt_prec1" :  scores_id_val["img2txt_prec1"],
+            "id_img2txt_rr" :     scores_id_val["img2txt_rr"],
+            "id_img2img_map" :    scores_id_val["img2img_map"],
+            "id_txt2img_map" :    scores_id_val["txt2img_map"],
+            "ood_img2txt_prec1" : scores_ood_val["img2txt_prec1"],
+            "ood_img2txt_rr" :    scores_ood_val["img2txt_rr"],
+            "ood_img2img_map" :   scores_ood_val["img2img_map"],
+            "ood_txt2img_map" :   scores_ood_val["txt2img_map"],
+            "comp" :              score_comp,
+            "comp_img2img" :      score_comp_img2img,
+        }
+        self.update_scores_tracker(scores_val)
+        if verbose:
+            self.print_val(scores_val)
+
+        time_elapsed_val = time_elapsed_id_val + time_elapsed_ood_val
+
+        return scores_val, is_best_comp, is_best_img2img, time_elapsed_val
+
+    def update_scores_tracker(self, scores_val):
+        for score in scores_val.keys():
+            self.scores_tracker[score].append(float(scores_val[score]))
+
+    def check_bests(self, score_comp, score_comp_img2img):
+        is_best_comp = False
+        is_best_img2img = False
+        if self.best_score_comp is None:
+            self.best_score_comp = score_comp
+            self.best_score_comp_img2img = score_comp_img2img
+        else:
+            if score_comp > self.best_score_comp:
+                self.best_score_comp = score_comp
+                is_best_comp = True
+            if score_comp_img2img > self.best_score_comp_img2img:
+                self.best_score_comp_img2img = score_comp_img2img
+                is_best_img2img = True
+        return is_best_comp, is_best_img2img
+
+    def print_val(self, scores):
+
+        header = " Validation "
+        if self.header_tag is not None:
+            header += f"({self.header_tag}) "
+
+        print(
+            f"{header:=^{75}}",
+            f"ID img2txt RR ------- {scores['id_img2txt_rr']:.4f}",
+            f"ID img2img mAP ------ {scores['id_img2img_map']:.4f}",
+            f"ID txt2img mAP ------ {scores['id_txt2img_map']:.4f}",
+            f"OOD img2txt RR ------ {scores['ood_img2txt_rr']:.4f}",
+            f"OOD img2img mAP ----- {scores['ood_img2img_map']:.4f}",
+            f"OOD txt2img mAP ----- {scores['ood_txt2img_map']:.4f}",
+            f"{'':-^{75}}",
+            f"Composite ----------- {scores['comp']:.4f} (best: {self.best_score_comp:.4f})",
+            f"img2img Composite --- {scores['comp_img2img']:.4f} (best: {self.best_score_comp_img2img:.4f})",
+            f"",
+            sep="\n"
+        )

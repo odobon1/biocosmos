@@ -3,6 +3,7 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import tqdm
 import numpy as np
+import random
 
 from utils import paths, read_pickle
 
@@ -19,13 +20,15 @@ class ImageTextDataset(Dataset):
     - Everything else is up to you!
     """
 
-    def __init__(self, index_imgs_class_enc, index_imgs_rfpaths, img_pp, cached_imgs, class_enc_2_text):
+    def __init__(self, index_imgs_class_enc, index_imgs_rfpaths, img_pp, cached_imgs, class_enc_2_text_sci, class_enc_2_text_tax, text_train):
         
         self.index_imgs_class_enc = index_imgs_class_enc
         self.index_imgs_rfpaths   = index_imgs_rfpaths
         self.img_pp               = img_pp
         self.cached_imgs          = cached_imgs
-        self.class_enc_2_text     = class_enc_2_text
+        self.class_enc_2_text_sci     = class_enc_2_text_sci
+        self.class_enc_2_text_tax     = class_enc_2_text_tax
+        self.text_train       = text_train
 
         self.n_samples = len(self.index_imgs_class_enc)
 
@@ -47,7 +50,16 @@ class ImageTextDataset(Dataset):
         idx --> sample (preprocessed image, class encoding)
         """
         class_enc = self.index_imgs_class_enc[idx]
-        text = self.class_enc_2_text[class_enc]
+
+        if self.text_train == "sci":
+            text = self.class_enc_2_text_sci[class_enc]
+        elif self.text_train == "tax":
+            text = self.class_enc_2_text_tax[class_enc]
+        elif self.text_train == "mixed":
+            if random.random() < 0.5:
+                text = self.class_enc_2_text_sci[class_enc]
+            else:
+                text = self.class_enc_2_text_tax[class_enc]
 
         if self.cached_imgs:
             img_t = self.imgs_mem[idx]
@@ -124,9 +136,12 @@ def spawn_dataloader(
         shuffle,
         num_workers,
         prefetch_factor,
-        index_txts,
-        index_txts_class_enc,
+        index_txts_sci,
+        index_txts_class_enc_sci,
+        index_txts_tax,
+        index_txts_class_enc_tax,
         drop_last,
+        text_train,
     ):
     """
 
@@ -144,14 +159,17 @@ def spawn_dataloader(
     - drop_last -------------- [bool] ---------------------------------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
     """
 
-    class_enc_2_text = dict(zip(index_txts_class_enc, index_txts))  # these are currently all numpy types (both the ints and the strings) -- this might be a problem
+    class_enc_2_text_sci = dict(zip(index_txts_class_enc_sci, index_txts_sci))  # these are currently all numpy types (both the ints and the strings) -- this might be a problem
+    class_enc_2_text_tax = dict(zip(index_txts_class_enc_tax, index_txts_tax))
 
     dataset = ImageTextDataset(
         index_imgs_class_enc,
         index_imgs_rfpaths,
         img_pp,
         cached_imgs,
-        class_enc_2_text,
+        class_enc_2_text_sci,
+        class_enc_2_text_tax,
+        text_train
     )
 
     loader = DataLoader(

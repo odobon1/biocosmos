@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 from torch.amp import autocast
 import time
 from tqdm import tqdm
@@ -95,8 +94,7 @@ class EvaluationPipeline:
             self, 
             split_type, 
             split_name, 
-            text_base_type, 
-            text_prep_type,
+            text_preps,
             img_pp,
             cached_imgs,
             batch_size,
@@ -105,34 +103,32 @@ class EvaluationPipeline:
             modes=["img2txt", "img2img", "txt2img"],
         ):
 
+        assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), "text_preps: each inner list must contain exactly one element for eval"
+
         self.split_type = split_type
         self.modes      = modes
 
-        index_imgs_class_enc, index_imgs_rfpaths, sid_2_class_enc = spawn_indexes_imgs(
+        index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = spawn_indexes_imgs(
             split_type=split_type,
             split_name=split_name,
         )
         self.index_txts, self.index_txts_class_enc = spawn_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,
-            text_base_type =text_base_type,
-            text_prep_type =text_prep_type,
+            text_preps     =text_preps,
         )
 
         self.loader = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
             index_imgs_rfpaths  =index_imgs_rfpaths,
-            img_pp              =img_pp,
-            cached_imgs         =cached_imgs,
+            index_imgs_sids     =index_imgs_sids,
+            text_preps          =text_preps,
             batch_size          =batch_size,
             shuffle             =False,
+            drop_last           =False,
+            img_pp              =img_pp,
+            cached_imgs         =cached_imgs,
             num_workers         =num_workers,
             prefetch_factor     =prefetch_factor,
-            index_txts_sci=self.index_txts,
-            index_txts_class_enc_sci=self.index_txts_class_enc,
-            index_txts_tax=self.index_txts,
-            index_txts_class_enc_tax=self.index_txts_class_enc,
-            drop_last=False,
-            text_train=text_base_type,
         )
 
     def evaluate(self, modelw):
@@ -205,8 +201,7 @@ class ValidationPipeline:
     def __init__(
             self,
             split_name,
-            text_base_type,
-            text_prep_type,
+            text_preps,
             img_pp,
             cached_imgs,
             batch_size,
@@ -223,8 +218,7 @@ class ValidationPipeline:
         self.id_val_pipe = EvaluationPipeline(
             split_type     ="id_val",
             split_name     =split_name,
-            text_base_type =text_base_type,
-            text_prep_type =text_prep_type,
+            text_preps     =text_preps,
             img_pp         =img_pp,
             cached_imgs    =cached_imgs,
             batch_size     =batch_size,
@@ -236,8 +230,7 @@ class ValidationPipeline:
         self.ood_val_pipe = EvaluationPipeline(
             split_type     ="ood_val",
             split_name     =split_name,
-            text_base_type =text_base_type,
-            text_prep_type =text_prep_type,
+            text_preps     =text_preps,
             img_pp         =img_pp,
             cached_imgs    =cached_imgs,
             batch_size     =batch_size,

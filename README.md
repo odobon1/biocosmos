@@ -20,16 +20,13 @@ Requires:
 Produces:
 - metadata_o/tax/nymph
 
-3. Generate Base Texts, Rank Keys, Splits
+3. Generate Rank Keys & Splits
 Run in any order:
-`python -m metadata_o.gen_base_texts_nymph`
 `python -m metadata_o.gen_rank_keys`
 `python -m metadata_o.gen_splits` (set split params first)
 Requires:
 - metadata_o/tax/nymph
 Produces:
-- metadata_o/base_texts/nymph_sci
-- metadata_o/base_texts/nymph_tax
 - metadata_o/rank_keys/nymph
 - metadata_o/splits/*
 - figures/splits/*

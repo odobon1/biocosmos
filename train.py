@@ -5,7 +5,7 @@ from tqdm import tqdm
 import time
 
 from models import CLIPWrapper
-from utils_data import spawn_dataloader, spawn_indexes_imgs, spawn_indexes_txts
+from utils_data import spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
 from utils import seed_libs
 
@@ -13,25 +13,34 @@ import pdb
 
 
 # config params
+EXPERIMENT_NAME  = "mixed42"
 CLIP_TYPE        = "bioclip"  # "openai" / "bioclip"
-CACHED_IMGS      = False  # preload, preprocess, cache all images into memory
+SPLIT_NAME       = "D"
+SEED             = 42
+N_EPOCHS         = 1_000
 BATCH_SIZE_TRAIN = 2048
 BATCH_SIZE_VAL   = 2048
-NUM_WORKERS      = 4  # adjust to CPU cores
-SPLIT_NAME       = "D"
-TEXT_PREP_TYPE   = "openai"  # "bioclip" (BioCLIP-style prepending) / "openai" (OpenAI CLIP-style prepending) / "base" (no prepending)
-# TEXT_BASE_TYPE   = "tax"  # "tax" / "sci"
 
-N_EPOCHS                 = 1_000
-SEED                     = 42
+CACHED_IMGS              = False  # preload, preprocess, cache all images into memory
+NUM_WORKERS              = 4  # adjust to CPU cores
 MP_TRAIN                 = True  # whether mixed precision is used for training
 DROP_PARTIAL_BATCH_TRAIN = True
-EXPERIMENT_NAME          = "mixed42"
+VERBOSE_BATCH_LOSS       = False
 
-TEXT_TRAIN         = "mixed"
-VERBOSE_BATCH_LOSS = False
+TEXT_PREPS_TRAIN = [
+    [
+        "",
+        "a photo of ",  # BioCLIP-style prepending
+        "a photo of a ",  # OpenAI CLIP-style prepending
+    ],
+    [
+        "",  # scientific name
+        "animalia arthropoda insecta lepidoptera nymphalidae ",  # full taxonomic name (capitlization irrelevant)
+    ]
+]
 
-print(f"Batch Size (Train): {BATCH_SIZE_TRAIN:,}")
+TEXT_PREPS_VAL_SCI = [["a photo of "]]  # scientific name, BioCLIP-style prepending
+TEXT_PREPS_VAL_TAX = [["a photo of "], ["animalia arthropoda insecta lepidoptera nymphalidae "]]
 
 
 def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_epochs, lr):
@@ -144,43 +153,29 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modelw = CLIPWrapper(CLIP_TYPE, device)
 
-    index_imgs_class_enc_train, index_imgs_rfpaths_train, sid_2_class_enc_train = spawn_indexes_imgs(
+    index_imgs_class_enc_train, index_imgs_rfpaths_train, index_imgs_sids_train, _ = spawn_indexes_imgs(
         # split_type="id_test",  # using id_test as "train" rn for dev (just bc it's smaller)
         split_type="train",
         split_name=SPLIT_NAME,
     )
-    index_txts_train_sci, index_txts_class_enc_train_sci = spawn_indexes_txts(
-        sid_2_class_enc=sid_2_class_enc_train,
-        text_base_type ="sci",
-        text_prep_type =TEXT_PREP_TYPE,
-    )
-    index_txts_train_tax, index_txts_class_enc_train_tax = spawn_indexes_txts(
-        sid_2_class_enc=sid_2_class_enc_train,
-        text_base_type ="tax",
-        text_prep_type =TEXT_PREP_TYPE,
-    )
-    
+
     loader_train = spawn_dataloader(
         index_imgs_class_enc=index_imgs_class_enc_train,
         index_imgs_rfpaths  =index_imgs_rfpaths_train,
-        img_pp              =modelw.img_pp,
-        cached_imgs         =CACHED_IMGS,
+        index_imgs_sids     =index_imgs_sids_train,
+        text_preps          =TEXT_PREPS_TRAIN,
         batch_size          =BATCH_SIZE_TRAIN,
         shuffle             =True,
+        drop_last           =DROP_PARTIAL_BATCH_TRAIN,
+        img_pp              =modelw.img_pp,
+        cached_imgs         =CACHED_IMGS,
         num_workers         =NUM_WORKERS,
         prefetch_factor     =2,
-        index_txts_sci=index_txts_train_sci,
-        index_txts_class_enc_sci=index_txts_class_enc_train_sci,
-        index_txts_tax=index_txts_train_tax,
-        index_txts_class_enc_tax=index_txts_class_enc_train_tax,
-        drop_last=DROP_PARTIAL_BATCH_TRAIN,
-        text_train=TEXT_TRAIN,
     )
 
     val_pipe_sci = ValidationPipeline(
         split_name     =SPLIT_NAME,
-        text_base_type ="sci",
-        text_prep_type =TEXT_PREP_TYPE,
+        text_preps     =TEXT_PREPS_VAL_SCI,
         img_pp         =modelw.img_pp,
         cached_imgs    =CACHED_IMGS,
         batch_size     =BATCH_SIZE_VAL,
@@ -191,8 +186,7 @@ def main():
 
     val_pipe_tax = ValidationPipeline(
         split_name     =SPLIT_NAME,
-        text_base_type ="tax",
-        text_prep_type =TEXT_PREP_TYPE,
+        text_preps     =TEXT_PREPS_VAL_TAX,
         img_pp         =modelw.img_pp,
         cached_imgs    =CACHED_IMGS,
         batch_size     =BATCH_SIZE_VAL,

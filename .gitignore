@@ -1,9 +1,6 @@
 __pycache__/
 metadata_o/__pycache__/
 
-figures/splits/*
-!figures/splits/.gitkeep
-
 metadata_o/data_indexes/*
 !metadata_o/data_indexes/.gitkeep
 
@@ -21,6 +18,9 @@ metadata_o/tax/*
 
 useful_gadgets.ipynb
 
-sandbox_mAP_img2img.ipynb
-sandbox_mAP_img2img.py
-sandbox_mAP_txt2img.py
+archive/*
+
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/clip_o1/
+!artifacts/clip_o1/**

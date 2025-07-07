@@ -7,12 +7,14 @@ import torch.nn.functional as F
 from transformers import CLIPProcessor, CLIPModel
 import open_clip
 
+from utils import paths
+
 import pdb
 
 
 class CLIPWrapper:
 
-    def __init__(self, clip_type, device):
+    def __init__(self, clip_type, device, checkpoint=None, criterion=None):
 
         self.device = device
         self.type   = clip_type
@@ -22,6 +24,7 @@ class CLIPWrapper:
             model_name   = "openai/clip-vit-base-patch32"
             preprocessor = CLIPProcessor.from_pretrained(model_name, use_fast=True)
             self.model   = CLIPModel.from_pretrained(model_name).to(device)
+
             self.model.eval()
 
             # per-sample image transform - runs in each DataLoader worker (when num_workers > 0) so I/O (disk read) and CPU work (resize, normalize, to-tensor) 
@@ -43,6 +46,13 @@ class CLIPWrapper:
 
             self.model, _, self.img_pp = open_clip.create_model_and_transforms("hf-hub:imageomics/bioclip")
             self.model.to(device)
+
+            if checkpoint is not None:
+                assert criterion == "comp" or criterion == "img2img", "CLIPWrapper(): checkpoint specified but criterion != ('comp' or 'img2img')"
+                dpath_model = paths["artifacts"] / checkpoint / "models" / f"best_{criterion}.pt"
+                state_dict  = torch.load(dpath_model, map_location=device)
+                self.model.load_state_dict(state_dict)
+
             self.model.eval()
 
             tokenizer = open_clip.get_tokenizer("hf-hub:imageomics/bioclip")

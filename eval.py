@@ -8,11 +8,14 @@ import pdb
 
 # config params
 CLIP_TYPE      = "bioclip"  # "openai" / "bioclip"
+CHECKPOINT     = "clip_o1"  # which checkpoint to load from (set None for original model)
+CRITERION      = "comp"  # "comp" / "img2img" (only applicable if CHECKPOINT != None)
 CACHED_IMGS    = False  # preload, preprocess, cache all images into memory
 BATCH_SIZE_VAL = 512
 NUM_WORKERS    = 4  # adjust to CPU cores
-SPLIT_NAME     = "D"
+SPLIT_NAME     = "C"
 TEXT_PREPS     = [["a photo of "]]  # scientific name, BioCLIP-style prepending
+
 
 def main():
 
@@ -28,7 +31,7 @@ def main():
         sep="\n"
     )
 
-    modelw = CLIPWrapper(CLIP_TYPE, device)
+    modelw = CLIPWrapper(CLIP_TYPE, device, checkpoint=CHECKPOINT, criterion=CRITERION)
 
     val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,
@@ -40,7 +43,7 @@ def main():
         prefetch_factor=2,
     )
 
-    _ = val_pipe.evaluate(modelw)
+    val_pipe.evaluate(modelw)
 
 if __name__ == "__main__":
     main()

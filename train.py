@@ -1,27 +1,33 @@
 import torch
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import ExponentialLR
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
+import os
 
 from models import CLIPWrapper
 from utils_data import spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
-from utils import seed_libs
+from utils import seed_libs, paths
 
 import pdb
 
 
 # config params
-EXPERIMENT_NAME  = "mixed42"
+EXPERIMENT_NAME = "clip_bs1024_lr5e-5"  # aka model name, but keeping the "experiment name" verbage for now
+ALLOW_OVERWRITE = False  # whether to allow overwrites in the models/ dir
+
 CLIP_TYPE        = "bioclip"  # "openai" / "bioclip"
-SPLIT_NAME       = "D"
+SPLIT_NAME       = "C"
 SEED             = 42
 N_EPOCHS         = 1_000
-BATCH_SIZE_TRAIN = 2048
-BATCH_SIZE_VAL   = 2048
+BATCH_SIZE_TRAIN = 1_024
+BATCH_SIZE_VAL   = 2_048
+LR_INIT          = 5e-5
+LR_DECAY         = 0.97
 
-CACHED_IMGS              = False  # preload, preprocess, cache all images into memory
+CACHED_IMGS              = True  # preload, preprocess, cache all images into memory
 NUM_WORKERS              = 4  # adjust to CPU cores
 MP_TRAIN                 = True  # whether mixed precision is used for training
 DROP_PARTIAL_BATCH_TRAIN = True
@@ -39,12 +45,12 @@ TEXT_PREPS_TRAIN = [
     ]
 ]
 
-TEXT_PREPS_VAL_SCI = [["a photo of "]]  # scientific name, BioCLIP-style prepending
-TEXT_PREPS_VAL_TAX = [["a photo of "], ["animalia arthropoda insecta lepidoptera nymphalidae "]]
+TEXT_PREPS_VAL = [["a photo of "]]  # scientific name, BioCLIP-style prepending
 
 
-def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_epochs, lr):
-    optimizer = torch.optim.AdamW(modelw.model.parameters(), lr=lr)
+def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, lr_init):
+    optimizer = torch.optim.AdamW(modelw.model.parameters(), lr=lr_init)
+    lr_sched = ExponentialLR(optimizer, gamma=LR_DECAY)
     criterion = torch.nn.CrossEntropyLoss()
     if MP_TRAIN:
         scaler = GradScaler()
@@ -56,8 +62,7 @@ def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_e
         sep="\n"
     )
     
-    scores_val_sci, _, _, time_elapsed_val_sci = val_pipe_sci.evaluate(modelw, verbose=True)
-    scores_val_tax, _, _, time_elapsed_val_tax = val_pipe_tax.evaluate(modelw, verbose=True)
+    val_pipe.evaluate(modelw, verbose=True)
 
     time_elapsed_train_mean = 0.0
     time_elapsed_val_mean = 0.0
@@ -113,6 +118,9 @@ def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_e
                 if VERBOSE_BATCH_LOSS:
                     print(f"Batch Loss: {loss_b:.4f}")
 
+        lr_epoch = lr_sched.get_last_lr()[0]
+        lr_sched.step()
+        
         # compute avg. train loss per sample
         if DROP_PARTIAL_BATCH_TRAIN:
             num_full_batches = len(loader_train.dataset) // BATCH_SIZE_TRAIN
@@ -126,15 +134,26 @@ def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_e
         print(
             f"{' Train ':=^{75}}",
             f"Loss ---------------- {loss_epoch_train:.4f}",
+            f"Learning Rate ------- {lr_epoch:.2e}",
             f"",
             sep="\n"
         )
 
         # VALIDATION
 
-        scores_val_sci, _, _, time_elapsed_val_sci = val_pipe_sci.evaluate(modelw, verbose=True)
-        scores_val_tax, _, _, time_elapsed_val_tax = val_pipe_tax.evaluate(modelw, verbose=True)
-        time_elapsed_val = time_elapsed_val_sci + time_elapsed_val_tax
+        _, is_best_comp, is_best_img2img, time_elapsed_val = val_pipe.evaluate(modelw, verbose=True)
+
+        if is_best_comp:
+            fpath_model = dpath_run / "models/best_comp.pt"
+            torch.save(modelw.model.state_dict(), fpath_model)
+            print("~ BEST COMP MODEL SAVED TO FILE ~")
+            print()
+
+        if is_best_img2img:
+            fpath_model = dpath_run / "models/best_img2img.pt"
+            torch.save(modelw.model.state_dict(), fpath_model)
+            print("~ BEST IMG2IMG MODEL SAVED TO FILE ~")
+            print()
 
         # track running means via Welford's algorithm
         time_elapsed_train_mean += (time_elapsed_train - time_elapsed_train_mean) / idx_epoch
@@ -148,7 +167,37 @@ def train_pipeline(modelw, loader_train, val_pipe_sci, val_pipe_tax, device, n_e
             sep="\n"
         )
 
+def create_train_run_dir(run_name_base, seed=None):
+    already_exists = False
+
+    def create_train_run_subdirs(dpath_run):
+        for subdir in ("logs", "models", "plots"):
+            os.makedirs(os.path.join(dpath_run, subdir), exist_ok=True)
+
+    if seed is None:
+        dpath_run = paths["artifacts"] / f"{run_name_base}_seedless0"
+        counter = 1
+        while os.path.exists(dpath_run):
+            dpath_run = paths["artifacts"] / f"{run_name_base}_seedless{counter}"
+            counter += 1
+        create_train_run_subdirs(dpath_run)
+    else:
+        dpath_run = paths["artifacts"] / f"{run_name_base}_{seed}"
+        if os.path.exists(dpath_run):
+            already_exists = True
+        else:
+            create_train_run_subdirs(dpath_run)
+
+    return already_exists, dpath_run
+
 def main():
+
+    already_exists, dpath_run = create_train_run_dir(run_name_base=EXPERIMENT_NAME, seed=SEED)
+    if already_exists and not ALLOW_OVERWRITE:
+        print(f"experiment_name --- {EXPERIMENT_NAME}")
+        print(f"seed -------------- {SEED}")
+        raise ValueError("Experiment Directory Exists!")
+
     seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modelw = CLIPWrapper(CLIP_TYPE, device)
@@ -173,36 +222,24 @@ def main():
         prefetch_factor     =2,
     )
 
-    val_pipe_sci = ValidationPipeline(
+    val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,
-        text_preps     =TEXT_PREPS_VAL_SCI,
+        text_preps     =TEXT_PREPS_VAL,
         img_pp         =modelw.img_pp,
         cached_imgs    =CACHED_IMGS,
         batch_size     =BATCH_SIZE_VAL,
         num_workers    =NUM_WORKERS,
         prefetch_factor=2,
-        header_tag     ="sci",
-    )
-
-    val_pipe_tax = ValidationPipeline(
-        split_name     =SPLIT_NAME,
-        text_preps     =TEXT_PREPS_VAL_TAX,
-        img_pp         =modelw.img_pp,
-        cached_imgs    =CACHED_IMGS,
-        batch_size     =BATCH_SIZE_VAL,
-        num_workers    =NUM_WORKERS,
-        prefetch_factor=2,
-        header_tag     ="tax",
     )
 
     train_pipeline(
         modelw, 
         loader_train, 
-        val_pipe_sci,
-        val_pipe_tax,
+        val_pipe,
+        dpath_run,
         device, 
         n_epochs=N_EPOCHS, 
-        lr=1e-6,
+        lr_init=LR_INIT,
     )
 
 if __name__ == "__main__":

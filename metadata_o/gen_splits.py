@@ -15,7 +15,7 @@ import pdb
 
 # config params
 PCT_EVAL             = 0.10
-PCT_OOD_CLOSE_ENOUGH = 0.0001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
+PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 SPLIT_NAME           = "E"
 ALLOW_OVERWRITES     = False
 # NST_NAMES            = ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
@@ -26,7 +26,7 @@ NST_UPPER_BOUNDS     = [20, 100, 500]
 assert len(NST_NAMES) == len(NST_UPPER_BOUNDS) + 1, f"len(NST_NAMES) ({len(NST_NAMES)}) != len(NST_UPPER_BOUNDS) + 1 ({len(NST_UPPER_BOUNDS)})"
 
 dpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
-dpath_figs   = paths["repo_o"] / f"figures/splits/{SPLIT_NAME}"
+dpath_figs   = dpath_splits / "figures"
 
 if os.path.isdir(dpath_splits) and not ALLOW_OVERWRITES:
     error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
@@ -515,11 +515,11 @@ n_sids_id       = len(sids_id)
 n_sids_ood_val  = len(sids_ood_val)
 n_sids_ood_test = len(sids_ood_test)
 
-sids_id_val, _ = zip(*skeys_id_val)
-n_sids_id_val  = len(set(sids_id_val))
+sids_id_val_unrolled, _ = zip(*skeys_id_val)
+n_sids_id_val           = len(set(sids_id_val_unrolled))
 
-sids_id_test, _ = zip(*skeys_id_test)
-n_sids_id_test  = len(set(sids_id_test))
+sids_id_test_unrolled, _ = zip(*skeys_id_test)
+n_sids_id_test           = len(set(sids_id_test_unrolled))
 
 n_skeys_train   = len(skeys_train)
 n_skeys_id_val  = len(skeys_id_val)

@@ -20,3 +20,7 @@ metadata_o/tax/*
 !metadata_o/tax/.gitkeep
 
 useful_gadgets.ipynb
+
+sandbox_mAP_img2img.ipynb
+sandbox_mAP_img2img.py
+sandbox_mAP_txt2img.py

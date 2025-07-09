@@ -6,9 +6,11 @@ import numpy as np
 import torch
 
 
-# config params
+""" CONFIG PARAMS """
+
 # MACHINE = "pace"
 MACHINE = "hpg"
+
 
 if MACHINE == "pace":
     paths = {

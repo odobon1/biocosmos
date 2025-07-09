@@ -14,22 +14,38 @@ from utils import seed_libs, paths
 import pdb
 
 
-# config params
-EXPERIMENT_NAME = "clip_bs1024_lr5e-5"  # aka model name, but keeping the "experiment name" verbage for now
-ALLOW_OVERWRITE = False  # whether to allow overwrites in the models/ dir
+""" CONFIG PARAMS """
 
-CLIP_TYPE        = "bioclip"  # "openai" / "bioclip"
-SPLIT_NAME       = "C"
+EXPERIMENT_NAME   = "test_qg"
+ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
+
+# ----------------------------------------- largest batch size (1xB200 train w/ MP)
+# CLIP_TYPE = "openai_vitb32_hf"            # 4_096
+# CLIP_TYPE = "bioclip"                     # 2_048
+# CLIP_TYPE = "bioclip2"                    # 512
+# CLIP_TYPE = "openai_vitb32"               # 4_096
+# CLIP_TYPE = "openai_vitb16"               # 1_024
+# CLIP_TYPE = "openai_vitl14"               # 512
+# CLIP_TYPE = "openai_vitl14_336"           # 256
+# CLIP_TYPE = "openai_rn50"                 # 2_048
+# CLIP_TYPE = "openai_rn101"                # 1_024
+# CLIP_TYPE = "openai_rn101_yfcc15m"        # 1_024
+# CLIP_TYPE = "openai_rn50x4"               # 1_024
+# CLIP_TYPE = "openai_rn50x16"              # 256
+CLIP_TYPE = "openai_rn50x64"              # 128
+
+# SPLIT_NAME       = "D"
+SPLIT_NAME       = "dev16k"
 SEED             = 42
-N_EPOCHS         = 1_000
-BATCH_SIZE_TRAIN = 1_024
+N_EPOCHS         = 1
+BATCH_SIZE_TRAIN = 128
 BATCH_SIZE_VAL   = 2_048
-LR_INIT          = 5e-5
-LR_DECAY         = 0.97
+LR_INIT          = 3e-5
+LR_DECAY         = 0.99
 
-CACHED_IMGS              = True  # preload, preprocess, cache all images into memory
+CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
 NUM_WORKERS              = 4  # adjust to CPU cores
-MP_TRAIN                 = True  # whether mixed precision is used for training
+MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
 VERBOSE_BATCH_LOSS       = False
 
@@ -41,11 +57,20 @@ TEXT_PREPS_TRAIN = [
     ],
     [
         "",  # scientific name
-        "animalia arthropoda insecta lepidoptera nymphalidae ",  # full taxonomic name (capitlization irrelevant)
+        "animalia arthropoda insecta lepidoptera nymphalidae ",  # full taxonomic name
     ]
 ]
 
 TEXT_PREPS_VAL = [["a photo of "]]  # scientific name, BioCLIP-style prepending
+
+print(
+    f"",
+    f"Split ---------------- {SPLIT_NAME}",
+    f"CLIP-type ------------ {CLIP_TYPE}",
+    f"Batch Size (Train) --- {BATCH_SIZE_TRAIN}",
+    f"",
+    sep="\n"
+)
 
 
 def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, lr_init):
@@ -56,7 +81,6 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
         scaler = GradScaler()
     
     print(
-        f"",
         f"{' Fine-Tuning Init ':#^{75}}",
         f"",
         sep="\n"
@@ -103,10 +127,11 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
                 embs_imgs = modelw.embed_images(imgs_b)  # ------------------------------ Tensor(B, D)
                 embs_txts = modelw.embed_texts(texts_b)  # ------------------------------ Tensor(B, D)
 
-                sim = embs_imgs @ embs_txts.T * modelw.model.logit_scale.exp()  # ------- Tensor(B, B) --- logits
+                sim = embs_imgs @ embs_txts.T  # ---------------------------------------- Tensor(B, B) --- logits
+                logits = sim * modelw.model.logit_scale.exp()
 
-                loss_i2t_b = criterion(sim, targets)
-                loss_t2i_b = criterion(sim.T, targets)
+                loss_i2t_b = criterion(logits, targets)
+                loss_t2i_b = criterion(logits.T, targets)
                 loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
 
                 loss_b.backward()
@@ -141,17 +166,27 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
 
         # VALIDATION
 
-        _, is_best_comp, is_best_img2img, time_elapsed_val = val_pipe.evaluate(modelw, verbose=True)
+        scores_val, is_best_comp, is_best_img2img, time_elapsed_val = val_pipe.evaluate(modelw, verbose=True)
 
         if is_best_comp:
-            fpath_model = dpath_run / "models/best_comp.pt"
-            torch.save(modelw.model.state_dict(), fpath_model)
+            fpath_chkpt = dpath_run / "models/best_comp.pt"
+            chkpt = {
+                "model_state_dict" : modelw.model.state_dict(),
+                "scores_val" :       scores_val,
+                "epoch" :            idx_epoch,
+            }
+            torch.save(chkpt, fpath_chkpt)
             print("~ BEST COMP MODEL SAVED TO FILE ~")
             print()
 
         if is_best_img2img:
-            fpath_model = dpath_run / "models/best_img2img.pt"
-            torch.save(modelw.model.state_dict(), fpath_model)
+            fpath_chkpt = dpath_run / "models/best_comp.pt"
+            chkpt = {
+                "model_state_dict" : modelw.model.state_dict(),
+                "scores_val" :       scores_val,
+                "epoch" :            idx_epoch,
+            }
+            torch.save(chkpt, fpath_chkpt)
             print("~ BEST IMG2IMG MODEL SAVED TO FILE ~")
             print()
 
@@ -167,7 +202,7 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
             sep="\n"
         )
 
-def create_train_run_dir(run_name_base, seed=None):
+def create_train_run_dir(experiment_name, seed=None):
     already_exists = False
 
     def create_train_run_subdirs(dpath_run):
@@ -175,14 +210,14 @@ def create_train_run_dir(run_name_base, seed=None):
             os.makedirs(os.path.join(dpath_run, subdir), exist_ok=True)
 
     if seed is None:
-        dpath_run = paths["artifacts"] / f"{run_name_base}_seedless0"
+        dpath_run = paths["artifacts"] / f"{experiment_name}_seedless0"
         counter = 1
         while os.path.exists(dpath_run):
-            dpath_run = paths["artifacts"] / f"{run_name_base}_seedless{counter}"
+            dpath_run = paths["artifacts"] / f"{experiment_name}_seedless{counter}"
             counter += 1
         create_train_run_subdirs(dpath_run)
     else:
-        dpath_run = paths["artifacts"] / f"{run_name_base}_{seed}"
+        dpath_run = paths["artifacts"] / f"{experiment_name}_{seed}"
         if os.path.exists(dpath_run):
             already_exists = True
         else:
@@ -192,18 +227,16 @@ def create_train_run_dir(run_name_base, seed=None):
 
 def main():
 
-    already_exists, dpath_run = create_train_run_dir(run_name_base=EXPERIMENT_NAME, seed=SEED)
+    already_exists, dpath_run = create_train_run_dir(experiment_name=EXPERIMENT_NAME, seed=SEED)
     if already_exists and not ALLOW_OVERWRITE:
-        print(f"experiment_name --- {EXPERIMENT_NAME}")
-        print(f"seed -------------- {SEED}")
-        raise ValueError("Experiment Directory Exists!")
+        print(f"Train-Run Name --- {EXPERIMENT_NAME}_{SEED}")
+        raise ValueError("Train-Run Directory Exists!")
 
     seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modelw = CLIPWrapper(CLIP_TYPE, device)
 
     index_imgs_class_enc_train, index_imgs_rfpaths_train, index_imgs_sids_train, _ = spawn_indexes_imgs(
-        # split_type="id_test",  # using id_test as "train" rn for dev (just bc it's smaller)
         split_type="train",
         split_name=SPLIT_NAME,
     )

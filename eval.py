@@ -6,14 +6,28 @@ from utils_eval import ValidationPipeline
 import pdb
 
 
-# config params
-CLIP_TYPE      = "bioclip"  # "openai" / "bioclip"
-CHECKPOINT     = "clip_o1"  # which checkpoint to load from (set None for original model)
-CRITERION      = "comp"  # "comp" / "img2img" (only applicable if CHECKPOINT != None)
+""" CONFIG PARAMS """
+
+# CLIP_TYPE = "openai_vitb32_hf"
+# CLIP_TYPE = "bioclip"
+# CLIP_TYPE = "bioclip2"
+CLIP_TYPE = "openai_vitb32"
+# CLIP_TYPE = "openai_vitb16"
+# CLIP_TYPE = "openai_vitl14"
+# CLIP_TYPE = "openai_rn50"
+# CLIP_TYPE = "openai_rn101"
+# CLIP_TYPE = "openai_rn101_yfcc15m"
+# CLIP_TYPE = "openai_rn50x4"
+# CLIP_TYPE = "openai_rn50x16"
+# CLIP_TYPE = "openai_rn50x64"
+
+RUN_NAME       = "test_run_42"  # which train-run to load from (set None to baseline original model)
+# RUN_NAME       = None
+CHKPT_CRIT     = "comp"  # "comp" / "img2img" --- checkpoint criterion (only applicable if RUN_NAME != None)
 CACHED_IMGS    = False  # preload, preprocess, cache all images into memory
 BATCH_SIZE_VAL = 512
 NUM_WORKERS    = 4  # adjust to CPU cores
-SPLIT_NAME     = "C"
+SPLIT_NAME     = "D"
 TEXT_PREPS     = [["a photo of "]]  # scientific name, BioCLIP-style prepending
 
 
@@ -25,13 +39,14 @@ def main():
         f"",
         f"device: {device}",
         f"",
-        f"Split ------------ {SPLIT_NAME}",
-        f"CLIP-type -------- {CLIP_TYPE}",
+        f"Split -------- {SPLIT_NAME}",
+        f"CLIP-type ---- {CLIP_TYPE}",
+        f"Checkpoint --- {RUN_NAME} ({CHKPT_CRIT})"
         f"",
         sep="\n"
     )
 
-    modelw = CLIPWrapper(CLIP_TYPE, device, checkpoint=CHECKPOINT, criterion=CRITERION)
+    modelw = CLIPWrapper(CLIP_TYPE, device, run_name=RUN_NAME, chkpt_crit=CHKPT_CRIT)
 
     val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,

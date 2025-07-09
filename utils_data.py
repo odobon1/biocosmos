@@ -85,7 +85,8 @@ def collate_fn(batch):
     imgs_b, class_encs_b, texts_b = zip(*batch)
 
     imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
-    return imgs_b, class_encs_b, np.array(texts_b)
+
+    return imgs_b, class_encs_b, list(texts_b)
 
 def spawn_indexes_imgs(split_type, split_name):
     """
@@ -125,7 +126,7 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
 
     index_txts = [gen_text(sid, text_preps) for sid in index_txts_sids]
 
-    return np.array(index_txts), index_txts_class_enc
+    return index_txts, index_txts_class_enc
 
 def spawn_dataloader(
         index_imgs_class_enc,

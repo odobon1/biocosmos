@@ -13,17 +13,19 @@ from utils_ingestion import strat_splits
 import pdb
 
 
-# config params
-PCT_EVAL             = 0.10
+""" CONFIG PARAMS """
+
+PCT_EVAL             = 0.05
 PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
-SPLIT_NAME           = "E"
+SPLIT_NAME           = "dev"
 ALLOW_OVERWRITES     = False
 # NST_NAMES            = ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
 # NST_UPPER_BOUNDS     = [1, 2, 3, 4, 5, 10, 20, 50, 100]  # divides n-shot space into len(NST_UPPER_BOUNDS) + 1 buckets, last bucket is if n is greater than the last upper bound
-NST_NAMES            = ["1-20", "21-100", "101-500", "501+"]
-NST_UPPER_BOUNDS     = [20, 100, 500]
+NST_NAMES            = ["1-19", "20-99", "100-499", "500+"]
+NST_UPPER_BOUNDS     = [19, 99, 499]
 
 assert len(NST_NAMES) == len(NST_UPPER_BOUNDS) + 1, f"len(NST_NAMES) ({len(NST_NAMES)}) != len(NST_UPPER_BOUNDS) + 1 ({len(NST_UPPER_BOUNDS)})"
+
 
 dpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
 dpath_figs   = dpath_splits / "figures"

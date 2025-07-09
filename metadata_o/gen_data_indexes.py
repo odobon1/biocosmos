@@ -7,8 +7,10 @@ from utils import paths, read_pickle, write_pickle
 import pdb
 
 
-# config params
-SPLIT_NAME = "D"
+""" CONFIG PARAMS """
+
+SPLIT_NAME = "dev16k"
+
 
 if not os.path.isdir(paths["metadata_o"] / f"splits/{SPLIT_NAME}"):
     error_msg = f"Split '{SPLIT_NAME}' doesn't exist!"

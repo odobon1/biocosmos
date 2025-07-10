@@ -16,14 +16,17 @@ import pdb
 
 """ CONFIG PARAMS """
 
-EXPERIMENT_NAME   = "test_qg"
+# EXPERIMENT_NAME   = "speedtest_w8"
+EXPERIMENT_NAME   = "speedtest_pl_w8"
+# EXPERIMENT_NAME   = "speedtest_pp_w8"
+
 ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 
-# ----------------------------------------- largest batch size (1xB200 train w/ MP)
+# ----------------------------------------- current max batch size (1xB200 train w/ MP)
 # CLIP_TYPE = "openai_vitb32_hf"            # 4_096
 # CLIP_TYPE = "bioclip"                     # 2_048
 # CLIP_TYPE = "bioclip2"                    # 512
-# CLIP_TYPE = "openai_vitb32"               # 4_096
+CLIP_TYPE = "openai_vitb32"               # 2_048 (4_096 occasionally gets VRAM error)
 # CLIP_TYPE = "openai_vitb16"               # 1_024
 # CLIP_TYPE = "openai_vitl14"               # 512
 # CLIP_TYPE = "openai_vitl14_336"           # 256
@@ -32,19 +35,25 @@ ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 # CLIP_TYPE = "openai_rn101_yfcc15m"        # 1_024
 # CLIP_TYPE = "openai_rn50x4"               # 1_024
 # CLIP_TYPE = "openai_rn50x16"              # 256
-CLIP_TYPE = "openai_rn50x64"              # 128
+# CLIP_TYPE = "openai_rn50x64"              # 128
 
-# SPLIT_NAME       = "D"
-SPLIT_NAME       = "dev16k"
+SPLIT_NAME       = "B"
+# SPLIT_NAME       = "dev16k"
 SEED             = 42
-N_EPOCHS         = 1
-BATCH_SIZE_TRAIN = 128
+N_EPOCHS         = 1_000
+BATCH_SIZE_TRAIN = 2_048
 BATCH_SIZE_VAL   = 2_048
 LR_INIT          = 3e-5
 LR_DECAY         = 0.99
 
-CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
-NUM_WORKERS              = 4  # adjust to CPU cores
+# CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
+
+# CACHED_IMGS              = None
+CACHED_IMGS              = "pl"
+# CACHED_IMGS              = "pp"
+
+NUM_WORKERS              = 8  # adjust to CPU cores
+PREFETCH_FACTOR          = 4
 MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
 VERBOSE_BATCH_LOSS       = False
@@ -65,6 +74,8 @@ TEXT_PREPS_VAL = [["a photo of "]]  # scientific name, BioCLIP-style prepending
 
 print(
     f"",
+    f"Experiment Name ------ {EXPERIMENT_NAME}",
+    f"Train-Run Name ------- {EXPERIMENT_NAME}_{SEED}",
     f"Split ---------------- {SPLIT_NAME}",
     f"CLIP-type ------------ {CLIP_TYPE}",
     f"Batch Size (Train) --- {BATCH_SIZE_TRAIN}",
@@ -94,7 +105,7 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
 
         header_epoch = f" Epoch {idx_epoch} "
         print(
-            f"{header_epoch:#^{75}}{'' if EXPERIMENT_NAME is None else ' (' + EXPERIMENT_NAME + ')'}",
+            f"{header_epoch:#^{75}}{'' if EXPERIMENT_NAME is None else ' (' + EXPERIMENT_NAME + '_' + str(SEED) + ')'}",
             f"",
             sep="\n"
         )
@@ -229,8 +240,7 @@ def main():
 
     already_exists, dpath_run = create_train_run_dir(experiment_name=EXPERIMENT_NAME, seed=SEED)
     if already_exists and not ALLOW_OVERWRITE:
-        print(f"Train-Run Name --- {EXPERIMENT_NAME}_{SEED}")
-        raise ValueError("Train-Run Directory Exists!")
+        raise ValueError(f"Train-run directory '{EXPERIMENT_NAME}_{SEED}' already exists!")
 
     seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -252,7 +262,7 @@ def main():
         img_pp              =modelw.img_pp,
         cached_imgs         =CACHED_IMGS,
         num_workers         =NUM_WORKERS,
-        prefetch_factor     =2,
+        prefetch_factor     =PREFETCH_FACTOR,
     )
 
     val_pipe = ValidationPipeline(
@@ -262,7 +272,7 @@ def main():
         cached_imgs    =CACHED_IMGS,
         batch_size     =BATCH_SIZE_VAL,
         num_workers    =NUM_WORKERS,
-        prefetch_factor=2,
+        prefetch_factor=PREFETCH_FACTOR,
     )
 
     train_pipeline(

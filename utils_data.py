@@ -5,6 +5,7 @@ import tqdm
 import numpy as np
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from utils import paths, read_pickle
 
@@ -28,7 +29,8 @@ class ImageTextDataset(Dataset):
             index_imgs_sids,
             text_preps,
             img_pp, 
-            cached_imgs, 
+            cached_imgs,
+            num_workers,
         ):
         
         self.index_imgs_class_enc = index_imgs_class_enc
@@ -40,17 +42,22 @@ class ImageTextDataset(Dataset):
 
         self.n_samples = len(self.index_imgs_class_enc)
 
-        if self.cached_imgs:
+        if self.cached_imgs in ("pl", "pp"):
             time_start = time.time()
 
-            # load all images into memory (as preprocessed tensors)
-            self.imgs_mem = []
-            for rfpath in tqdm.tqdm(self.index_imgs_rfpaths, desc="Preloading, Preprocessing, Caching Images"):
+            def load_pp_img(rfpath):
                 img   = Image.open(paths["nymph"] / "images" / rfpath).convert("RGB")
-                img_t = self.img_pp(img)
-                self.imgs_mem.append(img_t)
+                return img if cached_imgs == "pl" else img_pp(img)
 
-            time_end = time.time()
+            # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
+            self.imgs_mem = []
+            with ThreadPoolExecutor(max_workers=num_workers) as exe:
+                for img in tqdm.tqdm(exe.map(load_pp_img, self.index_imgs_rfpaths),
+                                     total=len(self.index_imgs_rfpaths),
+                                     desc ="Caching Images"):
+                    self.imgs_mem.append(img)
+
+            time_end     = time.time()
             time_elapsed = time_end - time_start
             print(f"Time Elapsed (preload): {time_elapsed:.1f} s")
 
@@ -68,8 +75,11 @@ class ImageTextDataset(Dataset):
 
         text = gen_text(sid, self.text_preps)
 
-        if self.cached_imgs:
+        if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
+        elif self.cached_imgs == "pl":
+            img   = self.imgs_mem[idx]
+            img_t = self.img_pp(img)
         else:
             # load + preprocess image
             img   = Image.open(paths["nymph"] / "images" / self.index_imgs_rfpaths[idx]).convert("RGB")
@@ -166,17 +176,19 @@ def spawn_dataloader(
         text_preps,
         img_pp,
         cached_imgs,
+        num_workers,
     )
 
     loader = DataLoader(
         dataset,
-        batch_size     =batch_size,
-        shuffle        =shuffle,
-        num_workers    =num_workers,
-        pin_memory     =True,  # (True) speeds up host --> GPU copies, higher RAM cost
-        prefetch_factor=prefetch_factor,
-        collate_fn     =collate_fn,
-        drop_last      =drop_last,
+        batch_size        =batch_size,
+        shuffle           =shuffle,
+        num_workers       =num_workers,
+        pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
+        prefetch_factor   =prefetch_factor,
+        collate_fn        =collate_fn,
+        drop_last         =drop_last,
+        persistent_workers=True,
     )
 
     return loader

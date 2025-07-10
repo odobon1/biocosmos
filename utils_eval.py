@@ -23,7 +23,7 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
     """
 
     Q = embs_imgs.size(0)  # num. queries
-    N = Q - 1  # num. corpus-samples
+    N = Q - 1  # num. candidate-samples
     
     # full similarity matrix
     sim = embs_imgs @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, Q)
@@ -34,7 +34,7 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
     # get top-N neighbors per query (all of them except query image i.e. N = Q - 1)
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
 
-    # positives mask / boolean relevance mask (True wherever the query-image class matches the corpus-image class)
+    # positives mask / boolean relevance mask (True wherever the query-image class matches the candidate-image class)
     pos_mask = classes_enc_imgs.unsqueeze(1) == classes_enc_imgs[idxs]  # ------------------- Tensor(Q, N)
     
     ranks    = torch.arange(1, N+1, device=embs_imgs.device)  # ----------------------------- Tensor(N)
@@ -74,7 +74,7 @@ def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, class
     # get top-N neighbors per query (all of them)
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
 
-    # positives mask / boolean relevance mask (True wherever the query class matches the corpus class)
+    # positives mask / boolean relevance mask (True wherever the query class matches the candidate class)
     pos_mask = classes_enc_queries.unsqueeze(1) == classes_enc_cands[idxs]  # --------------- Tensor(Q, N)
 
     ranks    = torch.arange(1, N+1, device=sim.device)  # ----------------------------------- Tensor(N)

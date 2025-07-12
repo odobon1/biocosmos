@@ -4,6 +4,8 @@ import random
 import os
 import numpy as np
 import torch
+import subprocess
+import re
 
 
 """ CONFIG PARAMS """
@@ -45,6 +47,24 @@ elif MACHINE == "hpg":
         "nymph_2_metadata" : fpath_nymph_2_metadata,
         "vlm4bio" :          dpath_vlm4bio,
     }
+
+def get_slurm_alloc():
+    job_id = os.getenv("SLURM_JOB_ID")
+    out = subprocess.check_output(["scontrol", "show", "job", job_id], text=True)
+    tres = re.search(r"TRES=([^ ]+)", out)
+
+    info = {}
+    for pair in tres.group(1).split(","):
+        key, val = pair.split("=")
+        info[key] = val
+
+    alloc = {
+        "gpus": int(info.get("gres/gpu", "0")),
+        "cpus": int(info.get("cpu", "0")),
+        "ram":  int(info.get("mem", "0").rstrip("G")),
+    }
+
+    return alloc
 
 def seed_libs(seed):
     if seed is not None:

@@ -1,62 +1,92 @@
 import torch
 from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import ExponentialLR
-import matplotlib.pyplot as plt
+import torch.nn.functional as F
 from tqdm import tqdm
 import time
 import os
 
-from models import CLIPWrapper
+from models import VisionLanguageModelWrapper
 from utils_data import spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
-from utils import seed_libs, paths
+from utils import seed_libs, paths, get_slurm_alloc
 
 import pdb
+
+torch.set_printoptions(
+    precision=4,
+    sci_mode =False,
+    threshold=1000,  # total elements before summarizing
+    edgeitems=3,  # num items to show at the start/end of each dim
+    linewidth=120
+)
 
 
 """ CONFIG PARAMS """
 
-# EXPERIMENT_NAME   = "speedtest_w8"
-EXPERIMENT_NAME   = "speedtest_pl_w8"
-# EXPERIMENT_NAME   = "speedtest_pp_w8"
-
+EXPERIMENT_NAME = "test_run"
 ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 
 # ----------------------------------------- current max batch size (1xB200 train w/ MP)
-# CLIP_TYPE = "openai_vitb32_hf"            # 4_096
-# CLIP_TYPE = "bioclip"                     # 2_048
-# CLIP_TYPE = "bioclip2"                    # 512
-CLIP_TYPE = "openai_vitb32"               # 2_048 (4_096 occasionally gets VRAM error)
-# CLIP_TYPE = "openai_vitb16"               # 1_024
-# CLIP_TYPE = "openai_vitl14"               # 512
-# CLIP_TYPE = "openai_vitl14_336"           # 256
-# CLIP_TYPE = "openai_rn50"                 # 2_048
-# CLIP_TYPE = "openai_rn101"                # 1_024
-# CLIP_TYPE = "openai_rn101_yfcc15m"        # 1_024
-# CLIP_TYPE = "openai_rn50x4"               # 1_024
-# CLIP_TYPE = "openai_rn50x16"              # 256
-# CLIP_TYPE = "openai_rn50x64"              # 128
+# MODEL_TYPE = "clip_vitb32_hf"             # 4_096
+# MODEL_TYPE = "bioclip"                    # 2_048
+# MODEL_TYPE = "bioclip2"                   # 512
+# MODEL_TYPE = "clip_vitb32"                # 2_048 (4_096 intermittently exhausts VRAM, causing OOM failure)
+# MODEL_TYPE = "clip_vitb16"                # 1_024
+# MODEL_TYPE = "clip_vitl14"                # 512
+# MODEL_TYPE = "clip_vitl14_336"            # 256
+# MODEL_TYPE = "clip_rn50"                  # 2_048
+# MODEL_TYPE = "clip_rn101"                 # 1_024
+# MODEL_TYPE = "clip_rn101_yfcc15m"         # 1_024
+# MODEL_TYPE = "clip_rn50x4"                # 1_024
+# MODEL_TYPE = "clip_rn50x16"               # 256
+# MODEL_TYPE = "clip_rn50x64"               # 128
+MODEL_TYPE = "siglip_vitb16"              # 1_024
+# MODEL_TYPE = "siglip_vitb16_384"          # x
+# MODEL_TYPE = "siglip_vitl16_384"          # x
+# MODEL_TYPE = "siglip_vitso400m14"         # x
+# MODEL_TYPE = "siglip2_vitb16"             # x
+# MODEL_TYPE = "siglip2_vitb16_384"         # x
+# MODEL_TYPE = "siglip2_vitl16_384"         # x
+# MODEL_TYPE = "siglip2_vitso400m14"        # x
+# MODEL_TYPE = "siglip2_vitgopt16_384"      # x
+# MODEL_TYPE = "vitamin_s"                  # x
+# MODEL_TYPE = "vitamin_s_ltt"              # x
+# MODEL_TYPE = "vitamin_b"                  # x
+# MODEL_TYPE = "vitamin_b_ltt"              # x
+# MODEL_TYPE = "vitamin_l"                  # x
+# MODEL_TYPE = "vitamin_l_256"              # x
+# MODEL_TYPE = "vitamin_l_336"              # x
+# MODEL_TYPE = "vitamin_l_384"              # x
+# MODEL_TYPE = "vitamin_l2"                 # x
+# MODEL_TYPE = "vitamin_l2_384"             # x
+# MODEL_TYPE = "vitamin_xl_384"             # x
 
 SPLIT_NAME       = "B"
 # SPLIT_NAME       = "dev16k"
 SEED             = 42
 N_EPOCHS         = 1_000
-BATCH_SIZE_TRAIN = 2_048
+BATCH_SIZE_TRAIN = 1_024
 BATCH_SIZE_VAL   = 2_048
 LR_INIT          = 3e-5
 LR_DECAY         = 0.99
 
+# freezing will need to be updated to support Hugging Face models
+FREEZE_TEXT_ENCODER  = False
+FREEZE_IMAGE_ENCODER = False
+
+# LOSS_TYPE = "clip"
+LOSS_TYPE = "siglip_aligned"
+
 # CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
 
-# CACHED_IMGS              = None
-CACHED_IMGS              = "pl"
+CACHED_IMGS              = None
+# CACHED_IMGS              = "pl"
 # CACHED_IMGS              = "pp"
 
-NUM_WORKERS              = 8  # adjust to CPU cores
-PREFETCH_FACTOR          = 4
 MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
-VERBOSE_BATCH_LOSS       = False
+VERBOSE_BATCH_LOSS       = True
 
 TEXT_PREPS_TRAIN = [
     [
@@ -72,22 +102,59 @@ TEXT_PREPS_TRAIN = [
 
 TEXT_PREPS_VAL = [["a photo of "]]  # scientific name, BioCLIP-style prepending
 
+alloc           = get_slurm_alloc()
+NUM_WORKERS     = alloc["cpus"]
+PREFETCH_FACTOR = min(NUM_WORKERS, 8)
+
+assert not (FREEZE_TEXT_ENCODER and FREEZE_IMAGE_ENCODER), "Text and image encoders are both set to frozen!"
+
 print(
     f"",
-    f"Experiment Name ------ {EXPERIMENT_NAME}",
-    f"Train-Run Name ------- {EXPERIMENT_NAME}_{SEED}",
-    f"Split ---------------- {SPLIT_NAME}",
-    f"CLIP-type ------------ {CLIP_TYPE}",
+    f"Experiment Name --- {EXPERIMENT_NAME}",
+    f"Train-Run Name ---- {EXPERIMENT_NAME}_{SEED}",
+    f"Split ------------- {SPLIT_NAME}",
+    f"",
+    f"Model Type ----------- {MODEL_TYPE}",
+    f"Loss Type ------------ {LOSS_TYPE}",
     f"Batch Size (Train) --- {BATCH_SIZE_TRAIN}",
+    f"",
+    f"Num. GPUs ----------- {alloc['gpus']}",
+    f"Num. CPUs/Workers --- {alloc['cpus']}",
+    f"RAM ----------------- {alloc['ram']} GB",
     f"",
     sep="\n"
 )
 
 
 def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, lr_init):
-    optimizer = torch.optim.AdamW(modelw.model.parameters(), lr=lr_init)
-    lr_sched = ExponentialLR(optimizer, gamma=LR_DECAY)
-    criterion = torch.nn.CrossEntropyLoss()
+
+    if FREEZE_TEXT_ENCODER:
+        for name, param in modelw.model.named_parameters():
+            if (
+                name.startswith("token_embedding.") or
+                name == "positional_embedding"      or
+                name.startswith("transformer.")     or
+                name.startswith("ln_final.")        or
+                name == "text_projection"           or
+                name.startswith("text.")  # SigLIP, ViTamin variants (all of the above are for the BioCLIP + CLIP variants) ~ note: ViTamin same as SigLIP except no logit_bias parameter
+            ):
+                param.requires_grad = False
+
+    if FREEZE_IMAGE_ENCODER:
+        for name, param in modelw.model.named_parameters():
+            if name.startswith("visual."):  # covers all variants
+                param.requires_grad = False
+
+    # params_trainable = filter(lambda p: p.requires_grad, modelw.model.parameters())
+    params_trainable = [p for p in modelw.model.parameters() if p.requires_grad]
+
+    # use this for the cross-loss experiments
+    # if LOSS_TYPE == "siglip_aligned":
+    #     bias = torch.zeros((), device=device, requires_grad=True)
+    #     params_trainable.append(bias)
+
+    optimizer      = torch.optim.AdamW(params_trainable, lr=lr_init)
+    lr_sched       = ExponentialLR(optimizer, gamma=LR_DECAY)
     if MP_TRAIN:
         scaler = GradScaler()
     
@@ -116,34 +183,37 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
         for imgs_b, _, texts_b in tqdm(loader_train, desc="Train", leave=False):
             imgs_b = imgs_b.to(device, non_blocking=True)
 
-            targets = torch.arange(imgs_b.size(0), device=device, dtype=torch.long)
-
             optimizer.zero_grad()
 
             if MP_TRAIN:
                 with autocast(device_type=device.type):
-                    embs_imgs = modelw.embed_images(imgs_b)  # -------------------------- Tensor(B, D)
-                    embs_txts = modelw.embed_texts(texts_b)  # -------------------------- Tensor(B, D)
+                    embs_imgs = modelw.embed_images(imgs_b)  # --- Tensor(B, D)
+                    embs_txts = modelw.embed_texts(texts_b)  # --- Tensor(B, D)
 
-                    sim = embs_imgs @ embs_txts.T * modelw.model.logit_scale.exp()  # --- Tensor(B, B) --- logits
+                    sim = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B) --- logits
 
-                    loss_i2t_b = criterion(sim, targets)
-                    loss_t2i_b = criterion(sim.T, targets)
-                    loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
+                    if LOSS_TYPE == "clip":
+                        logits = modelw.compute_logits_clip(sim)
+                        loss_b = modelw.compute_loss_clip(logits)
+                    elif LOSS_TYPE == "siglip_aligned":
+                        logits = modelw.compute_logits_siglip(sim)
+                        loss_b = modelw.compute_loss_siglip_aligned(logits)
 
                 scaler.scale(loss_b).backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                embs_imgs = modelw.embed_images(imgs_b)  # ------------------------------ Tensor(B, D)
-                embs_txts = modelw.embed_texts(texts_b)  # ------------------------------ Tensor(B, D)
+                embs_imgs = modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
+                embs_txts = modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
 
-                sim = embs_imgs @ embs_txts.T  # ---------------------------------------- Tensor(B, B) --- logits
-                logits = sim * modelw.model.logit_scale.exp()
+                sim    = embs_imgs @ embs_txts.T  # -------------- Tensor(B, B)
 
-                loss_i2t_b = criterion(logits, targets)
-                loss_t2i_b = criterion(logits.T, targets)
-                loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
+                if LOSS_TYPE == "clip":
+                    logits = modelw.compute_logits_clip(sim)
+                    loss_b = modelw.compute_loss_clip(logits)
+                elif LOSS_TYPE == "siglip_aligned":
+                    logits = modelw.compute_logits_siglip(sim)
+                    loss_b = modelw.compute_loss_siglip_aligned(logits)
 
                 loss_b.backward()
                 optimizer.step()
@@ -244,7 +314,7 @@ def main():
 
     seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelw = CLIPWrapper(CLIP_TYPE, device)
+    modelw = VisionLanguageModelWrapper(MODEL_TYPE, device)
 
     index_imgs_class_enc_train, index_imgs_rfpaths_train, index_imgs_sids_train, _ = spawn_indexes_imgs(
         split_type="train",

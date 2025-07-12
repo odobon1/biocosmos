@@ -1,6 +1,6 @@
 import torch
 
-from models import CLIPWrapper
+from models import VisionLanguageModelWrapper
 from utils_eval import ValidationPipeline
 
 import pdb
@@ -8,21 +8,41 @@ import pdb
 
 """ CONFIG PARAMS """
 
-# CLIP_TYPE = "openai_vitb32_hf"
-# CLIP_TYPE = "bioclip"
-# CLIP_TYPE = "bioclip2"
-CLIP_TYPE = "openai_vitb32"
-# CLIP_TYPE = "openai_vitb16"
-# CLIP_TYPE = "openai_vitl14"
-# CLIP_TYPE = "openai_rn50"
-# CLIP_TYPE = "openai_rn101"
-# CLIP_TYPE = "openai_rn101_yfcc15m"
-# CLIP_TYPE = "openai_rn50x4"
-# CLIP_TYPE = "openai_rn50x16"
-# CLIP_TYPE = "openai_rn50x64"
+# MODEL_TYPE = "clip_vitb32_hf"
+# MODEL_TYPE = "bioclip"
+# MODEL_TYPE = "bioclip2"
+MODEL_TYPE = "clip_vitb32"
+# MODEL_TYPE = "clip_vitb16"
+# MODEL_TYPE = "clip_vitl14"
+# MODEL_TYPE = "clip_rn50"
+# MODEL_TYPE = "clip_rn101"
+# MODEL_TYPE = "clip_rn101_yfcc15m"
+# MODEL_TYPE = "clip_rn50x4"
+# MODEL_TYPE = "clip_rn50x16"
+# MODEL_TYPE = "clip_rn50x64"
+# MODEL_TYPE = "siglip_vitb16"
+# MODEL_TYPE = "siglip_vitb16_384"
+# MODEL_TYPE = "siglip_vitl16_384"
+# MODEL_TYPE = "siglip_vitso400m14"
+# MODEL_TYPE = "siglip2_vitb16"
+# MODEL_TYPE = "siglip2_vitb16_384"
+# MODEL_TYPE = "siglip2_vitl16_384"
+# MODEL_TYPE = "siglip2_vitso400m14"
+# MODEL_TYPE = "siglip2_vitgopt16_384"
+# MODEL_TYPE = "vitamin_s"
+# MODEL_TYPE = "vitamin_s_ltt"
+# MODEL_TYPE = "vitamin_b"
+# MODEL_TYPE = "vitamin_b_ltt"
+# MODEL_TYPE = "vitamin_l"
+# MODEL_TYPE = "vitamin_l_256"
+# MODEL_TYPE = "vitamin_l_336"
+# MODEL_TYPE = "vitamin_l_384"
+# MODEL_TYPE = "vitamin_l2"
+# MODEL_TYPE = "vitamin_l2_384"
+# MODEL_TYPE = "vitamin_xl_384"
 
-RUN_NAME       = "test_run_42"  # which train-run to load from (set None to baseline original model)
-# RUN_NAME       = None
+# RUN_NAME       = "test_run_42"  # which train-run to load from (set None to baseline original model)
+RUN_NAME       = None
 CHKPT_CRIT     = "comp"  # "comp" / "img2img" --- checkpoint criterion (only applicable if RUN_NAME != None)
 CACHED_IMGS    = False  # preload, preprocess, cache all images into memory
 BATCH_SIZE_VAL = 512
@@ -40,13 +60,13 @@ def main():
         f"device: {device}",
         f"",
         f"Split -------- {SPLIT_NAME}",
-        f"CLIP-type ---- {CLIP_TYPE}",
-        f"Checkpoint --- {RUN_NAME} ({CHKPT_CRIT})"
+        f"CLIP-type ---- {MODEL_TYPE}",
+        f"Checkpoint --- {RUN_NAME}{'' if RUN_NAME is None else ' (' + CHKPT_CRIT + ')'}"
         f"",
         sep="\n"
     )
 
-    modelw = CLIPWrapper(CLIP_TYPE, device, run_name=RUN_NAME, chkpt_crit=CHKPT_CRIT)
+    modelw = VisionLanguageModelWrapper(MODEL_TYPE, device, run_name=RUN_NAME, chkpt_crit=CHKPT_CRIT)
 
     val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,

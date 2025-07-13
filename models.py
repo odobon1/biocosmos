@@ -12,41 +12,6 @@ from utils import paths
 import pdb
 
 
-OPEN_CLIP_TYPES = (
-    "bioclip",
-    "bioclip2",
-    "clip_vitb32",
-    "clip_vitb16",
-    "clip_vitl14",
-    "clip_vitl14_336",
-    "clip_rn50",
-    "clip_rn101",
-    "clip_rn101_yfcc15m",
-    "clip_rn50x4",
-    "clip_rn50x16",
-    "clip_rn50x64",
-    "siglip_vitb16",
-    "siglip_vitb16_384",
-    "siglip_vitl16_384",
-    "siglip_vitso400m14",
-    "siglip2_vitb16",
-    "siglip2_vitb16_384",
-    "siglip2_vitl16_384",
-    "siglip2_vitso400m14",
-    "siglip2_vitgopt16_384",
-    "vitamin_s",
-    "vitamin_s_ltt",
-    "vitamin_b",
-    "vitamin_b_ltt",
-    "vitamin_l",
-    "vitamin_l_256",
-    "vitamin_l_336",
-    "vitamin_l_384",
-    "vitamin_l2",
-    "vitamin_l2_384",
-    "vitamin_xl_384",
-)
-
 class VisionLanguageModelWrapper:
 
     def __init__(self, model_type, device, run_name=None, chkpt_crit=None):
@@ -58,115 +23,83 @@ class VisionLanguageModelWrapper:
 
         self.criterion_clip = torch.nn.CrossEntropyLoss()
 
-        # hugging face
-        if model_type == "clip_vitb32_hf":
+        if model_type == "bioclip":
+            model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip",   None,         False
+        elif model_type == "bioclip2":
+            model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip-2", None,         False  # note: bioclip2 quick_gelu=False different from no quick_gelu specified at all (unlike bioclip which is the same)
 
-            model_name   = "openai/clip-vit-base-patch32"
-            preprocessor = CLIPProcessor.from_pretrained(model_name, use_fast=True)
-            self.model   = CLIPModel.from_pretrained(model_name)
-            self.model   = self.model.to(self.device).eval()
-            if run_name is not None:
-                self.load_checkpoint(run_name, chkpt_crit)
+        elif model_type == "clip_vitb16":
+            model_name, pretrained, quick_gelu = "ViT-B-16",                    "openai",     True
+        elif model_type == "clip_vitb32":
+            model_name, pretrained, quick_gelu = "ViT-B-32",                    "openai",     True
+        elif model_type == "clip_vitl14":
+            model_name, pretrained, quick_gelu = "ViT-L-14",                    "openai",     True
+        elif model_type == "clip_vitl14_336":
+            model_name, pretrained, quick_gelu = "ViT-L-14-336",                "openai",     True
+        
+        elif model_type == "clip_rn50":
+            model_name, pretrained, quick_gelu = "RN50",                        "openai",     True
+        elif model_type == "clip_rn101":
+            model_name, pretrained, quick_gelu = "RN101",                       "openai",     True
+        elif model_type == "clip_rn101_yfcc15m":
+            model_name, pretrained, quick_gelu = "RN101",                       "yfcc15m",    True
+        elif model_type == "clip_rn50x4":
+            model_name, pretrained, quick_gelu = "RN50x4",                      "openai",     True
+        elif model_type == "clip_rn50x16":
+            model_name, pretrained, quick_gelu = "RN50x16",                     "openai",     True
+        elif model_type == "clip_rn50x64":
+            model_name, pretrained, quick_gelu = "RN50x64",                     "openai",     True
 
-            # per-sample image transform - runs in each DataLoader worker (when num_workers > 0) so I/O (disk read) and CPU work (resize, normalize, to-tensor) 
-            # happen in parallel across multiple processes -- enables fully parallelized transforms, overlap with GPU compute, easy to cache in RAM if desired, 
-            # at the expense of a little more boilerplate in Dataset and needing to manage transforms
-            self.img_pp = lambda imgs: preprocessor.image_processor(
-                    images=[imgs],
-                    return_tensors="pt",
-            )["pixel_values"][0]
+        elif model_type == "siglip_vitb16":
+            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP",             "webli",      False
+        elif model_type == "siglip_vitb16_384":
+            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP-384",         "webli",      False
+        elif model_type == "siglip_vitl16_384":
+            model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP-384",         "webli",      False
+        elif model_type == "siglip_vitso400m14":
+            model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP",        "webli",      False
+        elif model_type == "siglip2_vitb16":
+            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2",            "webli",      False
+        elif model_type == "siglip2_vitb16_384":
+            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2-384",        "webli",      False
+        elif model_type == "siglip2_vitl16_384":
+            model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP2-384",        "webli",      False
+        elif model_type == "siglip2_vitso400m14":
+            model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP2",       "webli",      False
+        elif model_type == "siglip2_vitgopt16_384":
+            model_name, pretrained, quick_gelu = "ViT-gopt-16-SigLIP2-384",     "webli",      False
 
-            # batch text tokenization
-            self.txt_pp = lambda txts: preprocessor.tokenizer(
-                text=txts,
-                return_tensors="pt",
-                padding=True,
-            ).to(self.device)
+        elif model_type == "vitamin_s":
+            model_name, pretrained, quick_gelu = "ViTamin-S",                   "datacomp1b", False
+        elif model_type == "vitamin_s_ltt":
+            model_name, pretrained, quick_gelu = "ViTamin-S-LTT",               "datacomp1b", False
+        elif model_type == "vitamin_b":
+            model_name, pretrained, quick_gelu = "ViTamin-B",                   "datacomp1b", False
+        elif model_type == "vitamin_b_ltt":
+            model_name, pretrained, quick_gelu = "ViTamin-B-LTT",               "datacomp1b", False
+        elif model_type == "vitamin_l":
+            model_name, pretrained, quick_gelu = "ViTamin-L",                   "datacomp1b", False
+        elif model_type == "vitamin_l_256":
+            model_name, pretrained, quick_gelu = "ViTamin-L-256",               "datacomp1b", False
+        elif model_type == "vitamin_l_336":
+            model_name, pretrained, quick_gelu = "ViTamin-L-336",               "datacomp1b", False
+        elif model_type == "vitamin_l_384":
+            model_name, pretrained, quick_gelu = "ViTamin-L-384",               "datacomp1b", False
+        elif model_type == "vitamin_l2":
+            model_name, pretrained, quick_gelu = "ViTamin-L2",                  "datacomp1b", False
+        elif model_type == "vitamin_l2_384":
+            model_name, pretrained, quick_gelu = "ViTamin-L2-384",              "datacomp1b", False
+        elif model_type == "vitamin_xl_384":
+            model_name, pretrained, quick_gelu = "ViTamin-XL-384",              "datacomp1b", False
 
-        # open_clip
-        elif model_type in OPEN_CLIP_TYPES:
+        # self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
+        self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, quick_gelu=quick_gelu)
+        self.model                 = self.model.to(self.device).eval()
+        if run_name is not None:
+            self.load_checkpoint(run_name, chkpt_crit)
 
-            if model_type == "bioclip":
-                model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip",   None,         False
-            elif model_type == "bioclip2":
-                model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip-2", None,         False  # note: bioclip2 quick_gelu=False different from no quick_gelu specified at all (unlike bioclip which is the same)
-            
-            elif model_type == "clip_vitb32":
-                model_name, pretrained, quick_gelu = "ViT-B-32",                    "openai",     True
-            elif model_type == "clip_vitb16":
-                model_name, pretrained, quick_gelu = "ViT-B-16",                    "openai",     True
-            elif model_type == "clip_vitl14":
-                model_name, pretrained, quick_gelu = "ViT-L-14",                    "openai",     True
-            elif model_type == "clip_vitl14_336":
-                model_name, pretrained, quick_gelu = "ViT-L-14-336",                "openai",     True
-            
-            elif model_type == "clip_rn50":
-                model_name, pretrained, quick_gelu = "RN50",                        "openai",     True
-            elif model_type == "clip_rn101":
-                model_name, pretrained, quick_gelu = "RN101",                       "openai",     True
-            elif model_type == "clip_rn101_yfcc15m":
-                model_name, pretrained, quick_gelu = "RN101",                       "yfcc15m",    True
-            elif model_type == "clip_rn50x4":
-                model_name, pretrained, quick_gelu = "RN50x4",                      "openai",     True
-            elif model_type == "clip_rn50x16":
-                model_name, pretrained, quick_gelu = "RN50x16",                     "openai",     True
-            elif model_type == "clip_rn50x64":
-                model_name, pretrained, quick_gelu = "RN50x64",                     "openai",     True
-
-            elif model_type == "siglip_vitb16":
-                model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP",             "webli",      False
-            elif model_type == "siglip_vitb16_384":
-                model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP-384",         "webli",      False
-            elif model_type == "siglip_vitl16_384":
-                model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP-384",         "webli",      False
-            elif model_type == "siglip_vitso400m14":
-                model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP",        "webli",      False
-            elif model_type == "siglip2_vitb16":
-                model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2",            "webli",      False
-            elif model_type == "siglip2_vitb16_384":
-                model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2-384",        "webli",      False
-            elif model_type == "siglip2_vitl16_384":
-                model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP2-384",        "webli",      False
-            elif model_type == "siglip2_vitso400m14":
-                model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP2",       "webli",      False
-            elif model_type == "siglip2_vitgopt16_384":
-                model_name, pretrained, quick_gelu = "ViT-gopt-16-SigLIP2-384",     "webli",      False
-
-            elif model_type == "vitamin_s":
-                model_name, pretrained, quick_gelu = "ViTamin-S",                   "datacomp1b", False
-            elif model_type == "vitamin_s_ltt":
-                model_name, pretrained, quick_gelu = "ViTamin-S-LTT",               "datacomp1b", False
-            elif model_type == "vitamin_b":
-                model_name, pretrained, quick_gelu = "ViTamin-B",                   "datacomp1b", False
-            elif model_type == "vitamin_b_ltt":
-                model_name, pretrained, quick_gelu = "ViTamin-B-LTT",               "datacomp1b", False
-            elif model_type == "vitamin_l":
-                model_name, pretrained, quick_gelu = "ViTamin-L",                   "datacomp1b", False
-            elif model_type == "vitamin_l_256":
-                model_name, pretrained, quick_gelu = "ViTamin-L-256",               "datacomp1b", False
-            elif model_type == "vitamin_l_336":
-                model_name, pretrained, quick_gelu = "ViTamin-L-336",               "datacomp1b", False
-            elif model_type == "vitamin_l_384":
-                model_name, pretrained, quick_gelu = "ViTamin-L-384",               "datacomp1b", False
-            elif model_type == "vitamin_l2":
-                model_name, pretrained, quick_gelu = "ViTamin-L2",                  "datacomp1b", False
-            elif model_type == "vitamin_l2_384":
-                model_name, pretrained, quick_gelu = "ViTamin-L2-384",              "datacomp1b", False
-            elif model_type == "vitamin_xl_384":
-                model_name, pretrained, quick_gelu = "ViTamin-XL-384",              "datacomp1b", False
-
-            # self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-            self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, quick_gelu=quick_gelu)
-            self.model                 = self.model.to(self.device).eval()
-            if run_name is not None:
-                self.load_checkpoint(run_name, chkpt_crit)
-
-            tokenizer   = open_clip.get_tokenizer(model_name)
-            self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
-
-        else:
-
-            raise ValueError(f"Invalid model_type specified: '{model_type}'")
+        tokenizer   = open_clip.get_tokenizer(model_name)
+        self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
     def load_checkpoint(self, run_name, chkpt_crit):
 
@@ -190,10 +123,7 @@ class VisionLanguageModelWrapper:
         """
 
         with torch.set_grad_enabled(self.model.training):
-            if self.type == "clip_vitb32_hf":
-                embs_imgs_b = self.model.get_image_features(pixel_values=imgs_b)
-            elif self.type in OPEN_CLIP_TYPES:
-                embs_imgs_b = self.model.encode_image(imgs_b)
+            embs_imgs_b = self.model.encode_image(imgs_b)
 
         embs_imgs_b = F.normalize(embs_imgs_b, dim=1)
 
@@ -213,10 +143,7 @@ class VisionLanguageModelWrapper:
         tokens_txts = self.txt_pp(txts)  # ------------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
 
         with torch.set_grad_enabled(self.model.training):
-            if self.type == "clip_vitb32_hf":
-                embs_txts = self.model.get_text_features(**tokens_txts)
-            elif self.type in OPEN_CLIP_TYPES:
-                embs_txts = self.model.encode_text(tokens_txts)
+            embs_txts = self.model.encode_text(tokens_txts)
 
         embs_txts = F.normalize(embs_txts, dim=1)  # --- Tensor(L, D)
 

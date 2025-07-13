@@ -8,11 +8,10 @@ import pdb
 
 """ CONFIG PARAMS """
 
-# MODEL_TYPE = "clip_vitb32_hf"
 # MODEL_TYPE = "bioclip"
 # MODEL_TYPE = "bioclip2"
-MODEL_TYPE = "clip_vitb32"
 # MODEL_TYPE = "clip_vitb16"
+MODEL_TYPE = "clip_vitb32"
 # MODEL_TYPE = "clip_vitl14"
 # MODEL_TYPE = "clip_rn50"
 # MODEL_TYPE = "clip_rn101"

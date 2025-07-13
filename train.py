@@ -28,7 +28,6 @@ EXPERIMENT_NAME = "test_run"
 ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 
 # ----------------------------------------- current max batch size (1xB200 train w/ MP)
-# MODEL_TYPE = "clip_vitb32_hf"             # 4_096
 # MODEL_TYPE = "bioclip"                    # 2_048
 # MODEL_TYPE = "bioclip2"                   # 512
 # MODEL_TYPE = "clip_vitb32"                # 2_048 (4_096 intermittently exhausts VRAM, causing OOM failure)
@@ -51,9 +50,9 @@ MODEL_TYPE = "siglip_vitb16"              # 1_024
 # MODEL_TYPE = "siglip2_vitso400m14"        # x
 # MODEL_TYPE = "siglip2_vitgopt16_384"      # x
 # MODEL_TYPE = "vitamin_s"                  # x
-# MODEL_TYPE = "vitamin_s_ltt"              # x
+# MODEL_TYPE = "vitamin_s_ltt"              # x  ~ LTT = "Locked-Text Tuning"
 # MODEL_TYPE = "vitamin_b"                  # x
-# MODEL_TYPE = "vitamin_b_ltt"              # x
+# MODEL_TYPE = "vitamin_b_ltt"              # x  ~ LTT = "Locked-Text Tuning"
 # MODEL_TYPE = "vitamin_l"                  # x
 # MODEL_TYPE = "vitamin_l_256"              # x
 # MODEL_TYPE = "vitamin_l_336"              # x
@@ -68,7 +67,7 @@ SEED             = 42
 N_EPOCHS         = 1_000
 BATCH_SIZE_TRAIN = 1_024
 BATCH_SIZE_VAL   = 2_048
-LR_INIT          = 3e-5
+LR_INIT          = 1e-5
 LR_DECAY         = 0.99
 
 # freezing will need to be updated to support Hugging Face models
@@ -86,7 +85,7 @@ CACHED_IMGS              = None
 
 MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
-VERBOSE_BATCH_LOSS       = True
+VERBOSE_BATCH_LOSS       = False
 
 TEXT_PREPS_TRAIN = [
     [
@@ -117,6 +116,8 @@ print(
     f"Model Type ----------- {MODEL_TYPE}",
     f"Loss Type ------------ {LOSS_TYPE}",
     f"Batch Size (Train) --- {BATCH_SIZE_TRAIN}",
+    f"LR Init -------------- {LR_INIT}",
+    f"LR Decay ------------- {LR_DECAY}",
     f"",
     f"Num. GPUs ----------- {alloc['gpus']}",
     f"Num. CPUs/Workers --- {alloc['cpus']}",

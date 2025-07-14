@@ -295,8 +295,7 @@ class ValidationPipeline:
             self.scores_tracker[score].append(float(scores_val[score]))
 
     def check_bests(self, score_comp, score_comp_img2img):
-        is_best_comp = False
-        is_best_img2img = False
+        is_best_comp, is_best_img2img = False, False
         if self.best_score_comp is None:
             self.best_score_comp = score_comp
             self.best_score_comp_img2img = score_comp_img2img

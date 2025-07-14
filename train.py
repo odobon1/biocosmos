@@ -6,7 +6,7 @@ from tqdm import tqdm
 import time
 import os
 
-from models import VisionLanguageModelWrapper
+from models import VLMWrapper
 from utils_data import spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
 from utils import seed_libs, paths, get_slurm_alloc
@@ -61,21 +61,20 @@ MODEL_TYPE = "siglip_vitb16"              # 1_024
 # MODEL_TYPE = "vitamin_l2_384"             # x
 # MODEL_TYPE = "vitamin_xl_384"             # x
 
-SPLIT_NAME       = "B"
-# SPLIT_NAME       = "dev16k"
-SEED             = 42
+# SPLIT_NAME       = "B"
+SPLIT_NAME       = "dev16k"
+SEED             = 43
 N_EPOCHS         = 1_000
 BATCH_SIZE_TRAIN = 1_024
 BATCH_SIZE_VAL   = 2_048
 LR_INIT          = 1e-5
 LR_DECAY         = 0.99
 
-# freezing will need to be updated to support Hugging Face models
 FREEZE_TEXT_ENCODER  = False
 FREEZE_IMAGE_ENCODER = False
 
-# LOSS_TYPE = "clip"
-LOSS_TYPE = "siglip_aligned"
+LOSS_TYPE = "clip"
+# LOSS_TYPE = "siglip_aligned"
 
 # CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
 
@@ -122,31 +121,14 @@ print(
     f"Num. GPUs ----------- {alloc['gpus']}",
     f"Num. CPUs/Workers --- {alloc['cpus']}",
     f"RAM ----------------- {alloc['ram']} GB",
-    f"",
     sep="\n"
 )
 
 
 def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, lr_init):
 
-    if FREEZE_TEXT_ENCODER:
-        for name, param in modelw.model.named_parameters():
-            if (
-                name.startswith("token_embedding.") or
-                name == "positional_embedding"      or
-                name.startswith("transformer.")     or
-                name.startswith("ln_final.")        or
-                name == "text_projection"           or
-                name.startswith("text.")  # SigLIP, ViTamin variants (all of the above are for the BioCLIP + CLIP variants) ~ note: ViTamin same as SigLIP except no logit_bias parameter
-            ):
-                param.requires_grad = False
+    modelw.freeze(FREEZE_TEXT_ENCODER, FREEZE_IMAGE_ENCODER)
 
-    if FREEZE_IMAGE_ENCODER:
-        for name, param in modelw.model.named_parameters():
-            if name.startswith("visual."):  # covers all variants
-                param.requires_grad = False
-
-    # params_trainable = filter(lambda p: p.requires_grad, modelw.model.parameters())
     params_trainable = [p for p in modelw.model.parameters() if p.requires_grad]
 
     # use this for the cross-loss experiments
@@ -191,14 +173,9 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
                     embs_imgs = modelw.embed_images(imgs_b)  # --- Tensor(B, D)
                     embs_txts = modelw.embed_texts(texts_b)  # --- Tensor(B, D)
 
-                    sim = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B) --- logits
-
-                    if LOSS_TYPE == "clip":
-                        logits = modelw.compute_logits_clip(sim)
-                        loss_b = modelw.compute_loss_clip(logits)
-                    elif LOSS_TYPE == "siglip_aligned":
-                        logits = modelw.compute_logits_siglip(sim)
-                        loss_b = modelw.compute_loss_siglip_aligned(logits)
+                    sim    = embs_imgs @ embs_txts.T  # ---------- Tensor(B, B)
+                    logits = modelw.compute_logits(sim)
+                    loss_b = modelw.compute_loss(logits)
 
                 scaler.scale(loss_b).backward()
                 scaler.step(optimizer)
@@ -208,13 +185,8 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
                 embs_txts = modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
 
                 sim    = embs_imgs @ embs_txts.T  # -------------- Tensor(B, B)
-
-                if LOSS_TYPE == "clip":
-                    logits = modelw.compute_logits_clip(sim)
-                    loss_b = modelw.compute_loss_clip(logits)
-                elif LOSS_TYPE == "siglip_aligned":
-                    logits = modelw.compute_logits_siglip(sim)
-                    loss_b = modelw.compute_loss_siglip_aligned(logits)
+                logits = modelw.compute_logits(sim)
+                loss_b = modelw.compute_loss(logits)
 
                 loss_b.backward()
                 optimizer.step()
@@ -240,8 +212,8 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
 
         print(
             f"{' Train ':=^{75}}",
-            f"Loss ---------------- {loss_epoch_train:.4f}",
-            f"Learning Rate ------- {lr_epoch:.2e}",
+            f"Loss --- {loss_epoch_train:.4f}",
+            f"LR ----- {lr_epoch:.2e}",
             f"",
             sep="\n"
         )
@@ -251,26 +223,9 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
         scores_val, is_best_comp, is_best_img2img, time_elapsed_val = val_pipe.evaluate(modelw, verbose=True)
 
         if is_best_comp:
-            fpath_chkpt = dpath_run / "models/best_comp.pt"
-            chkpt = {
-                "model_state_dict" : modelw.model.state_dict(),
-                "scores_val" :       scores_val,
-                "epoch" :            idx_epoch,
-            }
-            torch.save(chkpt, fpath_chkpt)
-            print("~ BEST COMP MODEL SAVED TO FILE ~")
-            print()
-
+            modelw.save_checkpoint(dpath_run, scores_val, idx_epoch, "comp")
         if is_best_img2img:
-            fpath_chkpt = dpath_run / "models/best_comp.pt"
-            chkpt = {
-                "model_state_dict" : modelw.model.state_dict(),
-                "scores_val" :       scores_val,
-                "epoch" :            idx_epoch,
-            }
-            torch.save(chkpt, fpath_chkpt)
-            print("~ BEST IMG2IMG MODEL SAVED TO FILE ~")
-            print()
+            modelw.save_checkpoint(dpath_run, scores_val, idx_epoch, "img2img")
 
         # track running means via Welford's algorithm
         time_elapsed_train_mean += (time_elapsed_train - time_elapsed_train_mean) / idx_epoch
@@ -315,7 +270,7 @@ def main():
 
     seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelw = VisionLanguageModelWrapper(MODEL_TYPE, device)
+    modelw = VLMWrapper.build(MODEL_TYPE, device, loss_type=LOSS_TYPE)
 
     index_imgs_class_enc_train, index_imgs_rfpaths_train, index_imgs_sids_train, _ = spawn_indexes_imgs(
         split_type="train",

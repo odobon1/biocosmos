@@ -1,6 +1,6 @@
 import torch
 
-from models import VisionLanguageModelWrapper
+from models import VLMWrapper
 from utils_eval import ValidationPipeline
 
 import pdb
@@ -8,10 +8,10 @@ import pdb
 
 """ CONFIG PARAMS """
 
-# MODEL_TYPE = "bioclip"
+MODEL_TYPE = "bioclip"
 # MODEL_TYPE = "bioclip2"
 # MODEL_TYPE = "clip_vitb16"
-MODEL_TYPE = "clip_vitb32"
+# MODEL_TYPE = "clip_vitb32"
 # MODEL_TYPE = "clip_vitl14"
 # MODEL_TYPE = "clip_rn50"
 # MODEL_TYPE = "clip_rn101"
@@ -40,32 +40,30 @@ MODEL_TYPE = "clip_vitb32"
 # MODEL_TYPE = "vitamin_l2_384"
 # MODEL_TYPE = "vitamin_xl_384"
 
-# RUN_NAME       = "test_run_42"  # which train-run to load from (set None to baseline original model)
-RUN_NAME       = None
+RUN_NAME       = "test_run_43"  # which train-run to load from (set None for original model)
+# RUN_NAME       = None
 CHKPT_CRIT     = "comp"  # "comp" / "img2img" --- checkpoint criterion (only applicable if RUN_NAME != None)
 CACHED_IMGS    = False  # preload, preprocess, cache all images into memory
 BATCH_SIZE_VAL = 512
 NUM_WORKERS    = 4  # adjust to CPU cores
-SPLIT_NAME     = "D"
+SPLIT_NAME     = "B"
 TEXT_PREPS     = [["a photo of "]]  # scientific name, BioCLIP-style prepending
 
 
 def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    modelw = VLMWrapper.build(MODEL_TYPE, device, run_name=RUN_NAME, chkpt_crit=CHKPT_CRIT)
 
     print(
-        f"",
         f"device: {device}",
         f"",
         f"Split -------- {SPLIT_NAME}",
-        f"CLIP-type ---- {MODEL_TYPE}",
-        f"Checkpoint --- {RUN_NAME}{'' if RUN_NAME is None else ' (' + CHKPT_CRIT + ')'}"
+        f"Model Type --- {modelw.type}",
+        f"Checkpoint --- {RUN_NAME}{'' if RUN_NAME is None else ' (' + CHKPT_CRIT + ')'}",
         f"",
         sep="\n"
     )
-
-    modelw = VisionLanguageModelWrapper(MODEL_TYPE, device, run_name=RUN_NAME, chkpt_crit=CHKPT_CRIT)
 
     val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,

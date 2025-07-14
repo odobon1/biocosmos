@@ -154,19 +154,19 @@ def spawn_dataloader(
     """
 
     Args:
-    - index_imgs_class_enc --- [list(int)] ----------------------------------- Class encodings (data index)
-    - index_imgs_rfpaths ----- [list(int)] ----------------------------------- Relative filepaths to images (data index)
-    - index_imgs_sids -------- [list(str)] ----------------------------------- Species Identifiers (data index)
-    - text_preps ------------- [list(list(str))] ----------------------------- List of text prepending selections that are randomly picked from to assemble train texts
-    - batch_size ------------- [int] ----------------------------------------- Batch size
-    - shuffle ---------------- [bool] ---------------------------------------- Whether to shuffle samples between cycles
-    - drop_last -------------- [bool] ---------------------------------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
-    - img_pp ----------------- [torchvision.transforms.transforms.Compose] --- The image preprocessor
-    - cached_imgs ------------ [bool] ---------------------------------------- Whether to cache images in memory
-    - num_workers ------------ [int] ----------------------------------------- Parallelism
-    - prefetch_factor -------- [int] ----------------------------------------- How many batches each worker will load in advance;
-                                                                               Higher prefetch_factor increases throughput, higher RAM cost;
-                                                                               Only takes effect when num_workers > 0
+    - index_imgs_class_enc --- [list(int)] --------- Class encodings (data index)
+    - index_imgs_rfpaths ----- [list(int)] --------- Relative filepaths to images (data index)
+    - index_imgs_sids -------- [list(str)] --------- Species Identifiers (data index)
+    - text_preps ------------- [list(list(str))] --- List of text prepending selections that are randomly picked from to assemble train texts
+    - batch_size ------------- [int] --------------- Batch size
+    - shuffle ---------------- [bool] -------------- Whether to shuffle samples between cycles
+    - drop_last -------------- [bool] -------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
+    - img_pp ----------------- [callable] ---------- The image preprocessor
+    - cached_imgs ------------ [bool] -------------- Whether to cache images in memory
+    - num_workers ------------ [int] --------------- Parallelism
+    - prefetch_factor -------- [int] --------------- How many batches each worker will load in advance;
+                                                     Higher prefetch_factor increases throughput, higher RAM cost;
+                                                     Only takes effect when num_workers > 0
     """
 
     dataset = ImageTextDataset(

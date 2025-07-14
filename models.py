@@ -4,115 +4,133 @@ import transformers.modeling_utils as _mu
 _mu.check_torch_load_is_safe = lambda *args, **kwargs: None
 
 import torch.nn.functional as F
-from transformers import CLIPProcessor, CLIPModel
 import open_clip
+import abc
 
 from utils import paths
 
 import pdb
 
 
-class VisionLanguageModelWrapper:
+CLIP_MODELS = {
+    "bioclip" :               ("hf-hub:imageomics/bioclip",   None,         False),
+    "bioclip2" :              ("hf-hub:imageomics/bioclip-2", None,         False),  # note: bioclip2 quick_gelu=False different from no quick_gelu specified at all (unlike bioclip which is the same)
+    "clip_vitb16" :           ("ViT-B-16",                    "openai",     True),
+    "clip_vitb32" :           ("ViT-B-32",                    "openai",     True),
+    "clip_vitl14" :           ("ViT-L-14",                    "openai",     True),
+    "clip_vitl14_336" :       ("ViT-L-14-336",                "openai",     True),
+    "clip_rn50" :             ("RN50",                        "openai",     True),
+    "clip_rn101" :            ("RN101",                       "openai",     True),
+    "clip_rn101_yfcc15m" :    ("RN101",                       "yfcc15m",    True),
+    "clip_rn50x4" :           ("RN50x4",                      "openai",     True),
+    "clip_rn50x16" :          ("RN50x16",                     "openai",     True),
+    "clip_rn50x64" :          ("RN50x64",                     "openai",     True),
+}
+SIGLIP_MODELS = {
+    "siglip_vitb16" :         ("ViT-B-16-SigLIP",             "webli",      False),
+    "siglip_vitb16_384" :     ("ViT-B-16-SigLIP-384",         "webli",      False),
+    "siglip_vitl16_384" :     ("ViT-L-16-SigLIP-384",         "webli",      False),
+    "siglip_vitso400m14" :    ("ViT-SO400M-14-SigLIP",        "webli",      False),
+    "siglip2_vitb16" :        ("ViT-B-16-SigLIP2",            "webli",      False),
+    "siglip2_vitb16_384" :    ("ViT-B-16-SigLIP2-384",        "webli",      False),
+    "siglip2_vitl16_384" :    ("ViT-L-16-SigLIP2-384",        "webli",      False),
+    "siglip2_vitso400m14" :   ("ViT-SO400M-14-SigLIP2",       "webli",      False),
+    "siglip2_vitgopt16_384" : ("ViT-gopt-16-SigLIP2-384",     "webli",      False),
+}
+VITAMIN_MODELS = {
+    "vitamin_s" :             ("ViTamin-S",                   "datacomp1b", False),
+    "vitamin_s_ltt" :         ("ViTamin-S-LTT",               "datacomp1b", False),
+    "vitamin_b" :             ("ViTamin-B",                   "datacomp1b", False),
+    "vitamin_b_ltt" :         ("ViTamin-B-LTT",               "datacomp1b", False),
+    "vitamin_l" :             ("ViTamin-L",                   "datacomp1b", False),
+    "vitamin_l_256" :         ("ViTamin-L-256",               "datacomp1b", False),
+    "vitamin_l_336" :         ("ViTamin-L-336",               "datacomp1b", False),
+    "vitamin_l_384" :         ("ViTamin-L-384",               "datacomp1b", False),
+    "vitamin_l2" :            ("ViTamin-L2",                  "datacomp1b", False),
+    "vitamin_l2_384" :        ("ViTamin-L2-384",              "datacomp1b", False),
+    "vitamin_xl_384" :        ("ViTamin-XL-384",              "datacomp1b", False),
+}
 
-    def __init__(self, model_type, device, run_name=None, chkpt_crit=None):
+class VLMWrapper(abc.ABC):
+    """
+    Base class for all vision-language model wrappers. Dispatches to an appropriate subclass based on model_type and
+    centralizes common initialization logic (e.g. device, tokenizer, checkpoint, etc.)
+    """
+    def __init__(self, model_type, device, model_name, pretrained, quick_gelu):
+        """
+        maybe add logic supporting quick_gelu = None and evaluate BioCLIP 2 once more, also enables systematically 
+        checking through model types once the experimental infrastructure is more fleshed out
+
+        Args:
+        - model_type --- [str] --------------- Indicates which pretrained backbone to load
+        - device ------- [torch.device] ------ Target device for all model tensors
+        - model_name --- [str] --------------- open_clip model identifier
+        - pretrained --- [str] --------------- 
+        - quick_gelu --- [bool] -------------- 
+        """
+
+        model, _, img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, quick_gelu=quick_gelu)
 
         self.device = device
         self.type   = model_type
-
-        # add emb dim var (if it doesn't already exist in model)
-
-        self.criterion_clip = torch.nn.CrossEntropyLoss()
-
-        if model_type == "bioclip":
-            model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip",   None,         False
-        elif model_type == "bioclip2":
-            model_name, pretrained, quick_gelu = "hf-hub:imageomics/bioclip-2", None,         False  # note: bioclip2 quick_gelu=False different from no quick_gelu specified at all (unlike bioclip which is the same)
-
-        elif model_type == "clip_vitb16":
-            model_name, pretrained, quick_gelu = "ViT-B-16",                    "openai",     True
-        elif model_type == "clip_vitb32":
-            model_name, pretrained, quick_gelu = "ViT-B-32",                    "openai",     True
-        elif model_type == "clip_vitl14":
-            model_name, pretrained, quick_gelu = "ViT-L-14",                    "openai",     True
-        elif model_type == "clip_vitl14_336":
-            model_name, pretrained, quick_gelu = "ViT-L-14-336",                "openai",     True
-        
-        elif model_type == "clip_rn50":
-            model_name, pretrained, quick_gelu = "RN50",                        "openai",     True
-        elif model_type == "clip_rn101":
-            model_name, pretrained, quick_gelu = "RN101",                       "openai",     True
-        elif model_type == "clip_rn101_yfcc15m":
-            model_name, pretrained, quick_gelu = "RN101",                       "yfcc15m",    True
-        elif model_type == "clip_rn50x4":
-            model_name, pretrained, quick_gelu = "RN50x4",                      "openai",     True
-        elif model_type == "clip_rn50x16":
-            model_name, pretrained, quick_gelu = "RN50x16",                     "openai",     True
-        elif model_type == "clip_rn50x64":
-            model_name, pretrained, quick_gelu = "RN50x64",                     "openai",     True
-
-        elif model_type == "siglip_vitb16":
-            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP",             "webli",      False
-        elif model_type == "siglip_vitb16_384":
-            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP-384",         "webli",      False
-        elif model_type == "siglip_vitl16_384":
-            model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP-384",         "webli",      False
-        elif model_type == "siglip_vitso400m14":
-            model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP",        "webli",      False
-        elif model_type == "siglip2_vitb16":
-            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2",            "webli",      False
-        elif model_type == "siglip2_vitb16_384":
-            model_name, pretrained, quick_gelu = "ViT-B-16-SigLIP2-384",        "webli",      False
-        elif model_type == "siglip2_vitl16_384":
-            model_name, pretrained, quick_gelu = "ViT-L-16-SigLIP2-384",        "webli",      False
-        elif model_type == "siglip2_vitso400m14":
-            model_name, pretrained, quick_gelu = "ViT-SO400M-14-SigLIP2",       "webli",      False
-        elif model_type == "siglip2_vitgopt16_384":
-            model_name, pretrained, quick_gelu = "ViT-gopt-16-SigLIP2-384",     "webli",      False
-
-        elif model_type == "vitamin_s":
-            model_name, pretrained, quick_gelu = "ViTamin-S",                   "datacomp1b", False
-        elif model_type == "vitamin_s_ltt":
-            model_name, pretrained, quick_gelu = "ViTamin-S-LTT",               "datacomp1b", False
-        elif model_type == "vitamin_b":
-            model_name, pretrained, quick_gelu = "ViTamin-B",                   "datacomp1b", False
-        elif model_type == "vitamin_b_ltt":
-            model_name, pretrained, quick_gelu = "ViTamin-B-LTT",               "datacomp1b", False
-        elif model_type == "vitamin_l":
-            model_name, pretrained, quick_gelu = "ViTamin-L",                   "datacomp1b", False
-        elif model_type == "vitamin_l_256":
-            model_name, pretrained, quick_gelu = "ViTamin-L-256",               "datacomp1b", False
-        elif model_type == "vitamin_l_336":
-            model_name, pretrained, quick_gelu = "ViTamin-L-336",               "datacomp1b", False
-        elif model_type == "vitamin_l_384":
-            model_name, pretrained, quick_gelu = "ViTamin-L-384",               "datacomp1b", False
-        elif model_type == "vitamin_l2":
-            model_name, pretrained, quick_gelu = "ViTamin-L2",                  "datacomp1b", False
-        elif model_type == "vitamin_l2_384":
-            model_name, pretrained, quick_gelu = "ViTamin-L2-384",              "datacomp1b", False
-        elif model_type == "vitamin_xl_384":
-            model_name, pretrained, quick_gelu = "ViTamin-XL-384",              "datacomp1b", False
-
-        # self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-        self.model, _, self.img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, quick_gelu=quick_gelu)
-        self.model                 = self.model.to(self.device).eval()
-        if run_name is not None:
-            self.load_checkpoint(run_name, chkpt_crit)
+        self.model  = model.to(device).eval()
+        self.img_pp = img_pp
 
         tokenizer   = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
-    def load_checkpoint(self, run_name, chkpt_crit):
+    @classmethod
+    def build(cls, model_type, device, run_name=None, chkpt_crit="comp", loss_type=None):
 
-        assert chkpt_crit == "comp" or chkpt_crit == "img2img", "VisionLanguageModelWrapper(): run_name specified but chkpt_crit != ('comp' or 'img2img')"
-        
-        dpath_model = paths["artifacts"] / run_name / "models" / f"best_{chkpt_crit}.pt"
-        checkpoint = torch.load(
-            dpath_model, 
-            map_location=self.device,
-            weights_only=False,
-        )
-        state_dict = checkpoint["model_state_dict"]
-        self.model.load_state_dict(state_dict)
+        loaded_chkpt = None
+        if run_name:
+            print(f"\nLoading '{run_name}' ({chkpt_crit}) from checkpoint...\n")
+
+            chkpt_path = paths["artifacts"] / run_name / "models" / f"best_{chkpt_crit}.pt"
+            loaded_chkpt = torch.load(
+                chkpt_path, 
+                # map_location=device,
+                map_location="cpu",  # map_location = "cpu" avoids loading two copies of the entire state dict into VRAM at once
+                weights_only=False
+            )
+            model_type = loaded_chkpt["model_type"]  # override model_type if loading from checkpoint
+        else:
+            print("\nLoading Fresh Model...\n")
+
+        if model_type in CLIP_MODELS:
+            inst = CLIPWrapper(model_type, device)
+        elif model_type in SIGLIP_MODELS:
+            inst = SigLIPWrapper(model_type, device)
+        elif model_type in VITAMIN_MODELS:
+            inst = ViTaminWrapper(model_type, device)
+        else:
+            raise ValueError(f"Unknown model_type: '{model_type}'")
+
+        inst.loss_type = loss_type
+        if loaded_chkpt is not None:
+            inst.model.load_state_dict(loaded_chkpt["model_state_dict"])
+
+        return inst
+
+    @property
+    def embed_dim(self):
+        if isinstance(self, CLIPWrapper):
+            return self.model.text_projection.weight.shape[0]
+        if isinstance(self, SigLIPWrapper):
+            return self.model.text.text_projection.weight.shape[0]
+        if isinstance(self, ViTaminWrapper):
+            return self.model.text.text_projection.shape[0]
+
+    def save_checkpoint(self, dpath_run, scores_val, idx_epoch, chkpt_crit):
+        fpath_chkpt = dpath_run / f"models/best_{chkpt_crit}.pt"
+        chkpt = {
+            "model_state_dict" : self.model.state_dict(),
+            "scores_val" :       scores_val,
+            "epoch" :            idx_epoch,
+            "model_type" :       self.type,
+        }
+        torch.save(chkpt, fpath_chkpt)
+        print(f"~ Best {chkpt_crit} model saved to file ~\n")
 
     def embed_images(self, imgs_b):
         """
@@ -151,6 +169,7 @@ class VisionLanguageModelWrapper:
 
     def img2txt_classify(self, embs_imgs_b, embs_txts, classes_enc_txts):
         """
+
         Args:
         - embs_imgs_b -------- [Tensor(B, D)] --- Batch of image embeddings (D for dim. embeddings)
         - embs_txts ---------- [Tensor(L, D)] --- Text embeddings
@@ -166,28 +185,93 @@ class VisionLanguageModelWrapper:
 
         return pred_classes_enc_txts, scores
 
+    def compute_logits_clip(self, sim):
+        logits = sim * self.model.logit_scale.exp()
+        return logits
+
+    def compute_logits_siglip(self, sim):
+        logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
+        return logits
+    
+    def compute_logits(self, sim):
+        if self.loss_type == "clip":
+            return self.compute_logits_clip(sim)
+        elif self.loss_type.startswith("siglip_"):
+            return self.compute_logits_siglip(sim)
+        else:
+            raise ValueError(self.loss_type)
+
     def compute_loss_clip(self, logits):
         B       = logits.size(0)
         targets = torch.arange(B, device=self.device, dtype=torch.long)
 
-        loss_i2t_b = self.criterion_clip(logits, targets)
-        loss_t2i_b = self.criterion_clip(logits.T, targets)
+        loss_i2t_b = F.cross_entropy(logits, targets)
+        loss_t2i_b = F.cross_entropy(logits.T, targets)
         loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
 
         return loss_b
-    
-    def compute_logits_clip(self, sim):
-        logits = sim * self.model.logit_scale.exp()
-        return logits
 
     def compute_loss_siglip_aligned(self, logits):
         B       = logits.size(0)
         targets = torch.eye(B, device=self.device)
 
-        loss_b  = F.binary_cross_entropy_with_logits(logits, targets)
+        loss_b = F.binary_cross_entropy_with_logits(logits, targets)
 
         return loss_b
 
-    def compute_logits_siglip(self, sim):
-        logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
-        return logits
+    def compute_loss(self, logits):
+        if self.loss_type == "clip":
+            return self.compute_loss_clip(logits)
+        elif self.loss_type == "siglip_aligned":
+            return self.compute_loss_siglip_aligned(logits)
+        else:
+            raise ValueError(self.loss_type)
+
+    def freeze(self, freeze_txt, freeze_img):
+        if freeze_txt: self.freeze_text_encoder()
+        if freeze_img: self.freeze_image_encoder()
+
+    def freeze_image_encoder(self):
+        for name, param in self.model.named_parameters():
+            if name.startswith("visual."):
+                param.requires_grad = False
+
+    @abc.abstractmethod
+    def freeze_text_encoder(self):
+        raise NotImplementedError
+
+class CLIPWrapper(VLMWrapper):
+    def __init__(self, model_type, device):
+        model_name, pretrained, quick_gelu = CLIP_MODELS[model_type]
+        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+
+    def freeze_text_encoder(self):
+        for name, param in self.model.named_parameters():
+            if (
+                name.startswith("token_embedding.") or
+                name == "positional_embedding"      or
+                name.startswith("transformer.")     or
+                name.startswith("ln_final.")        or
+                name == "text_projection"
+            ):
+                param.requires_grad = False
+
+class SigLIPWrapper(VLMWrapper):
+    def __init__(self, model_type, device):
+        model_name, pretrained, quick_gelu = SIGLIP_MODELS[model_type]
+        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+
+    def freeze_text_encoder(self):
+        for name, param in self.model.named_parameters():
+            if name.startswith("text."):
+                param.requires_grad = False
+
+class ViTaminWrapper(VLMWrapper):
+    def __init__(self, model_type, device):
+        model_name, pretrained, quick_gelu = VITAMIN_MODELS[model_type]
+        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+
+    def freeze_text_encoder(self):
+        for name, param in self.model.named_parameters():
+            if name.startswith("text."):
+                param.requires_grad = False

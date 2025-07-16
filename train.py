@@ -24,7 +24,7 @@ torch.set_printoptions(
 
 """ CONFIG PARAMS """
 
-EXPERIMENT_NAME = "test_run"
+EXPERIMENT_NAME = "dev_match_pos"
 ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 
 # ----------------------------------------- current max batch size (1xB200 train w/ MP)
@@ -61,9 +61,9 @@ MODEL_TYPE = "siglip_vitb16"              # 1_024
 # MODEL_TYPE = "vitamin_l2_384"             # x
 # MODEL_TYPE = "vitamin_xl_384"             # x
 
-# SPLIT_NAME       = "B"
-SPLIT_NAME       = "dev16k"
-SEED             = 43
+SPLIT_NAME       = "B"
+# SPLIT_NAME       = "dev16k"
+SEED             = 42
 N_EPOCHS         = 1_000
 BATCH_SIZE_TRAIN = 1_024
 BATCH_SIZE_VAL   = 2_048
@@ -73,8 +73,9 @@ LR_DECAY         = 0.99
 FREEZE_TEXT_ENCODER  = False
 FREEZE_IMAGE_ENCODER = False
 
-LOSS_TYPE = "clip"
-# LOSS_TYPE = "siglip_aligned"
+# LOSS_TYPE = "clip"
+# LOSS_TYPE = "siglip_aligned_pos"
+LOSS_TYPE = "siglip_match_pos"
 
 # CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
 
@@ -84,7 +85,7 @@ CACHED_IMGS              = None
 
 MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
-VERBOSE_BATCH_LOSS       = False
+VERBOSE_BATCH_LOSS       = True
 
 TEXT_PREPS_TRAIN = [
     [
@@ -163,7 +164,7 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
         time_start_train = time.time()
         modelw.model.train()
         loss_total_train = 0.0
-        for imgs_b, _, texts_b in tqdm(loader_train, desc="Train", leave=False):
+        for imgs_b, class_encs_b, texts_b in tqdm(loader_train, desc="Train", leave=False):
             imgs_b = imgs_b.to(device, non_blocking=True)
 
             optimizer.zero_grad()
@@ -175,7 +176,7 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
 
                     sim    = embs_imgs @ embs_txts.T  # ---------- Tensor(B, B)
                     logits = modelw.compute_logits(sim)
-                    loss_b = modelw.compute_loss(logits)
+                    loss_b = modelw.compute_loss(logits, class_encs_b)
 
                 scaler.scale(loss_b).backward()
                 scaler.step(optimizer)

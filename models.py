@@ -203,7 +203,7 @@ class VLMWrapper(abc.ABC):
 
     def compute_loss_clip(self, logits):
         B       = logits.size(0)
-        targets = torch.arange(B, device=self.device, dtype=torch.long)
+        targets = torch.arange(B, device=self.device)
 
         loss_i2t_b = F.cross_entropy(logits, targets)
         loss_t2i_b = F.cross_entropy(logits.T, targets)
@@ -211,19 +211,30 @@ class VLMWrapper(abc.ABC):
 
         return loss_b
 
-    def compute_loss_siglip_aligned(self, logits):
+    def compute_loss_siglip_aligned_pos(self, logits):
         B       = logits.size(0)
         targets = torch.eye(B, device=self.device)
 
         loss_b = F.binary_cross_entropy_with_logits(logits, targets)
 
         return loss_b
+    
+    def compute_loss_siglip_match_pos(self, logits, class_encs_b):
+        class_encs_b = torch.tensor(class_encs_b)
+        targets = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
 
-    def compute_loss(self, logits):
+        loss_b = F.binary_cross_entropy_with_logits(logits, targets)
+
+        return loss_b
+
+    def compute_loss(self, logits, class_encs_b):
+
         if self.loss_type == "clip":
             return self.compute_loss_clip(logits)
-        elif self.loss_type == "siglip_aligned":
-            return self.compute_loss_siglip_aligned(logits)
+        elif self.loss_type == "siglip_aligned_pos":
+            return self.compute_loss_siglip_aligned_pos(logits)
+        elif self.loss_type == "siglip_match_pos":
+            return self.compute_loss_siglip_match_pos(logits, class_encs_b)
         else:
             raise ValueError(self.loss_type)
 

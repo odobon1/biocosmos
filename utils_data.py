@@ -64,11 +64,20 @@ class ImageTextDataset(Dataset):
     def __len__(self):
         return self.n_samples
     
-    # gets called in the background on indices of batch N+1 while GPU (and main process) are busy running img2txt_classify() on batch N
     def __getitem__(self, idx):
         """
-        Returns transformed image and class encoding.
-        idx --> sample (preprocessed image, class encoding)
+        Get processed image tensor, class encoding, and generated text.
+        idx --> sample (preprocessed image, class encoding, text)
+
+        This method gets called in a background thread/process to prepare batch N+1 while GPU and main process are processing batch N.
+
+        Args:
+        - idx --- [int] --- Sample index
+
+        Returns:
+        - [torch.Tensor]
+        - [int]
+        - [str]
         """
         class_enc = self.index_imgs_class_enc[idx]
         sid       = self.index_imgs_sids[idx]
@@ -84,7 +93,7 @@ class ImageTextDataset(Dataset):
             # load + preprocess image
             img   = Image.open(paths["nymph"] / "images" / self.index_imgs_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
-        
+
         return img_t, class_enc, text
 
 def collate_fn(batch):
@@ -119,7 +128,7 @@ def spawn_indexes_imgs(split_type, split_name):
             class_enc_new += 1
         index_imgs_class_enc.append(sid_2_class_enc[sid])
 
-    return np.array(index_imgs_class_enc), np.array(index_imgs_rfpaths), index_imgs_sids, sid_2_class_enc
+    return index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc
 
 def spawn_indexes_txts(sid_2_class_enc, text_preps):
     """

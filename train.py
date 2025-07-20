@@ -24,7 +24,7 @@ torch.set_printoptions(
 
 """ CONFIG PARAMS """
 
-EXPERIMENT_NAME = "dev_match_pos"
+EXPERIMENT_NAME = "test_trial"
 ALLOW_OVERWRITE = True  # whether to allow overwrites in the artifacts/ dir
 
 # ----------------------------------------- current max batch size (1xB200 train w/ MP)
@@ -61,27 +61,26 @@ MODEL_TYPE = "siglip_vitb16"              # 1_024
 # MODEL_TYPE = "vitamin_l2_384"             # x
 # MODEL_TYPE = "vitamin_xl_384"             # x
 
-SPLIT_NAME       = "B"
-# SPLIT_NAME       = "dev16k"
+SPLIT_NAME       = "S29-0"
+# SPLIT_NAME       = "dev"
 SEED             = 42
 N_EPOCHS         = 1_000
 BATCH_SIZE_TRAIN = 1_024
 BATCH_SIZE_VAL   = 2_048
 LR_INIT          = 1e-5
-LR_DECAY         = 0.99
+LR_DECAY         = 0.98
 
 FREEZE_TEXT_ENCODER  = False
 FREEZE_IMAGE_ENCODER = False
 
-# LOSS_TYPE = "clip"
-# LOSS_TYPE = "siglip_aligned_pos"
-LOSS_TYPE = "siglip_match_pos"
-
-# CACHED_IMGS              = False  # (True) preload, preprocess, cache all images into memory
+# LOSS_TYPE = "infonce"  # --------------------- standard CLIP loss
+LOSS_TYPE = "pairwise_sigmoid"  # ------------ standard SigLIP loss
+# LOSS_TYPE = "pairwise_sigmoid_upwtdpos"  # --- standard SigLIP loss with upweighted positives
+# LOSS_TYPE = "multipos_sigmoid"  # ------------ custom SigLIP loss (multi-positives)
 
 CACHED_IMGS              = None
-# CACHED_IMGS              = "pl"
-# CACHED_IMGS              = "pp"
+# CACHED_IMGS              = "pl"  # preload, cache all images into memory
+# CACHED_IMGS              = "pp"  # preload, preprocess, cache all images into memory
 
 MP_TRAIN                 = True  # (True) use mixed precision for training
 DROP_PARTIAL_BATCH_TRAIN = True
@@ -198,7 +197,7 @@ def train_pipeline(modelw, loader_train, val_pipe, dpath_run, device, n_epochs, 
                 if VERBOSE_BATCH_LOSS:
                     print(f"Batch Loss: {loss_b:.4f}")
 
-        lr_epoch = lr_sched.get_last_lr()[0]
+        lr_epoch = optimizer.param_groups[0]["lr"]
         lr_sched.step()
         
         # compute avg. train loss per sample

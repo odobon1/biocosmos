@@ -194,14 +194,14 @@ class VLMWrapper(abc.ABC):
         return logits
     
     def compute_logits(self, sim):
-        if self.loss_type == "clip":
+        if self.loss_type == "infonce":
             return self.compute_logits_clip(sim)
-        elif self.loss_type.startswith("siglip_"):
+        elif self.loss_type in ("pairwise_sigmoid", "pairwise_sigmoid_upwtdpos", "multipos_sigmoid"):
             return self.compute_logits_siglip(sim)
         else:
             raise ValueError(self.loss_type)
 
-    def compute_loss_clip(self, logits):
+    def compute_loss_infonce(self, logits):
         B       = logits.size(0)
         targets = torch.arange(B, device=self.device)
 
@@ -211,15 +211,23 @@ class VLMWrapper(abc.ABC):
 
         return loss_b
 
-    def compute_loss_siglip_aligned_pos(self, logits):
+    def compute_loss_pairwise_sigmoid(self, logits, up_weighted_pos=False):
         B       = logits.size(0)
         targets = torch.eye(B, device=self.device)
+        if up_weighted_pos:
+            pos_weight = torch.full((1,), float(B-1), dtype=logits.dtype, device=logits.device)
+        else:
+            pos_weight = None
 
-        loss_b = F.binary_cross_entropy_with_logits(logits, targets)
+        loss_b = F.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            pos_weight=pos_weight,
+        )
 
         return loss_b
     
-    def compute_loss_siglip_match_pos(self, logits, class_encs_b):
+    def compute_loss_multipos_sigmoid(self, logits, class_encs_b):
         class_encs_b = torch.tensor(class_encs_b)
         targets = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
 
@@ -229,12 +237,14 @@ class VLMWrapper(abc.ABC):
 
     def compute_loss(self, logits, class_encs_b):
 
-        if self.loss_type == "clip":
-            return self.compute_loss_clip(logits)
-        elif self.loss_type == "siglip_aligned_pos":
-            return self.compute_loss_siglip_aligned_pos(logits)
-        elif self.loss_type == "siglip_match_pos":
-            return self.compute_loss_siglip_match_pos(logits, class_encs_b)
+        if self.loss_type == "infonce":
+            return self.compute_loss_infonce(logits)
+        elif self.loss_type == "pairwise_sigmoid":
+            return self.compute_loss_pairwise_sigmoid(logits)
+        elif self.loss_type == "pairwise_sigmoid_upwtdpos":
+            return self.compute_loss_pairwise_sigmoid(logits, up_weighted_pos=True)
+        elif self.loss_type == "multipos_sigmoid":
+            return self.compute_loss_multipos_sigmoid(logits, class_encs_b)
         else:
             raise ValueError(self.loss_type)
 

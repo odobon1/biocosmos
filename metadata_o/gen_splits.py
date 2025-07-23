@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import bisect
 
-from utils import paths, read_pickle, write_pickle
+from utils import paths, load_pickle, save_pickle
 from utils_ingestion import strat_splits
 
 import pdb
@@ -15,10 +15,10 @@ import pdb
 
 """ CONFIG PARAMS """
 
-PCT_EVAL             = 0.05
-PCT_OOD_CLOSE_ENOUGH = 0.001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
-SPLIT_NAME           = "dev"
-ALLOW_OVERWRITES     = False
+PCT_EVAL             = 0.29
+PCT_OOD_CLOSE_ENOUGH = 0.0001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
+SPLIT_NAME           = "S29-0"
+ALLOW_OVERWRITE      = False
 # NST_NAMES            = ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
 # NST_UPPER_BOUNDS     = [1, 2, 3, 4, 5, 10, 20, 50, 100]  # divides n-shot space into len(NST_UPPER_BOUNDS) + 1 buckets, last bucket is if n is greater than the last upper bound
 NST_NAMES            = ["1-19", "20-99", "100-499", "500+"]
@@ -30,14 +30,14 @@ assert len(NST_NAMES) == len(NST_UPPER_BOUNDS) + 1, f"len(NST_NAMES) ({len(NST_N
 dpath_splits = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
 dpath_figs   = dpath_splits / "figures"
 
-if os.path.isdir(dpath_splits) and not ALLOW_OVERWRITES:
+if os.path.isdir(dpath_splits) and not ALLOW_OVERWRITE:
     error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
     raise ValueError(error_msg)
 print(F"SPLIT_NAME: '{SPLIT_NAME}'")
 
 pct_ood_eval = pct_id_eval = PCT_EVAL / 2  # OOD splits: pct_splits
 
-tax_nymph       = read_pickle(paths["metadata_o"] / "tax/nymph.pkl")
+tax_nymph       = load_pickle(paths["metadata_o"] / "tax/nymph.pkl")
 sids            = set(tax_nymph["found"].keys())  # OOD splits: insts
 n_sids          = len(sids)
 n_sids_ood_eval = round(n_sids * pct_ood_eval)
@@ -65,15 +65,15 @@ n_genera = len(set(genera))  # OOD splits: n_classes
 
 genus_2_sids:
 {
-    genus0 : [sid0, sid1, sid2, ...],
-    genus1 : [...],
+    genus0: [sid0, sid1, sid2, ...],
+    genus1: [...],
     ...
 }
 
 sid_2_skeys_id_multis:
 {
-    sid0 : [skey0, skey1, skey2, ...],
-    sid1 : [...],
+    sid0: [skey0, skey1, skey2, ...],
+    sid1: [...],
     ...
 }
 """
@@ -88,16 +88,16 @@ for genus, count in count_g.items():
 
 n_insts_2_classes_g (OOD):
 {
-    1 : [genus0, genus1, genus2, ...],
-    2 : [...],
-    4 : [...],
+    1: [genus0, genus1, genus2, ...],
+    2: [...],
+    4: [...],
     ...
 }
 
 n_insts_2_classes_s (ID):
 {
-    1 : [sid0, sid1, sid2, ...],
-    2 : [...],
+    1: [sid0, sid1, sid2, ...],
+    2: [...],
     ...
 }
 """
@@ -221,9 +221,9 @@ n-shot tracking data structures
 
 n_shot_tracker = [
     {
-        "train" : set(skeys),
-        "id_val" : set(skeys),
-        "id_test" : set(skeys),
+        "train": set(skeys),
+        "id_val": set(skeys),
+        "id_test": set(skeys),
     },
     {...}.
     ...
@@ -234,13 +234,13 @@ n_shot_tracker = [
 (for saving to file)
 
 id_eval_nshot = {
-    "names" : NST_NAMES (it's a list),
-    "buckets" : {
-        nst_name0 : {
-            "id_val" : set(skeys),
-            "id_test" : set(skeys),
+    "names": NST_NAMES (it's a list),
+    "buckets": {
+        nst_name0: {
+            "id_val": set(skeys),
+            "id_test": set(skeys),
         }.
-        nst_name1 : {
+        nst_name1: {
             ...
         },
         ...
@@ -253,9 +253,9 @@ n_shot_tracker = []
 
 for _ in range(len(NST_NAMES)):
     nst_bucket = {
-        "train" : set(),
-        "id_val" : set(),
-        "id_test" : set(),
+        "train": set(),
+        "id_val": set(),
+        "id_test": set(),
     }
     n_shot_tracker.append(nst_bucket)
 
@@ -298,25 +298,25 @@ print("Saving Stuff...")
 os.makedirs(dpath_splits, exist_ok=True)
 os.makedirs(dpath_figs, exist_ok=True)
 
-write_pickle(skeys_train, dpath_splits / "train.pkl")
-write_pickle(skeys_id_val, dpath_splits / "id_val.pkl")
-write_pickle(skeys_id_test, dpath_splits / "id_test.pkl")
-write_pickle(skeys_ood_val, dpath_splits / "ood_val.pkl")
-write_pickle(skeys_ood_test, dpath_splits / "ood_test.pkl")
+save_pickle(skeys_train, dpath_splits / "train.pkl")
+save_pickle(skeys_id_val, dpath_splits / "id_val.pkl")
+save_pickle(skeys_id_test, dpath_splits / "id_test.pkl")
+save_pickle(skeys_ood_val, dpath_splits / "ood_val.pkl")
+save_pickle(skeys_ood_test, dpath_splits / "ood_test.pkl")
 
 # [List] Edition --> [Dict] Edition
 id_eval_nshot = {
-    "names" : NST_NAMES,  # just to preserve ordering of the names if needed
-    "buckets" : {
-        name : {
-            "id_val" : bucket["id_val"],
-            "id_test" : bucket["id_test"],
+    "names": NST_NAMES,  # just to preserve ordering of the names if needed
+    "buckets": {
+        name: {
+            "id_val": bucket["id_val"],
+            "id_test": bucket["id_test"],
         }
         for name, bucket in zip(NST_NAMES, n_shot_tracker)
     },
 }
 
-write_pickle(id_eval_nshot, dpath_splits / f"id_eval_nshot.pkl")
+save_pickle(id_eval_nshot, dpath_splits / f"id_eval_nshot.pkl")
 
 print("Saved!")
 

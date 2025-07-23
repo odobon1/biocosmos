@@ -2,14 +2,14 @@ import glob
 from tqdm import tqdm
 import os
 
-from utils import paths, read_pickle, write_pickle
+from utils import paths, load_pickle, save_pickle
 
 import pdb
 
 
 """ CONFIG PARAMS """
 
-SPLIT_NAME = "dev16k"
+SPLIT_NAME = "S29-0"
 
 
 if not os.path.isdir(paths["metadata_o"] / f"splits/{SPLIT_NAME}"):
@@ -20,18 +20,18 @@ else:
     os.makedirs(dpath_data_indexes, exist_ok=True)
 
 # load species id's
-sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
 
 """
 `img_ptrs` structure:
 
 img_ptrs = {
-    sid0 : {
-        0 : fpath_img_s0_0,
-        1 : fpath_img_s0_1,
+    sid0: {
+        0: fpath_img_s0_0,
+        1: fpath_img_s0_1,
         ...,
     },
-    sid1 : {
+    sid1: {
         ...,
     },
     ...
@@ -56,11 +56,11 @@ for sid in tqdm(sids):
 for split in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
 
     data_index = {
-        "sids" : [],
-        "rfpaths" : [],
+        "sids": [],
+        "rfpaths": [],
     }
 
-    skeys_split = read_pickle(paths["metadata_o"] / f"splits/{SPLIT_NAME}/{split}.pkl")
+    skeys_split = load_pickle(paths["metadata_o"] / f"splits/{SPLIT_NAME}/{split}.pkl")
 
     for skey in skeys_split:
         sid = skey[0]
@@ -71,4 +71,4 @@ for split in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
         rfpath = img_ptrs[sid][sidx]
         data_index["rfpaths"].append(rfpath)
 
-    write_pickle(data_index, paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/{split}.pkl")
+    save_pickle(data_index, paths["metadata_o"] / f"data_indexes/{SPLIT_NAME}/{split}.pkl")

@@ -4,7 +4,7 @@ Must be run on HiPerGator
 
 import os
 
-from utils import paths, read_pickle, write_pickle
+from utils import paths, load_pickle, save_pickle
 
 
 non_alpha_valids = ["polygonia_c-aureum", "polygonia_c-album", "nymphalis_l-album"]
@@ -35,6 +35,6 @@ for sid in sids:
     else:
         sids_known.append(sid)
         
-write_pickle(sids, paths["metadata_o"] / "species_ids/all.pkl")
-write_pickle(sids_known, paths["metadata_o"] / "species_ids/known.pkl")
-write_pickle(sids_unknown, paths["metadata_o"] / "species_ids/unknown.pkl")
+save_pickle(sids, paths["metadata_o"] / "species_ids/all.pkl")
+save_pickle(sids_known, paths["metadata_o"] / "species_ids/known.pkl")
+save_pickle(sids_unknown, paths["metadata_o"] / "species_ids/unknown.pkl")

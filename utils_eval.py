@@ -98,7 +98,7 @@ class EvaluationPipeline:
             img_pp,
             cached_imgs,
             batch_size,
-            num_workers,
+            n_workers,
             prefetch_factor,
             modes=["img2txt", "img2img", "txt2img"],
         ):
@@ -127,7 +127,7 @@ class EvaluationPipeline:
             drop_last           =False,
             img_pp              =img_pp,
             cached_imgs         =cached_imgs,
-            num_workers         =num_workers,
+            n_workers           =n_workers,
             prefetch_factor     =prefetch_factor,
         )
 
@@ -205,7 +205,7 @@ class ValidationPipeline:
             img_pp,
             cached_imgs,
             batch_size,
-            num_workers,
+            n_workers,
             prefetch_factor,
             header_tag=None,
         ):
@@ -222,7 +222,7 @@ class ValidationPipeline:
             img_pp         =img_pp,
             cached_imgs    =cached_imgs,
             batch_size     =batch_size,
-            num_workers    =num_workers,
+            n_workers      =n_workers,
             prefetch_factor=prefetch_factor,
             modes          =["img2txt", "img2img", "txt2img"],
         )
@@ -234,22 +234,22 @@ class ValidationPipeline:
             img_pp         =img_pp,
             cached_imgs    =cached_imgs,
             batch_size     =batch_size,
-            num_workers    =num_workers,
+            n_workers      =n_workers,
             prefetch_factor=prefetch_factor,
             modes          =["img2txt", "img2img", "txt2img"],
         )
 
         self.scores_tracker = {
-            "id_img2txt_prec1" :  [],
-            "id_img2txt_rr" :     [],
-            "id_img2img_map" :    [],
-            "id_txt2img_map" :    [],
-            "ood_img2txt_prec1" : [],
-            "ood_img2txt_rr" :    [],
-            "ood_img2img_map" :   [],
-            "ood_txt2img_map" :   [],
-            "comp" :              [],
-            "comp_img2img" :      [],
+            "id_img2txt_prec1":  [],
+            "id_img2txt_rr":     [],
+            "id_img2img_map":    [],
+            "id_txt2img_map":    [],
+            "ood_img2txt_prec1": [],
+            "ood_img2txt_rr":    [],
+            "ood_img2img_map":   [],
+            "ood_txt2img_map":   [],
+            "comp":              [],
+            "comp_img2img":      [],
         }
 
     def evaluate(self, modelw, verbose=True):
@@ -271,28 +271,23 @@ class ValidationPipeline:
         is_best_comp, is_best_img2img = self.check_bests(score_comp, score_comp_img2img)
 
         scores_val = {
-            "id_img2txt_prec1" :  scores_id_val["img2txt_prec1"],
-            "id_img2txt_rr" :     scores_id_val["img2txt_rr"],
-            "id_img2img_map" :    scores_id_val["img2img_map"],
-            "id_txt2img_map" :    scores_id_val["txt2img_map"],
-            "ood_img2txt_prec1" : scores_ood_val["img2txt_prec1"],
-            "ood_img2txt_rr" :    scores_ood_val["img2txt_rr"],
-            "ood_img2img_map" :   scores_ood_val["img2img_map"],
-            "ood_txt2img_map" :   scores_ood_val["txt2img_map"],
-            "comp" :              score_comp,
-            "comp_img2img" :      score_comp_img2img,
+            "id_img2txt_prec1":  scores_id_val["img2txt_prec1"],
+            "id_img2txt_rr":     scores_id_val["img2txt_rr"],
+            "id_img2img_map":    scores_id_val["img2img_map"],
+            "id_txt2img_map":    scores_id_val["txt2img_map"],
+            "ood_img2txt_prec1": scores_ood_val["img2txt_prec1"],
+            "ood_img2txt_rr":    scores_ood_val["img2txt_rr"],
+            "ood_img2img_map":   scores_ood_val["img2img_map"],
+            "ood_txt2img_map":   scores_ood_val["txt2img_map"],
+            "comp":              score_comp,
+            "comp_img2img":      score_comp_img2img,
         }
-        self.update_scores_tracker(scores_val)
         if verbose:
             self.print_val(scores_val)
 
         time_elapsed_val = time_elapsed_id_val + time_elapsed_ood_val
 
         return scores_val, is_best_comp, is_best_img2img, time_elapsed_val
-
-    def update_scores_tracker(self, scores_val):
-        for score in scores_val.keys():
-            self.scores_tracker[score].append(float(scores_val[score]))
 
     def check_bests(self, score_comp, score_comp_img2img):
         is_best_comp, is_best_img2img = False, False

@@ -3,7 +3,7 @@ import sys
 import time
 from tqdm import tqdm
 
-from utils import read_pickle, write_pickle, paths
+from utils import load_pickle, save_pickle, paths
 
 Entrez.email = "odobon2@gmail.com"
 Entrez.api_key = "310aae4d36e96379c856bde5db7b7e5d6209"
@@ -84,25 +84,25 @@ def get_tax_metadata_species(genus, species_epithet):
     """
 
     meta = {
-        "direct_rank" : None,
-        "direct_sci_name" : None,
-        "direct_match_exact" : False,
-        "direct_match_inexact" : False,
-        "genus_search_exact" : False,
-        "genus_search_broad" : False,
-        "synonym" : False,
-        "species_match" : False,
-        "genus_match" : False,
-        "genus_not_found" : False,
-        "partial_match" : False,
-        "num_partial_matches" : 0,
-        "partial_name" : None,
-        "partial_rank" : None,
-        "final_name" : None,
-        "final_rank" : None,
-        "genus_level_only" : False,
-        "inferred" : False,
-        "no_tax_info" : False,
+        "direct_rank": None,
+        "direct_sci_name": None,
+        "direct_match_exact": False,
+        "direct_match_inexact": False,
+        "genus_search_exact": False,
+        "genus_search_broad": False,
+        "synonym": False,
+        "species_match": False,
+        "genus_match": False,
+        "genus_not_found": False,
+        "partial_match": False,
+        "num_partial_matches": 0,
+        "partial_name": None,
+        "partial_rank": None,
+        "final_name": None,
+        "final_rank": None,
+        "genus_level_only": False,
+        "inferred": False,
+        "no_tax_info": False,
     }
 
     try:
@@ -269,8 +269,8 @@ def get_tax_metadata_species(genus, species_epithet):
 def get_tax_metadata(sids):
     
     metadata = {
-        "found" : {},
-        "missing" : set(),
+        "found": {},
+        "missing": set(),
     }
 
     for sid in tqdm(sids):
@@ -280,8 +280,8 @@ def get_tax_metadata(sids):
 
         if tax:
             metadata["found"][sid] = {
-                "tax" : tax, 
-                "meta" : meta
+                "tax": tax, 
+                "meta": meta
             }
         else:
             metadata["missing"].add(sid)
@@ -290,9 +290,9 @@ def get_tax_metadata(sids):
 
 def main():
 
-    sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+    sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
     metadata = get_tax_metadata(sids)
-    write_pickle(metadata, paths["metadata_o"] / "tax/ncbi.pkl")
+    save_pickle(metadata, paths["metadata_o"] / "tax/ncbi.pkl")
 
 if __name__ == "__main__":
     main()

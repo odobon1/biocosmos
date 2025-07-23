@@ -4,36 +4,36 @@ Takes metadata/tax/nymph structure and produces metadata/rank_keys/nymph structu
 
 from bidict import bidict
 
-from utils import paths, read_pickle, write_pickle
+from utils import paths, load_pickle, save_pickle
 
 import pdb
 
 
 rank_keys_nymph = {
-    "genus" : bidict(),
-    "species" : bidict(),
+    "genus": bidict(),
+    "species": bidict(),
 }
 
 """
 `rank_keys_nymph` Structure:
 
 rank_keys_nymph = {
-    "species" : bidict(
-        sid0 : species_rank_key0,
-        sid1 : species_rank_key1,
-        sid2 : ...,
+    "species": bidict(
+        sid0: species_rank_key0,
+        sid1: species_rank_key1,
+        sid2: ...,
         ...
     ),
-    "genus" : bidict(
-        genus0 : genus_rank_key0,
-        genus1 : genus_rank_key1,
-        genus2 : ...,
+    "genus": bidict(
+        genus0: genus_rank_key0,
+        genus1: genus_rank_key1,
+        genus2: ...,
         ...
     ),
 }
 """
 
-tax_nymph = read_pickle(paths["metadata_o"] / "tax/nymph.pkl")
+tax_nymph = load_pickle(paths["metadata_o"] / "tax/nymph.pkl")
 
 for rkey_species, sid in enumerate(tax_nymph["found"].keys()):
 
@@ -45,4 +45,4 @@ for rkey_species, sid in enumerate(tax_nymph["found"].keys()):
         rkey_genus = len(rank_keys_nymph["genus"].keys())
         rank_keys_nymph["genus"][genus_str] = rkey_genus
 
-write_pickle(rank_keys_nymph, paths["metadata_o"] / "rank_keys/nymph.pkl")
+save_pickle(rank_keys_nymph, paths["metadata_o"] / "rank_keys/nymph.pkl")

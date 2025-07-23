@@ -7,48 +7,48 @@ import torch.nn.functional as F
 import open_clip
 import abc
 
-from utils import paths
+from utils import paths, load_json
 
 import pdb
 
 
 CLIP_MODELS = {
-    "bioclip" :               ("hf-hub:imageomics/bioclip",   None,         False),
-    "bioclip2" :              ("hf-hub:imageomics/bioclip-2", None,         False),  # note: bioclip2 quick_gelu=False different from no quick_gelu specified at all (unlike bioclip which is the same)
-    "clip_vitb16" :           ("ViT-B-16",                    "openai",     True),
-    "clip_vitb32" :           ("ViT-B-32",                    "openai",     True),
-    "clip_vitl14" :           ("ViT-L-14",                    "openai",     True),
-    "clip_vitl14_336" :       ("ViT-L-14-336",                "openai",     True),
-    "clip_rn50" :             ("RN50",                        "openai",     True),
-    "clip_rn101" :            ("RN101",                       "openai",     True),
-    "clip_rn101_yfcc15m" :    ("RN101",                       "yfcc15m",    True),
-    "clip_rn50x4" :           ("RN50x4",                      "openai",     True),
-    "clip_rn50x16" :          ("RN50x16",                     "openai",     True),
-    "clip_rn50x64" :          ("RN50x64",                     "openai",     True),
+    "bioclip":               ("hf-hub:imageomics/bioclip",   None,         False),
+    "bioclip2":              ("hf-hub:imageomics/bioclip-2", None,         False),  # note: bioclip2 quick_gelu=False different from quick_gelu=None, unlike bioclip and all the others (which are the same)
+    "clip_vitb16":           ("ViT-B-16",                    "openai",     True),
+    "clip_vitb32":           ("ViT-B-32",                    "openai",     True),
+    "clip_vitl14":           ("ViT-L-14",                    "openai",     True),
+    "clip_vitl14_336":       ("ViT-L-14-336",                "openai",     True),
+    "clip_rn50":             ("RN50",                        "openai",     True),
+    "clip_rn101":            ("RN101",                       "openai",     True),
+    "clip_rn101_yfcc15m":    ("RN101",                       "yfcc15m",    True),
+    "clip_rn50x4":           ("RN50x4",                      "openai",     True),
+    "clip_rn50x16":          ("RN50x16",                     "openai",     True),
+    "clip_rn50x64":          ("RN50x64",                     "openai",     True),
 }
 SIGLIP_MODELS = {
-    "siglip_vitb16" :         ("ViT-B-16-SigLIP",             "webli",      False),
-    "siglip_vitb16_384" :     ("ViT-B-16-SigLIP-384",         "webli",      False),
-    "siglip_vitl16_384" :     ("ViT-L-16-SigLIP-384",         "webli",      False),
-    "siglip_vitso400m14" :    ("ViT-SO400M-14-SigLIP",        "webli",      False),
-    "siglip2_vitb16" :        ("ViT-B-16-SigLIP2",            "webli",      False),
-    "siglip2_vitb16_384" :    ("ViT-B-16-SigLIP2-384",        "webli",      False),
-    "siglip2_vitl16_384" :    ("ViT-L-16-SigLIP2-384",        "webli",      False),
-    "siglip2_vitso400m14" :   ("ViT-SO400M-14-SigLIP2",       "webli",      False),
-    "siglip2_vitgopt16_384" : ("ViT-gopt-16-SigLIP2-384",     "webli",      False),
+    "siglip_vitb16":         ("ViT-B-16-SigLIP",             "webli",      False),
+    "siglip_vitb16_384":     ("ViT-B-16-SigLIP-384",         "webli",      False),
+    "siglip_vitl16_384":     ("ViT-L-16-SigLIP-384",         "webli",      False),
+    "siglip_vitso400m14":    ("ViT-SO400M-14-SigLIP",        "webli",      False),
+    "siglip2_vitb16":        ("ViT-B-16-SigLIP2",            "webli",      False),
+    "siglip2_vitb16_384":    ("ViT-B-16-SigLIP2-384",        "webli",      False),
+    "siglip2_vitl16_384":    ("ViT-L-16-SigLIP2-384",        "webli",      False),
+    "siglip2_vitso400m14":   ("ViT-SO400M-14-SigLIP2",       "webli",      False),
+    "siglip2_vitgopt16_384": ("ViT-gopt-16-SigLIP2-384",     "webli",      False),
 }
 VITAMIN_MODELS = {
-    "vitamin_s" :             ("ViTamin-S",                   "datacomp1b", False),
-    "vitamin_s_ltt" :         ("ViTamin-S-LTT",               "datacomp1b", False),
-    "vitamin_b" :             ("ViTamin-B",                   "datacomp1b", False),
-    "vitamin_b_ltt" :         ("ViTamin-B-LTT",               "datacomp1b", False),
-    "vitamin_l" :             ("ViTamin-L",                   "datacomp1b", False),
-    "vitamin_l_256" :         ("ViTamin-L-256",               "datacomp1b", False),
-    "vitamin_l_336" :         ("ViTamin-L-336",               "datacomp1b", False),
-    "vitamin_l_384" :         ("ViTamin-L-384",               "datacomp1b", False),
-    "vitamin_l2" :            ("ViTamin-L2",                  "datacomp1b", False),
-    "vitamin_l2_384" :        ("ViTamin-L2-384",              "datacomp1b", False),
-    "vitamin_xl_384" :        ("ViTamin-XL-384",              "datacomp1b", False),
+    "vitamin_s":             ("ViTamin-S",                   "datacomp1b", False),
+    "vitamin_s_ltt":         ("ViTamin-S-LTT",               "datacomp1b", False),
+    "vitamin_b":             ("ViTamin-B",                   "datacomp1b", False),
+    "vitamin_b_ltt":         ("ViTamin-B-LTT",               "datacomp1b", False),
+    "vitamin_l":             ("ViTamin-L",                   "datacomp1b", False),
+    "vitamin_l_256":         ("ViTamin-L-256",               "datacomp1b", False),
+    "vitamin_l_336":         ("ViTamin-L-336",               "datacomp1b", False),
+    "vitamin_l_384":         ("ViTamin-L-384",               "datacomp1b", False),
+    "vitamin_l2":            ("ViTamin-L2",                  "datacomp1b", False),
+    "vitamin_l2_384":        ("ViTamin-L2-384",              "datacomp1b", False),
+    "vitamin_xl_384":        ("ViTamin-XL-384",              "datacomp1b", False),
 }
 
 class VLMWrapper(abc.ABC):
@@ -69,7 +69,12 @@ class VLMWrapper(abc.ABC):
         - quick_gelu --- [bool] -------------- 
         """
 
-        model, _, img_pp = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, quick_gelu=quick_gelu)
+        model, _, img_pp = open_clip.create_model_and_transforms(
+            model_name, 
+            pretrained=pretrained, 
+            quick_gelu=quick_gelu,
+            cache_dir=paths["hf_cache"],
+        )
 
         self.device = device
         self.type   = model_type
@@ -80,20 +85,18 @@ class VLMWrapper(abc.ABC):
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
     @classmethod
-    def build(cls, model_type, device, run_name=None, chkpt_crit="comp", loss_type=None):
+    def build(cls, model_type, device, trial_name=None, save_crit="comp", loss_type=None):
 
-        loaded_chkpt = None
-        if run_name:
-            print(f"\nLoading '{run_name}' ({chkpt_crit}) from checkpoint...\n")
-
-            chkpt_path = paths["artifacts"] / run_name / "models" / f"best_{chkpt_crit}.pt"
-            loaded_chkpt = torch.load(
-                chkpt_path, 
+        model_state_dict = None
+        if trial_name:
+            print(f"\nLoading '{trial_name}' ({save_crit})...\n")
+            fpath_model_state_dict = paths["artifacts"] / trial_name / f"models/best_{save_crit}/state_dict_model.pt"
+            model_state_dict       = torch.load(
+                fpath_model_state_dict, 
                 # map_location=device,
                 map_location="cpu",  # map_location = "cpu" avoids loading two copies of the entire state dict into VRAM at once
-                weights_only=False
             )
-            model_type = loaded_chkpt["model_type"]  # override model_type if loading from checkpoint
+            model_type = load_json(paths["artifacts"] / trial_name / "metadata_trial.json")["model_type"]  # override model_type
         else:
             print("\nLoading Fresh Model...\n")
 
@@ -107,8 +110,8 @@ class VLMWrapper(abc.ABC):
             raise ValueError(f"Unknown model_type: '{model_type}'")
 
         inst.loss_type = loss_type
-        if loaded_chkpt is not None:
-            inst.model.load_state_dict(loaded_chkpt["model_state_dict"])
+        if model_state_dict is not None:
+            inst.model.load_state_dict(model_state_dict)
 
         return inst
 
@@ -121,16 +124,10 @@ class VLMWrapper(abc.ABC):
         if isinstance(self, ViTaminWrapper):
             return self.model.text.text_projection.shape[0]
 
-    def save_checkpoint(self, dpath_run, scores_val, idx_epoch, chkpt_crit):
-        fpath_chkpt = dpath_run / f"models/best_{chkpt_crit}.pt"
-        chkpt = {
-            "model_state_dict" : self.model.state_dict(),
-            "scores_val" :       scores_val,
-            "epoch" :            idx_epoch,
-            "model_type" :       self.type,
-        }
-        torch.save(chkpt, fpath_chkpt)
-        print(f"~ Best {chkpt_crit} model saved to file ~\n")
+    def save(self, dpath):
+        fpath            = dpath / "state_dict_model.pt"
+        state_dict_model = self.model.state_dict()
+        torch.save(state_dict_model, fpath)
 
     def embed_images(self, imgs_b):
         """

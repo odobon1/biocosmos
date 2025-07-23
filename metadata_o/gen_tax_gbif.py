@@ -1,6 +1,6 @@
 from pygbif import species
 
-from utils import read_pickle, write_pickle, paths
+from utils import load_pickle, save_pickle, paths
 
 import pdb
 
@@ -34,9 +34,9 @@ def get_tax_metadata(sids, verbose=False):
     ranks e.g. GBIF data for Mallika jacksoni contains genus + species, but is missing family)
     """
     metadata = {
-        "found" : {},
-        "partial" : {},
-        "missing" : set(),
+        "found": {},
+        "partial": {},
+        "missing": set(),
     }
 
     ranks = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
@@ -68,14 +68,14 @@ def get_tax_metadata(sids, verbose=False):
                     tax[rank] = None
 
             meta = {
-                "status" : result["status"],
-                "confidence" : result["confidence"],
-                "matchType" : result["matchType"],
-                "synonym" : result["synonym"],
+                "status": result["status"],
+                "confidence": result["confidence"],
+                "matchType": result["matchType"],
+                "synonym": result["synonym"],
             }
             species_metadata = {
-                "tax" : tax,
-                "meta" : meta,
+                "tax": tax,
+                "meta": meta,
             }
 
             if partial:
@@ -111,9 +111,9 @@ def get_tax_metadata(sids, verbose=False):
 
 def main():
 
-    sids = read_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+    sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
     metadata = get_tax_metadata(sids, verbose=True)
-    write_pickle(metadata, paths["metadata_o"] / "tax/gbif.pkl")
+    save_pickle(metadata, paths["metadata_o"] / "tax/gbif.pkl")
 
 if __name__ == "__main__":
     main()

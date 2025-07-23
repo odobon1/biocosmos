@@ -7,7 +7,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from utils import paths, read_pickle
+from utils import paths, load_pickle
 
 import pdb
 
@@ -30,7 +30,7 @@ class ImageTextDataset(Dataset):
             text_preps,
             img_pp, 
             cached_imgs,
-            num_workers,
+            n_workers,
         ):
         
         self.index_imgs_class_enc = index_imgs_class_enc
@@ -42,6 +42,7 @@ class ImageTextDataset(Dataset):
 
         self.n_samples = len(self.index_imgs_class_enc)
 
+        time_cache = None  # need to pass this var to metadata save
         if self.cached_imgs in ("pl", "pp"):
             time_start = time.time()
 
@@ -51,15 +52,15 @@ class ImageTextDataset(Dataset):
 
             # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
             self.imgs_mem = []
-            with ThreadPoolExecutor(max_workers=num_workers) as exe:
+            with ThreadPoolExecutor(max_workers=n_workers) as exe:
                 for img in tqdm.tqdm(exe.map(load_pp_img, self.index_imgs_rfpaths),
                                      total=len(self.index_imgs_rfpaths),
                                      desc ="Caching Images"):
                     self.imgs_mem.append(img)
 
-            time_end     = time.time()
-            time_elapsed = time_end - time_start
-            print(f"Time Elapsed (preload): {time_elapsed:.1f} s")
+            time_end   = time.time()
+            time_cache = time_end - time_start
+            print(f"Time Elapsed (image caching): {time_cache:.1f} s")
 
     def __len__(self):
         return self.n_samples
@@ -114,7 +115,7 @@ def spawn_indexes_imgs(split_type, split_name):
     - split_type --- [str] --- "train" / "id_val" / "id_test" / "ood_val" / "ood_test"
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
-    data_index = read_pickle(paths["metadata_o"] / f"data_indexes/{split_name}/{split_type}.pkl")
+    data_index = load_pickle(paths["metadata_o"] / f"data_indexes/{split_name}/{split_type}.pkl")
 
     index_imgs_rfpaths = data_index["rfpaths"]
     index_imgs_sids    = data_index["sids"]
@@ -157,7 +158,7 @@ def spawn_dataloader(
         drop_last,
         img_pp,
         cached_imgs,
-        num_workers,
+        n_workers,
         prefetch_factor,
     ):
     """
@@ -172,10 +173,10 @@ def spawn_dataloader(
     - drop_last -------------- [bool] -------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
     - img_pp ----------------- [callable] ---------- The image preprocessor
     - cached_imgs ------------ [bool] -------------- Whether to cache images in memory
-    - num_workers ------------ [int] --------------- Parallelism
+    - n_workers -------------- [int] --------------- Parallelism
     - prefetch_factor -------- [int] --------------- How many batches each worker will load in advance;
                                                      Higher prefetch_factor increases throughput, higher RAM cost;
-                                                     Only takes effect when num_workers > 0
+                                                     Only takes effect when n_workers > 0
     """
 
     dataset = ImageTextDataset(
@@ -185,14 +186,14 @@ def spawn_dataloader(
         text_preps,
         img_pp,
         cached_imgs,
-        num_workers,
+        n_workers,
     )
 
     loader = DataLoader(
         dataset,
         batch_size        =batch_size,
         shuffle           =shuffle,
-        num_workers       =num_workers,
+        num_workers       =n_workers,
         pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
         prefetch_factor   =prefetch_factor,
         collate_fn        =collate_fn,

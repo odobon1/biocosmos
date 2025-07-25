@@ -182,14 +182,6 @@ class VLMWrapper(abc.ABC):
 
         return pred_classes_enc_txts, scores
 
-    def compute_logits_clip(self, sim):
-        logits = sim * self.model.logit_scale.exp()
-        return logits
-
-    def compute_logits_siglip(self, sim):
-        logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
-        return logits
-    
     def compute_logits(self, sim):
         if self.loss_type == "infonce":
             return self.compute_logits_clip(sim)
@@ -198,17 +190,41 @@ class VLMWrapper(abc.ABC):
         else:
             raise ValueError(self.loss_type)
 
-    def compute_loss_infonce(self, logits):
+    def compute_logits_clip(self, sim):
+        logits = sim * self.model.logit_scale.exp()
+        return logits
+
+    def compute_logits_siglip(self, sim):
+        logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
+        return logits
+
+    def compute_loss(self, logits, class_encs_b, reduction="mean"):
+        """
+        `reduction` arg added in preparation for n-shot loss tracking (reduction="none" in that case)
+        """
+
+        if self.loss_type == "infonce":
+            return self.compute_loss_infonce(logits, reduction)
+        elif self.loss_type == "pairwise_sigmoid":
+            return self.compute_loss_pairwise_sigmoid(logits, reduction)
+        elif self.loss_type == "pairwise_sigmoid_upwtdpos":
+            return self.compute_loss_pairwise_sigmoid(logits, reduction, up_weighted_pos=True)
+        elif self.loss_type == "multipos_sigmoid":
+            return self.compute_loss_multipos_sigmoid(logits, reduction, class_encs_b)
+        else:
+            raise ValueError(self.loss_type)
+
+    def compute_loss_infonce(self, logits, reduction):
         B       = logits.size(0)
         targets = torch.arange(B, device=self.device)
 
-        loss_i2t_b = F.cross_entropy(logits, targets)
-        loss_t2i_b = F.cross_entropy(logits.T, targets)
+        loss_i2t_b = F.cross_entropy(logits, targets, reduction=reduction)
+        loss_t2i_b = F.cross_entropy(logits.T, targets, reduction=reduction)
         loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
 
         return loss_b
 
-    def compute_loss_pairwise_sigmoid(self, logits, up_weighted_pos=False):
+    def compute_loss_pairwise_sigmoid(self, logits, reduction, up_weighted_pos=False):
         B       = logits.size(0)
         targets = torch.eye(B, device=self.device)
         if up_weighted_pos:
@@ -216,34 +232,17 @@ class VLMWrapper(abc.ABC):
         else:
             pos_weight = None
 
-        loss_b = F.binary_cross_entropy_with_logits(
-            logits,
-            targets,
-            pos_weight=pos_weight,
-        )
+        loss_b = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight, reduction=reduction)
 
         return loss_b
     
-    def compute_loss_multipos_sigmoid(self, logits, class_encs_b):
+    def compute_loss_multipos_sigmoid(self, logits, reduction, class_encs_b):
         class_encs_b = torch.tensor(class_encs_b)
         targets = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
 
-        loss_b = F.binary_cross_entropy_with_logits(logits, targets)
+        loss_b = F.binary_cross_entropy_with_logits(logits, targets, reduction=reduction)
 
         return loss_b
-
-    def compute_loss(self, logits, class_encs_b):
-
-        if self.loss_type == "infonce":
-            return self.compute_loss_infonce(logits)
-        elif self.loss_type == "pairwise_sigmoid":
-            return self.compute_loss_pairwise_sigmoid(logits)
-        elif self.loss_type == "pairwise_sigmoid_upwtdpos":
-            return self.compute_loss_pairwise_sigmoid(logits, up_weighted_pos=True)
-        elif self.loss_type == "multipos_sigmoid":
-            return self.compute_loss_multipos_sigmoid(logits, class_encs_b)
-        else:
-            raise ValueError(self.loss_type)
 
     def freeze(self, freeze_txt, freeze_img):
         if freeze_txt: self.freeze_text_encoder()

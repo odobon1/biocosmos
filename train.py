@@ -1,7 +1,7 @@
-import torch
-from torch.amp import autocast, GradScaler
-from torch.optim.lr_scheduler import ExponentialLR
-from tqdm import tqdm
+import torch  # type: ignore[import]
+from torch.amp import autocast, GradScaler  # type: ignore[import]
+from torch.optim.lr_scheduler import ExponentialLR  # type: ignore[import]
+from tqdm import tqdm  # type: ignore[import]
 import time
 from datetime import datetime, timezone
 import yaml
@@ -58,7 +58,7 @@ class TrainConfig:
     freeze_image_encoder: bool
 
     cached_imgs: str | None
-    mp_train: bool
+    mixed_prec: bool
     drop_partial_batch_train: bool
     verbose_batch_loss: bool
 
@@ -85,12 +85,15 @@ class TrialDataTracker:
             "id_img2txt_rr":     [],
             "id_img2img_map":    [],
             "id_txt2img_map":    [],
+            "id_loss":           [],
             "ood_img2txt_prec1": [],
             "ood_img2txt_rr":    [],
             "ood_img2img_map":   [],
             "ood_txt2img_map":   [],
+            "ood_loss":          [],
             "comp":              [],
             "comp_img2img":      [],
+            "comp_loss":         [],
             "lr":                [],
             "loss_train":        [],
         }
@@ -263,10 +266,7 @@ class TrainPipeline:
             time_val_avg   = f"{time_val_avg:.2f}"
         metadata = {
             "model_type":    self.cfg.model_type,
-            "runtime_avgs":  {
-                                "train": f"{time_train_avg}",
-                                "val":   f"{time_val_avg}",
-                            },      
+            "runtime_avgs":  {"train": f"{time_train_avg}", "val":   f"{time_val_avg}"},      
             "datetime_init": self.datetime_init,
         }
         save_json(metadata, fpath_meta)
@@ -286,7 +286,7 @@ class TrainPipeline:
 
         self.optimizer = torch.optim.AdamW(params_trainable, lr=self.cfg.lr_init)
         self.lr_sched  = ExponentialLR(self.optimizer, gamma=self.cfg.lr_decay)
-        if self.cfg.mp_train:
+        if self.cfg.mixed_prec:
             self.scaler = GradScaler()
 
     def train(self):
@@ -299,7 +299,7 @@ class TrainPipeline:
         )
         
         data_tracker        = TrialDataTracker(self.dpath_trial)
-        scores_val, _, _, _ = self.val_pipe.evaluate(self.modelw, verbose=True)
+        scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw, verbose=True)
         data_tracker.update(scores_val)
 
         time_train_avg = 0.0
@@ -321,7 +321,7 @@ class TrainPipeline:
 
                 self.optimizer.zero_grad()
 
-                if self.cfg.mp_train:
+                if self.cfg.mixed_prec:
                     with autocast(device_type=self.device.type):
                         loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
                     self.scaler.scale(loss_train_b).backward()
@@ -360,7 +360,7 @@ class TrainPipeline:
             )
 
             # validation
-            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.evaluate(self.modelw, verbose=True)
+            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(self.modelw, verbose=True)
             data_tracker.update(scores_val, lr=lr, loss_train=loss_train_avg)
 
             # track running means via Welford's algorithm

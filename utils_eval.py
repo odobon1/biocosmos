@@ -100,13 +100,12 @@ class EvaluationPipeline:
             batch_size,
             n_workers,
             prefetch_factor,
-            modes=["img2txt", "img2img", "txt2img"],
         ):
 
         assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), "text_preps: each inner list must contain exactly one element for eval"
 
         self.split_type = split_type
-        self.modes      = modes
+        self.batch_size = batch_size
 
         index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = spawn_indexes_imgs(
             split_type=split_type,
@@ -117,7 +116,7 @@ class EvaluationPipeline:
             text_preps     =text_preps,
         )
 
-        self.loader = spawn_dataloader(
+        self.dataloader = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
             index_imgs_rfpaths  =index_imgs_rfpaths,
             index_imgs_sids     =index_imgs_sids,
@@ -131,70 +130,78 @@ class EvaluationPipeline:
             prefetch_factor     =prefetch_factor,
         )
 
-    def evaluate(self, modelw):
+    def evaluate_split(self, modelw):
         time_start = time.time()
         modelw.model.eval()
 
-        # return structure
-        eval_scores = {}
+        eval_scores = {}  # return structure
 
-        if "img2img" in self.modes or "txt2img" in self.modes:
-            embs_imgs        = []
-            classes_enc_imgs = []
+        with torch.no_grad(), autocast(device_type=modelw.device.type):
+            embs_txts_all = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
 
-        if "img2txt" in self.modes or "txt2img" in self.modes:
-            with torch.no_grad(), autocast(device_type=modelw.device.type):
-                embs_txts = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
-
-        n_correct = 0
-        for imgs_b, targ_classes_enc_b, _ in tqdm(self.loader, desc=f"Eval ({self.split_type})", leave=False):
+        embs_imgs        = []
+        classes_enc_imgs = []
+        loss_total       = 0.0
+        n_samples_loss   = 0  # only full batches accumulated for loss computation
+        n_correct        = 0
+        for imgs_b, targ_classes_enc_b, texts_b in tqdm(self.dataloader, desc=f"Eval ({self.split_type})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
             with torch.no_grad(), autocast(device_type=modelw.device.type):
                 embs_imgs_b = modelw.embed_images(imgs_b)  # --------- Tensor(B, D)
+                B           = imgs_b.size(0)
 
-            if "img2img" in self.modes or "txt2img" in self.modes:
-                embs_imgs.append(embs_imgs_b.cpu())
-                classes_enc_imgs.append(torch.tensor(targ_classes_enc_b, dtype=torch.long))
+            embs_imgs.append(embs_imgs_b.cpu())
+            classes_enc_imgs.append(torch.tensor(targ_classes_enc_b, dtype=torch.long))
 
-            if "img2txt" in self.modes:
-                """
-                maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
-                """
-                pred_classes_enc_txts_b, _ = modelw.img2txt_classify(embs_imgs_b, embs_txts, self.index_txts_class_enc)
+            """
+            maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
+            """
+            pred_classes_enc_txts_b, _ = modelw.img2txt_classify(embs_imgs_b, embs_txts_all, self.index_txts_class_enc)
 
-                n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))
-                n_correct += n_correct_b
+            n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))
+            n_correct += n_correct_b
+
+            if B == self.batch_size:  # only compute loss for full batches
+                with torch.no_grad(), autocast(device_type=modelw.device.type):
+                    embs_txts_b = modelw.embed_texts(texts_b)
+                    sim_b       = embs_imgs_b @ embs_txts_b.T
+                    logits_b    = modelw.compute_logits(sim_b)
+                    loss_b      = modelw.compute_loss(logits_b, targ_classes_enc_b)
+
+                loss_total     += loss_b.detach().item() * B
+                n_samples_loss += B
 
         # prepare image embedding and class encoding tensors for mAP computation
         embs_imgs        = torch.cat(embs_imgs, dim=0)  # ---------- Tensor(Q, D)
         classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)
 
-        if "img2txt" in self.modes:
-            # img2txt precision@1 computation
-            n_samps       = len(self.loader.dataset)
-            prec1_img2txt = n_correct / n_samps
+        # img2txt precision@1 computation
+        n_samps                      = len(self.dataloader.dataset)
+        prec1_img2txt                = n_correct / n_samps
+        eval_scores["img2txt_prec1"] = prec1_img2txt
 
-            eval_scores["img2txt_prec1"] = prec1_img2txt
+        # img2txt RR (via mAP) computation ~ mAP is equivalent to RR when all gallery instances are class-singletons i.e. one sample per class
+        map_img2txt               = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts_all.cpu(), torch.tensor(self.index_txts_class_enc))
+        eval_scores["img2txt_rr"] = map_img2txt  # mean average precision (mAP) is identical to reciprocal rank (RR) in this context
 
-            # img2txt mAP (RR) computation
-            map_img2txt               = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts.cpu(), torch.tensor(self.index_txts_class_enc))
-            eval_scores["img2txt_rr"] = map_img2txt  # mean average precision (mAP) is identical to reciprocal rank (RR) in this context
+        # img2img mAP computation
+        map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
+        eval_scores["img2img_map"] = map_img2img
 
-        if "img2img" in self.modes:
-            map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
-            eval_scores["img2img_map"] = map_img2img
+        # txt2img mAP computation
+        map_txt2img                = compute_map_cross_modal(embs_txts_all.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
+        eval_scores["txt2img_map"] = map_txt2img
 
-        if "txt2img" in self.modes:
-            map_txt2img                = compute_map_cross_modal(embs_txts.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
-            eval_scores["txt2img_map"] = map_txt2img
+        # loss aggregation
+        loss_avg = loss_total / n_samples_loss
 
         modelw.model.train()
 
         time_end = time.time()
         time_elapsed = time_end - time_start
 
-        return eval_scores, time_elapsed
+        return eval_scores, loss_avg, time_elapsed
 
 class ValidationPipeline:
 
@@ -224,7 +231,6 @@ class ValidationPipeline:
             batch_size     =batch_size,
             n_workers      =n_workers,
             prefetch_factor=prefetch_factor,
-            modes          =["img2txt", "img2img", "txt2img"],
         )
 
         self.ood_val_pipe = EvaluationPipeline(
@@ -236,7 +242,6 @@ class ValidationPipeline:
             batch_size     =batch_size,
             n_workers      =n_workers,
             prefetch_factor=prefetch_factor,
-            modes          =["img2txt", "img2img", "txt2img"],
         )
 
         self.scores_tracker = {
@@ -252,13 +257,13 @@ class ValidationPipeline:
             "comp_img2img":      [],
         }
 
-    def evaluate(self, modelw, verbose=True):
+    def run_validation(self, modelw, verbose=True):
         """
         `is_best` param in the return will dictate when models are saved (early stopping)
         """
 
-        scores_id_val, time_elapsed_id_val = self.id_val_pipe.evaluate(modelw)
-        scores_ood_val, time_elapsed_ood_val = self.ood_val_pipe.evaluate(modelw)
+        scores_id_val, loss_avg_id, time_elapsed_id_val = self.id_val_pipe.evaluate_split(modelw)
+        scores_ood_val, loss_avg_ood, time_elapsed_ood_val = self.ood_val_pipe.evaluate_split(modelw)
 
         score_comp = (scores_id_val["img2txt_rr"] + \
                       scores_id_val["img2img_map"] + \
@@ -275,12 +280,15 @@ class ValidationPipeline:
             "id_img2txt_rr":     scores_id_val["img2txt_rr"],
             "id_img2img_map":    scores_id_val["img2img_map"],
             "id_txt2img_map":    scores_id_val["txt2img_map"],
+            "id_loss":           loss_avg_id,
             "ood_img2txt_prec1": scores_ood_val["img2txt_prec1"],
             "ood_img2txt_rr":    scores_ood_val["img2txt_rr"],
             "ood_img2img_map":   scores_ood_val["img2img_map"],
             "ood_txt2img_map":   scores_ood_val["txt2img_map"],
+            "ood_loss":          loss_avg_ood,
             "comp":              score_comp,
             "comp_img2img":      score_comp_img2img,
+            "comp_loss":         (loss_avg_id + loss_avg_ood) / 2
         }
         if verbose:
             self.print_val(scores_val)
@@ -320,6 +328,10 @@ class ValidationPipeline:
             f"{'':-^{75}}",
             f"Composite ----------- {scores['comp']:.4f} (best: {self.best_score_comp:.4f})",
             f"img2img Composite --- {scores['comp_img2img']:.4f} (best: {self.best_score_comp_img2img:.4f})",
+            f"{'':-^{75}}",
+            f"ID Loss ------------- {scores['id_loss']:.4f}",
+            f"OOD Loss ------------ {scores['ood_loss']:.4f}",
+            f"Comp Loss ----------- {scores['comp_loss']:.4f}",
             f"",
             sep="\n"
         )

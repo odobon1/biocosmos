@@ -46,7 +46,7 @@ def main():
         prefetch_factor=PREFETCH_FACTOR,
     )
 
-    val_pipe.evaluate(modelw)
+    val_pipe.run_validation(modelw)
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 study_name: dev
-experiment_name: dev
+experiment_name: dev_loss
 seed: 42
 split_name: S29-0
 # split_name: dev
@@ -23,7 +23,7 @@ freeze_text_encoder: false
 freeze_image_encoder: false
 
 cached_imgs: null  # options: null / pl / pp
-mp_train: true  # whether to use mixed precision for training
+mixed_prec: true  # whether to use mixed precision for training and validation
 drop_partial_batch_train: true
 verbose_batch_loss: false
 

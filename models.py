@@ -98,7 +98,7 @@ class VLMWrapper(abc.ABC):
             )
             model_type = load_json(paths["artifacts"] / trial_name / "metadata_trial.json")["model_type"]  # override model_type
         else:
-            print("\nLoading Fresh Model...\n")
+            print("\nLoading Fresh Model...")
 
         if model_type in CLIP_MODELS:
             inst = CLIPWrapper(model_type, device)

@@ -39,9 +39,9 @@ def main():
     val_pipe = ValidationPipeline(
         split_name     =SPLIT_NAME,
         text_preps     =TEXT_PREPS,
+        batch_size     =BATCH_SIZE,
         img_pp         =modelw.img_pp,
         cached_imgs    =CACHED_IMGS,
-        batch_size     =BATCH_SIZE,
         n_workers      =N_WORKERS,
         prefetch_factor=PREFETCH_FACTOR,
     )

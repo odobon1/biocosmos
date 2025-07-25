@@ -115,4 +115,4 @@ python -m metadata_o.gen_data_indexes  # designate split first
 | `infonce`                   | InfoNCE; Standard CLIP loss                    |
 | `pairwise_sigmoid`          | Standard SigLIP loss                           |
 | `pairwise_sigmoid_upwtdpos` | Standard SigLIP loss with upweighted positives |
-| `multipos_sigmoid`          | Custom SigLIP loss (multi-positive)           |
+| `multipos_sigmoid`          | Custom SigLIP loss (multi-positive)            |

@@ -4,22 +4,23 @@ from torch.optim.lr_scheduler import ExponentialLR
 from tqdm import tqdm
 import time
 from datetime import datetime, timezone
+import yaml
+from dataclasses import dataclass, asdict
+from pathlib import Path
+import shutil
 
+from utils import (
+    paths, 
+    save_json, 
+    load_json, 
+    save_pickle, 
+    seed_libs,
+    get_text_preps, 
+    compute_dataloader_workers_prefetch,
+)
 from models import VLMWrapper
 from utils_data import spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
-from utils import seed_libs, get_text_preps, compute_dataloader_workers_prefetch
-from utils_train import (
-    get_train_config,
-    get_trial_dpath,
-    create_trial_dirs, 
-    save_metadata_study,
-    save_metadata_experiment,
-    save_metadata_trial, 
-    save_metadata_model, 
-    print_train_init_info,  
-    TrialDataTracker,
-)
 
 import pdb
 
@@ -31,240 +32,385 @@ torch.set_printoptions(
     linewidth=120
 )
 
-train_config = get_train_config()
 
-STUDY_NAME       = train_config.study_name
-EXPERIMENT_NAME  = train_config.experiment_name
-SEED             = train_config.seed
-CHECKPOINT_EVERY = train_config.checkpoint_every
-SPLIT_NAME       = train_config.split_name
+@dataclass
+class TrainConfig:
+    study_name: str
+    experiment_name: str
+    seed: int | None
+    checkpoint_every: int
+    split_name: str
 
-ALLOW_OVERWRITE_TRIAL = train_config.allow_overwrite_trial
-ALLOW_DIFF_STUDY      = train_config.allow_diff_study
-ALLOW_DIFF_EXPERIMENT = train_config.allow_diff_experiment
+    allow_overwrite_trial: bool
+    allow_diff_study: bool
+    allow_diff_experiment: bool
 
-MODEL_TYPE = train_config.model_type
-LOSS_TYPE  = train_config.loss_type
+    model_type: str
+    loss_type: str
 
-N_EPOCHS         = train_config.n_epochs
-BATCH_SIZE_TRAIN = train_config.batch_size_train
-BATCH_SIZE_VAL   = train_config.batch_size_val
-LR_INIT          = train_config.lr_init
-LR_DECAY         = train_config.lr_decay
+    n_epochs: int
+    batch_size_train: int
+    batch_size_val: int
+    lr_init: float
+    lr_decay: float
 
-FREEZE_TEXT_ENCODER  = train_config.freeze_text_encoder
-FREEZE_IMAGE_ENCODER = train_config.freeze_image_encoder
+    freeze_text_encoder: bool
+    freeze_image_encoder: bool
 
-CACHED_IMGS              = train_config.cached_imgs
-MP_TRAIN                 = train_config.mp_train
-DROP_PARTIAL_BATCH_TRAIN = train_config.drop_partial_batch_train
-VERBOSE_BATCH_LOSS       = train_config.verbose_batch_loss
+    cached_imgs: str | None
+    mp_train: bool
+    drop_partial_batch_train: bool
+    verbose_batch_loss: bool
 
-TEXT_PREPS_TRAIN = get_text_preps(train_config.text_preps_type_train)
-TEXT_PREPS_VAL   = get_text_preps(train_config.text_preps_type_val)
+    text_preps_type_train: str
+    text_preps_type_val: str
 
-N_WORKERS, PREFETCH_FACTOR, SLURM_ALLOC = compute_dataloader_workers_prefetch()
+def get_train_config():
+    with open(Path(__file__).parent / "config_train.yaml") as f:
+        train_config_dict = yaml.safe_load(f)
+    train_config = TrainConfig(**train_config_dict)
 
+    assert not (train_config.freeze_text_encoder and train_config.freeze_image_encoder), "Text and image encoders are both set to frozen!"
 
-def train_pipeline(modelw, loader_train, val_pipe, dpath_trial, trial_fullname, device, n_epochs, lr_init):
-    datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
-    save_metadata_trial(dpath_trial, modelw.type, datetime_init)
+    return train_config
 
-    dpath_model_best_comp    = dpath_trial / "models/best_comp"
-    dpath_model_best_img2img = dpath_trial / "models/best_img2img"
-    dpath_model_checkpoint   = dpath_trial / "models/checkpoint"
+class TrialDataTracker:
 
-    modelw.freeze(FREEZE_TEXT_ENCODER, FREEZE_IMAGE_ENCODER)
+    def __init__(self, dpath_trial):
 
-    params_trainable = [p for p in modelw.model.parameters() if p.requires_grad]
+        self.fpath_data = dpath_trial / "data_trial.pkl"
 
-    optimizer = torch.optim.AdamW(params_trainable, lr=lr_init)
-    lr_sched  = ExponentialLR(optimizer, gamma=LR_DECAY)
-    if MP_TRAIN:
-        scaler = GradScaler()
-    
-    print(
-        f"{' Fine-Tuning Init ':#^{75}}",
-        f"",
-        sep="\n"
-    )
-    
-    data_tracker        = TrialDataTracker(dpath_trial)
-    scores_val, _, _, _ = val_pipe.evaluate(modelw, verbose=True)
-    data_tracker.update(scores_val)
+        self.data = {
+            "id_img2txt_prec1":  [],
+            "id_img2txt_rr":     [],
+            "id_img2img_map":    [],
+            "id_txt2img_map":    [],
+            "ood_img2txt_prec1": [],
+            "ood_img2txt_rr":    [],
+            "ood_img2img_map":   [],
+            "ood_txt2img_map":   [],
+            "comp":              [],
+            "comp_img2img":      [],
+            "lr":                [],
+            "loss_train":        [],
+        }
 
-    time_train_avg = 0.0
-    time_val_avg   = 0.0
-    for idx_epoch in range(1, n_epochs + 1):
+    def update(self, scores_val, lr=None, loss_train=None):
 
-        header_epoch = f" Epoch {idx_epoch} "
-        print(
-            f"{header_epoch:#^{75}}{'' if EXPERIMENT_NAME is None else ' (' + trial_fullname + ')'}",
-            f"",
-            sep="\n"
+        for score in scores_val.keys():
+            self.data[score].append(float(scores_val[score]))
+
+        if lr is not None:
+            self.data["lr"].append(lr)
+        if loss_train is not None:
+            self.data["loss_train"].append(loss_train)
+
+    def save(self):
+        save_pickle(self.data, self.fpath_data)
+
+class TrainPipeline:
+
+    def __init__(self, modelw, train_config, device):
+        self.datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
+
+        self.modelw = modelw
+        self.cfg    = train_config
+        self.device = device
+
+        self.modelw.freeze(self.cfg.freeze_text_encoder, self.cfg.freeze_image_encoder)
+
+        self.n_workers, self.prefetch_factor, self.slurm_alloc = compute_dataloader_workers_prefetch()
+
+        self.set_dpaths_and_trial_fullname()
+        self.print_init_info()
+        self.create_trial_dirs()
+        self.save_metadata_study()
+        self.save_metadata_experiment()
+        self.save_metadata_trial()
+
+        index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, _ = spawn_indexes_imgs(
+            split_type="train",
+            split_name=self.cfg.split_name,
         )
 
-        time_train_start = time.time()
-        modelw.model.train()
-        loss_train_total = 0.0
-        for imgs_b, class_encs_b, texts_b in tqdm(loader_train, desc="Train", leave=False):
-            imgs_b = imgs_b.to(device, non_blocking=True)
+        text_preps_train = get_text_preps(self.cfg.text_preps_type_train)
+        self.dataloader  = spawn_dataloader(
+            index_imgs_class_enc=index_imgs_class_enc,
+            index_imgs_rfpaths  =index_imgs_rfpaths,
+            index_imgs_sids     =index_imgs_sids,
+            text_preps          =text_preps_train,
+            batch_size          =self.cfg.batch_size_train,
+            shuffle             =True,
+            drop_last           =self.cfg.drop_partial_batch_train,
+            img_pp              =self.modelw.img_pp,
+            cached_imgs         =self.cfg.cached_imgs,
+            n_workers           =self.n_workers,
+            prefetch_factor     =self.prefetch_factor,
+        )
 
-            optimizer.zero_grad()
+        text_preps_val = get_text_preps(self.cfg.text_preps_type_val)
+        self.val_pipe  = ValidationPipeline(
+            split_name     =self.cfg.split_name,
+            text_preps     =text_preps_val,
+            batch_size     =self.cfg.batch_size_val,
+            img_pp         =self.modelw.img_pp,
+            cached_imgs    =self.cfg.cached_imgs,
+            n_workers      =self.n_workers,
+            prefetch_factor=self.prefetch_factor,
+        )
 
-            if MP_TRAIN:
-                with autocast(device_type=device.type):
-                    embs_imgs = modelw.embed_images(imgs_b)  # --- Tensor(B, D)
-                    embs_txts = modelw.embed_texts(texts_b)  # --- Tensor(B, D)
+        self.init_opt_and_lr_sched()
 
-                    sim          = embs_imgs @ embs_txts.T  # ---- Tensor(B, B)
-                    logits       = modelw.compute_logits(sim)
-                    loss_train_b = modelw.compute_loss(logits, class_encs_b)
+    def set_dpaths_and_trial_fullname(self):
 
-                scaler.scale(loss_train_b).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                embs_imgs = modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
-                embs_txts = modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
+        self.dpath_study      = paths["artifacts"] / self.cfg.study_name
+        self.dpath_experiment = self.dpath_study / self.cfg.experiment_name
 
-                sim          = embs_imgs @ embs_txts.T  # -------- Tensor(B, B)
-                logits       = modelw.compute_logits(sim)
-                loss_train_b = modelw.compute_loss(logits)
-
-                loss_train_b.backward()
-                optimizer.step()
-
-            with torch.no_grad():
-                loss_train_b = loss_train_b.detach().item() * imgs_b.size(0)
-                loss_train_total += loss_train_b
-                if VERBOSE_BATCH_LOSS:
-                    print(f"Batch Loss: {loss_train_b:.4f}")
-
-        lr = optimizer.param_groups[0]["lr"]
-        lr_sched.step()
-        
-        # compute avg. train loss per sample
-        if DROP_PARTIAL_BATCH_TRAIN:
-            n_full_batches = len(loader_train.dataset) // BATCH_SIZE_TRAIN
-            loss_train_avg = loss_train_total / (n_full_batches * BATCH_SIZE_TRAIN)
+        if self.cfg.seed is not None:
+            trial_name       = self.cfg.seed
+            self.dpath_trial = self.dpath_experiment / str(trial_name)
+            if self.dpath_trial.exists():
+                if self.cfg.allow_overwrite_trial:
+                    shutil.rmtree(self.dpath_trial)
+                else:
+                    raise ValueError(f"Trial directory '{self.cfg.study_name}/{self.cfg.experiment_name}/{self.cfg.seed}' already exists!")
         else:
-            loss_train_avg = loss_train_total / len(loader_train.dataset)
+            counter = 0
+            while True:
+                trial_name       = f"seedless{counter}"
+                self.dpath_trial = self.dpath_experiment / trial_name
+                if self.dpath_trial.exists():
+                    counter += 1
+                else:
+                    break
 
-        time_train_end = time.time()
-        time_train     = time_train_end - time_train_start
+        self.dpath_model_best_comp    = self.dpath_trial / "models/best_comp"
+        self.dpath_model_best_img2img = self.dpath_trial / "models/best_img2img"
+        self.dpath_model_checkpoint   = self.dpath_trial / "models/checkpoint"
 
+        self.trial_fullname = str(self.dpath_trial).split("artifacts/")[1]
+
+    def print_init_info(self):
         print(
-            f"{' Train ':=^{75}}",
-            f"Loss --- {loss_train_avg:.4f}",
-            f"LR ----- {lr:.2e}",
             f"",
+            f"Study -------- {self.cfg.study_name}",
+            f"Experiment --- {self.cfg.experiment_name}",
+            f"Seed --------- {self.cfg.seed}",
+            f"Trial -------- {self.trial_fullname}",
+            f"Split -------- {self.cfg.split_name}",
+            f"",
+            f"Model Type ----------- {self.cfg.model_type}",
+            f"Loss Type ------------ {self.cfg.loss_type}",
+            f"Batch Size (Train) --- {self.cfg.batch_size_train}",
+            f"LR Init -------------- {self.cfg.lr_init}",
+            f"LR Decay ------------- {self.cfg.lr_decay}",
+            f"",
+            f"Num. GPUs --- {self.slurm_alloc['gpus']}",
+            f"Num. CPUs --- {self.slurm_alloc['cpus']}",
+            f"RAM --------- {self.slurm_alloc['ram']} GB",
+            f"",
+            f"Num. Workers ------ {self.n_workers}",
+            f"Prefetch Factor --- {self.prefetch_factor}",
             sep="\n"
         )
 
-        # validation
-        scores_val, is_best_comp, is_best_img2img, time_val = val_pipe.evaluate(modelw, verbose=True)
-        data_tracker.update(scores_val, lr=lr, loss_train=loss_train_avg)
+    def create_trial_dirs(self):
+        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
+            (self.dpath_trial / subdir).mkdir(parents=True)
 
-        # track running means via Welford's algorithm
-        time_train_avg += (time_train - time_train_avg) / idx_epoch
-        time_val_avg += (time_val - time_val_avg) / idx_epoch
+    def save_metadata_study(self):
+        fpath_meta = self.dpath_study / "metadata_study.json"
+        metadata   = {
+            "split_name":      self.cfg.split_name,
+            "n_gpus":          self.slurm_alloc["gpus"],
+            "n_cpus":          self.slurm_alloc["cpus"],
+            "ram":             f"{self.slurm_alloc['ram']} GB",
+            "n_workers":       self.n_workers,
+            "prefetch_factor": self.prefetch_factor,
+        }
+        if fpath_meta.exists() and not self.cfg.allow_diff_study:
+            metadata_loaded = load_json(fpath_meta)
+            assert metadata == metadata_loaded, "Study params changed!"
+        else:
+            save_json(metadata, fpath_meta)
 
-        if is_best_comp:
-            modelw.save(dpath_model_best_comp)
-            save_metadata_model(dpath_model_best_comp, scores_val, idx_epoch)
-            print(f"~ Best comp model saved to file ~\n")
-        if is_best_img2img:
-            modelw.save(dpath_model_best_img2img)
-            save_metadata_model(dpath_model_best_img2img, scores_val, idx_epoch)
-            print(f"~ Best img2img model saved to file ~\n")
+    def save_metadata_experiment(self):
+        
+        def clean_metadata(metadata):
+            del metadata["study_name"]
+            del metadata["experiment_name"]
+            del metadata["seed"]
+            del metadata["split_name"]
+            del metadata["allow_overwrite_trial"]
+            del metadata["allow_diff_study"]
+            del metadata["allow_diff_experiment"]
+            del metadata["checkpoint_every"]
+            del metadata["verbose_batch_loss"]
+        
+        fpath_meta = self.dpath_experiment / "metadata_experiment.json"
+        metadata   = asdict(self.cfg)
+        clean_metadata(metadata)
+        if fpath_meta.exists() and not self.cfg.allow_diff_experiment:
+            metadata_loaded = load_json(fpath_meta)
+            assert metadata == metadata_loaded, "Experiment params changed!"
+        else:
+            save_json(metadata, fpath_meta)
 
-        if idx_epoch % CHECKPOINT_EVERY == 0:
-            modelw.save(dpath_model_checkpoint)
-            save_metadata_model(dpath_model_checkpoint, scores_val, idx_epoch)
-            save_metadata_trial(
-                dpath_trial, 
-                modelw.type, 
-                datetime_init, 
-                time_train_avg=time_train_avg, 
-                time_val_avg  =time_val_avg,
+    def save_metadata_trial(self, time_train_avg=None, time_val_avg=None):
+        fpath_meta = self.dpath_trial / "metadata_trial.json"
+        if time_train_avg is not None:
+            time_train_avg = f"{time_train_avg:.2f}"
+            time_val_avg   = f"{time_val_avg:.2f}"
+        metadata = {
+            "model_type":    self.cfg.model_type,
+            "runtime_avgs":  {
+                                "train": f"{time_train_avg}",
+                                "val":   f"{time_val_avg}",
+                            },      
+            "datetime_init": self.datetime_init,
+        }
+        save_json(metadata, fpath_meta)
+
+    def save_metadata_model(self, dpath_model, scores_val, idx_epoch):
+        fpath_meta = dpath_model / "metadata_model.json"
+        scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
+        metadata   = {
+            "scores_val": scores_val,
+            "idx_epoch":  idx_epoch,
+        }
+        save_json(metadata, fpath_meta)
+
+    def init_opt_and_lr_sched(self):
+
+        params_trainable = [p for p in self.modelw.model.parameters() if p.requires_grad]
+
+        self.optimizer = torch.optim.AdamW(params_trainable, lr=self.cfg.lr_init)
+        self.lr_sched  = ExponentialLR(self.optimizer, gamma=self.cfg.lr_decay)
+        if self.cfg.mp_train:
+            self.scaler = GradScaler()
+
+    def train(self):
+        
+        print(
+            f"",
+            f"{' Fine-Tuning Init ':#^{75}}",
+            f"",
+            sep="\n"
+        )
+        
+        data_tracker        = TrialDataTracker(self.dpath_trial)
+        scores_val, _, _, _ = self.val_pipe.evaluate(self.modelw, verbose=True)
+        data_tracker.update(scores_val)
+
+        time_train_avg = 0.0
+        time_val_avg   = 0.0
+        for idx_epoch in range(1, self.cfg.n_epochs + 1):
+
+            header_epoch = f" Epoch {idx_epoch} "
+            print(
+                f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.trial_fullname + ')'}",
+                f"",
+                sep="\n"
             )
-            data_tracker.save()
 
-        print(
-            f"{' Elapsed Time ':=^{75}}",
-            f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)",
-            f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)",
-            f"",
-            sep="\n"
-        )
+            time_train_start = time.time()
+            self.modelw.model.train()
+            loss_train_total = 0.0
+            for imgs_b, class_encs_b, texts_b in tqdm(self.dataloader, desc="Train", leave=False):
+                imgs_b = imgs_b.to(self.device, non_blocking=True)
+
+                self.optimizer.zero_grad()
+
+                if self.cfg.mp_train:
+                    with autocast(device_type=self.device.type):
+                        loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
+                    self.scaler.scale(loss_train_b).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
+                    loss_train_b.backward()
+                    self.optimizer.step()
+
+                with torch.no_grad():
+                    loss_train_b = loss_train_b.detach().item() * imgs_b.size(0)
+                    loss_train_total += loss_train_b
+                    if self.cfg.verbose_batch_loss:
+                        print(f"Batch Loss: {loss_train_b:.4f}")
+
+            lr = self.optimizer.param_groups[0]["lr"]
+            self.lr_sched.step()
+            
+            # compute avg. train loss per sample
+            if self.cfg.drop_partial_batch_train:
+                n_full_batches = len(self.dataloader.dataset) // self.cfg.batch_size_train
+                loss_train_avg = loss_train_total / (n_full_batches * self.cfg.batch_size_train)
+            else:
+                loss_train_avg = loss_train_total / len(self.dataloader.dataset)
+
+            time_train_end = time.time()
+            time_train     = time_train_end - time_train_start
+
+            print(
+                f"{' Train ':=^{75}}",
+                f"Loss --- {loss_train_avg:.4f}",
+                f"LR ----- {lr:.2e}",
+                f"",
+                sep="\n"
+            )
+
+            # validation
+            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.evaluate(self.modelw, verbose=True)
+            data_tracker.update(scores_val, lr=lr, loss_train=loss_train_avg)
+
+            # track running means via Welford's algorithm
+            time_train_avg += (time_train - time_train_avg) / idx_epoch
+            time_val_avg += (time_val - time_val_avg) / idx_epoch
+
+            if is_best_comp:
+                self.modelw.save(self.dpath_model_best_comp)
+                self.save_metadata_model(self.dpath_model_best_comp, scores_val, idx_epoch)
+                print(f"~ Best comp model saved to file ~\n")
+            if is_best_img2img:
+                self.modelw.save(self.dpath_model_best_img2img)
+                self.save_metadata_model(self.dpath_model_best_img2img, scores_val, idx_epoch)
+                print(f"~ Best img2img model saved to file ~\n")
+
+            if idx_epoch % self.cfg.checkpoint_every == 0:
+                self.modelw.save(self.dpath_model_checkpoint)
+                self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch)
+                self.save_metadata_trial(time_train_avg=time_train_avg, time_val_avg=time_val_avg)
+                data_tracker.save()
+
+            print(
+                f"{' Elapsed Time ':=^{75}}",
+                f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)",
+                f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)",
+                f"",
+                sep="\n"
+            )
+
+    def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):
+
+        embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
+        embs_txts = self.modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
+
+        sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
+        logits       = self.modelw.compute_logits(sim)
+        loss_train_b = self.modelw.compute_loss(logits, class_encs_b)
+
+        return loss_train_b
 
 def main():
 
-    dpath_study, dpath_experiment, dpath_trial, trial_fullname = get_trial_dpath(STUDY_NAME, EXPERIMENT_NAME, SEED, ALLOW_OVERWRITE_TRIAL)
-    print_train_init_info(
-        STUDY_NAME,
-        EXPERIMENT_NAME, 
-        SEED, 
-        trial_fullname,
-        SPLIT_NAME, 
-        MODEL_TYPE, 
-        LOSS_TYPE, 
-        BATCH_SIZE_TRAIN, 
-        LR_INIT, 
-        LR_DECAY, 
-        SLURM_ALLOC,
-        N_WORKERS,
-        PREFETCH_FACTOR,
-    )
-    # (any dir-init-related Value Errors and etc. should be caught above, before trial dirs are created)
-    create_trial_dirs(dpath_trial)
-    save_metadata_study(dpath_study, SPLIT_NAME, SLURM_ALLOC, N_WORKERS, PREFETCH_FACTOR, ALLOW_DIFF_STUDY)
-    save_metadata_experiment(dpath_experiment, train_config, ALLOW_DIFF_EXPERIMENT)
+    train_config = get_train_config()
+    seed_libs(train_config.seed)
 
-    seed_libs(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelw = VLMWrapper.build(MODEL_TYPE, device, loss_type=LOSS_TYPE)
+    modelw = VLMWrapper.build(train_config.model_type, device, loss_type=train_config.loss_type)
 
-    index_imgs_class_enc_train, index_imgs_rfpaths_train, index_imgs_sids_train, _ = spawn_indexes_imgs(
-        split_type="train",
-        split_name=SPLIT_NAME,
-    )
-
-    loader_train = spawn_dataloader(
-        index_imgs_class_enc=index_imgs_class_enc_train,
-        index_imgs_rfpaths  =index_imgs_rfpaths_train,
-        index_imgs_sids     =index_imgs_sids_train,
-        text_preps          =TEXT_PREPS_TRAIN,
-        batch_size          =BATCH_SIZE_TRAIN,
-        shuffle             =True,
-        drop_last           =DROP_PARTIAL_BATCH_TRAIN,
-        img_pp              =modelw.img_pp,
-        cached_imgs         =CACHED_IMGS,
-        n_workers           =N_WORKERS,
-        prefetch_factor     =PREFETCH_FACTOR,
-    )
-
-    val_pipe = ValidationPipeline(
-        split_name     =SPLIT_NAME,
-        text_preps     =TEXT_PREPS_VAL,
-        img_pp         =modelw.img_pp,
-        cached_imgs    =CACHED_IMGS,
-        batch_size     =BATCH_SIZE_VAL,
-        n_workers      =N_WORKERS,
-        prefetch_factor=PREFETCH_FACTOR,
-    )
-
-    train_pipeline(
-        modelw, 
-        loader_train, 
-        val_pipe,
-        dpath_trial,
-        trial_fullname,
-        device, 
-        n_epochs=N_EPOCHS, 
-        lr_init=LR_INIT,
-    )
+    train_pipe = TrainPipeline(modelw, train_config, device)
+    train_pipe.train()
 
 if __name__ == "__main__":
     main()

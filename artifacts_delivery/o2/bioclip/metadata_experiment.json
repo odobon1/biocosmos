@@ -1,0 +1,16 @@
+{
+    "model_type": "bioclip",
+    "loss_type": "infonce",
+    "n_epochs": 1000,
+    "batch_size_train": 1024,
+    "batch_size_val": 1024,
+    "lr_init": 1e-05,
+    "lr_decay": 0.99,
+    "freeze_text_encoder": false,
+    "freeze_image_encoder": false,
+    "cached_imgs": null,
+    "mixed_prec": true,
+    "drop_partial_batch_train": true,
+    "text_preps_type_train": "mixed",
+    "text_preps_type_val": "bioclip_sci"
+}

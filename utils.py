@@ -3,7 +3,7 @@ from pathlib import Path
 import random
 import os
 import numpy as np
-import torch
+import torch  # type: ignore[import]
 import json
 import subprocess
 import re
@@ -36,7 +36,7 @@ elif MACHINE == "hpg":
     dpath_vlm4bio          = dpath_data / "datasets/VLM4Bio"
 
     paths = {
-        "hf_cache":          dpath_data / "cache/huggingface/hub",
+        "hf_cache":         dpath_data / "cache/huggingface/hub",
         "biocosmos":        dpath_biocosmos,
         "repo_o":           dpath_repo_o,
         "metadata_o":       dpath_repo_o / "metadata_o",
@@ -114,16 +114,16 @@ def get_slurm_alloc():
         info[key] = val
 
     slurm_alloc = {
-        "gpus": int(info.get("gres/gpu", "0")),
-        "cpus": int(info.get("cpu", "0")),
-        "ram":  int(info.get("mem", "0").rstrip("G")),
+        "n_gpus": int(info.get("gres/gpu", "0")),
+        "n_cpus": int(info.get("cpu", "0")),
+        "ram":    int(info.get("mem", "0").rstrip("G")),
     }
 
     return slurm_alloc
 
 def compute_dataloader_workers_prefetch():
     slurm_alloc     = get_slurm_alloc()
-    n_workers       = slurm_alloc["cpus"]
+    n_workers       = slurm_alloc["n_cpus"]
     prefetch_factor = min(n_workers, 8)
 
     return n_workers, prefetch_factor, slurm_alloc

@@ -1,23 +1,23 @@
 study_name: dev
-experiment_name: dev_loss
+experiment_name: dev
 seed: 42
-split_name: S29-0
-# split_name: dev
 
-allow_overwrite_trial: true  # whether to allow overwrites in the artifacts/ dir
+allow_overwrite_trial: true  # whether to allow overwrites in the artifacts/study/experiment/trial/ dir
 allow_diff_study: true
 allow_diff_experiment: true
 
 # all vars below are saved at the experiment level except for checkpoint_every and verbose_batch_loss (which aren't saved at all)
 model_type: bioclip
 loss_type: infonce
+split_name: S29-0
+# split_name: dev
 
 n_epochs: 1000
-checkpoint_every: 2
+checkpoint_every: 1
+batch_size_train: 1024
+batch_size_val: 1024
 lr_init: 1.0e-5
 lr_decay: 0.99
-batch_size_train: 1024
-batch_size_val: 2048
 
 freeze_text_encoder: false
 freeze_image_encoder: false

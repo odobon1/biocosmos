@@ -1,49 +1,96 @@
-import torch
+import torch  # type: ignore[import]
+from pathlib import Path
+import yaml
+from dataclasses import dataclass
 
 from models import VLMWrapper
 from utils_eval import ValidationPipeline
-from utils import compute_dataloader_workers_prefetch
+from utils import paths, compute_dataloader_workers_prefetch, get_text_preps, load_json
 
 import pdb
 
 
-""" CONFIG PARAMS """
+@dataclass
+class EvalConfig:
+    rdpath_trial: str | None
+    save_crit: str  # model save criterion (only applicable if DPATH_TRIAL != None)
 
-MODEL_TYPE = "siglip_vitb16"
+    # params that get overridden if rdpath_trial is specified
+    model_type: str
+    loss_type: str
+    split_name: str
 
-TRIAL_NAME  = None  # which trial to load from (set None for original model)
-# TRIAL_NAME  = "dev/dev/42"
-SAVE_CRIT   = "comp"  # "comp" / "img2img" --- model save criterion (only applicable if TRIAL_NAME != None)
-CACHED_IMGS = False  # preload, preprocess, cache all images into memory
-BATCH_SIZE  = 1024
-SPLIT_NAME  = "S29-0"
-TEXT_PREPS  = [["a photo of "]]  # scientific name, BioCLIP-style prepending
+    batch_size: int
+    text_preps_type: str
 
-N_WORKERS, PREFETCH_FACTOR, _ = compute_dataloader_workers_prefetch()
+    cached_imgs: bool
+
+    def __post_init__(self):
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
+        self.n_gpus = slurm_alloc["n_gpus"]
+        self.n_cpus = slurm_alloc["n_cpus"]
+        self.ram    = slurm_alloc["ram"]
+
+        if self.rdpath_trial is not None:
+            metadata_experiment = load_json(paths["repo_o"] / self.rdpath_trial / "../metadata_experiment.json")
+            self.model_type     = metadata_experiment["model_type"]  # override model_type
+            self.loss_type      = metadata_experiment["loss_type"]  # override loss_type
+
+            metadata_study  = load_json(paths["repo_o"] / self.rdpath_trial / "../../metadata_study.json")
+            self.split_name = metadata_study["split_name"]
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.print_init_info()
+
+    @classmethod
+    def has_field(cls, name_field):
+        return name_field in cls.__dataclass_fields__
+
+    def print_init_info(self):
+        print(
+            f"",
+            f"Trial ------------- {self.rdpath_trial}{'' if self.rdpath_trial is None else ' (' + self.save_crit + ')'}",
+            f"",
+            f"Model Type -------- {self.model_type}",
+            f"Loss Type --------- {self.loss_type}",
+            f"Split ------------- {self.split_name}",
+            f"",
+            f"Batch Size -------- {self.batch_size}",
+            f"",
+            f"Num. GPUs --------- {self.n_gpus}",
+            f"Num. CPUs --------- {self.n_cpus}",
+            f"RAM --------------- {self.ram} GB",
+            f"",
+            f"Num. Workers ------ {self.n_workers}",
+            f"Prefetch Factor --- {self.prefetch_factor}",
+            f"",
+            f"Device ------------ {self.device}",
+            f"",
+            sep="\n"
+        )
+
+def get_config_eval():
+    with open(Path(__file__).parent / "config_eval.yaml") as f:
+        config_eval_dict = yaml.safe_load(f)
+    config_eval = EvalConfig(**config_eval_dict)
+    return config_eval
 
 def main():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelw = VLMWrapper.build(MODEL_TYPE, device, trial_name=TRIAL_NAME, save_crit=SAVE_CRIT)
+    config_eval = get_config_eval()
 
-    print(
-        f"device: {device}",
-        f"",
-        f"Split -------- {SPLIT_NAME}",
-        f"Model Type --- {modelw.type}",
-        f"Trial -------- {TRIAL_NAME}{'' if TRIAL_NAME is None else ' (' + SAVE_CRIT + ')'}",
-        f"",
-        sep="\n"
-    )
+    modelw = VLMWrapper.build(config_eval)
 
-    val_pipe = ValidationPipeline(
-        split_name     =SPLIT_NAME,
-        text_preps     =TEXT_PREPS,
-        batch_size     =BATCH_SIZE,
-        img_pp         =modelw.img_pp,
-        cached_imgs    =CACHED_IMGS,
-        n_workers      =N_WORKERS,
-        prefetch_factor=PREFETCH_FACTOR,
+    text_preps = get_text_preps(config_eval.text_preps_type)
+    val_pipe   = ValidationPipeline(
+        split_name     =config_eval.split_name,
+        text_preps     =text_preps,
+        batch_size     =config_eval.batch_size,
+        img_pp         =modelw.img_pp_val,
+        cached_imgs    =config_eval.cached_imgs,
+        n_workers      =config_eval.n_workers,
+        prefetch_factor=config_eval.prefetch_factor,
     )
 
     val_pipe.run_validation(modelw)

@@ -43,8 +43,6 @@ class TrainConfig:
     study_name: str
     experiment_name: str
     seed: int | None
-    checkpoint_every: int
-    split_name: str
 
     allow_overwrite_trial: bool
     allow_diff_study: bool
@@ -52,8 +50,10 @@ class TrainConfig:
 
     model_type: str
     loss_type: str
+    split_name: str
 
     n_epochs: int
+    checkpoint_every: int
     batch_size_train: int
     batch_size_val: int
     lr_init: float
@@ -70,14 +70,56 @@ class TrainConfig:
     text_preps_type_train: str
     text_preps_type_val: str
 
-def get_train_config():
+    def __post_init__(self):
+        if self.freeze_text_encoder and self.freeze_image_encoder:
+            raise ValueError("Text and image encoders are both set to frozen!")
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
+        self.n_gpus = slurm_alloc["n_gpus"]
+        self.n_cpus = slurm_alloc["n_cpus"]
+        self.ram    = slurm_alloc["ram"]
+
+        self.rdpath_trial = f"artifacts/{self.study_name}/{self.experiment_name}/{self.seed}"
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.print_init_info()
+
+    @classmethod
+    def has_field(cls, name_field):
+        return name_field in cls.__dataclass_fields__
+
+    def print_init_info(self):
+        print(
+            f"",
+            f"Study ---------------- {self.study_name}",
+            f"Experiment ----------- {self.experiment_name}",
+            f"Seed ----------------- {self.seed}",
+            f"Trial Path ----------- {self.rdpath_trial}",
+            f"",
+            f"Model Type ----------- {self.model_type}",
+            f"Loss Type ------------ {self.loss_type}",
+            f"Split ---------------- {self.split_name}",
+            f"",
+            f"Batch Size (Train) --- {self.batch_size_train}",
+            f"LR Init -------------- {self.lr_init}",
+            f"LR Decay ------------- {self.lr_decay}",
+            f"",
+            f"Num. GPUs ------------ {self.n_gpus}",
+            f"Num. CPUs ------------ {self.n_cpus}",
+            f"RAM ------------------ {self.ram} GB",
+            f"",
+            f"Num. Workers --------- {self.n_workers}",
+            f"Prefetch Factor ------ {self.prefetch_factor}",
+            f"",
+            f"Device --------------- {self.device}",
+            sep="\n"
+        )
+
+def get_config_train():
     with open(Path(__file__).parent / "config_train.yaml") as f:
-        train_config_dict = yaml.safe_load(f)
-    train_config = TrainConfig(**train_config_dict)
-
-    assert not (train_config.freeze_text_encoder and train_config.freeze_image_encoder), "Text and image encoders are both set to frozen!"
-
-    return train_config
+        config_train_dict = yaml.safe_load(f)
+    config_train = TrainConfig(**config_train_dict)
+    return config_train
 
 class TrialDataTracker:
 
@@ -118,31 +160,26 @@ class TrialDataTracker:
 
 class TrainPipeline:
 
-    def __init__(self, modelw, train_config, device):
+    def __init__(self, modelw, config_train):
         self.datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
         self.modelw = modelw
-        self.cfg    = train_config
-        self.device = device
+        self.cfg    = config_train
 
         self.modelw.freeze(self.cfg.freeze_text_encoder, self.cfg.freeze_image_encoder)
 
-        self.n_workers, self.prefetch_factor, self.slurm_alloc = compute_dataloader_workers_prefetch()
-
-        self.set_dpaths_and_trial_fullname()
-        self.print_init_info()
+        self.set_paths()
         self.create_trial_dirs()
         self.save_metadata_study()
         self.save_metadata_experiment()
-        self.save_metadata_trial()
 
         index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, _ = spawn_indexes_imgs(
             split_type="train",
             split_name=self.cfg.split_name,
         )
 
-        text_preps_train = get_text_preps(self.cfg.text_preps_type_train)
-        self.dataloader  = spawn_dataloader(
+        text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
+        self.dataloader, time_cache_train = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
             index_imgs_rfpaths  =index_imgs_rfpaths,
             index_imgs_sids     =index_imgs_sids,
@@ -150,10 +187,10 @@ class TrainPipeline:
             batch_size          =self.cfg.batch_size_train,
             shuffle             =True,
             drop_last           =self.cfg.drop_partial_batch_train,
-            img_pp              =self.modelw.img_pp,
+            img_pp              =self.modelw.img_pp_train,
             cached_imgs         =self.cfg.cached_imgs,
-            n_workers           =self.n_workers,
-            prefetch_factor     =self.prefetch_factor,
+            n_workers           =self.cfg.n_workers,
+            prefetch_factor     =self.cfg.prefetch_factor,
         )
 
         text_preps_val = get_text_preps(self.cfg.text_preps_type_val)
@@ -161,15 +198,24 @@ class TrainPipeline:
             split_name     =self.cfg.split_name,
             text_preps     =text_preps_val,
             batch_size     =self.cfg.batch_size_val,
-            img_pp         =self.modelw.img_pp,
+            img_pp         =self.modelw.img_pp_val,
             cached_imgs    =self.cfg.cached_imgs,
-            n_workers      =self.n_workers,
-            prefetch_factor=self.prefetch_factor,
+            n_workers      =self.cfg.n_workers,
+            prefetch_factor=self.cfg.prefetch_factor,
         )
 
+        self.set_time_cache(time_cache_train)
+        self.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
-    def set_dpaths_and_trial_fullname(self):
+    def set_time_cache(self, time_cache_train):
+        if time_cache_train is not None:
+            time_cache      = time_cache_train + self.val_pipe.time_cache
+            self.time_cache = f"{time_cache:.2f}"
+        else:
+            self.time_cache = None
+
+    def set_paths(self):
 
         self.dpath_study      = paths["artifacts"] / self.cfg.study_name
         self.dpath_experiment = self.dpath_study / self.cfg.experiment_name
@@ -196,32 +242,6 @@ class TrainPipeline:
         self.dpath_model_best_img2img = self.dpath_trial / "models/best_img2img"
         self.dpath_model_checkpoint   = self.dpath_trial / "models/checkpoint"
 
-        self.trial_fullname = str(self.dpath_trial).split("artifacts/")[1]
-
-    def print_init_info(self):
-        print(
-            f"",
-            f"Study -------- {self.cfg.study_name}",
-            f"Experiment --- {self.cfg.experiment_name}",
-            f"Seed --------- {self.cfg.seed}",
-            f"Trial -------- {self.trial_fullname}",
-            f"Split -------- {self.cfg.split_name}",
-            f"",
-            f"Model Type ----------- {self.cfg.model_type}",
-            f"Loss Type ------------ {self.cfg.loss_type}",
-            f"Batch Size (Train) --- {self.cfg.batch_size_train}",
-            f"LR Init -------------- {self.cfg.lr_init}",
-            f"LR Decay ------------- {self.cfg.lr_decay}",
-            f"",
-            f"Num. GPUs --- {self.slurm_alloc['gpus']}",
-            f"Num. CPUs --- {self.slurm_alloc['cpus']}",
-            f"RAM --------- {self.slurm_alloc['ram']} GB",
-            f"",
-            f"Num. Workers ------ {self.n_workers}",
-            f"Prefetch Factor --- {self.prefetch_factor}",
-            sep="\n"
-        )
-
     def create_trial_dirs(self):
         for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
             (self.dpath_trial / subdir).mkdir(parents=True)
@@ -230,11 +250,11 @@ class TrainPipeline:
         fpath_meta = self.dpath_study / "metadata_study.json"
         metadata   = {
             "split_name":      self.cfg.split_name,
-            "n_gpus":          self.slurm_alloc["gpus"],
-            "n_cpus":          self.slurm_alloc["cpus"],
-            "ram":             f"{self.slurm_alloc['ram']} GB",
-            "n_workers":       self.n_workers,
-            "prefetch_factor": self.prefetch_factor,
+            "n_gpus":          self.cfg.n_gpus,
+            "n_cpus":          self.cfg.n_cpus,
+            "ram":             f"{self.cfg.ram} GB",
+            "n_workers":       self.cfg.n_workers,
+            "prefetch_factor": self.cfg.prefetch_factor,
         }
         if fpath_meta.exists() and not self.cfg.allow_diff_study:
             metadata_loaded = load_json(fpath_meta)
@@ -270,18 +290,17 @@ class TrainPipeline:
             time_train_avg = f"{time_train_avg:.2f}"
             time_val_avg   = f"{time_val_avg:.2f}"
         metadata = {
-            "model_type":    self.cfg.model_type,
-            "runtime_avgs":  {"train": f"{time_train_avg}", "val":   f"{time_val_avg}"},      
+            "runtime_perf":  {"cache": self.time_cache, "train_avg": time_train_avg, "val_avg": time_val_avg},      
             "datetime_init": self.datetime_init,
         }
         save_json(metadata, fpath_meta)
 
-    def save_metadata_model(self, dpath_model, scores_val, idx_epoch):
+    def save_metadata_model(self, dpath_model, scores_val, idx_epoch_chkpt, idx_epoch):
         fpath_meta = dpath_model / "metadata_model.json"
         scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
         metadata   = {
             "scores_val": scores_val,
-            "idx_epoch":  idx_epoch,
+            "idx_epoch":  f"{idx_epoch_chkpt}/{idx_epoch}",
         }
         save_json(metadata, fpath_meta)
 
@@ -317,10 +336,10 @@ class TrainPipeline:
         # Plot 1: mAP/RR Scores
         ax0 = fig.add_subplot(gs[0, 0])
 
-        ax0.plot(x, data["id_img2txt_rr"], label="ID RR", color="blue")
+        ax0.plot(x, data["id_img2txt_rr"], label="ID img2txt RR", color="blue")
         ax0.plot(x, data["id_img2img_map"], label="ID img2img mAP", color="red")
         ax0.plot(x, data["id_txt2img_map"], label="ID txt2img mAP", color="green")
-        ax0.plot(x, data["ood_img2txt_rr"], label="OOD RR", color="blue", linestyle="--")
+        ax0.plot(x, data["ood_img2txt_rr"], label="OOD img2txt RR", color="blue", linestyle="--")
         ax0.plot(x, data["ood_img2img_map"], label="OOD img2img mAP", color="red", linestyle="--")
         ax0.plot(x, data["ood_txt2img_map"], label="OOD txt2img mAP", color="green", linestyle="--")
 
@@ -418,7 +437,6 @@ class TrainPipeline:
     def train(self):
         
         print(
-            f"",
             f"{' Fine-Tuning Init ':#^{75}}",
             f"",
             sep="\n"
@@ -428,13 +446,17 @@ class TrainPipeline:
         scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw, verbose=True)
         data_tracker.update(scores_val)
 
-        time_train_avg = 0.0
-        time_val_avg   = 0.0
+        time_train_avg          = 0.0
+        time_val_avg            = 0.0
+        idx_epoch_best_comp     = 0
+        idx_epoch_best_img2img  = 0
+        scores_val_best_comp    = None
+        scores_val_best_img2img = None
         for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
             header_epoch = f" Epoch {idx_epoch} "
             print(
-                f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.trial_fullname + ')'}",
+                f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
                 f"",
                 sep="\n"
             )
@@ -443,12 +465,12 @@ class TrainPipeline:
             self.modelw.model.train()
             loss_train_total = 0.0
             for imgs_b, class_encs_b, texts_b in tqdm(self.dataloader, desc="Train", leave=False):
-                imgs_b = imgs_b.to(self.device, non_blocking=True)
+                imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
 
                 self.optimizer.zero_grad()
 
                 if self.cfg.mixed_prec:
-                    with autocast(device_type=self.device.type):
+                    with autocast(device_type=self.cfg.device.type):
                         loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
@@ -495,16 +517,19 @@ class TrainPipeline:
 
             if is_best_comp:
                 self.modelw.save(self.dpath_model_best_comp)
-                self.save_metadata_model(self.dpath_model_best_comp, scores_val, idx_epoch)
+                idx_epoch_best_comp  = idx_epoch
+                scores_val_best_comp = scores_val
                 print(f"~ Best comp model saved to file ~\n")
             if is_best_img2img:
                 self.modelw.save(self.dpath_model_best_img2img)
-                self.save_metadata_model(self.dpath_model_best_img2img, scores_val, idx_epoch)
+                idx_epoch_best_img2img  = idx_epoch
+                scores_val_best_img2img = scores_val
                 print(f"~ Best img2img model saved to file ~\n")
-
-            if idx_epoch % self.cfg.checkpoint_every == 0:
+            if idx_epoch % self.cfg.checkpoint_every == 0 or is_best_comp or is_best_img2img:
                 self.modelw.save(self.dpath_model_checkpoint)
-                self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch)
+                self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch, idx_epoch)
+                self.save_metadata_model(self.dpath_model_best_comp, scores_val_best_comp, idx_epoch_best_comp, idx_epoch)
+                self.save_metadata_model(self.dpath_model_best_img2img, scores_val_best_img2img, idx_epoch_best_img2img, idx_epoch)
                 self.save_metadata_trial(time_train_avg=time_train_avg, time_val_avg=time_val_avg)
                 data_tracker.save()
                 self.plot_metrics(data_tracker)
@@ -530,13 +555,12 @@ class TrainPipeline:
 
 def main():
 
-    train_config = get_train_config()
-    seed_libs(train_config.seed)
+    config_train = get_config_train()
+    seed_libs(config_train.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelw = VLMWrapper.build(train_config.model_type, device, loss_type=train_config.loss_type)
+    modelw = VLMWrapper.build(config_train)
 
-    train_pipe = TrainPipeline(modelw, train_config, device)
+    train_pipe = TrainPipeline(modelw, config_train)
     train_pipe.train()
 
 if __name__ == "__main__":

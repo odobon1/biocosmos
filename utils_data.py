@@ -1,7 +1,7 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import tqdm
+import torch  # type: ignore[import]
+from torch.utils.data import Dataset, DataLoader  # type: ignore[import]
+from PIL import Image  # type: ignore[import]
+import tqdm  # type: ignore[import]
 import numpy as np
 import random
 import time
@@ -42,7 +42,7 @@ class ImageTextDataset(Dataset):
 
         self.n_samples = len(self.index_imgs_class_enc)
 
-        time_cache = None  # need to pass this var to metadata save
+        self.time_cache = None  # need to pass this var to metadata save
         if self.cached_imgs in ("pl", "pp"):
             time_start = time.time()
 
@@ -58,9 +58,9 @@ class ImageTextDataset(Dataset):
                                      desc ="Caching Images"):
                     self.imgs_mem.append(img)
 
-            time_end   = time.time()
-            time_cache = time_end - time_start
-            print(f"Time Elapsed (image caching): {time_cache:.1f} s")
+            time_end        = time.time()
+            self.time_cache = time_end - time_start
+            print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
     def __len__(self):
         return self.n_samples
@@ -189,7 +189,7 @@ def spawn_dataloader(
         n_workers,
     )
 
-    loader = DataLoader(
+    dataloader = DataLoader(
         dataset,
         batch_size        =batch_size,
         shuffle           =shuffle,
@@ -201,7 +201,7 @@ def spawn_dataloader(
         persistent_workers=True,
     )
 
-    return loader
+    return dataloader, dataset.time_cache
 
 def gen_text(sid, text_preps):
 

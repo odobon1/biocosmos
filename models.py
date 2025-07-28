@@ -1,13 +1,13 @@
-import torch
+import torch  # type: ignore[import]
 # monkey-patch modeling_utils safety check
-import transformers.modeling_utils as _mu
+import transformers.modeling_utils as _mu  # type: ignore[import]
 _mu.check_torch_load_is_safe = lambda *args, **kwargs: None
 
-import torch.nn.functional as F
-import open_clip
+import torch.nn.functional as F  # type: ignore[import]
+import open_clip  # type: ignore[import]
 import abc
 
-from utils import paths, load_json
+from utils import paths
 
 import pdb
 
@@ -56,62 +56,63 @@ class VLMWrapper(abc.ABC):
     Base class for all vision-language model wrappers. Dispatches to an appropriate subclass based on model_type and
     centralizes common initialization logic (e.g. device, tokenizer, checkpoint, etc.)
     """
-    def __init__(self, model_type, device, model_name, pretrained, quick_gelu):
+    def __init__(self, config, model_name, pretrained, quick_gelu):
         """
         maybe add logic supporting quick_gelu = None and evaluate BioCLIP 2 once more, also enables systematically 
         checking through model types once the experimental infrastructure is more fleshed out
 
         Args:
-        - model_type --- [str] --------------- Indicates which pretrained backbone to load
-        - device ------- [torch.device] ------ Target device for all model tensors
-        - model_name --- [str] --------------- open_clip model identifier
-        - pretrained --- [str] --------------- 
-        - quick_gelu --- [bool] -------------- 
+        - config ------- [TrainConfig or EvaLConfig] --- configuration object
+        - model_name --- [str] ------------------------- open_clip model identifier
+        - pretrained --- [str] ------------------------- 
+        - quick_gelu --- [bool] ------------------------ 
         """
 
-        model, _, img_pp = open_clip.create_model_and_transforms(
+        model, img_pp_train, img_pp_val = open_clip.create_model_and_transforms(
             model_name, 
             pretrained=pretrained, 
             quick_gelu=quick_gelu,
             cache_dir=paths["hf_cache"],
         )
 
-        self.device = device
-        self.type   = model_type
-        self.model  = model.to(device).eval()
-        self.img_pp = img_pp
+        self.device       = config.device
+        self.type         = config.model_type
+        self.model        = model.to(self.device).eval()
+        self.img_pp_train = img_pp_train
+        self.img_pp_val   = img_pp_val
 
         tokenizer   = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
     @classmethod
-    def build(cls, model_type, device, trial_name=None, save_crit="comp", loss_type=None):
+    def build(cls, config):
 
         model_state_dict = None
-        if trial_name:
-            print(f"\nLoading '{trial_name}' ({save_crit})...\n")
-            fpath_model_state_dict = paths["artifacts"] / trial_name / f"models/best_{save_crit}/state_dict_model.pt"
+        if config.has_field("rdpath_trial") and config.rdpath_trial is not None:
+            print(f"Loading '{config.rdpath_trial}' ({config.save_crit})...")
+            fpath_model_state_dict = paths["repo_o"] / config.rdpath_trial / f"models/best_{config.save_crit}/state_dict_model.pt"
             model_state_dict       = torch.load(
                 fpath_model_state_dict, 
                 # map_location=device,
                 map_location="cpu",  # map_location = "cpu" avoids loading two copies of the entire state dict into VRAM at once
             )
-            model_type = load_json(paths["artifacts"] / trial_name / "metadata_trial.json")["model_type"]  # override model_type
         else:
-            print("\nLoading Fresh Model...")
+            print("Loading fresh model...")
 
-        if model_type in CLIP_MODELS:
-            inst = CLIPWrapper(model_type, device)
-        elif model_type in SIGLIP_MODELS:
-            inst = SigLIPWrapper(model_type, device)
-        elif model_type in VITAMIN_MODELS:
-            inst = ViTaminWrapper(model_type, device)
+        if config.model_type in CLIP_MODELS:
+            inst = CLIPWrapper(config)
+        elif config.model_type in SIGLIP_MODELS:
+            inst = SigLIPWrapper(config)
+        elif config.model_type in VITAMIN_MODELS:
+            inst = ViTaminWrapper(config)
         else:
-            raise ValueError(f"Unknown model_type: '{model_type}'")
+            raise ValueError(f"Unknown model_type: '{config.model_type}'")
 
-        inst.loss_type = loss_type
+        inst.loss_type = config.loss_type
         if model_state_dict is not None:
             inst.model.load_state_dict(model_state_dict)
+
+        print("Model loaded!\n")
 
         return inst
 
@@ -258,9 +259,11 @@ class VLMWrapper(abc.ABC):
         raise NotImplementedError
 
 class CLIPWrapper(VLMWrapper):
-    def __init__(self, model_type, device):
-        model_name, pretrained, quick_gelu = CLIP_MODELS[model_type]
-        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+    def __init__(self, config):
+        model_name, pretrained, quick_gelu = CLIP_MODELS[config.model_type]
+        super().__init__(config, model_name, pretrained, quick_gelu)
+
+        self.input_res = self.img_pp_val.transforms[1].size[0]
 
     def freeze_text_encoder(self):
         for name, param in self.model.named_parameters():
@@ -274,9 +277,11 @@ class CLIPWrapper(VLMWrapper):
                 param.requires_grad = False
 
 class SigLIPWrapper(VLMWrapper):
-    def __init__(self, model_type, device):
-        model_name, pretrained, quick_gelu = SIGLIP_MODELS[model_type]
-        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+    def __init__(self, config):
+        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.model_type]
+        super().__init__(config, model_name, pretrained, quick_gelu)
+
+        self.input_res = self.img_pp_val.transforms[0].size[0]
 
     def freeze_text_encoder(self):
         for name, param in self.model.named_parameters():
@@ -284,9 +289,11 @@ class SigLIPWrapper(VLMWrapper):
                 param.requires_grad = False
 
 class ViTaminWrapper(VLMWrapper):
-    def __init__(self, model_type, device):
-        model_name, pretrained, quick_gelu = VITAMIN_MODELS[model_type]
-        super().__init__(model_type, device, model_name, pretrained, quick_gelu)
+    def __init__(self, config):
+        model_name, pretrained, quick_gelu = VITAMIN_MODELS[config.model_type]
+        super().__init__(config, model_name, pretrained, quick_gelu)
+
+        self.input_res = self.img_pp_val.transforms[1].size[0]
 
     def freeze_text_encoder(self):
         for name, param in self.model.named_parameters():

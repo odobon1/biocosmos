@@ -1,7 +1,7 @@
-import torch
-from torch.amp import autocast
+import torch  # type: ignore[import]
+from torch.amp import autocast  # type: ignore[import]
 import time
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
 
 from utils_data import spawn_dataloader, spawn_indexes_imgs, spawn_indexes_txts
 
@@ -116,7 +116,7 @@ class EvaluationPipeline:
             text_preps     =text_preps,
         )
 
-        self.dataloader = spawn_dataloader(
+        self.dataloader, self.time_cache = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
             index_imgs_rfpaths  =index_imgs_rfpaths,
             index_imgs_sids     =index_imgs_sids,
@@ -222,7 +222,7 @@ class ValidationPipeline:
         self.best_score_comp = None
         self.best_score_comp_img2img = None
 
-        self.id_val_pipe = EvaluationPipeline(
+        self.val_pipe_id = EvaluationPipeline(
             split_type     ="id_val",
             split_name     =split_name,
             text_preps     =text_preps,
@@ -233,7 +233,7 @@ class ValidationPipeline:
             prefetch_factor=prefetch_factor,
         )
 
-        self.ood_val_pipe = EvaluationPipeline(
+        self.val_pipe_ood = EvaluationPipeline(
             split_type     ="ood_val",
             split_name     =split_name,
             text_preps     =text_preps,
@@ -243,6 +243,8 @@ class ValidationPipeline:
             n_workers      =n_workers,
             prefetch_factor=prefetch_factor,
         )
+
+        self.set_time_cache()
 
         self.scores_tracker = {
             "id_img2txt_prec1":  [],
@@ -257,34 +259,40 @@ class ValidationPipeline:
             "comp_img2img":      [],
         }
 
+    def set_time_cache(self):
+        if self.val_pipe_id.time_cache is not None:
+            self.time_cache = self.val_pipe_id.time_cache + self.val_pipe_ood.time_cache
+        else:
+            self.time_cache = None
+
     def run_validation(self, modelw, verbose=True):
         """
         `is_best` param in the return will dictate when models are saved (early stopping)
         """
 
-        scores_id_val, loss_avg_id, time_elapsed_id_val = self.id_val_pipe.evaluate_split(modelw)
-        scores_ood_val, loss_avg_ood, time_elapsed_ood_val = self.ood_val_pipe.evaluate_split(modelw)
+        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw)
+        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw)
 
-        score_comp = (scores_id_val["img2txt_rr"] + \
-                      scores_id_val["img2img_map"] + \
-                      scores_id_val["txt2img_map"] + \
-                      scores_ood_val["img2txt_rr"] + \
-                      scores_ood_val["img2img_map"] + \
-                      scores_ood_val["txt2img_map"]) / 6
-        score_comp_img2img = (scores_id_val["img2img_map"] + scores_ood_val["img2img_map"]) / 2
+        score_comp = (scores_id["img2txt_rr"] + \
+                      scores_id["img2img_map"] + \
+                      scores_id["txt2img_map"] + \
+                      scores_ood["img2txt_rr"] + \
+                      scores_ood["img2img_map"] + \
+                      scores_ood["txt2img_map"]) / 6
+        score_comp_img2img = (scores_id["img2img_map"] + scores_ood["img2img_map"]) / 2
 
         is_best_comp, is_best_img2img = self.check_bests(score_comp, score_comp_img2img)
 
         scores_val = {
-            "id_img2txt_prec1":  scores_id_val["img2txt_prec1"],
-            "id_img2txt_rr":     scores_id_val["img2txt_rr"],
-            "id_img2img_map":    scores_id_val["img2img_map"],
-            "id_txt2img_map":    scores_id_val["txt2img_map"],
+            "id_img2txt_prec1":  scores_id["img2txt_prec1"],
+            "id_img2txt_rr":     scores_id["img2txt_rr"],
+            "id_img2img_map":    scores_id["img2img_map"],
+            "id_txt2img_map":    scores_id["txt2img_map"],
             "id_loss":           loss_avg_id,
-            "ood_img2txt_prec1": scores_ood_val["img2txt_prec1"],
-            "ood_img2txt_rr":    scores_ood_val["img2txt_rr"],
-            "ood_img2img_map":   scores_ood_val["img2img_map"],
-            "ood_txt2img_map":   scores_ood_val["txt2img_map"],
+            "ood_img2txt_prec1": scores_ood["img2txt_prec1"],
+            "ood_img2txt_rr":    scores_ood["img2txt_rr"],
+            "ood_img2img_map":   scores_ood["img2img_map"],
+            "ood_txt2img_map":   scores_ood["txt2img_map"],
             "ood_loss":          loss_avg_ood,
             "comp":              score_comp,
             "comp_img2img":      score_comp_img2img,
@@ -293,7 +301,7 @@ class ValidationPipeline:
         if verbose:
             self.print_val(scores_val)
 
-        time_elapsed_val = time_elapsed_id_val + time_elapsed_ood_val
+        time_elapsed_val = time_elapsed_id + time_elapsed_ood
 
         return scores_val, is_best_comp, is_best_img2img, time_elapsed_val
 
@@ -329,9 +337,9 @@ class ValidationPipeline:
             f"Composite ----------- {scores['comp']:.4f} (best: {self.best_score_comp:.4f})",
             f"img2img Composite --- {scores['comp_img2img']:.4f} (best: {self.best_score_comp_img2img:.4f})",
             f"{'':-^{75}}",
-            f"ID Loss ------------- {scores['id_loss']:.4f}",
-            f"OOD Loss ------------ {scores['ood_loss']:.4f}",
-            f"Comp Loss ----------- {scores['comp_loss']:.4f}",
+            f"ID Loss ----- {scores['id_loss']:.4f}",
+            f"OOD Loss ---- {scores['ood_loss']:.4f}",
+            f"Comp Loss --- {scores['comp_loss']:.4f}",
             f"",
             sep="\n"
         )

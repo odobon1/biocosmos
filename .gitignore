@@ -3,6 +3,8 @@ metadata_o/__pycache__/
 
 metadata_o/data_indexes/*
 !metadata_o/data_indexes/.gitkeep
+!metadata_o/data_indexes/S29-0/
+!metadata_o/data_indexes/S29-0/**
 
 metadata_o/rank_keys/*
 !metadata_o/rank_keys/.gitkeep

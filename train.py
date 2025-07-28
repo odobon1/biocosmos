@@ -366,8 +366,8 @@ class TrainPipeline:
         # Plot 3: Precision@1
         ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
 
-        ax2.plot(x, data["id_img2txt_prec1"], label="ID prec@1")
-        ax2.plot(x, data["ood_img2txt_prec1"], label="OOD prec@1")
+        ax2.plot(x, data["id_img2txt_prec1"], label="ID img2txt Prec@1")
+        ax2.plot(x, data["ood_img2txt_prec1"], label="OOD img2txt Prec@1")
 
         ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
         ax2.set_ylim(0, 1)

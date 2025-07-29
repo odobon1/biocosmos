@@ -58,6 +58,7 @@ class TrainConfig:
     batch_size_val: int
     lr_init: float
     lr_decay: float
+    weight_decay: float
 
     freeze_text_encoder: bool
     freeze_image_encoder: bool
@@ -103,6 +104,7 @@ class TrainConfig:
             f"Batch Size (Train) --- {self.batch_size_train}",
             f"LR Init -------------- {self.lr_init}",
             f"LR Decay ------------- {self.lr_decay}",
+            f"Weight Decay --------- {self.weight_decay}",
             f"",
             f"Num. GPUs ------------ {self.n_gpus}",
             f"Num. CPUs ------------ {self.n_cpus}",
@@ -306,10 +308,27 @@ class TrainPipeline:
 
     def init_opt_and_lr_sched(self):
 
-        params_trainable = [p for p in self.modelw.model.parameters() if p.requires_grad]
+        params_decay, params_no_decay = [], []
+        for name, param in self.modelw.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.endswith(".bias") or param.ndim == 1 or "norm" in name.lower():
+                params_no_decay.append(param)
+            else:
+                params_decay.append(param)
 
-        self.optimizer = torch.optim.AdamW(params_trainable, lr=self.cfg.lr_init)
-        self.lr_sched  = ExponentialLR(self.optimizer, gamma=self.cfg.lr_decay)
+        param_groups = [
+            {"params": params_decay,    "weight_decay": self.cfg.weight_decay},
+            {"params": params_no_decay, "weight_decay": 0.0},
+        ]
+
+        self.optimizer = torch.optim.AdamW(
+            param_groups, 
+            lr   =self.cfg.lr_init,
+            betas=(0.9, 0.98),  # CLIP paper's recommended betas: B1 = 0.9; B2 = 0.999 (ResNet) / 0.98 (ViT)
+            eps  =1e-6,  # CLIP paper's recommended epsilon: 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+        )
+        self.lr_sched = ExponentialLR(self.optimizer, gamma=self.cfg.lr_decay)
         if self.cfg.mixed_prec:
             self.scaler = GradScaler()
 

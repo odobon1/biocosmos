@@ -130,7 +130,7 @@ class EvaluationPipeline:
             prefetch_factor     =prefetch_factor,
         )
 
-    def evaluate_split(self, modelw):
+    def evaluate_split(self, modelw, verbose_batch_loss=False):
         time_start = time.time()
         modelw.model.eval()
 
@@ -168,6 +168,12 @@ class EvaluationPipeline:
                     sim_b       = embs_imgs_b @ embs_txts_b.T
                     logits_b    = modelw.compute_logits(sim_b)
                     loss_b      = modelw.compute_loss(logits_b, targ_classes_enc_b)
+
+                batch_loss = loss_b.detach().item() * B
+                loss_total += batch_loss
+                n_samples_loss += B
+                if verbose_batch_loss:
+                    print(f"Batch Loss: {batch_loss:.4f}")
 
                 loss_total     += loss_b.detach().item() * B
                 n_samples_loss += B
@@ -265,13 +271,13 @@ class ValidationPipeline:
         else:
             self.time_cache = None
 
-    def run_validation(self, modelw, verbose=True):
+    def run_validation(self, modelw, verbose=True, verbose_batch_loss=False):
         """
         `is_best` param in the return will dictate when models are saved (early stopping)
         """
 
-        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw)
-        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw)
+        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw, verbose_batch_loss)
+        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw, verbose_batch_loss)
 
         score_comp = (scores_id["img2txt_rr"] + \
                       scores_id["img2img_map"] + \

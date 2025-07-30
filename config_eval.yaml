@@ -11,3 +11,5 @@ batch_size: 1024
 text_preps_type: bioclip_sci
 
 cached_imgs: null  # options: null / pl / pp
+
+verbose_batch_loss: false

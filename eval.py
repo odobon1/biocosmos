@@ -25,6 +25,8 @@ class EvalConfig:
 
     cached_imgs: bool
 
+    verbose_batch_loss: bool
+
     def __post_init__(self):
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
@@ -93,7 +95,7 @@ def main():
         prefetch_factor=config_eval.prefetch_factor,
     )
 
-    val_pipe.run_validation(modelw)
+    val_pipe.run_validation(modelw, verbose_batch_loss=config_eval.verbose_batch_loss)
 
 if __name__ == "__main__":
     main()

@@ -462,7 +462,11 @@ class TrainPipeline:
         )
         
         data_tracker        = TrialDataTracker(self.dpath_trial)
-        scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw, verbose=True)
+        scores_val, _, _, _ = self.val_pipe.run_validation(
+            self.modelw, 
+            verbose           =True, 
+            verbose_batch_loss=self.cfg.verbose_batch_loss
+        )
         data_tracker.update(scores_val)
 
         time_train_avg          = 0.0
@@ -527,7 +531,11 @@ class TrainPipeline:
             )
 
             # validation
-            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(self.modelw, verbose=True)
+            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
+                self.modelw, 
+                verbose           =True, 
+                verbose_batch_loss=self.cfg.verbose_batch_loss
+            )
             data_tracker.update(scores_val, lr=lr, loss_train=loss_train_avg)
 
             # track running means via Welford's algorithm

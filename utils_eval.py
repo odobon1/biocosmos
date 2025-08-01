@@ -52,8 +52,7 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
 
 def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, classes_enc_cands):
     """
-    Originally: Vectorized mAP for evaluating text-to-image retrieval.
-    Now: Generalized such that it can also be used for computing mAP (RR) for image-to-text retrieval.
+    Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
     Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
     
     Args:
@@ -187,16 +186,29 @@ class EvaluationPipeline:
         prec1_img2txt                = n_correct / n_samps
         eval_scores["img2txt_prec1"] = prec1_img2txt
 
-        # img2txt RR (via mAP) computation ~ mAP is equivalent to RR when all gallery instances are class-singletons i.e. one sample per class
-        map_img2txt               = compute_map_cross_modal(embs_imgs, classes_enc_imgs, embs_txts_all.cpu(), torch.tensor(self.index_txts_class_enc))
-        eval_scores["img2txt_rr"] = map_img2txt  # mean average precision (mAP) is identical to reciprocal rank (RR) in this context
+        # img2txt mAP computation
+        map_img2txt = compute_map_cross_modal(
+            embs_imgs, 
+            classes_enc_imgs, 
+            embs_txts_all.cpu(), 
+            torch.tensor(self.index_txts_class_enc),
+        )
+        eval_scores["img2txt_map"] = map_img2txt
 
         # img2img mAP computation
-        map_img2img                = compute_map_img2img(embs_imgs, classes_enc_imgs)
+        map_img2img = compute_map_img2img(
+            embs_imgs, 
+            classes_enc_imgs,
+        )
         eval_scores["img2img_map"] = map_img2img
 
         # txt2img mAP computation
-        map_txt2img                = compute_map_cross_modal(embs_txts_all.cpu(), torch.tensor(self.index_txts_class_enc), embs_imgs, classes_enc_imgs)
+        map_txt2img = compute_map_cross_modal(
+            embs_txts_all.cpu(), 
+            torch.tensor(self.index_txts_class_enc), 
+            embs_imgs, 
+            classes_enc_imgs,
+        )
         eval_scores["txt2img_map"] = map_txt2img
 
         # loss aggregation
@@ -254,11 +266,11 @@ class ValidationPipeline:
 
         self.scores_tracker = {
             "id_img2txt_prec1":  [],
-            "id_img2txt_rr":     [],
+            "id_img2txt_map":    [],
             "id_img2img_map":    [],
             "id_txt2img_map":    [],
             "ood_img2txt_prec1": [],
-            "ood_img2txt_rr":    [],
+            "ood_img2txt_map":   [],
             "ood_img2img_map":   [],
             "ood_txt2img_map":   [],
             "comp":              [],
@@ -279,10 +291,10 @@ class ValidationPipeline:
         scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw, verbose_batch_loss)
         scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw, verbose_batch_loss)
 
-        score_comp = (scores_id["img2txt_rr"] + \
+        score_comp = (scores_id["img2txt_map"] + \
                       scores_id["img2img_map"] + \
                       scores_id["txt2img_map"] + \
-                      scores_ood["img2txt_rr"] + \
+                      scores_ood["img2txt_map"] + \
                       scores_ood["img2img_map"] + \
                       scores_ood["txt2img_map"]) / 6
         score_comp_img2img = (scores_id["img2img_map"] + scores_ood["img2img_map"]) / 2
@@ -291,12 +303,12 @@ class ValidationPipeline:
 
         scores_val = {
             "id_img2txt_prec1":  scores_id["img2txt_prec1"],
-            "id_img2txt_rr":     scores_id["img2txt_rr"],
+            "id_img2txt_map":    scores_id["img2txt_map"],
             "id_img2img_map":    scores_id["img2img_map"],
             "id_txt2img_map":    scores_id["txt2img_map"],
             "id_loss":           loss_avg_id,
             "ood_img2txt_prec1": scores_ood["img2txt_prec1"],
-            "ood_img2txt_rr":    scores_ood["img2txt_rr"],
+            "ood_img2txt_map":   scores_ood["img2txt_map"],
             "ood_img2img_map":   scores_ood["img2img_map"],
             "ood_txt2img_map":   scores_ood["txt2img_map"],
             "ood_loss":          loss_avg_ood,
@@ -333,10 +345,10 @@ class ValidationPipeline:
 
         print(
             f"{header:=^{75}}",
-            f"ID img2txt RR ------- {scores['id_img2txt_rr']:.4f}",
+            f"ID img2txt mAP ------ {scores['id_img2txt_map']:.4f}",
             f"ID img2img mAP ------ {scores['id_img2img_map']:.4f}",
             f"ID txt2img mAP ------ {scores['id_txt2img_map']:.4f}",
-            f"OOD img2txt RR ------ {scores['ood_img2txt_rr']:.4f}",
+            f"OOD img2txt mAP ----- {scores['ood_img2txt_map']:.4f}",
             f"OOD img2img mAP ----- {scores['ood_img2img_map']:.4f}",
             f"OOD txt2img mAP ----- {scores['ood_txt2img_map']:.4f}",
             f"{'':-^{75}}",

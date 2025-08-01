@@ -1,5 +1,5 @@
 study_name: dev
-experiment_name: plat
+experiment_name: dev
 seed: 42
 
 allow_overwrite_trial: true  # whether to allow overwrites in the artifacts/study/experiment/trial/ dir
@@ -9,18 +9,33 @@ allow_diff_experiment: true
 # all vars below are saved at the experiment level except for checkpoint_every and verbose_batch_loss (which aren't saved at all)
 model_type: clip_vitb16
 loss_type: infonce
-split_name: S29-0
-# split_name: dev
+# split_name: S29-0
+split_name: dev
 
-n_epochs: 20
+n_epochs: 200
 checkpoint_every: 1
 batch_size_train: 1024
 batch_size_val: 1024
-lr_sched_type: plat  # options: exp / plat
+
 lr_init: 1.0e-5
-lr_decay: 0.9
-lr_patience: 2  # patience for plateau scheculer
-weight_decay: 0.0  # CLIP paper's recommended weight_decay = 0.2
+weight_decay: 0.0  # CLIP paper recommends weight_decay = 0.2
+beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
+beta2: 0.98  # CLIP paper recommends Beta2 = 0.999 (ResNet) / 0.98 (ViT)
+eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+
+lr_sched_type: coswr  # options: exp / plat / cos / coswr
+# exp
+lr_exp_decay: 0.99
+# plat (may also want to tweak threshold / eps)
+lr_plat_factor: 0.5
+lr_plat_patience: 0
+lr_plat_cooldown: 0
+# cos
+lr_cos_t_max: 10  # half-period length
+# coswr
+lr_coswr_T_0: 7  # period length
+# cos + coswr + plat
+lr_min: 1.0e-7
 
 freeze_text_encoder: false
 freeze_image_encoder: false

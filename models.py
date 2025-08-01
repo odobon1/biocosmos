@@ -189,7 +189,7 @@ class VLMWrapper(abc.ABC):
         elif self.loss_type in ("pairwise_sigmoid", "pairwise_sigmoid_upwtdpos", "multipos_sigmoid"):
             return self.compute_logits_siglip(sim)
         else:
-            raise ValueError(self.loss_type)
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}'")
 
     def compute_logits_clip(self, sim):
         logits = sim * self.model.logit_scale.exp()
@@ -213,7 +213,7 @@ class VLMWrapper(abc.ABC):
         elif self.loss_type == "multipos_sigmoid":
             return self.compute_loss_multipos_sigmoid(logits, reduction, class_encs_b)
         else:
-            raise ValueError(self.loss_type)
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}'")
 
     def compute_loss_infonce(self, logits, reduction):
         B       = logits.size(0)

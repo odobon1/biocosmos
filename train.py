@@ -1,6 +1,6 @@
 import torch  # type: ignore[import]
 from torch.amp import autocast, GradScaler  # type: ignore[import]
-from torch.optim.lr_scheduler import ExponentialLR  # type: ignore[import]
+from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 import time
 from datetime import datetime, timezone
@@ -56,8 +56,10 @@ class TrainConfig:
     checkpoint_every: int
     batch_size_train: int
     batch_size_val: int
+    lr_sched_type: str
     lr_init: float
     lr_decay: float
+    lr_patience: int  # patience for plateau scheduler
     weight_decay: float
 
     freeze_text_encoder: bool
@@ -102,6 +104,7 @@ class TrainConfig:
             f"Split ---------------- {self.split_name}",
             f"",
             f"Batch Size (Train) --- {self.batch_size_train}",
+            f"LR Scheduler --------- {self.lr_sched_type}",
             f"LR Init -------------- {self.lr_init}",
             f"LR Decay ------------- {self.lr_decay}",
             f"Weight Decay --------- {self.weight_decay}",
@@ -167,6 +170,7 @@ class TrainPipeline:
 
         self.modelw = modelw
         self.cfg    = config_train
+        self.lr     = self.cfg.lr_init
 
         self.modelw.freeze(self.cfg.freeze_text_encoder, self.cfg.freeze_image_encoder)
 
@@ -276,6 +280,8 @@ class TrainPipeline:
             del metadata["allow_diff_experiment"]
             del metadata["checkpoint_every"]
             del metadata["verbose_batch_loss"]
+            if metadata["lr_sched_type"] == "exp":
+                del metadata["lr_patience"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
@@ -328,7 +334,22 @@ class TrainPipeline:
             betas=(0.9, 0.98),  # CLIP paper's recommended betas: B1 = 0.9; B2 = 0.999 (ResNet) / 0.98 (ViT)
             eps  =1e-6,  # CLIP paper's recommended epsilon: 1.0e-8 (ResNet) / 1.0e-6 (ViT)
         )
-        self.lr_sched = ExponentialLR(self.optimizer, gamma=self.cfg.lr_decay)
+
+        if self.cfg.lr_sched_type == "exp":
+            self.lr_sched = ExponentialLR(
+                self.optimizer, 
+                gamma=self.cfg.lr_decay,
+            )
+        elif self.cfg.lr_sched_type == "plat":
+            self.lr_sched = ReduceLROnPlateau(
+                self.optimizer,
+                mode="min",
+                factor=self.cfg.lr_decay,
+                patience=self.cfg.lr_patience,
+            )
+        else:
+            raise ValueError(f"Unknown lr_sched_type: '{self.cfg.lr_sched_type}'")
+
         if self.cfg.mixed_prec:
             self.scaler = GradScaler()
 
@@ -473,16 +494,10 @@ class TrainPipeline:
         time_val_avg            = 0.0
         idx_epoch_best_comp     = 0
         idx_epoch_best_img2img  = 0
-        scores_val_best_comp    = None
-        scores_val_best_img2img = None
+        scores_val_best_comp    = {}
+        scores_val_best_img2img = {}
         for idx_epoch in range(1, self.cfg.n_epochs + 1):
-
-            header_epoch = f" Epoch {idx_epoch} "
-            print(
-                f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
-                f"",
-                sep="\n"
-            )
+            self.print_epoch_header(idx_epoch)
 
             time_train_start = time.time()
             self.modelw.model.train()
@@ -508,9 +523,6 @@ class TrainPipeline:
                     loss_train_total += loss_train_b
                     if self.cfg.verbose_batch_loss:
                         print(f"Batch Loss: {loss_train_b:.4f}")
-
-            lr = self.optimizer.param_groups[0]["lr"]
-            self.lr_sched.step()
             
             # compute avg. train loss per sample
             if self.cfg.drop_partial_batch_train:
@@ -522,21 +534,21 @@ class TrainPipeline:
             time_train_end = time.time()
             time_train     = time_train_end - time_train_start
 
-            print(
-                f"{' Train ':=^{75}}",
-                f"Loss --- {loss_train_avg:.4f}",
-                f"LR ----- {lr:.2e}",
-                f"",
-                sep="\n"
-            )
-
             # validation
             scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
                 self.modelw, 
                 verbose           =True, 
-                verbose_batch_loss=self.cfg.verbose_batch_loss
+                verbose_batch_loss=self.cfg.verbose_batch_loss,
             )
-            data_tracker.update(scores_val, lr=lr, loss_train=loss_train_avg)
+            data_tracker.update(scores_val, lr=self.lr, loss_train=loss_train_avg)
+
+            self.step_lr_scheduler(scores_val)
+
+            print(
+                f"Train Loss --- {loss_train_avg:.4f}",
+                f"",
+                sep="\n"
+            )
 
             # track running means via Welford's algorithm
             time_train_avg += (time_train - time_train_avg) / idx_epoch
@@ -568,6 +580,23 @@ class TrainPipeline:
                 f"",
                 sep="\n"
             )
+
+    def print_epoch_header(self, idx_epoch):
+        header_epoch = f" Epoch {idx_epoch} "
+        print(
+            f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
+            f"",
+            f"{' Train ':=^{75}}",
+            f"LR ----- {self.lr:.2e}",
+            sep="\n"
+        )
+
+    def step_lr_scheduler(self, scores_val):
+        if self.cfg.lr_sched_type == "exp":
+            self.lr_sched.step()
+        elif self.cfg.lr_sched_type == "plat":
+            self.lr_sched.step(scores_val["comp_loss"])
+        self.lr = self.optimizer.param_groups[0]["lr"]
 
     def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):
 

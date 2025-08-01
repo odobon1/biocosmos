@@ -1,5 +1,5 @@
 study_name: dev
-experiment_name: dev_l2
+experiment_name: plat
 seed: 42
 
 allow_overwrite_trial: true  # whether to allow overwrites in the artifacts/study/experiment/trial/ dir
@@ -7,18 +7,20 @@ allow_diff_study: true
 allow_diff_experiment: true
 
 # all vars below are saved at the experiment level except for checkpoint_every and verbose_batch_loss (which aren't saved at all)
-model_type: bioclip
+model_type: clip_vitb16
 loss_type: infonce
 split_name: S29-0
 # split_name: dev
 
-n_epochs: 1000
+n_epochs: 20
 checkpoint_every: 1
 batch_size_train: 1024
 batch_size_val: 1024
+lr_sched_type: plat  # options: exp / plat
 lr_init: 1.0e-5
-lr_decay: 0.99
-weight_decay: 0.2  # CLIP paper's recommended weight_decay = 0.2
+lr_decay: 0.9
+lr_patience: 2  # patience for plateau scheculer
+weight_decay: 0.0  # CLIP paper's recommended weight_decay = 0.2
 
 freeze_text_encoder: false
 freeze_image_encoder: false

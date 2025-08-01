@@ -1,6 +1,11 @@
 import torch  # type: ignore[import]
 from torch.amp import autocast, GradScaler  # type: ignore[import]
-from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau  # type: ignore[import]
+from torch.optim.lr_scheduler import (  # type: ignore[import]
+    ExponentialLR, 
+    ReduceLROnPlateau, 
+    CosineAnnealingLR, 
+    CosineAnnealingWarmRestarts,
+)
 from tqdm import tqdm  # type: ignore[import]
 import time
 from datetime import datetime, timezone
@@ -56,11 +61,21 @@ class TrainConfig:
     checkpoint_every: int
     batch_size_train: int
     batch_size_val: int
-    lr_sched_type: str
+    
     lr_init: float
-    lr_decay: float
-    lr_patience: int  # patience for plateau scheduler
     weight_decay: float
+    beta1: float
+    beta2: float
+    eps: float
+
+    lr_sched_type: str
+    lr_exp_decay: float
+    lr_plat_factor: float
+    lr_plat_patience: int
+    lr_plat_cooldown: int
+    lr_cos_t_max: int
+    lr_coswr_T_0: int
+    lr_min: float
 
     freeze_text_encoder: bool
     freeze_image_encoder: bool
@@ -104,10 +119,30 @@ class TrainConfig:
             f"Split ---------------- {self.split_name}",
             f"",
             f"Batch Size (Train) --- {self.batch_size_train}",
-            f"LR Scheduler --------- {self.lr_sched_type}",
+            f"",
             f"LR Init -------------- {self.lr_init}",
-            f"LR Decay ------------- {self.lr_decay}",
             f"Weight Decay --------- {self.weight_decay}",
+            f"(β1, β2) ------------- ({self.beta1}, {self.beta2})",
+            f"ε (Optimizer) -------- {self.eps}",
+            f"",
+            f"LR Scheduler --------- {self.lr_sched_type}",
+            sep="\n"
+        )
+
+        if self.lr_sched_type == "exp":
+            print(f"~ Decay -------------- {self.lr_exp_decay}")
+        elif self.lr_sched_type == "plat":
+            print(f"~ Factor ------------- {self.lr_plat_factor}")
+            print(f"~ Patience ----------- {self.lr_plat_patience}")
+            print(f"~ Cooldown ----------- {self.lr_plat_cooldown}")
+        elif self.lr_sched_type == "cos":
+            print(f"~ t_max -------------- {self.lr_cos_t_max}")
+        elif self.lr_sched_type == "coswr":
+            print(f"~ T_0 ---------------- {self.lr_coswr_T_0}")
+        if self.lr_sched_type in ("cos", "coswr", "plat"):
+            print(f"~ LR min ------------- {self.lr_min}")
+        
+        print(
             f"",
             f"Num. GPUs ------------ {self.n_gpus}",
             f"Num. CPUs ------------ {self.n_cpus}",
@@ -134,12 +169,12 @@ class TrialDataTracker:
 
         self.data = {
             "id_img2txt_prec1":  [],
-            "id_img2txt_rr":     [],
+            "id_img2txt_map":    [],
             "id_img2img_map":    [],
             "id_txt2img_map":    [],
             "id_loss":           [],
             "ood_img2txt_prec1": [],
-            "ood_img2txt_rr":    [],
+            "ood_img2txt_map":   [],
             "ood_img2img_map":   [],
             "ood_txt2img_map":   [],
             "ood_loss":          [],
@@ -280,8 +315,18 @@ class TrainPipeline:
             del metadata["allow_diff_experiment"]
             del metadata["checkpoint_every"]
             del metadata["verbose_batch_loss"]
-            if metadata["lr_sched_type"] == "exp":
-                del metadata["lr_patience"]
+            if metadata["lr_sched_type"] != "exp":
+                del metadata["lr_exp_decay"]
+            if metadata["lr_sched_type"] != "plat":
+                del metadata["lr_plat_factor"]
+                del metadata["lr_plat_patience"]
+                del metadata["lr_plat_cooldown"]
+            if metadata["lr_sched_type"] != "cos":
+                del metadata["lr_cos_t_max"]
+            if metadata["lr_sched_type"] != "coswr":
+                del metadata["lr_coswr_T_0"]
+            if metadata["lr_sched_type"] not in ("cos", "coswr", "plat"):
+                del metadata["lr_min"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
@@ -331,21 +376,35 @@ class TrainPipeline:
         self.optimizer = torch.optim.AdamW(
             param_groups, 
             lr   =self.cfg.lr_init,
-            betas=(0.9, 0.98),  # CLIP paper's recommended betas: B1 = 0.9; B2 = 0.999 (ResNet) / 0.98 (ViT)
-            eps  =1e-6,  # CLIP paper's recommended epsilon: 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+            betas=(self.cfg.beta1, self.cfg.beta2),
+            eps  =self.cfg.eps,
         )
 
         if self.cfg.lr_sched_type == "exp":
             self.lr_sched = ExponentialLR(
                 self.optimizer, 
-                gamma=self.cfg.lr_decay,
+                gamma=self.cfg.lr_exp_decay,
             )
         elif self.cfg.lr_sched_type == "plat":
             self.lr_sched = ReduceLROnPlateau(
                 self.optimizer,
-                mode="min",
-                factor=self.cfg.lr_decay,
-                patience=self.cfg.lr_patience,
+                mode    ="min",
+                factor  =self.cfg.lr_plat_factor,
+                patience=self.cfg.lr_plat_patience,
+                cooldown=self.cfg.lr_plat_cooldown,
+                min_lr  =self.cfg.lr_min,
+            )
+        elif self.cfg.lr_sched_type == "cos":
+            self.lr_sched = CosineAnnealingLR(
+                self.optimizer,
+                T_max  =self.cfg.lr_cos_t_max,
+                eta_min=self.cfg.lr_min,
+            )
+        elif self.cfg.lr_sched_type == "coswr":
+            self.lr_sched = CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0    =self.cfg.lr_coswr_T_0,
+                eta_min=self.cfg.lr_min,
             )
         else:
             raise ValueError(f"Unknown lr_sched_type: '{self.cfg.lr_sched_type}'")
@@ -373,30 +432,30 @@ class TrainPipeline:
 
         ##########################################################################################################
         ##########################################################################################################
-        # Plot 1: mAP/RR Scores
+        # Plot 1: mAP Scores
         ax0 = fig.add_subplot(gs[0, 0])
 
-        ax0.plot(x, data["id_img2txt_rr"], label="ID img2txt RR", color="blue")
-        ax0.plot(x, data["id_img2img_map"], label="ID img2img mAP", color="red")
-        ax0.plot(x, data["id_txt2img_map"], label="ID txt2img mAP", color="green")
-        ax0.plot(x, data["ood_img2txt_rr"], label="OOD img2txt RR", color="blue", linestyle="--")
-        ax0.plot(x, data["ood_img2img_map"], label="OOD img2img mAP", color="red", linestyle="--")
+        ax0.plot(x, data["id_img2txt_map"],  label="ID img2txt mAP",  color="blue")
+        ax0.plot(x, data["id_img2img_map"],  label="ID img2img mAP",  color="red")
+        ax0.plot(x, data["id_txt2img_map"],  label="ID txt2img mAP",  color="green")
+        ax0.plot(x, data["ood_img2txt_map"], label="OOD img2txt mAP", color="blue",  linestyle="--")
+        ax0.plot(x, data["ood_img2img_map"], label="OOD img2img mAP", color="red",   linestyle="--")
         ax0.plot(x, data["ood_txt2img_map"], label="OOD txt2img mAP", color="green", linestyle="--")
 
-        ax0.set_ylabel("mAP/RR Scores", fontsize=fontsize_axes, fontweight="bold")
+        ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
         ax0.set_ylim(0, 1)
 
         ax0.legend(loc="lower right", fontsize=fontsize_legend)
         ax0.grid(True)
         ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         ##########################################################################################################
-        # Plot 2: mAP/RR Composites
+        # Plot 2: mAP Composites
         ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
 
         ax1.plot(x, data["comp"], label="Composite", color="black")
         ax1.plot(x, data["comp_img2img"], label="img2img Composite", color="#B22222")
 
-        ax1.set_ylabel("mAP/RR Composites", fontsize=fontsize_axes, fontweight="bold")
+        ax1.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
         ax1.set_ylim(0, 1)
 
         ax1.legend(loc="lower right", fontsize=fontsize_legend)
@@ -496,6 +555,7 @@ class TrainPipeline:
         idx_epoch_best_img2img  = 0
         scores_val_best_comp    = {}
         scores_val_best_img2img = {}
+        loss_val_best           = np.inf
         for idx_epoch in range(1, self.cfg.n_epochs + 1):
             self.print_epoch_header(idx_epoch)
 
@@ -542,10 +602,14 @@ class TrainPipeline:
             )
             data_tracker.update(scores_val, lr=self.lr, loss_train=loss_train_avg)
 
+            if scores_val["comp_loss"] < loss_val_best:
+                loss_val_best = scores_val["comp_loss"]
+
             self.step_lr_scheduler(scores_val)
 
             print(
-                f"Train Loss --- {loss_train_avg:.4f}",
+                f"Train Loss ------ {loss_train_avg:.4f}",
+                f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})",
                 f"",
                 sep="\n"
             )
@@ -592,11 +656,20 @@ class TrainPipeline:
         )
 
     def step_lr_scheduler(self, scores_val):
-        if self.cfg.lr_sched_type == "exp":
+
+        lr_prev = self.optimizer.param_groups[0]["lr"]
+
+        if self.cfg.lr_sched_type in ("exp", "cos", "coswr"):
             self.lr_sched.step()
         elif self.cfg.lr_sched_type == "plat":
             self.lr_sched.step(scores_val["comp_loss"])
+        else:
+            raise ValueError(f"Unknown lr_sched_type: '{self.cfg.lr_sched_type}'")
+
         self.lr = self.optimizer.param_groups[0]["lr"]
+
+        if self.cfg.lr_sched_type == "plat" and self.lr < lr_prev:
+            self.lr_sched.best = scores_val["comp_loss"]
 
     def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):
 

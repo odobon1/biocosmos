@@ -23,19 +23,24 @@ beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
 beta2: 0.98  # CLIP paper recommends Beta2 = 0.999 (ResNet) / 0.98 (ViT)
 eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
 
-lr_sched_type: coswr  # options: exp / plat / cos / coswr
-# exp
-lr_exp_decay: 0.99
-# plat (may also want to tweak threshold / eps)
-lr_plat_factor: 0.5
-lr_plat_patience: 0
-lr_plat_cooldown: 0
-# cos
-lr_cos_t_max: 10  # half-period length
-# coswr
-lr_coswr_T_0: 7  # period length
-# cos + coswr + plat
-lr_min: 1.0e-7
+lr_sched:
+  # type: exp
+  # args:
+  #   gamma: 0.99
+  # type: plat  # may also want to tweak threshold / eps
+  # args:
+  #   factor: 0.61803398875  # golden ratio
+  #   patience: 0
+  #   cooldown: 0
+  #   min_lr: 1.0e-7
+  # type: cos
+  # args:
+  #   T_max: 10  # half-period
+  #   eta_min: 1.0e-7
+  type: coswr
+  args:
+    T_0: 7  # period
+    eta_min: 1.0e-7
 
 freeze_text_encoder: false
 freeze_image_encoder: false

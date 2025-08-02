@@ -68,14 +68,7 @@ class TrainConfig:
     beta2: float
     eps: float
 
-    lr_sched_type: str
-    lr_exp_decay: float
-    lr_plat_factor: float
-    lr_plat_patience: int
-    lr_plat_cooldown: int
-    lr_cos_t_max: int
-    lr_coswr_T_0: int
-    lr_min: float
+    lr_sched: dict
 
     freeze_text_encoder: bool
     freeze_image_encoder: bool
@@ -109,49 +102,50 @@ class TrainConfig:
     def print_init_info(self):
         print(
             f"",
-            f"Study ---------------- {self.study_name}",
-            f"Experiment ----------- {self.experiment_name}",
-            f"Seed ----------------- {self.seed}",
-            f"Trial Path ----------- {self.rdpath_trial}",
+            f"Study ------------------- {self.study_name}",
+            f"Experiment -------------- {self.experiment_name}",
+            f"Seed -------------------- {self.seed}",
+            f"Trial Path -------------- {self.rdpath_trial}",
             f"",
-            f"Model Type ----------- {self.model_type}",
-            f"Loss Type ------------ {self.loss_type}",
-            f"Split ---------------- {self.split_name}",
+            f"Model Type -------------- {self.model_type}",
+            f"Loss Type --------------- {self.loss_type}",
+            f"Split ------------------- {self.split_name}",
             f"",
-            f"Batch Size (Train) --- {self.batch_size_train}",
+            f"Batch Size (Train) ------ {self.batch_size_train}",
             f"",
-            f"LR Init -------------- {self.lr_init}",
-            f"Weight Decay --------- {self.weight_decay}",
-            f"(β1, β2) ------------- ({self.beta1}, {self.beta2})",
-            f"ε (Optimizer) -------- {self.eps}",
+            f"LR Init ----------------- {self.lr_init}",
+            f"Weight Decay ------------ {self.weight_decay}",
+            f"(β1, β2) ---------------- ({self.beta1}, {self.beta2})",
+            f"ε (Optimizer) ----------- {self.eps}",
             f"",
-            f"LR Scheduler --------- {self.lr_sched_type}",
+            f"LR Scheduler ------------ {self.lr_sched['type']}",
             sep="\n"
         )
 
-        if self.lr_sched_type == "exp":
-            print(f"~ Decay -------------- {self.lr_exp_decay}")
-        elif self.lr_sched_type == "plat":
-            print(f"~ Factor ------------- {self.lr_plat_factor}")
-            print(f"~ Patience ----------- {self.lr_plat_patience}")
-            print(f"~ Cooldown ----------- {self.lr_plat_cooldown}")
-        elif self.lr_sched_type == "cos":
-            print(f"~ t_max -------------- {self.lr_cos_t_max}")
-        elif self.lr_sched_type == "coswr":
-            print(f"~ T_0 ---------------- {self.lr_coswr_T_0}")
-        if self.lr_sched_type in ("cos", "coswr", "plat"):
-            print(f"~ LR min ------------- {self.lr_min}")
+        if self.lr_sched['type'] == "exp":
+            print(f"~ Gamma (Decay) --------- {self.lr_sched['args']['gamma']}")
+        elif self.lr_sched['type'] == "plat":
+            print(f"~ Factor (Decay) -------- {self.lr_sched['args']['factor']}")
+            print(f"~ Patience -------------- {self.lr_sched['args']['patience']}")
+            print(f"~ Cooldown -------------- {self.lr_sched['args']['cooldown']}")
+            print(f"~ LR Min ---------------- {self.lr_sched['args']['min_lr']}")
+        elif self.lr_sched['type'] == "cos":
+            print(f"~ Half-Period (T_max) --- {self.lr_sched['args']['T_max']}")
+            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args']['eta_min']}")
+        elif self.lr_sched['type'] == "coswr":
+            print(f"~ Period (T_0) ---------- {self.lr_sched['args']['T_0']}")
+            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args']['eta_min']}")
         
         print(
             f"",
-            f"Num. GPUs ------------ {self.n_gpus}",
-            f"Num. CPUs ------------ {self.n_cpus}",
-            f"RAM ------------------ {self.ram} GB",
+            f"Num. GPUs --------------- {self.n_gpus}",
+            f"Num. CPUs --------------- {self.n_cpus}",
+            f"RAM --------------------- {self.ram} GB",
             f"",
-            f"Num. Workers --------- {self.n_workers}",
-            f"Prefetch Factor ------ {self.prefetch_factor}",
+            f"Num. Workers ------------ {self.n_workers}",
+            f"Prefetch Factor --------- {self.prefetch_factor}",
             f"",
-            f"Device --------------- {self.device}",
+            f"Device ------------------ {self.device}",
             sep="\n"
         )
 
@@ -315,18 +309,6 @@ class TrainPipeline:
             del metadata["allow_diff_experiment"]
             del metadata["checkpoint_every"]
             del metadata["verbose_batch_loss"]
-            if metadata["lr_sched_type"] != "exp":
-                del metadata["lr_exp_decay"]
-            if metadata["lr_sched_type"] != "plat":
-                del metadata["lr_plat_factor"]
-                del metadata["lr_plat_patience"]
-                del metadata["lr_plat_cooldown"]
-            if metadata["lr_sched_type"] != "cos":
-                del metadata["lr_cos_t_max"]
-            if metadata["lr_sched_type"] != "coswr":
-                del metadata["lr_coswr_T_0"]
-            if metadata["lr_sched_type"] not in ("cos", "coswr", "plat"):
-                del metadata["lr_min"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
@@ -380,34 +362,19 @@ class TrainPipeline:
             eps  =self.cfg.eps,
         )
 
-        if self.cfg.lr_sched_type == "exp":
-            self.lr_sched = ExponentialLR(
-                self.optimizer, 
-                gamma=self.cfg.lr_exp_decay,
-            )
-        elif self.cfg.lr_sched_type == "plat":
-            self.lr_sched = ReduceLROnPlateau(
-                self.optimizer,
-                mode    ="min",
-                factor  =self.cfg.lr_plat_factor,
-                patience=self.cfg.lr_plat_patience,
-                cooldown=self.cfg.lr_plat_cooldown,
-                min_lr  =self.cfg.lr_min,
-            )
-        elif self.cfg.lr_sched_type == "cos":
-            self.lr_sched = CosineAnnealingLR(
-                self.optimizer,
-                T_max  =self.cfg.lr_cos_t_max,
-                eta_min=self.cfg.lr_min,
-            )
-        elif self.cfg.lr_sched_type == "coswr":
-            self.lr_sched = CosineAnnealingWarmRestarts(
-                self.optimizer,
-                T_0    =self.cfg.lr_coswr_T_0,
-                eta_min=self.cfg.lr_min,
-            )
+        lr_sched_type = self.cfg.lr_sched["type"]
+        lr_sched_args = self.cfg.lr_sched.get("args")
+
+        if lr_sched_type == "exp":
+            self.lr_sched = ExponentialLR(self.optimizer, **lr_sched_args)
+        elif lr_sched_type == "plat":
+            self.lr_sched = ReduceLROnPlateau(self.optimizer, mode="min", **lr_sched_args)
+        elif lr_sched_type == "cos":
+            self.lr_sched = CosineAnnealingLR(self.optimizer, **lr_sched_args)
+        elif lr_sched_type == "coswr":
+            self.lr_sched = CosineAnnealingWarmRestarts(self.optimizer, **lr_sched_args)
         else:
-            raise ValueError(f"Unknown lr_sched_type: '{self.cfg.lr_sched_type}'")
+            raise ValueError(f"Unknown lr_sched type: '{lr_sched_type}'")
 
         if self.cfg.mixed_prec:
             self.scaler = GradScaler()
@@ -659,16 +626,17 @@ class TrainPipeline:
 
         lr_prev = self.optimizer.param_groups[0]["lr"]
 
-        if self.cfg.lr_sched_type in ("exp", "cos", "coswr"):
+        lr_sched_type = self.cfg.lr_sched["type"]
+        if lr_sched_type in ("exp", "cos", "coswr"):
             self.lr_sched.step()
-        elif self.cfg.lr_sched_type == "plat":
+        elif lr_sched_type == "plat":
             self.lr_sched.step(scores_val["comp_loss"])
         else:
-            raise ValueError(f"Unknown lr_sched_type: '{self.cfg.lr_sched_type}'")
+            raise ValueError(f"Unknown lr_sched_type: '{lr_sched_type}'")
 
         self.lr = self.optimizer.param_groups[0]["lr"]
 
-        if self.cfg.lr_sched_type == "plat" and self.lr < lr_prev:
+        if lr_sched_type == "plat" and self.lr < lr_prev:
             self.lr_sched.best = scores_val["comp_loss"]
 
     def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):

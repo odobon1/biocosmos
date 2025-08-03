@@ -237,8 +237,8 @@ class ValidationPipeline:
 
         self.header_tag = header_tag
 
-        self.best_score_comp = None
-        self.best_score_comp_img2img = None
+        self.best_comp_map    = None
+        self.best_img2img_map = None
 
         self.val_pipe_id = EvaluationPipeline(
             split_type     ="id_val",
@@ -273,8 +273,8 @@ class ValidationPipeline:
             "ood_img2txt_map":   [],
             "ood_img2img_map":   [],
             "ood_txt2img_map":   [],
-            "comp":              [],
-            "comp_img2img":      [],
+            "comp_map":          [],
+            "img2img_map":       [],
         }
 
     def set_time_cache(self):
@@ -291,15 +291,15 @@ class ValidationPipeline:
         scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw, verbose_batch_loss)
         scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw, verbose_batch_loss)
 
-        score_comp = (scores_id["img2txt_map"] + \
-                      scores_id["img2img_map"] + \
-                      scores_id["txt2img_map"] + \
-                      scores_ood["img2txt_map"] + \
-                      scores_ood["img2img_map"] + \
-                      scores_ood["txt2img_map"]) / 6
-        score_comp_img2img = (scores_id["img2img_map"] + scores_ood["img2img_map"]) / 2
+        comp_map = (scores_id["img2txt_map"] + \
+                    scores_id["img2img_map"] + \
+                    scores_id["txt2img_map"] + \
+                    scores_ood["img2txt_map"] + \
+                    scores_ood["img2img_map"] + \
+                    scores_ood["txt2img_map"]) / 6
+        img2img_map = (scores_id["img2img_map"] + scores_ood["img2img_map"]) / 2
 
-        is_best_comp, is_best_img2img = self.check_bests(score_comp, score_comp_img2img)
+        is_best_comp, is_best_img2img = self.check_bests(comp_map, img2img_map)
 
         scores_val = {
             "id_img2txt_prec1":  scores_id["img2txt_prec1"],
@@ -312,8 +312,8 @@ class ValidationPipeline:
             "ood_img2img_map":   scores_ood["img2img_map"],
             "ood_txt2img_map":   scores_ood["txt2img_map"],
             "ood_loss":          loss_avg_ood,
-            "comp":              score_comp,
-            "comp_img2img":      score_comp_img2img,
+            "comp_map":          comp_map,
+            "img2img_map":       img2img_map,
             "comp_loss":         (loss_avg_id + loss_avg_ood) / 2
         }
         if verbose:
@@ -323,17 +323,17 @@ class ValidationPipeline:
 
         return scores_val, is_best_comp, is_best_img2img, time_elapsed_val
 
-    def check_bests(self, score_comp, score_comp_img2img):
+    def check_bests(self, comp_map, img2img_map):
         is_best_comp, is_best_img2img = False, False
-        if self.best_score_comp is None:
-            self.best_score_comp = score_comp
-            self.best_score_comp_img2img = score_comp_img2img
+        if self.best_comp_map is None:
+            self.best_comp_map = comp_map
+            self.best_img2img_map = img2img_map
         else:
-            if score_comp > self.best_score_comp:
-                self.best_score_comp = score_comp
+            if comp_map > self.best_comp_map:
+                self.best_comp_map = comp_map
                 is_best_comp = True
-            if score_comp_img2img > self.best_score_comp_img2img:
-                self.best_score_comp_img2img = score_comp_img2img
+            if img2img_map > self.best_img2img_map:
+                self.best_img2img_map = img2img_map
                 is_best_img2img = True
         return is_best_comp, is_best_img2img
 
@@ -352,8 +352,8 @@ class ValidationPipeline:
             f"OOD img2img mAP ----- {scores['ood_img2img_map']:.4f}",
             f"OOD txt2img mAP ----- {scores['ood_txt2img_map']:.4f}",
             f"{'':-^{75}}",
-            f"Composite ----------- {scores['comp']:.4f} (best: {self.best_score_comp:.4f})",
-            f"img2img Composite --- {scores['comp_img2img']:.4f} (best: {self.best_score_comp_img2img:.4f})",
+            f"Composite mAP ------- {scores['comp_map']:.4f} (best: {self.best_comp_map:.4f})",
+            f"img2img mAP --------- {scores['img2img_map']:.4f} (best: {self.best_img2img_map:.4f})",
             f"{'':-^{75}}",
             f"ID Loss ----- {scores['id_loss']:.4f}",
             f"OOD Loss ---- {scores['ood_loss']:.4f}",

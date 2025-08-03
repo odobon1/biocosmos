@@ -24,21 +24,34 @@ beta2: 0.98  # CLIP paper recommends Beta2 = 0.999 (ResNet) / 0.98 (ViT)
 eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
 
 lr_sched:
+  # # Exponential LR Scheduler
   # type: exp
   # args:
+  #   dummy: null
+  # args_sched:
   #   gamma: 0.99
+  # # Plateau LR Scheduler
   # type: plat  # may also want to tweak threshold / eps
   # args:
+  #   reset_best_val: true  # (true) reset best validation score after LR drop to avoid early plateauing
+  #   val_type: loss  # options: loss / perf
+  # args_sched:
   #   factor: 0.61803398875  # golden ratio
-  #   patience: 0
-  #   cooldown: 0
+  #   patience: 1
+  #   cooldown: 1
   #   min_lr: 1.0e-7
+  # # Cosine LR Scheduler
   # type: cos
   # args:
+  #   dummy: null
+  # args_sched:
   #   T_max: 10  # half-period
   #   eta_min: 1.0e-7
+  # Cosine Warm-Restarts LR Scheduler
   type: coswr
   args:
+    dummy: null
+  args_sched:
     T_0: 7  # period
     eta_min: 1.0e-7
 

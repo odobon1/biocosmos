@@ -84,6 +84,9 @@ class TrainConfig:
     def __post_init__(self):
         if self.freeze_text_encoder and self.freeze_image_encoder:
             raise ValueError("Text and image encoders are both set to frozen!")
+        if self.lr_sched["type"] == "plat":
+            if self.lr_sched["args"]["val_type"] not in ("loss", "perf"):
+                raise ValueError("val_type must be set to either 'loss' or 'perf' for plateau LR scheduler!")
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
@@ -123,18 +126,18 @@ class TrainConfig:
         )
 
         if self.lr_sched['type'] == "exp":
-            print(f"~ Gamma (Decay) --------- {self.lr_sched['args']['gamma']}")
+            print(f"~ Gamma (Decay) --------- {self.lr_sched['args_sched']['gamma']}")
         elif self.lr_sched['type'] == "plat":
-            print(f"~ Factor (Decay) -------- {self.lr_sched['args']['factor']}")
-            print(f"~ Patience -------------- {self.lr_sched['args']['patience']}")
-            print(f"~ Cooldown -------------- {self.lr_sched['args']['cooldown']}")
-            print(f"~ LR Min ---------------- {self.lr_sched['args']['min_lr']}")
+            print(f"~ Factor (Decay) -------- {self.lr_sched['args_sched']['factor']}")
+            print(f"~ Patience -------------- {self.lr_sched['args_sched']['patience']}")
+            print(f"~ Cooldown -------------- {self.lr_sched['args_sched']['cooldown']}")
+            print(f"~ LR Min ---------------- {self.lr_sched['args_sched']['min_lr']}")
         elif self.lr_sched['type'] == "cos":
-            print(f"~ Half-Period (T_max) --- {self.lr_sched['args']['T_max']}")
-            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args']['eta_min']}")
+            print(f"~ Half-Period (T_max) --- {self.lr_sched['args_sched']['T_max']}")
+            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args_sched']['eta_min']}")
         elif self.lr_sched['type'] == "coswr":
-            print(f"~ Period (T_0) ---------- {self.lr_sched['args']['T_0']}")
-            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args']['eta_min']}")
+            print(f"~ Period (T_0) ---------- {self.lr_sched['args_sched']['T_0']}")
+            print(f"~ LR Min (eta_min) ------ {self.lr_sched['args_sched']['eta_min']}")
         
         print(
             f"",
@@ -172,8 +175,8 @@ class TrialDataTracker:
             "ood_img2img_map":   [],
             "ood_txt2img_map":   [],
             "ood_loss":          [],
-            "comp":              [],
-            "comp_img2img":      [],
+            "comp_map":          [],
+            "img2img_map":       [],
             "comp_loss":         [],
             "lr":                [],
             "loss_train":        [],
@@ -192,6 +195,48 @@ class TrialDataTracker:
     def save(self):
         save_pickle(self.data, self.fpath_data)
 
+class LRSchedulerWrapper:
+
+    def __init__(self, optimizer, sched_type, args={}, args_sched={}):
+        self.opt  = optimizer
+        self.type = sched_type
+
+        if self.type == "exp":
+            self.sched = ExponentialLR(self.opt, **args_sched)
+        elif self.type == "plat":
+            self.val_type       = args["val_type"]
+            self.reset_best_val = args["reset_best_val"]
+            if self.val_type == "loss":
+                self.sched = ReduceLROnPlateau(self.opt, mode="min", **args_sched)
+            elif self.val_type == "perf":
+                self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
+        elif self.type == "cos":
+            self.sched = CosineAnnealingLR(self.opt, **args_sched)
+        elif self.type == "coswr":
+            self.sched = CosineAnnealingWarmRestarts(self.opt, **args_sched)
+        else:
+            raise ValueError(f"Unknown scheduler type: '{self.type}'")
+
+        self.lr = self.get_lr()
+
+    def step(self, scores_val):
+
+        if self.type == "plat":
+            if self.val_type == "loss":
+                val_signal = scores_val["comp_loss"]
+            elif self.val_type == "perf":
+                val_signal = scores_val["comp_map"]
+            self.sched.step(val_signal)
+            if self.get_lr() < self.lr:  # if current LR < previous LR
+                if self.reset_best_val:
+                    self.sched.best = val_signal
+        else:
+            self.sched.step()
+        self.lr = self.get_lr()
+
+    def get_lr(self):
+        return self.opt.param_groups[0]["lr"]
+
 class TrainPipeline:
 
     def __init__(self, modelw, config_train):
@@ -199,7 +244,6 @@ class TrainPipeline:
 
         self.modelw = modelw
         self.cfg    = config_train
-        self.lr     = self.cfg.lr_init
 
         self.modelw.freeze(self.cfg.freeze_text_encoder, self.cfg.freeze_image_encoder)
 
@@ -362,19 +406,12 @@ class TrainPipeline:
             eps  =self.cfg.eps,
         )
 
-        lr_sched_type = self.cfg.lr_sched["type"]
-        lr_sched_args = self.cfg.lr_sched.get("args")
-
-        if lr_sched_type == "exp":
-            self.lr_sched = ExponentialLR(self.optimizer, **lr_sched_args)
-        elif lr_sched_type == "plat":
-            self.lr_sched = ReduceLROnPlateau(self.optimizer, mode="min", **lr_sched_args)
-        elif lr_sched_type == "cos":
-            self.lr_sched = CosineAnnealingLR(self.optimizer, **lr_sched_args)
-        elif lr_sched_type == "coswr":
-            self.lr_sched = CosineAnnealingWarmRestarts(self.optimizer, **lr_sched_args)
-        else:
-            raise ValueError(f"Unknown lr_sched type: '{lr_sched_type}'")
+        self.lr_schedw = LRSchedulerWrapper(
+            self.optimizer, 
+            self.cfg.lr_sched["type"],
+            self.cfg.lr_sched.get("args"),
+            self.cfg.lr_sched.get("args_sched"),
+        )
 
         if self.cfg.mixed_prec:
             self.scaler = GradScaler()
@@ -419,8 +456,8 @@ class TrainPipeline:
         # Plot 2: mAP Composites
         ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
 
-        ax1.plot(x, data["comp"], label="Composite", color="black")
-        ax1.plot(x, data["comp_img2img"], label="img2img Composite", color="#B22222")
+        ax1.plot(x, data["comp_map"], label="Composite", color="black")
+        ax1.plot(x, data["img2img_map"], label="img2img Composite", color="#B22222")
 
         ax1.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
         ax1.set_ylim(0, 1)
@@ -567,12 +604,12 @@ class TrainPipeline:
                 verbose           =True, 
                 verbose_batch_loss=self.cfg.verbose_batch_loss,
             )
-            data_tracker.update(scores_val, lr=self.lr, loss_train=loss_train_avg)
+            data_tracker.update(scores_val, lr=self.lr_schedw.lr, loss_train=loss_train_avg)
 
             if scores_val["comp_loss"] < loss_val_best:
                 loss_val_best = scores_val["comp_loss"]
 
-            self.step_lr_scheduler(scores_val)
+            self.lr_schedw.step(scores_val)
 
             print(
                 f"Train Loss ------ {loss_train_avg:.4f}",
@@ -618,26 +655,9 @@ class TrainPipeline:
             f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
             f"",
             f"{' Train ':=^{75}}",
-            f"LR ----- {self.lr:.2e}",
+            f"LR ----- {self.lr_schedw.lr:.2e}",
             sep="\n"
         )
-
-    def step_lr_scheduler(self, scores_val):
-
-        lr_prev = self.optimizer.param_groups[0]["lr"]
-
-        lr_sched_type = self.cfg.lr_sched["type"]
-        if lr_sched_type in ("exp", "cos", "coswr"):
-            self.lr_sched.step()
-        elif lr_sched_type == "plat":
-            self.lr_sched.step(scores_val["comp_loss"])
-        else:
-            raise ValueError(f"Unknown lr_sched_type: '{lr_sched_type}'")
-
-        self.lr = self.optimizer.param_groups[0]["lr"]
-
-        if lr_sched_type == "plat" and self.lr < lr_prev:
-            self.lr_sched.best = scores_val["comp_loss"]
 
     def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):
 

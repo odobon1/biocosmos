@@ -5,6 +5,7 @@ from torch.optim.lr_scheduler import (  # type: ignore[import]
     ReduceLROnPlateau, 
     CosineAnnealingLR, 
     CosineAnnealingWarmRestarts,
+    LambdaLR,
 )
 from tqdm import tqdm  # type: ignore[import]
 import time
@@ -17,7 +18,7 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 import matplotlib.gridspec as gridspec  # type: ignore[import]
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator, NullLocator  # type: ignore[import]
 import numpy as np
-
+import math
 
 from utils import (
     paths, 
@@ -125,20 +126,24 @@ class TrainConfig:
             sep="\n"
         )
 
-        if self.lr_sched['type'] == "exp":
+        if self.lr_sched["type"] == "exp":
             print(f"~ Gamma (Decay) --------- {self.lr_sched['args_sched']['gamma']}")
-        elif self.lr_sched['type'] == "plat":
+        elif self.lr_sched["type"] == "plat":
             print(f"~ Factor (Decay) -------- {self.lr_sched['args_sched']['factor']}")
             print(f"~ Patience -------------- {self.lr_sched['args_sched']['patience']}")
             print(f"~ Cooldown -------------- {self.lr_sched['args_sched']['cooldown']}")
             print(f"~ LR Min ---------------- {self.lr_sched['args_sched']['min_lr']}")
-        elif self.lr_sched['type'] == "cos":
+        elif self.lr_sched["type"] == "cos":
             print(f"~ Half-Period (T_max) --- {self.lr_sched['args_sched']['T_max']}")
             print(f"~ LR Min (eta_min) ------ {self.lr_sched['args_sched']['eta_min']}")
-        elif self.lr_sched['type'] == "coswr":
+        elif self.lr_sched["type"] == "coswr":
             print(f"~ Period (T_0) ---------- {self.lr_sched['args_sched']['T_0']}")
             print(f"~ LR Min (eta_min) ------ {self.lr_sched['args_sched']['eta_min']}")
-        
+        elif self.lr_sched["type"] == "cosXexp":
+            print("foo")
+        elif self.lr_sched["type"] == "coswrXexp":
+            print("bar")
+
         print(
             f"",
             f"Num. GPUs --------------- {self.n_gpus}",
@@ -202,7 +207,8 @@ class LRSchedulerWrapper:
         self.type = sched_type
 
         if self.type == "exp":
-            self.sched = ExponentialLR(self.opt, **args_sched)
+            self.lr_min = args["lr_min"]
+            self.sched  = ExponentialLR(self.opt, **args_sched)
         elif self.type == "plat":
             self.val_type       = args["val_type"]
             self.reset_best_val = args["reset_best_val"]
@@ -214,10 +220,12 @@ class LRSchedulerWrapper:
             self.sched = CosineAnnealingLR(self.opt, **args_sched)
         elif self.type == "coswr":
             self.sched = CosineAnnealingWarmRestarts(self.opt, **args_sched)
+        elif self.type == "cosXexp":
+            self.sched = CosineExponentialLR(self.opt, **args)
+        elif self.type == "coswrXexp":
+            self.sched = CosineWRExponentialLR(self.opt, **args)
         else:
             raise ValueError(f"Unknown scheduler type: '{self.type}'")
-
-        self.lr = self.get_lr()
 
     def step(self, scores_val):
 
@@ -226,16 +234,67 @@ class LRSchedulerWrapper:
                 val_signal = scores_val["comp_loss"]
             elif self.val_type == "perf":
                 val_signal = scores_val["comp_map"]
+            lr_prev = self.get_lr()
             self.sched.step(val_signal)
-            if self.get_lr() < self.lr:  # if current LR < previous LR
+            if self.get_lr() < lr_prev:  # if current LR < previous LR
                 if self.reset_best_val:
                     self.sched.best = val_signal
         else:
             self.sched.step()
-        self.lr = self.get_lr()
+            if self.type == "exp" and self.get_lr() < self.lr_min:
+                for pg in self.opt.param_groups:
+                    pg["lr"] = self.lr_min
 
     def get_lr(self):
         return self.opt.param_groups[0]["lr"]
+
+class CosineExponentialLR(LambdaLR):
+
+    def __init__(self, optimizer, gamma, period, peak_ratio, lr_nom_min):
+
+        self.lr_init     = optimizer.param_groups[0]["lr"]
+        self.gamma       = gamma
+        self.peak_ratio  = peak_ratio
+        self.period      = period
+        self.lr_nom_min  = lr_nom_min
+
+        super().__init__(optimizer, lr_lambda=self._lr_lambda)
+
+    def _lr_lambda(self, idx_epoch):
+
+        peak = self.lr_init * (self.gamma ** idx_epoch)
+        if peak < self.lr_nom_min:
+            peak = self.lr_nom_min
+        valley     = peak / self.peak_ratio
+        cos_factor = 0.5 * (1 + math.cos(2 * math.pi * (idx_epoch / self.period)))
+
+        lr = valley + (peak - valley) * cos_factor
+
+        return lr / self.lr_init
+
+class CosineWRExponentialLR(LambdaLR):
+
+    def __init__(self, optimizer, gamma, period, peak_ratio, lr_nom_min):
+
+        self.lr_init     = optimizer.param_groups[0]["lr"]
+        self.gamma       = gamma
+        self.peak_ratio  = peak_ratio
+        self.period      = period
+        self.lr_nom_min  = lr_nom_min
+
+        super().__init__(optimizer, lr_lambda=self._lr_lambda)
+
+    def _lr_lambda(self, idx_epoch):
+
+        peak = self.lr_init * (self.gamma ** idx_epoch)
+        if peak < self.lr_nom_min:
+            peak = self.lr_nom_min
+        valley     = peak / self.peak_ratio
+        cos_factor = 0.5 * (1 + math.cos(math.pi * ((idx_epoch % self.period) / self.period)))
+
+        lr = valley + (peak - valley) * cos_factor
+
+        return lr / self.lr_init
 
 class TrainPipeline:
 
@@ -604,7 +663,7 @@ class TrainPipeline:
                 verbose           =True, 
                 verbose_batch_loss=self.cfg.verbose_batch_loss,
             )
-            data_tracker.update(scores_val, lr=self.lr_schedw.lr, loss_train=loss_train_avg)
+            data_tracker.update(scores_val, lr=self.lr_schedw.get_lr(), loss_train=loss_train_avg)
 
             if scores_val["comp_loss"] < loss_val_best:
                 loss_val_best = scores_val["comp_loss"]
@@ -655,7 +714,7 @@ class TrainPipeline:
             f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
             f"",
             f"{' Train ':=^{75}}",
-            f"LR ----- {self.lr_schedw.lr:.2e}",
+            f"LR ----- {self.lr_schedw.get_lr():.2e}",
             sep="\n"
         )
 

@@ -27,33 +27,47 @@ lr_sched:
   # # Exponential LR Scheduler
   # type: exp
   # args:
-  #   dummy: null
+  #   lr_min: 1.0e-6
   # args_sched:
-  #   gamma: 0.99
+  #   gamma: 0.5
   # # Plateau LR Scheduler
   # type: plat  # may also want to tweak threshold / eps
   # args:
   #   reset_best_val: true  # (true) reset best validation score after LR drop to avoid early plateauing
-  #   val_type: loss  # options: loss / perf
+  #   val_type:       loss  # options: loss / perf
   # args_sched:
-  #   factor: 0.61803398875  # golden ratio
+  #   factor:   0.61803398875  # golden ratio
   #   patience: 1
   #   cooldown: 1
-  #   min_lr: 1.0e-7
+  #   min_lr:   1.0e-7
   # # Cosine LR Scheduler
   # type: cos
   # args:
   #   dummy: null
   # args_sched:
-  #   T_max: 10  # half-period
+  #   T_max:   5  # half-period
   #   eta_min: 1.0e-7
-  # Cosine Warm-Restarts LR Scheduler
-  type: coswr
+  # # Cosine Warm-Restarts LR Scheduler
+  # type: coswr
+  # args:
+  #   dummy: null
+  # args_sched:
+  #   T_0:     7  # period
+  #   eta_min: 1.0e-7
+  # # Cosine X Exponential LR Scheduler
+  # type: cosXexp
+  # args:
+  #   gamma:      0.98
+  #   period:     10
+  #   peak_ratio: 10
+  #   lr_nom_min: 5.0e-7
+  # Cosine Warm-Restarts X Exponential LR Scheduler
+  type: coswrXexp
   args:
-    dummy: null
-  args_sched:
-    T_0: 7  # period
-    eta_min: 1.0e-7
+    gamma:      0.98
+    period:     10
+    peak_ratio: 10
+    lr_nom_min: 5.0e-7
 
 freeze_text_encoder: false
 freeze_image_encoder: false

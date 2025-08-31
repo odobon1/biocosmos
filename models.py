@@ -84,6 +84,9 @@ class VLMWrapper(abc.ABC):
         tokenizer   = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
+        if config.act_chkpt:
+            self.model.set_grad_checkpointing(True)
+
     @classmethod
     def build(cls, config):
 

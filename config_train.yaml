@@ -1,27 +1,33 @@
-study_name: dev
-experiment_name: dev
-seed: 42
+study_name:      dev
+experiment_name: dev_siglip_so400m14_2
+seed:            42
 
 allow_overwrite_trial: true  # whether to allow overwrites in the artifacts/study/experiment/trial/ dir
-allow_diff_study: true
+allow_diff_study:      true
 allow_diff_experiment: true
 
 # all vars below are saved at the experiment level except for checkpoint_every and verbose_batch_loss (which aren't saved at all)
-model_type: clip_vitb16
-loss_type: infonce
-# split_name: S29-0
-split_name: dev
+model_type: siglip_vitso400m14
+loss_type:  pairwise_sigmoid
+split_name: S29-0
+# split_name: dev
 
-n_epochs: 200
+n_epochs:         200
 checkpoint_every: 1
+# batch_size_train: 512
 batch_size_train: 1024
-batch_size_val: 1024
+# batch_size_train: 2048
+# batch_size_train: 4096
+# batch_size_train: 8192
+# batch_size_train: 16384
+# batch_size_train: 32768
+batch_size_val:   1024
 
-lr_init: 1.0e-5
+lr_init:      1.0e-5
 weight_decay: 0.0  # CLIP paper recommends weight_decay = 0.2
-beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
-beta2: 0.98  # CLIP paper recommends Beta2 = 0.999 (ResNet) / 0.98 (ViT)
-eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+beta1:        0.9  # CLIP paper recommends Beta1 = 0.9
+beta2:        0.98  # CLIP paper recommends Beta2 = 0.999 (ResNet) / 0.98 (ViT)
+eps:          1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
 
 lr_sched:
   # # Exponential LR Scheduler
@@ -69,13 +75,14 @@ lr_sched:
     peak_ratio: 10
     lr_nom_min: 5.0e-7
 
-freeze_text_encoder: false
+freeze_text_encoder:  false
 freeze_image_encoder: false
 
-cached_imgs: null  # options: null / pl / pp
-mixed_prec: true  # whether to use mixed precision for training and validation
+cached_imgs:              null  # options: null / pl / pp
+mixed_prec:               true  # mixed precision for training and validation
+act_chkpt:                true  # activation checkpointing
 drop_partial_batch_train: true
-verbose_batch_loss: false
+verbose_batch_loss:       false
 
 text_preps_type_train: mixed
-text_preps_type_val: bioclip_sci
+text_preps_type_val:   bioclip_sci

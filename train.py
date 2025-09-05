@@ -76,6 +76,7 @@ class TrainConfig:
 
     cached_imgs: str | None
     mixed_prec: bool
+    act_chkpt: bool
     drop_partial_batch_train: bool
     verbose_batch_loss: bool
 
@@ -632,12 +633,12 @@ class TrainPipeline:
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
+                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.batch_forward_loss(imgs_b, texts_b, class_encs_b)
+                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b)
                     loss_train_b.backward()
                     self.optimizer.step()
 
@@ -718,7 +719,7 @@ class TrainPipeline:
             sep="\n"
         )
 
-    def batch_forward_loss(self, imgs_b, texts_b, class_encs_b):
+    def batch_forward(self, imgs_b, texts_b, class_encs_b):
 
         embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
         embs_txts = self.modelw.embed_texts(texts_b)  # ------- Tensor(B, D)

@@ -62,6 +62,8 @@ class ImageTextDataset(Dataset):
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
+        self.sids2commons = load_pickle("metadata_o/species_ids/sids2commons.pkl")
+
     def __len__(self):
         return self.n_samples
     
@@ -83,7 +85,7 @@ class ImageTextDataset(Dataset):
         class_enc = self.index_imgs_class_enc[idx]
         sid       = self.index_imgs_sids[idx]
 
-        text = gen_text(sid, self.text_preps)
+        text = gen_text(sid, self.text_preps, sids2commons=self.sids2commons)
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
@@ -194,7 +196,7 @@ def spawn_dataloader(
         batch_size        =batch_size,
         shuffle           =shuffle,
         num_workers       =n_workers,
-        pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
+        pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
         prefetch_factor   =prefetch_factor,
         collate_fn        =collate_fn,
         drop_last         =drop_last,
@@ -203,10 +205,25 @@ def spawn_dataloader(
 
     return dataloader, dataset.time_cache
 
-def gen_text(sid, text_preps):
+def gen_text(sid, text_preps, sids2commons=None):
 
     genus, species_epithet = sid.split("_", 1)
-    text = f"{genus} {species_epithet}"
+    text_sci = f"{genus} {species_epithet}"
+    text_tax = "animalia arthropoda insecta lepidoptera nymphalidae " + text_sci
+    if sids2commons is not None:
+        text_com = sids2commons[sid]
+    else:
+        text_com = None
+
+    if text_com is not None:
+        texts = [text_sci, text_tax, text_com]
+    else:
+        texts = [text_sci, text_tax]
+
+    text = random.choice(texts)
+
+    if text == text_com:
+        print(f"HOORAY! {text_com}")
 
     for text_preps_cat in reversed(text_preps):  # iterate through text prependending categories in reversed order
         text = random.choice(text_preps_cat) + text  # select random prepending from prepending-category, prepend to text

@@ -90,10 +90,6 @@ def get_text_preps(text_preps_type):
             "a photo of ",  # BioCLIP-style prepending
             "a photo of a ",  # OpenAI CLIP-style prepending
         ],
-        [
-            "",  # scientific name
-            "animalia arthropoda insecta lepidoptera nymphalidae ",  # full taxonomic name
-        ]
     ]
 
     TEXT_PREPS_BIOCLIP_SCI = [["a photo of "]]  # scientific name, BioCLIP-style prepending

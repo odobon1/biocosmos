@@ -15,6 +15,8 @@ class EvalConfig:
     rdpath_trial: str | None
     save_crit: str  # model save criterion (only applicable if DPATH_TRIAL != None)
 
+    verbose_batch_loss: bool
+
     # params that get overridden if rdpath_trial is specified
     model_type: str
     loss_type: str
@@ -24,9 +26,8 @@ class EvalConfig:
     text_preps_type: str
 
     cached_imgs: bool
-
-    verbose_batch_loss: bool
-
+    act_chkpt:   bool
+    
     def __post_init__(self):
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]

@@ -87,6 +87,14 @@ class VLMWrapper(abc.ABC):
         if config.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
+    def set_class_wts(self, class_wts):
+        self.class_wts = class_wts.to(self.device)
+
+    def set_focal(self, cfg_focal):
+        self.focal           = bool(cfg_focal["enabled"])
+        self.focal_gamma     = float(cfg_focal["gamma"])
+        self.focal_alpha_pos = float(cfg_focal["alpha_pos"])
+
     @classmethod
     def build(cls, config):
 
@@ -203,49 +211,78 @@ class VLMWrapper(abc.ABC):
         return logits
 
     def compute_loss(self, logits, class_encs_b, reduction="mean"):
+
         """
-        `reduction` arg added in preparation for n-shot loss tracking (reduction="none" in that case)
+        Note: `reduction` arg added in preparation for n-shot loss tracking (reduction="none" in that case)
         """
 
+        class_encs_b = torch.tensor(class_encs_b).to(self.device)
+
         if self.loss_type == "infonce":
-            return self.compute_loss_infonce(logits, reduction)
+            return self.compute_loss_infonce(logits, class_encs_b)
         elif self.loss_type == "pairwise_sigmoid":
-            return self.compute_loss_pairwise_sigmoid(logits, reduction)
+            return self.compute_loss_pairwise_sigmoid(logits, class_encs_b, reduction)
         elif self.loss_type == "pairwise_sigmoid_upwtdpos":
-            return self.compute_loss_pairwise_sigmoid(logits, reduction, up_weighted_pos=True)
+            return self.compute_loss_pairwise_sigmoid(logits, class_encs_b, reduction, up_wtd_pos=True)
         elif self.loss_type == "multipos_sigmoid":
-            return self.compute_loss_multipos_sigmoid(logits, reduction, class_encs_b)
+            return self.compute_loss_multipos_sigmoid(logits, class_encs_b, reduction)
         else:
             raise ValueError(f"Unknown loss_type: '{self.loss_type}'")
 
-    def compute_loss_infonce(self, logits, reduction):
-        B       = logits.size(0)
-        targets = torch.arange(B, device=self.device)
+    def compute_loss_infonce(self, logits, class_encs_b):
 
-        loss_i2t_b = F.cross_entropy(logits, targets, reduction=reduction)
-        loss_t2i_b = F.cross_entropy(logits.T, targets, reduction=reduction)
-        loss_b     = 0.5 * (loss_i2t_b + loss_t2i_b)
+        """
+        Note: may need to be adjusted for multiple GPUs (wrt reduction)
+        """
+
+        B      = logits.size(0)
+        targs  = torch.arange(B, device=self.device)
+        w      = self.class_wts[class_encs_b]
+
+        loss_i2t_b = F.cross_entropy(logits,   targs, reduction="none")
+        loss_t2i_b = F.cross_entropy(logits.T, targs, reduction="none")
+
+        if self.focal:
+            """
+            p_t = exp(-CE)
+            focal factor: (1 - p_t)^gamma
+            expm1 has better precision when p_t ~ 1 (CE ~ 0)
+            expm1(x) = e^x - 1
+            """
+            g       = self.focal_gamma
+            foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(g)  # clamping for numerical stability
+            foc_t2i = (-torch.expm1(-loss_t2i_b)).clamp_min(1e-12).pow(g)
+
+            w_i2t = foc_i2t * w
+            w_t2i = foc_t2i * w
+        else:
+            w_i2t = w
+            w_t2i = w
+
+        num_i2t = (w_i2t * loss_i2t_b).sum()
+        num_t2i = (w_t2i * loss_t2i_b).sum()
+        den_i2t = w_i2t.detach().sum().clamp_min(1e-12)
+        den_t2i = w_t2i.detach().sum().clamp_min(1e-12)
+
+        loss_b = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
         return loss_b
 
-    def compute_loss_pairwise_sigmoid(self, logits, reduction, up_weighted_pos=False):
-        B       = logits.size(0)
-        targets = torch.eye(B, device=self.device)
-        if up_weighted_pos:
+    def compute_loss_pairwise_sigmoid(self, logits, class_encs_b, reduction, up_wtd_pos=False):
+        B     = logits.size(0)
+        targs = torch.eye(B, device=self.device)
+        if up_wtd_pos:
             pos_weight = torch.full((1,), float(B-1), dtype=logits.dtype, device=logits.device)
         else:
             pos_weight = None
 
-        loss_b = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight, reduction=reduction)
+        loss_b = F.binary_cross_entropy_with_logits(logits, targs, pos_weight=pos_weight, reduction=reduction)
 
         return loss_b
     
-    def compute_loss_multipos_sigmoid(self, logits, reduction, class_encs_b):
-        class_encs_b = torch.tensor(class_encs_b)
-        targets = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
-
-        loss_b = F.binary_cross_entropy_with_logits(logits, targets, reduction=reduction)
-
+    def compute_loss_multipos_sigmoid(self, logits, class_encs_b, reduction):
+        targs  = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
+        loss_b = F.binary_cross_entropy_with_logits(logits, targs, reduction=reduction)
         return loss_b
 
     def freeze(self, freeze_txt, freeze_img):

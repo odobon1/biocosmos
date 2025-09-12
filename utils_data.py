@@ -222,9 +222,6 @@ def gen_text(sid, text_preps, sids2commons=None):
 
     text = random.choice(texts)
 
-    if text == text_com:
-        print(f"HOORAY! {text_com}")
-
     for text_preps_cat in reversed(text_preps):  # iterate through text prependending categories in reversed order
         text = random.choice(text_preps_cat) + text  # select random prepending from prepending-category, prepend to text
 

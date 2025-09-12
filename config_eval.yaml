@@ -1,15 +1,16 @@
 # rdpath_trial: null  # which trial to load from (set null for original model)
 rdpath_trial: artifacts_delivery/o2/bioclip/42
-save_crit: comp  # options: comp / img2img; model save criterion (only applicable if rdpath_trial != null)
+save_crit:    comp  # options: comp / img2img; model save criterion (only applicable if rdpath_trial != null)
+
+verbose_batch_loss: false
 
 # params that get overridden if rdpath_trial is specified
 model_type: bioclip
-loss_type: infonce
+loss_type:  infonce
 split_name: S29-0
 
 batch_size: 1024
 text_preps_type: bioclip_sci
 
 cached_imgs: null  # options: null / pl / pp
-
-verbose_batch_loss: false
+act_chkpt  : true

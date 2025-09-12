@@ -49,6 +49,7 @@ class TrainConfig:
     study_name: str
     experiment_name: str
     seed: int | None
+    split_name: str
 
     allow_overwrite_trial: bool
     allow_diff_study: bool
@@ -56,7 +57,8 @@ class TrainConfig:
 
     model_type: str
     loss_type: str
-    split_name: str
+    class_weighting: dict
+    focal: dict
 
     n_epochs: int
     checkpoint_every: int
@@ -317,6 +319,35 @@ class TrainPipeline:
             split_name=self.cfg.split_name,
         )
 
+        n_classes = len(set(index_imgs_class_enc))
+        counts    = np.bincount(index_imgs_class_enc, minlength=n_classes)  # counts[c] is number of samples with class encoding c
+        # n_samps   = counts.sum()
+        eps       = 1e-8
+        
+        cfg_cw = self.cfg.class_weighting
+        if cfg_cw["type"] is None:
+            class_wts = np.ones_like(counts)
+        elif cfg_cw["type"] == "inv_freq":
+            gamma     = cfg_cw.get("if_gamma", 0.0)
+            class_wts = 1.0 / np.power(counts, gamma)
+        elif cfg_cw["type"] == "class_balanced":
+            beta      = cfg_cw.get("cb_beta", 0.0)
+            class_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
+        else:
+            ValueError("class_weighting['type'] must be: null / inv_freq / class_balanced")
+
+        # normalize s.t. mean(class_wts) == 1.0
+        class_wts /= class_wts.mean()
+
+        class_wt_clip = cfg_cw.get("class_wt_clip", None)
+        if class_wt_clip is not None:
+            class_wts = np.minimum(class_wts, class_wt_clip)
+            class_wts = class_wts / class_wts.mean()  # renormalize after clipping
+
+        class_wts = torch.tensor(class_wts)
+        self.modelw.set_class_wts(class_wts)
+        self.modelw.set_focal(self.cfg.focal)
+
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(
             index_imgs_class_enc=index_imgs_class_enc,
@@ -529,8 +560,8 @@ class TrainPipeline:
         # Plot 3: Precision@1
         ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
 
-        ax2.plot(x, data["id_img2txt_prec1"], label="ID img2txt Prec@1")
-        ax2.plot(x, data["ood_img2txt_prec1"], label="OOD img2txt Prec@1")
+        ax2.plot(x, data["id_img2txt_prec1"], label="ID img2txt Prec@1", color="blue")
+        ax2.plot(x, data["ood_img2txt_prec1"], label="OOD img2txt Prec@1", color="blue", linestyle="--")
 
         ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
         ax2.set_ylim(0, 1)

@@ -47,6 +47,7 @@ torch.set_printoptions(
 
 @dataclass
 class TrainConfig:
+
     study_name: str
     experiment_name: str
     seed: int | None
@@ -89,9 +90,8 @@ class TrainConfig:
     def __post_init__(self):
         if self.freeze_text_encoder and self.freeze_image_encoder:
             raise ValueError("Text and image encoders are both set to frozen!")
-        if self.lr_sched["type"] == "plat":
-            if self.lr_sched["args"]["val_type"] not in ("loss", "perf"):
-                raise ValueError("val_type must be set to either 'loss' or 'perf' for plateau LR scheduler!")
+        if self.lr_sched["type"] == "plat" and self.lr_sched["args"]["val_type"] not in ("loss", "perf"):
+            raise ValueError("val_type must be set to either 'loss' or 'perf' for plateau LR scheduler!")
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
@@ -162,10 +162,10 @@ class TrainConfig:
         )
 
 def get_config_train():
-    with open(Path(__file__).parent / "config_train.yaml") as f:
-        config_train_dict = yaml.safe_load(f)
-    config_train = TrainConfig(**config_train_dict)
-    return config_train
+    with open(Path(__file__).parent / "config/train.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg = TrainConfig(**cfg_dict)
+    return cfg
 
 class TrialDataTracker:
 

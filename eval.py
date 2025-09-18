@@ -74,10 +74,10 @@ class EvalConfig:
         )
 
 def get_config_eval():
-    with open(Path(__file__).parent / "config_eval.yaml") as f:
-        config_eval_dict = yaml.safe_load(f)
-    config_eval = EvalConfig(**config_eval_dict)
-    return config_eval
+    with open(Path(__file__).parent / "config/eval.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg = EvalConfig(**cfg_dict)
+    return cfg
 
 def main():
 

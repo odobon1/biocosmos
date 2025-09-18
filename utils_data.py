@@ -6,19 +6,18 @@ import numpy as np
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from utils import paths, load_pickle, load_split
 
 import pdb
 
 
+@dataclass
 class Split:
-
-    def __init__(self, data_indexes, id_eval_nshot, class_counts_train):
-
-        self.data_indexes       = data_indexes
-        self.id_eval_nshot      = id_eval_nshot
-        self.class_counts_train = class_counts_train
+    data_indexes: dict
+    id_eval_nshot: dict
+    class_counts_train: np.ndarray
 
 
 class ImageTextDataset(Dataset):

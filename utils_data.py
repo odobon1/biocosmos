@@ -7,9 +7,18 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from utils import paths, load_pickle
+from utils import paths, load_pickle, load_split
 
 import pdb
+
+
+class Split:
+
+    def __init__(self, data_indexes, id_eval_nshot, class_counts_train):
+
+        self.data_indexes       = data_indexes
+        self.id_eval_nshot      = id_eval_nshot
+        self.class_counts_train = class_counts_train
 
 
 class ImageTextDataset(Dataset):
@@ -110,15 +119,7 @@ def collate_fn(batch):
 
     return imgs_b, class_encs_b, list(texts_b)
 
-def spawn_indexes_imgs(split_type, split_name):
-    """
-
-    Args:
-    - split_type --- [str] --- "train" / "id_val" / "id_test" / "ood_val" / "ood_test"
-    - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
-    """
-    data_index = load_pickle(paths["metadata_o"] / f"data_indexes/{split_name}/{split_type}.pkl")
-
+def assemble_indexes_imgs(data_index):
     index_imgs_rfpaths = data_index["rfpaths"]
     index_imgs_sids    = data_index["sids"]
 
@@ -130,6 +131,20 @@ def spawn_indexes_imgs(split_type, split_name):
             sid_2_class_enc[sid] = class_enc_new
             class_enc_new += 1
         index_imgs_class_enc.append(sid_2_class_enc[sid])
+
+    return index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc
+
+def spawn_indexes_imgs(split_name, split_type):
+    """
+
+    Args:
+    - split_type --- [str] --- "train" / "id_val" / "id_test" / "ood_val" / "ood_test"
+    - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
+    """
+    split      = load_split(split_name)
+    data_index = split.data_indexes[split_type]
+
+    index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = assemble_indexes_imgs(data_index)
 
     return index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc
 

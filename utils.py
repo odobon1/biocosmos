@@ -11,16 +11,16 @@ import re
 
 """ CONFIG PARAMS """
 
-# MACHINE = "pace"
-MACHINE = "hpg"
+# CLUSTER = "pace"
+CLUSTER = "hpg"
 
 
-if MACHINE == "pace":
+if CLUSTER == "pace":
     paths = {
         "repo_o": Path("/home/hice1/odobon3/Documents/biocosmos"),
         "vlm4bio": Path("VLM4Bio/datasets")
     }
-elif MACHINE == "hpg":
+elif CLUSTER == "hpg":
 
     dpath_biocosmos        = Path("/blue/arthur.porto-biocosmos")
     dpath_repo_o           = dpath_biocosmos / "odobon3.gatech/biocosmos"
@@ -64,6 +64,15 @@ def seed_libs(seed):
         torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
         torch.backends.cudnn.benchmark     = False  # (False) trades speed for reproducibility (default is False)
 
+def save_json(data, fpath):
+    with open(fpath, "w") as f:
+        json.dump(data, f, indent=4)
+
+def load_json(fpath):
+    with open(fpath, "r") as f:
+        data = json.load(f)
+    return data
+
 def save_pickle(obj, picklepath):
     with open(picklepath, "wb") as f:
         pickle.dump(obj, f)
@@ -73,14 +82,9 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
-def save_json(data, fpath):
-    with open(fpath, "w") as f:
-        json.dump(data, f, indent=4)
-
-def load_json(fpath):
-    with open(fpath, "r") as f:
-        data = json.load(f)
-    return data
+def load_split(split_name):
+    split = load_pickle(paths["metadata_o"] / f"splits/{split_name}/split.pkl")
+    return split
 
 def get_text_preps(text_preps_type):
 

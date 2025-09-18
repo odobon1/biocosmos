@@ -1,10 +1,12 @@
-__pycache__/
-metadata_o/__pycache__/
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/clip_o1/
+!artifacts/clip_o1/**
 
-metadata_o/data_indexes/*
-!metadata_o/data_indexes/.gitkeep
-!metadata_o/data_indexes/S29-0/
-!metadata_o/data_indexes/S29-0/**
+metadata_o/splits/*
+!metadata_o/splits/.gitkeep
+!metadata_o/splits/S29-42/
+!metadata_o/splits/S29-42/**
 
 metadata_o/rank_keys/*
 !metadata_o/rank_keys/.gitkeep
@@ -12,21 +14,16 @@ metadata_o/rank_keys/*
 metadata_o/species_ids/*
 !metadata_o/species_ids/.gitkeep
 
-metadata_o/splits/*
-!metadata_o/splits/.gitkeep
-
 metadata_o/tax/*
 !metadata_o/tax/.gitkeep
 
-useful_gadgets.ipynb
+archive/*
+
 class_spread.ipynb
 data_update_checker.ipynb
 metadata_o_cheatsheet.ipynb
 nymph_data_exploration.ipynb
+useful_gadgets.ipynb
 
-archive/*
-
-artifacts/*
-!artifacts/.gitkeep
-!artifacts/clip_o1/
-!artifacts/clip_o1/**
+__pycache__/
+metadata_o/__pycache__/

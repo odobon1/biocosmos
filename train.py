@@ -25,12 +25,13 @@ from utils import (
     save_json, 
     load_json, 
     save_pickle, 
+    load_split,
     seed_libs,
     get_text_preps, 
     compute_dataloader_workers_prefetch,
 )
 from models import VLMWrapper
-from utils_data import spawn_dataloader, spawn_indexes_imgs
+from utils_data import Split, spawn_dataloader, spawn_indexes_imgs
 from utils_eval import ValidationPipeline
 
 import pdb
@@ -315,37 +316,48 @@ class TrainPipeline:
         self.save_metadata_experiment()
 
         index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, _ = spawn_indexes_imgs(
-            split_type="train",
             split_name=self.cfg.split_name,
+            split_type="train",
         )
 
-        n_classes = len(set(index_imgs_class_enc))
-        counts    = np.bincount(index_imgs_class_enc, minlength=n_classes)  # counts[c] is number of samples with class encoding c
-        # n_samps   = counts.sum()
-        eps       = 1e-8
-        
+        # note: needs to be untangled....
+        split       = load_split(self.cfg.split_name)
+        counts      = split.class_counts_train
+        pair_counts = np.outer(counts, counts)
+
         cfg_cw = self.cfg.class_weighting
+
         if cfg_cw["type"] is None:
-            class_wts = np.ones_like(counts)
+            class_wts      = np.ones_like(counts)
+            class_pair_wts = np.ones_like(pair_counts)
         elif cfg_cw["type"] == "inv_freq":
-            gamma     = cfg_cw.get("if_gamma", 0.0)
-            class_wts = 1.0 / np.power(counts, gamma)
+            gamma          = cfg_cw.get("if_gamma", 0.0)
+            class_wts      = 1.0 / np.power(counts, gamma)
+            class_pair_wts = 1.0 / np.power(pair_counts, gamma)
         elif cfg_cw["type"] == "class_balanced":
-            beta      = cfg_cw.get("cb_beta", 0.0)
-            class_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
+            beta           = cfg_cw.get("cb_beta", 0.0)
+            class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), cfg_cw["cb_eps"])  # (1 - β) / (1 - β^n_c)
+            class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), cfg_cw["cb_eps"])
         else:
             ValueError("class_weighting['type'] must be: null / inv_freq / class_balanced")
 
-        # normalize s.t. mean(class_wts) == 1.0
-        class_wts /= class_wts.mean()
+        # normalize s.t. mean(wts) == 1.0
+        # class_wts /= class_wts.mean()
+        class_wts      = class_wts / class_wts.mean()
+        class_pair_wts = class_pair_wts / class_pair_wts.mean()
 
         class_wt_clip = cfg_cw.get("class_wt_clip", None)
         if class_wt_clip is not None:
-            class_wts = np.minimum(class_wts, class_wt_clip)
-            class_wts = class_wts / class_wts.mean()  # renormalize after clipping
+            class_wts      = np.minimum(class_wts, class_wt_clip)
+            class_pair_wts = np.minimum(class_pair_wts, class_wt_clip)
+            # renormalize after clipping
+            class_wts      = class_wts / class_wts.mean()
+            class_pair_wts = class_pair_wts / class_pair_wts.mean()
 
-        class_wts = torch.tensor(class_wts)
-        self.modelw.set_class_wts(class_wts)
+        class_wts      = torch.tensor(class_wts)
+        class_pair_wts = torch.tensor(class_pair_wts)
+
+        self.modelw.set_class_wts(class_wts, class_pair_wts)
         self.modelw.set_focal(self.cfg.focal)
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)

@@ -107,8 +107,8 @@ class EvaluationPipeline:
         self.batch_size = batch_size
 
         index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = spawn_indexes_imgs(
-            split_type=split_type,
             split_name=split_name,
+            split_type=split_type,
         )
         self.index_txts, self.index_txts_class_enc = spawn_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,

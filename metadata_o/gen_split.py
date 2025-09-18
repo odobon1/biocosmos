@@ -1,7 +1,3 @@
-"""
-Want to be able to run this one independently to generate more splits on the fly (i.e. not deeply integrated into the entire ingestion pipeline)
-"""
-
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import os
@@ -12,6 +8,9 @@ import random
 import numpy as np
 from sklearn.model_selection import train_test_split
 import copy
+from dataclasses import dataclass
+import yaml
+from pathlib import Path
 
 from utils import paths, load_pickle, save_pickle
 from utils_data import Split, assemble_indexes_imgs
@@ -19,23 +18,33 @@ from utils_data import Split, assemble_indexes_imgs
 import pdb
 
 
-""" CONFIG PARAMS """
+@dataclass
+class GenSplitConfig:
 
-PCT_EVAL             = 0.29
-PCT_OOD_CLOSE_ENOUGH = 0.0001  # careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
-SEED                 = 42
-SPLIT_NAME           = "S29-42"
-ALLOW_OVERWRITE      = False
-# NST_NAMES            = ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
-# NST_UPPER_BOUNDS     = [1, 2, 3, 4, 5, 10, 20, 50, 100]  # divides n-shot space into len(NST_UPPER_BOUNDS) + 1 buckets, last bucket is if n is greater than the last upper bound
-NST_NAMES            = ["1-19", "20-99", "100-499", "500+"]
-NST_UPPER_BOUNDS     = [19, 99, 499]
+    seed: int
+    split_name: str
+
+    allow_overwrite: bool
+
+    pct_eval: float
+    pct_ood_tol: float
+
+    nst_names: list
+    nst_seps: list
 
 
-random.seed(SEED)
-np.random.seed(SEED)
+def get_config_gen_split():
+    with open(Path(__file__).parent.parent / "config/gen_split.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg = GenSplitConfig(**cfg_dict)
+    return cfg
 
-assert len(NST_NAMES) == len(NST_UPPER_BOUNDS) + 1, f"len(NST_NAMES) ({len(NST_NAMES)}) != len(NST_UPPER_BOUNDS) + 1 ({len(NST_UPPER_BOUNDS)})"
+cfg = get_config_gen_split()
+
+random.seed(cfg.seed)
+np.random.seed(cfg.seed)
+
+assert len(cfg.nst_names) == len(cfg.nst_seps) + 1, f"len(nst_names) ({len(cfg.nst_names)}) != len(nst_seps) + 1 ({len(cfg.nst_seps)})"
 
 
 def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, insts, seed=None):
@@ -147,15 +156,15 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
     return insts_rem, insts_val, insts_test
 
 
-dpath_split = paths["metadata_o"] / f"splits/{SPLIT_NAME}"
+dpath_split = paths["metadata_o"] / f"splits/{cfg.split_name}"
 dpath_figs  = dpath_split / "figures"
 
-if os.path.isdir(dpath_split) and not ALLOW_OVERWRITE:
-    error_msg = f"Split '{SPLIT_NAME}' already exists, choose a different SPLIT_NAME!"
+if os.path.isdir(dpath_split) and not cfg.allow_overwrite:
+    error_msg = f"Split '{cfg.split_name}' already exists, choose different split_name!"
     raise ValueError(error_msg)
-print(F"SPLIT_NAME: '{SPLIT_NAME}'")
+print(F"Split Name: '{cfg.split_name}'")
 
-pct_ood_eval = pct_id_eval = PCT_EVAL / 2  # OOD per set percentage
+pct_ood_eval = pct_id_eval = cfg.pct_eval / 2  # OOD per set percentage
 
 tax_nymph       = load_pickle(paths["metadata_o"] / "tax/nymph.pkl")
 sids            = set(tax_nymph["found"].keys())  # OOD sets: insts
@@ -169,7 +178,7 @@ for sid in sids:
     n_samps_dict[sid] = n_samps_sid
     n_samps_total += n_samps_sid
 
-n_samps_eval = round(n_samps_total * PCT_EVAL)  # OOD sets: n_draws
+n_samps_eval = round(n_samps_total * cfg.pct_eval)  # OOD sets: n_draws
 
 genera       = []
 genus_2_sids = defaultdict(list)  # OOD sets: class_2_insts
@@ -237,7 +246,7 @@ while not close_enough:
         n_insts_2_classes=n_insts_2_classes_g, 
         class_2_insts    =genus_2_sids, 
         insts            =sids,
-        seed             =SEED+i,
+        seed             =cfg.seed+i,
     )
 
     # NUM SAMPLES CHECK
@@ -254,7 +263,7 @@ while not close_enough:
         n_samps_ood_test += n_samps_sid
     pct_samps_ood_test = n_samps_ood_test / n_samps_total
 
-    if abs((pct_ood_eval / 2) - pct_samps_ood_val) < PCT_OOD_CLOSE_ENOUGH and abs((pct_ood_eval / 2) - pct_samps_ood_test) < PCT_OOD_CLOSE_ENOUGH:
+    if abs((pct_ood_eval / 2) - pct_samps_ood_val) < cfg.pct_ood_tol and abs((pct_ood_eval / 2) - pct_samps_ood_test) < cfg.pct_ood_tol:
         close_enough = True
 
 skeys_ood_val = set()
@@ -311,7 +320,7 @@ skeys_train_multis, skeys_id_val, skeys_id_test = strat_split(
     n_insts_2_classes=n_insts_2_classes_s, 
     class_2_insts    =sid_2_skeys_id_multis, 
     insts            =skeys_id_multis,
-    seed             =SEED,
+    seed             =cfg.seed,
 )
 
 skeys_id_singles = set((sid, 0) for sid in sids_id_singles)
@@ -328,12 +337,12 @@ skeys_id |= skeys_train
 skeys_id |= skeys_id_val
 skeys_id |= skeys_id_test
 
-def find_range_index(upper_bounds, n):
+def find_range_index(nst_seps, n):
     assert isinstance(n, int), f"n must be an int, got {type(n).__name__}"
     if n <= 0:
         raise ValueError(f"find_range_index(): n = {n}")
 
-    return bisect.bisect_left(upper_bounds, n)
+    return bisect.bisect_left(nst_seps, n)
 
 """
 n-shot tracking data structures
@@ -357,7 +366,7 @@ n_shot_tracker = [
 (for saving to file)
 
 id_eval_nshot = {
-    "names": NST_NAMES (it's a list),
+    "names": nst_names (it's a list),
     "buckets": {
         nst_name0: {
             "id_val": set(skeys),
@@ -374,7 +383,7 @@ id_eval_nshot = {
 
 n_shot_tracker = []
 
-for _ in range(len(NST_NAMES)):
+for _ in range(len(cfg.nst_names)):
     nst_bucket = {
         "train": set(),
         "id_val": set(),
@@ -406,20 +415,20 @@ for sid in sids_id:
         print("PROBLEM")
         print(f"{n_skeys} {n_skeys_train} {n_skeys_id_val} {n_skeys_id_test}")
 
-    idx_nst_bucket = find_range_index(NST_UPPER_BOUNDS, n_skeys_train)
+    idx_nst_bucket = find_range_index(cfg.nst_seps, n_skeys_train)
     n_shot_tracker[idx_nst_bucket]["train"].update(sid_skeys_train)
     n_shot_tracker[idx_nst_bucket]["id_val"].update(sid_skeys_val)
     n_shot_tracker[idx_nst_bucket]["id_test"].update(sid_skeys_test)
 
 # list-style --> dict-style
 id_eval_nshot = {
-    "names": NST_NAMES,  # just to preserve ordering of the names if needed
+    "names": cfg.nst_names,  # just to preserve ordering of the names if needed
     "buckets": {
         name: {
             "id_val": bucket["id_val"],
             "id_test": bucket["id_test"],
         }
-        for name, bucket in zip(NST_NAMES, n_shot_tracker)
+        for name, bucket in zip(cfg.nst_names, n_shot_tracker)
     },
 }
 

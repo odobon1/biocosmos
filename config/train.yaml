@@ -1,10 +1,7 @@
-# study_name:      class_imb
 study_name:      dev
-# experiment_name: clip_inv-freq-0-5_focal_S29-42
 experiment_name: dev
 seed:            42
 split_name:      S29-42
-# split_name:      D2
 # split_name:      dev
 
 verbose_batch_loss: false
@@ -14,18 +11,20 @@ allow_overwrite_trial: true
 allow_diff_study:      true
 allow_diff_experiment: true
 
-model_type: clip_vitb16  # common options: bioclip / clip_vitb16 / siglip_vitb16
-loss_type:  infonce  # common options: infonce / pairwise_sigmoid / pairwise_sigmoid_upwtdpos / multipos_sigmoid
+model_type:    siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+loss_type:     sigmoid  # common options: {infonce, sigmoid}
+sig_targ_type: multipos  # options: {pairwise, multipos}; only relevant for sigmoid
 class_weighting:
-  type:     inv_freq  # options: null / inv_freq / class_balanced
+  type:     inv_freq  # options: {null, inv_freq, class_balanced}
   if_gamma: 0.5  # (0.0, 1.0]; "inverse-frequency gamma", only used for type: inv_freq; 1 / n_c^(if_gamma); if_gamma = 1.0 --> 1 / n_c (classic scheme), if_gamma = 0.5 --> 1 / sqrt(n_c), if_gamma = 0.0 --> no weighting (uniform)
   cb_beta:  0.9999  # [0.0, 1.0); only used for type: class_balanced; controls aggressiveness
   cb_eps:   1e-8  # minimum on unnormalized weights for numerical stability; only applicable for type: class_balanced
+  cp_type:  2  # options: {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
 focal:
-  enabled:   true
+  enabled:   false
   gamma:     2.0  # [0, inf); down-weights easy samples, larger gamma --> stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid; FL reduces to CE when gamma = 0
-  alpha_pos: 0.5  # how much weight positives get relative to negatives inside the focal loss term e.g. alpha_t = alpha_pos for positives, alpha_t = (1 - alpha_pos) for negatives; only relevant for sigmoid-based losses
-  comp_type: 1  # computation type; options: 1 / 2 / 3; 1: discrete targets only (positive/negative), 2/3: proposed continuous alternatives in support of hierarchical loss; nearly identical behavior for all 3 variants when targets=0/1; only relevant for sigmoid-based losses
+  alpha_pos: 0.5  # [0, 1]; only relevant for sigmoid; 0.5 equivalent to no pos/neg weighting; alpha_neg = 1 - alpha_pos
+  comp_type: 1  # options: {1, 2, 3}; focal loss computation type; 1: discrete targets only (positive/negative), 2/3: proposed continuous alternatives in support of hierarchical loss; nearly identical behavior for all 3 variants when targets=0/1; only relevant for sigmoid-based losses
 
 n_epochs:         10
 checkpoint_every: 1
@@ -58,7 +57,7 @@ lr_sched:
   # type: plat  # may also want to tweak threshold / eps
   # args:
   #   reset_best_val: true  # (true) reset best validation score after LR drop to avoid early plateauing
-  #   val_type:       loss  # options: loss / perf
+  #   val_type:       loss  # options: {loss, perf}
   # args_sched:
   #   factor:   0.61803398875  # golden ratio
   #   patience: 1
@@ -96,7 +95,7 @@ lr_sched:
 freeze_text_encoder:  false
 freeze_image_encoder: false
 
-cached_imgs: null  # options: null / pl / pp
+cached_imgs: null  # options: {null, pl, pp}
 mixed_prec:  true  # mixed precision for training and validation
 act_chkpt:   false  # activation checkpointing
 

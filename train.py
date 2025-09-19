@@ -59,6 +59,7 @@ class TrainConfig:
 
     model_type: str
     loss_type: str
+    sig_targ_type: str
     class_weighting: dict
     focal: dict
 
@@ -91,7 +92,7 @@ class TrainConfig:
         if self.freeze_text_encoder and self.freeze_image_encoder:
             raise ValueError("Text and image encoders are both set to frozen!")
         if self.lr_sched["type"] == "plat" and self.lr_sched["args"]["val_type"] not in ("loss", "perf"):
-            raise ValueError("val_type must be set to either 'loss' or 'perf' for plateau LR scheduler!")
+            raise ValueError("For plateau LR scheduler, val_type must be one of: {loss, perf}")
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
@@ -324,8 +325,14 @@ class TrainPipeline:
         split       = load_split(self.cfg.split_name)
         counts      = split.class_counts_train
         pair_counts = np.outer(counts, counts)
+        n_classes   = len(counts)
 
         cfg_cw = self.cfg.class_weighting
+
+        if cfg_cw["cp_type"] == 2:
+            neg_mult2 = np.full((n_classes, n_classes), 2)
+            np.fill_diagonal(neg_mult2, 1)
+            pair_counts = pair_counts * neg_mult2
 
         if cfg_cw["type"] is None:
             class_wts      = np.ones_like(counts)
@@ -339,12 +346,22 @@ class TrainPipeline:
             class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), cfg_cw["cb_eps"])  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), cfg_cw["cb_eps"])
         else:
-            ValueError("class_weighting['type'] must be: null / inv_freq / class_balanced")
+            ValueError("class_weighting['type'] must be one of: {null, inv_freq, class_balanced}")
 
         # normalize s.t. mean(wts) == 1.0
         # class_wts /= class_wts.mean()
         class_wts      = class_wts / class_wts.mean()
-        class_pair_wts = class_pair_wts / class_pair_wts.mean()
+
+        if cfg_cw["cp_type"] == 1:
+            class_pair_wts = class_pair_wts / class_pair_wts.mean()
+        elif cfg_cw["cp_type"] == 2:
+            mask = np.triu(np.ones_like(class_pair_wts, dtype=bool))
+            # values of the upper triangle (1D)
+            tri_vals = class_pair_wts[mask]
+            # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing
+            class_pair_wts = class_pair_wts / tri_vals.mean()
+        else:
+            ValueError("cp_type must be one of: {1, 2}")
 
         class_wt_clip = cfg_cw.get("class_wt_clip", None)
         if class_wt_clip is not None:
@@ -359,6 +376,7 @@ class TrainPipeline:
 
         self.modelw.set_class_wts(class_wts, class_pair_wts)
         self.modelw.set_focal(self.cfg.focal)
+        self.modelw.set_sigmoid_targ_type(self.cfg.sig_targ_type)
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(

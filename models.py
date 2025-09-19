@@ -87,13 +87,18 @@ class VLMWrapper(abc.ABC):
         if config.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-    def set_class_wts(self, class_wts):
-        self.class_wts = class_wts.to(self.device)
+    def set_class_wts(self, class_wts, class_pair_wts):
+        self.class_wts      = class_wts.to(self.device)
+        self.class_pair_wts = class_pair_wts.to(self.device)
 
     def set_focal(self, cfg_focal):
-        self.focal           = bool(cfg_focal["enabled"])
-        self.focal_gamma     = float(cfg_focal["gamma"])
-        self.focal_alpha_pos = float(cfg_focal["alpha_pos"])
+        self.focal           = cfg_focal["enabled"]
+        self.focal_gamma     = cfg_focal["gamma"]
+        self.focal_alpha_pos = cfg_focal["alpha_pos"]
+        self.focal_comp_type = cfg_focal["comp_type"]
+
+    def set_sigmoid_targ_type(self, sig_targ_type):
+        self.sig_targ_type = sig_targ_type
 
     @classmethod
     def build(cls, config):
@@ -197,10 +202,10 @@ class VLMWrapper(abc.ABC):
     def compute_logits(self, sim):
         if self.loss_type == "infonce":
             return self.compute_logits_clip(sim)
-        elif self.loss_type in ("pairwise_sigmoid", "pairwise_sigmoid_upwtdpos", "multipos_sigmoid"):
+        elif self.loss_type == "sigmoid":
             return self.compute_logits_siglip(sim)
         else:
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}'")
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce, sigmoid}}")
 
     def compute_logits_clip(self, sim):
         logits = sim * self.model.logit_scale.exp()
@@ -210,24 +215,12 @@ class VLMWrapper(abc.ABC):
         logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
         return logits
 
-    def compute_loss(self, logits, class_encs_b, reduction="mean"):
-
-        """
-        Note: `reduction` arg added in preparation for n-shot loss tracking (reduction="none" in that case)
-        """
-
+    def compute_loss(self, logits, class_encs_b):
         class_encs_b = torch.tensor(class_encs_b).to(self.device)
-
         if self.loss_type == "infonce":
             return self.compute_loss_infonce(logits, class_encs_b)
-        elif self.loss_type == "pairwise_sigmoid":
-            return self.compute_loss_pairwise_sigmoid(logits, class_encs_b, reduction)
-        elif self.loss_type == "pairwise_sigmoid_upwtdpos":
-            return self.compute_loss_pairwise_sigmoid(logits, class_encs_b, reduction, up_wtd_pos=True)
-        elif self.loss_type == "multipos_sigmoid":
-            return self.compute_loss_multipos_sigmoid(logits, class_encs_b, reduction)
-        else:
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}'")
+        elif self.loss_type == "sigmoid":
+            return self.compute_loss_sigmoid(logits, class_encs_b)
 
     def compute_loss_infonce(self, logits, class_encs_b):
 
@@ -237,7 +230,7 @@ class VLMWrapper(abc.ABC):
 
         B      = logits.size(0)
         targs  = torch.arange(B, device=self.device)
-        w      = self.class_wts[class_encs_b]
+        rw_wts = self.class_wts[class_encs_b]  # "re-weighting" weights
 
         loss_i2t_b = F.cross_entropy(logits,   targs, reduction="none")
         loss_t2i_b = F.cross_entropy(logits.T, targs, reduction="none")
@@ -253,37 +246,69 @@ class VLMWrapper(abc.ABC):
             foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(g)  # clamping for numerical stability
             foc_t2i = (-torch.expm1(-loss_t2i_b)).clamp_min(1e-12).pow(g)
 
-            w_i2t = foc_i2t * w
-            w_t2i = foc_t2i * w
+            w_i2t = foc_i2t * rw_wts
+            w_t2i = foc_t2i * rw_wts
         else:
-            w_i2t = w
-            w_t2i = w
+            w_i2t = rw_wts
+            w_t2i = rw_wts
 
         num_i2t = (w_i2t * loss_i2t_b).sum()
         num_t2i = (w_t2i * loss_t2i_b).sum()
         den_i2t = w_i2t.detach().sum().clamp_min(1e-12)
         den_t2i = w_t2i.detach().sum().clamp_min(1e-12)
 
-        loss_b = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
+        loss_batch = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
-        return loss_b
+        return loss_batch
 
-    def compute_loss_pairwise_sigmoid(self, logits, class_encs_b, reduction, up_wtd_pos=False):
-        B     = logits.size(0)
-        targs = torch.eye(B, device=self.device)
-        if up_wtd_pos:
-            pos_weight = torch.full((1,), float(B-1), dtype=logits.dtype, device=logits.device)
+    def _sigmoid_focal_modulate(self, logits, targs):
+        p = torch.sigmoid(logits)
+        if self.focal_comp_type == 1:
+            p_t = torch.where(targs > 0, p, 1 - p)
+        elif self.focal_comp_type == 2:
+            p_t = (1 - p) + targs * (2 * p - 1)
+        elif self.focal_comp_type == 3:
+            p_t = 1 - torch.abs(targs - p)
         else:
-            pos_weight = None
+            raise ValueError("Focal loss comp_type must be one of: {1, 2, 3}")
+        foc = (1 - p_t).pow(self.focal_gamma)
+        return foc
 
-        loss_b = F.binary_cross_entropy_with_logits(logits, targs, pos_weight=pos_weight, reduction=reduction)
+    def compute_loss_sigmoid(self, logits, class_encs_b):
+        """
+        targ_type options: {pairwise, multipos}
+        """
 
-        return loss_b
-    
-    def compute_loss_multipos_sigmoid(self, logits, class_encs_b, reduction):
-        targs  = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)
-        loss_b = F.binary_cross_entropy_with_logits(logits, targs, reduction=reduction)
-        return loss_b
+        if self.sig_targ_type == "pairwise":
+            B     = logits.size(0)
+            targs = torch.eye(B, device=self.device)  # --------------------------------------------------- Tensor(B, B)
+        elif self.sig_targ_type == "multipos":
+            targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)  # --- Tensor(B, B)
+        else:
+            ValueError("targ_type must be one of: {pairwise, multipos}")
+
+        # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
+        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # -------------------- Tensor(B, B); "re-weighting" weights
+
+        if self.focal:
+            foc_wts = self._sigmoid_focal_modulate(logits, targs)  # -------------------------------------- Tensor(B, B)
+        else:
+            foc_wts = torch.ones_like(targs)
+
+        alpha_pos  = self.focal_alpha_pos
+        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical
+
+        W = rw_wts * posneg_wts * foc_wts
+
+        loss_raw   = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # --------------- Tensor(B, B); unweighted loss matrix
+        loss_batch = (W * loss_raw).sum() / W.sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though) -- detach? (should gradients be flowing through .sum() denominator?)
+
+        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
+        with torch.no_grad():
+            norm = loss_raw.mean() / loss_batch
+        loss_batch = norm * loss_batch
+
+        return loss_batch
 
     def freeze(self, freeze_txt, freeze_img):
         if freeze_txt: self.freeze_text_encoder()

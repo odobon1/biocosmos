@@ -5,8 +5,6 @@ artifacts/*
 
 metadata_o/splits/*
 !metadata_o/splits/.gitkeep
-!metadata_o/splits/S29-42/
-!metadata_o/splits/S29-42/**
 
 metadata_o/rank_keys/*
 !metadata_o/rank_keys/.gitkeep

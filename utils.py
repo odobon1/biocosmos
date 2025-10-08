@@ -25,14 +25,8 @@ elif CLUSTER == "hpg":
     dpath_biocosmos        = Path("/blue/arthur.porto-biocosmos")
     dpath_repo_o           = dpath_biocosmos / "odobon3.gatech/biocosmos"
     dpath_data             = dpath_biocosmos / "data"
-    # dpath_nymph            = dpath_data / "datasets/nymphalidae_whole_specimen-v240606"
-    # fpath_nymph_metadata   = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v240606.csv"
     dpath_nymph            = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
     fpath_nymph_metadata   = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
-    dpath_nymph_1          = dpath_data / "datasets/nymphalidae_whole_specimen-v240606"
-    fpath_nymph_1_metadata = dpath_nymph_1 / "metadata/data_meta-nymphalidae_whole_specimen-v240606.csv"
-    dpath_nymph_2          = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    fpath_nymph_2_metadata = dpath_nymph_2 / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
     dpath_vlm4bio          = dpath_data / "datasets/VLM4Bio"
 
     paths = {
@@ -44,10 +38,6 @@ elif CLUSTER == "hpg":
         "nymph":            dpath_nymph,
         "nymph_imgs":       dpath_nymph / "images",
         "nymph_metadata":   fpath_nymph_metadata,
-        "nymph_1":          dpath_nymph_1,
-        "nymph_1_metadata": fpath_nymph_1_metadata,
-        "nymph_2":          dpath_nymph_2,
-        "nymph_2_metadata": fpath_nymph_2_metadata,
         "vlm4bio":          dpath_vlm4bio,
     }
 
@@ -96,8 +86,39 @@ def get_text_preps(text_preps_type):
         ],
     ]
 
-    TEXT_PREPS_BIOCLIP_SCI = [["a photo of "]]  # scientific name, BioCLIP-style prepending
+    TEXT_PREPS_BIOCLIP_SCI = [["a photo of $SCI$"]]  # scientific name, BioCLIP-style prepending
 
+    COMBO_TEMPS_TRAIN = [
+        [
+            "",
+            "a photo of ",
+        ],
+        [
+            "",
+            "$AAN$ ",
+        ],
+        [
+            "",
+            "$SEX$",
+        ],
+        [
+            "$SCI$",
+            "$TAX$",
+            "$COM$",
+        ],
+        [
+            "",
+            " butterfly",
+        ],
+        [
+            "",
+            "$POS$",
+        ],
+    ]
+
+
+    if text_preps_type == "combo_temps":
+        return COMBO_TEMPS_TRAIN
     if text_preps_type == "mixed":
         return TEXT_PREPS_MIXED
     elif text_preps_type == "bioclip_sci":

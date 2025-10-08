@@ -32,23 +32,27 @@ class ImageTextDataset(Dataset):
 
     def __init__(
             self, 
-            index_imgs_class_enc, 
-            index_imgs_rfpaths, 
-            index_imgs_sids,
+            index_class_encs, 
+            index_rfpaths, 
+            index_sids,
+            index_pos,
+            index_sex,
             text_preps,
             img_pp, 
             cached_imgs,
             n_workers,
         ):
         
-        self.index_imgs_class_enc = index_imgs_class_enc
-        self.index_imgs_rfpaths   = index_imgs_rfpaths
-        self.index_imgs_sids      = index_imgs_sids
-        self.text_preps           = text_preps
-        self.img_pp               = img_pp
-        self.cached_imgs          = cached_imgs
+        self.index_class_encs = index_class_encs
+        self.index_rfpaths    = index_rfpaths
+        self.index_sids       = index_sids
+        self.index_pos        = index_pos
+        self.index_sex        = index_sex
+        self.text_preps       = text_preps
+        self.img_pp           = img_pp
+        self.cached_imgs      = cached_imgs
 
-        self.n_samples = len(self.index_imgs_class_enc)
+        self.n_samples = len(self.index_class_encs)
 
         self.time_cache = None  # need to pass this var to metadata save
         if self.cached_imgs in ("pl", "pp"):
@@ -61,9 +65,7 @@ class ImageTextDataset(Dataset):
             # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
             self.imgs_mem = []
             with ThreadPoolExecutor(max_workers=n_workers) as exe:
-                for img in tqdm.tqdm(exe.map(load_pp_img, self.index_imgs_rfpaths),
-                                     total=len(self.index_imgs_rfpaths),
-                                     desc ="Caching Images"):
+                for img in tqdm.tqdm(exe.map(load_pp_img, self.index_rfpaths), total=len(self.index_rfpaths), desc="Caching Images"):
                     self.imgs_mem.append(img)
 
             time_end        = time.time()
@@ -90,10 +92,12 @@ class ImageTextDataset(Dataset):
         - [int]
         - [str]
         """
-        class_enc = self.index_imgs_class_enc[idx]
-        sid       = self.index_imgs_sids[idx]
+        class_enc = self.index_class_encs[idx]
+        sid       = self.index_sids[idx]
+        pos       = self.index_pos[idx]
+        sex       = self.index_sex[idx]
 
-        text = gen_text(sid, self.text_preps, sids2commons=self.sids2commons)
+        text = gen_text(sid, self.text_preps, pos, sex, sids2commons=self.sids2commons)
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
@@ -102,7 +106,7 @@ class ImageTextDataset(Dataset):
             img_t = self.img_pp(img)
         else:
             # load + preprocess image
-            img   = Image.open(paths["nymph"] / "images" / self.index_imgs_rfpaths[idx]).convert("RGB")
+            img   = Image.open(paths["nymph"] / "images" / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
         return img_t, class_enc, text
@@ -118,22 +122,24 @@ def collate_fn(batch):
 
     return imgs_b, class_encs_b, list(texts_b)
 
-def assemble_indexes_imgs(data_index):
-    index_imgs_rfpaths = data_index["rfpaths"]
-    index_imgs_sids    = data_index["sids"]
+def assemble_indexes(data_index):
+    index_rfpaths = data_index["rfpaths"]
+    index_sids    = data_index["sids"]
+    index_pos     = data_index["pos"]
+    index_sex     = data_index["sex"]
 
-    sid_2_class_enc      = {}
-    class_enc_new        = 0
-    index_imgs_class_enc = []
-    for sid in index_imgs_sids:
+    sid_2_class_enc  = {}
+    class_enc_new    = 0
+    index_class_encs = []
+    for sid in index_sids:
         if sid not in sid_2_class_enc.keys():
             sid_2_class_enc[sid] = class_enc_new
             class_enc_new += 1
-        index_imgs_class_enc.append(sid_2_class_enc[sid])
+        index_class_encs.append(sid_2_class_enc[sid])
 
-    return index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc
+    return index_class_encs, index_rfpaths, index_sids, sid_2_class_enc, index_pos, index_sex
 
-def spawn_indexes_imgs(split_name, split_type):
+def spawn_indexes(split_name, split_type):
     """
 
     Args:
@@ -143,18 +149,16 @@ def spawn_indexes_imgs(split_name, split_type):
     split      = load_split(split_name)
     data_index = split.data_indexes[split_type]
 
-    index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = assemble_indexes_imgs(data_index)
-
-    return index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc
+    return assemble_indexes(data_index)
 
 def spawn_indexes_txts(sid_2_class_enc, text_preps):
     """
     Think this is still needed but only for eval
 
-    Note: This was split apart from the spawn_indexes_imgs() logic for ease of setting up the mixed text-types experiment
+    Note: This was split apart from the spawn_indexes() logic for ease of setting up the mixed text-types experiment
     
     Args:
-    - sid_2_class_enc --- [dict(sid --> class enc)] --- generated by spawn_indexes_imgs()
+    - sid_2_class_enc --- [dict(sid --> class enc)] --- generated by spawn_indexes()
     """
 
     index_txts_sids      = list(sid_2_class_enc.keys())
@@ -165,9 +169,11 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     return index_txts, index_txts_class_enc
 
 def spawn_dataloader(
-        index_imgs_class_enc,
-        index_imgs_rfpaths,
-        index_imgs_sids,
+        index_class_encs,
+        index_rfpaths,
+        index_sids,
+        index_pos,
+        index_sex,
         text_preps,
         batch_size,
         shuffle,
@@ -180,25 +186,29 @@ def spawn_dataloader(
     """
 
     Args:
-    - index_imgs_class_enc --- [list(int)] --------- Class encodings (data index)
-    - index_imgs_rfpaths ----- [list(int)] --------- Relative filepaths to images (data index)
-    - index_imgs_sids -------- [list(str)] --------- Species Identifiers (data index)
-    - text_preps ------------- [list(list(str))] --- List of text prepending selections that are randomly picked from to assemble train texts
-    - batch_size ------------- [int] --------------- Batch size
-    - shuffle ---------------- [bool] -------------- Whether to shuffle samples between cycles
-    - drop_last -------------- [bool] -------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
-    - img_pp ----------------- [callable] ---------- The image preprocessor
-    - cached_imgs ------------ [bool] -------------- Whether to cache images in memory
-    - n_workers -------------- [int] --------------- Parallelism
-    - prefetch_factor -------- [int] --------------- How many batches each worker will load in advance;
+    - index_class_encs ------ [list(int)] --------- Class encodings (data index)
+    - index_rfpaths --------- [list(int)] --------- Relative filepaths to images (data index)
+    - index_sids ------------ [list(str)] --------- Species Identifiers (data index)
+    - index_pos ------------- [list(str)] --------- 
+    - index_sex ------------- [list(str)] --------- 
+    - text_preps ------------ [list(list(str))] --- List of text prepending selections that are randomly picked from to assemble train texts
+    - batch_size ------------ [int] --------------- Batch size
+    - shuffle --------------- [bool] -------------- Whether to shuffle samples between cycles
+    - drop_last ------------- [bool] -------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
+    - img_pp ---------------- [callable] ---------- The image preprocessor
+    - cached_imgs ----------- [bool] -------------- Whether to cache images in memory
+    - n_workers ------------- [int] --------------- Parallelism
+    - prefetch_factor ------- [int] --------------- How many batches each worker will load in advance;
                                                      Higher prefetch_factor increases throughput, higher RAM cost;
                                                      Only takes effect when n_workers > 0
     """
 
     dataset = ImageTextDataset(
-        index_imgs_class_enc,
-        index_imgs_rfpaths,
-        index_imgs_sids,
+        index_class_encs,
+        index_rfpaths,
+        index_sids,
+        index_pos,
+        index_sex,
         text_preps,
         img_pp,
         cached_imgs,
@@ -219,7 +229,7 @@ def spawn_dataloader(
 
     return dataloader, dataset.time_cache
 
-def gen_text(sid, text_preps, sids2commons=None):
+def gen_text(sid, combo_temp, pos=None, sex=None, sids2commons=None):
 
     genus, species_epithet = sid.split("_", 1)
     text_sci = f"{genus} {species_epithet}"
@@ -229,14 +239,40 @@ def gen_text(sid, text_preps, sids2commons=None):
     else:
         text_com = None
 
-    if text_com is not None:
-        texts = [text_sci, text_tax, text_com]
-    else:
-        texts = [text_sci, text_tax]
+    prompt = ""
 
-    text = random.choice(texts)
+    for combo_seg in reversed(combo_temp):  # iterate through combo segments in reversed order
 
-    for text_preps_cat in reversed(text_preps):  # iterate through text prependending categories in reversed order
-        text = random.choice(text_preps_cat) + text  # select random prepending from prepending-category, prepend to text
+        seg = random.choice(combo_seg)
 
-    return text
+        if "$COM$" in seg:
+            if text_com is not None:
+                seg = seg.replace("$COM$", text_com)
+            else:
+                if random.choice((True, False)):
+                    seg = seg.replace("$COM$", "$SCI$")
+                else:
+                    seg = seg.replace("$COM$", "$TAX$")
+        if "$SCI$" in seg:
+            seg = seg.replace("$SCI$", text_sci)
+        if "$TAX$" in seg:
+            seg = seg.replace("$TAX$", text_tax)
+
+        if "$SEX$" in seg:
+            if sex is None:
+                seg = seg.replace("$SEX$", "")
+            else:
+                seg = seg.replace("$SEX$", f"{sex} ")
+
+        if "$POS$" in seg:
+            seg = seg.replace("$POS$", f", {pos} view")
+
+        if "$AAN$" in seg:
+            if prompt[0] in ["a", "e", "i", "o", "u"]:
+                seg = seg.replace("$AAN$", "an")
+            else:
+                seg = seg.replace("$AAN$", "a")
+
+        prompt = seg + prompt  # select random prepending from prepending-category, prepend to text
+
+    return prompt

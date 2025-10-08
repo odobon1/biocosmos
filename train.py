@@ -31,7 +31,7 @@ from utils import (
     compute_dataloader_workers_prefetch,
 )
 from models import VLMWrapper
-from utils_data import Split, spawn_dataloader, spawn_indexes_imgs
+from utils_data import Split, spawn_dataloader, spawn_indexes
 from utils_eval import ValidationPipeline
 
 import pdb
@@ -321,7 +321,7 @@ class TrainPipeline:
         self.save_metadata_study()
         self.save_metadata_experiment()
 
-        index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, _ = spawn_indexes_imgs(
+        index_class_encs, index_rfpaths, index_sids, _, index_pos, index_sex = spawn_indexes(
             split_name=self.cfg.split_name,
             split_type="train",
         )
@@ -352,7 +352,7 @@ class TrainPipeline:
             class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
         else:
-            ValueError("class_weighting['type'] must be one of: {null, inv_freq, class_balanced}")
+            raise ValueError("class_weighting['type'] must be one of: {null, inv_freq, class_balanced}")
 
         # normalize s.t. mean(wts) == 1.0
         # class_wts /= class_wts.mean()
@@ -367,7 +367,7 @@ class TrainPipeline:
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing
             class_pair_wts = class_pair_wts / tri_vals.mean()
         else:
-            ValueError("cp_type must be one of: {1, 2}")
+            raise ValueError("cp_type must be one of: {1, 2}")
 
         class_wt_clip = cfg_cw.get("class_wt_clip", None)
         if class_wt_clip is not None:
@@ -386,17 +386,19 @@ class TrainPipeline:
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(
-            index_imgs_class_enc=index_imgs_class_enc,
-            index_imgs_rfpaths  =index_imgs_rfpaths,
-            index_imgs_sids     =index_imgs_sids,
-            text_preps          =text_preps_train,
-            batch_size          =self.cfg.batch_size,
-            shuffle             =True,
-            drop_last           =self.cfg.drop_partial_batch_train,
-            img_pp              =self.modelw.img_pp_train,
-            cached_imgs         =self.cfg.cached_imgs,
-            n_workers           =self.cfg.n_workers,
-            prefetch_factor     =self.cfg.prefetch_factor,
+            index_class_encs=index_class_encs,
+            index_rfpaths   =index_rfpaths,
+            index_sids      =index_sids,
+            index_pos       =index_pos,
+            index_sex       =index_sex,
+            text_preps      =text_preps_train,
+            batch_size      =self.cfg.batch_size,
+            shuffle         =True,
+            drop_last       =self.cfg.drop_partial_batch_train,
+            img_pp          =self.modelw.img_pp_train,
+            cached_imgs     =self.cfg.cached_imgs,
+            n_workers       =self.cfg.n_workers,
+            prefetch_factor =self.cfg.prefetch_factor,
         )
 
         text_preps_val = get_text_preps(self.cfg.text_preps_type_val)
@@ -788,6 +790,7 @@ class TrainPipeline:
 
     def batch_forward(self, imgs_b, texts_b, class_encs_b):
 
+        # normalized embeddings
         embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
         embs_txts = self.modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
 

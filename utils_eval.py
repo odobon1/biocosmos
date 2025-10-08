@@ -3,7 +3,7 @@ from torch.amp import autocast  # type: ignore[import]
 import time
 from tqdm import tqdm  # type: ignore[import]
 
-from utils_data import spawn_dataloader, spawn_indexes_imgs, spawn_indexes_txts
+from utils_data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
 
 import pdb
 
@@ -106,7 +106,7 @@ class EvaluationPipeline:
         self.split_type = split_type
         self.batch_size = batch_size
 
-        index_imgs_class_enc, index_imgs_rfpaths, index_imgs_sids, sid_2_class_enc = spawn_indexes_imgs(
+        index_class_encs, index_rfpaths, index_sids, sid_2_class_enc, index_pos, index_sex = spawn_indexes(
             split_name=split_name,
             split_type=split_type,
         )
@@ -116,17 +116,19 @@ class EvaluationPipeline:
         )
 
         self.dataloader, self.time_cache = spawn_dataloader(
-            index_imgs_class_enc=index_imgs_class_enc,
-            index_imgs_rfpaths  =index_imgs_rfpaths,
-            index_imgs_sids     =index_imgs_sids,
-            text_preps          =text_preps,
-            batch_size          =batch_size,
-            shuffle             =False,
-            drop_last           =False,
-            img_pp              =img_pp,
-            cached_imgs         =cached_imgs,
-            n_workers           =n_workers,
-            prefetch_factor     =prefetch_factor,
+            index_class_encs=index_class_encs,
+            index_rfpaths   =index_rfpaths,
+            index_sids      =index_sids,
+            index_pos       =index_pos,
+            index_sex       =index_sex,
+            text_preps      =text_preps,
+            batch_size      =batch_size,
+            shuffle         =False,
+            drop_last       =False,
+            img_pp          =img_pp,
+            cached_imgs     =cached_imgs,
+            n_workers       =n_workers,
+            prefetch_factor =prefetch_factor,
         )
 
     def evaluate_split(self, modelw, verbose_batch_loss=False):

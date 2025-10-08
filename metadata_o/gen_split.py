@@ -11,9 +11,10 @@ import copy
 from dataclasses import dataclass
 import yaml
 from pathlib import Path
+import pandas as pd
 
 from utils import paths, load_pickle, save_pickle
-from utils_data import Split, assemble_indexes_imgs
+from utils_data import Split, assemble_indexes
 
 import pdb
 
@@ -478,6 +479,8 @@ for sid in tqdm(sids):
         img_ptrs[sid][i] = rfpath
 
 
+df_metadata = pd.read_csv(paths["nymph_metadata"])
+
 data_indexes = {}
 
 for set_name in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
@@ -498,15 +501,23 @@ for set_name in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
         rfpath = img_ptrs[sid][sidx]
         data_index["rfpaths"].append(rfpath)
 
+        fname_img = rfpath.split("/")[1]
+
+    keys               = [rfpath.split("/")[1] for rfpath in data_index["rfpaths"]]
+    ordered_series_pos = df_metadata.set_index("mask_name")["class_dv"]
+    ordered_series_sex = df_metadata.set_index("mask_name")["sex"]
+    data_index["pos"]  = ordered_series_pos.reindex(keys).astype(object).where(lambda x: x.notna(), None).tolist()
+    data_index["sex"]  = ordered_series_sex.reindex(keys).astype(object).where(lambda x: x.notna(), None).tolist()
+
     data_indexes[set_name] = data_index
 
-# CLASS COUNTS
+# CLASS COUNTS (FOR CLASS IMBALANCE)
 
 # note: this all needs to get untangled....
-index_imgs_class_enc, _, _, _ = assemble_indexes_imgs(data_indexes["train"])
+index_class_encs, _, _, _ = assemble_indexes(data_indexes["train"])
 
-n_classes          = len(set(index_imgs_class_enc))
-class_counts_train = np.bincount(index_imgs_class_enc, minlength=n_classes)  # counts[c] is number of samples with class encoding c
+n_classes          = len(set(index_class_encs))
+class_counts_train = np.bincount(index_class_encs, minlength=n_classes)  # counts[c] is number of samples with class encoding c
 
 # SAVE SPLIT
 

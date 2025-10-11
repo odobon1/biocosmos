@@ -514,7 +514,7 @@ for set_name in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
 # CLASS COUNTS (FOR CLASS IMBALANCE)
 
 # note: this all needs to get untangled....
-index_class_encs, _, _, _ = assemble_indexes(data_indexes["train"])
+index_class_encs, _, _, _, _, _ = assemble_indexes(data_indexes["train"])
 
 n_classes          = len(set(index_class_encs))
 class_counts_train = np.bincount(index_class_encs, minlength=n_classes)  # counts[c] is number of samples with class encoding c

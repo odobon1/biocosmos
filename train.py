@@ -60,6 +60,7 @@ class TrainConfig:
     model_type: str
     loss_type: str
     sig_targ_type: str
+    hierarchical: bool
     class_weighting: dict
     focal: dict
 
@@ -383,6 +384,7 @@ class TrainPipeline:
         self.modelw.set_class_wts(class_wts, class_pair_wts)
         self.modelw.set_focal(self.cfg.focal)
         self.modelw.set_sigmoid_targ_type(self.cfg.sig_targ_type)
+        self.modelw.set_hierarchical(self.cfg.hierarchical)
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(
@@ -695,19 +697,19 @@ class TrainPipeline:
             time_train_start = time.time()
             self.modelw.model.train()
             loss_train_total = 0.0
-            for imgs_b, class_encs_b, texts_b in tqdm(self.dataloader, desc="Train", leave=False):
+            for imgs_b, class_encs_b, texts_b, rank_keys in tqdm(self.dataloader, desc="Train", leave=False):
                 imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
 
                 self.optimizer.zero_grad()
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b)
+                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b)
+                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys)
                     loss_train_b.backward()
                     self.optimizer.step()
 
@@ -788,7 +790,7 @@ class TrainPipeline:
             sep="\n"
         )
 
-    def batch_forward(self, imgs_b, texts_b, class_encs_b):
+    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys):
 
         # normalized embeddings
         embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
@@ -796,7 +798,7 @@ class TrainPipeline:
 
         sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
         logits       = self.modelw.compute_logits(sim)
-        loss_train_b = self.modelw.compute_loss(logits, class_encs_b)
+        loss_train_b = self.modelw.compute_loss(logits, class_encs_b, rank_keys)
 
         return loss_train_b
 

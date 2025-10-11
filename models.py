@@ -8,6 +8,7 @@ import open_clip  # type: ignore[import]
 import abc
 
 from utils import paths
+from utils_pp import compute_rank_dists
 
 import pdb
 
@@ -15,7 +16,7 @@ import pdb
 CLIP_MODELS = {
     "bioclip":               ("hf-hub:imageomics/bioclip",   None,         False),
     "bioclip2":              ("hf-hub:imageomics/bioclip-2", None,         False),  # note: bioclip2 quick_gelu=False different from quick_gelu=None, unlike bioclip and all the others (which are the same)
-    "clip_vitb16":           ("ViT-B-16",                    "openai",     True),
+    "clip_vitb16":           ("ViT-B-16",                    "openai",     True),  # Note: there are models like ('ViT-B-32-quickgelu', 'openai'), which suggests that model names not styled as "*-quickgelu" weren't trained with quickgelu ~ look into this
     "clip_vitb32":           ("ViT-B-32",                    "openai",     True),
     "clip_vitl14":           ("ViT-L-14",                    "openai",     True),
     "clip_vitl14_336":       ("ViT-L-14-336",                "openai",     True),
@@ -99,6 +100,9 @@ class VLMWrapper(abc.ABC):
 
     def set_sigmoid_targ_type(self, sig_targ_type):
         self.sig_targ_type = sig_targ_type
+
+    def set_hierarchical(self, hierarchical):
+        self.hierarchical = hierarchical
 
     @classmethod
     def build(cls, config):
@@ -215,25 +219,31 @@ class VLMWrapper(abc.ABC):
         logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
         return logits
 
-    def compute_loss(self, logits, class_encs_b):
+    def compute_loss(self, logits, class_encs_b, rank_keys):
         class_encs_b = torch.tensor(class_encs_b).to(self.device)
         if self.loss_type == "infonce":
-            return self.compute_loss_infonce(logits, class_encs_b)
+            return self.compute_loss_infonce(logits, class_encs_b, rank_keys)
         elif self.loss_type == "sigmoid":
-            return self.compute_loss_sigmoid(logits, class_encs_b)
+            return self.compute_loss_sigmoid(logits, class_encs_b, rank_keys)
 
-    def compute_loss_infonce(self, logits, class_encs_b):
+    def compute_loss_infonce(self, logits, class_encs_b, rank_keys):
 
         """
         Note: may need to be adjusted for multiple GPUs (wrt reduction)
         """
 
-        B      = logits.size(0)
-        targs  = torch.arange(B, device=self.device)
+        B = logits.size(0)
+        if self.hierarchical:
+            rank_dists = compute_rank_dists(rank_keys)
+            targs_raw  = 1 - 0.5 * rank_dists
+            targs      = targs_raw / targs_raw.sum(dim=1, keepdim=True)
+            targs      = targs.to(self.device)
+        else:
+            targs = torch.eye(B, device=self.device)  # --- Tensor(B, B)
         rw_wts = self.class_wts[class_encs_b]  # "re-weighting" weights
 
-        loss_i2t_b = F.cross_entropy(logits,   targs, reduction="none")
-        loss_t2i_b = F.cross_entropy(logits.T, targs, reduction="none")
+        loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")
+        loss_t2i_b = F.cross_entropy(logits.T, targs.T, reduction="none")
 
         if self.focal:
             """
@@ -243,7 +253,7 @@ class VLMWrapper(abc.ABC):
             expm1(x) = e^x - 1
             """
             g       = self.focal_gamma
-            foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(g)  # clamping for numerical stability
+            foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(g)
             foc_t2i = (-torch.expm1(-loss_t2i_b)).clamp_min(1e-12).pow(g)
 
             w_i2t = foc_i2t * rw_wts
@@ -274,18 +284,23 @@ class VLMWrapper(abc.ABC):
         foc = (1 - p_t).pow(self.focal_gamma)
         return foc
 
-    def compute_loss_sigmoid(self, logits, class_encs_b):
+    def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
         """
         targ_type options: {pairwise, multipos}
         """
 
-        if self.sig_targ_type == "pairwise":
-            B     = logits.size(0)
-            targs = torch.eye(B, device=self.device)  # --------------------------------------------------- Tensor(B, B)
-        elif self.sig_targ_type == "multipos":
-            targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)  # --- Tensor(B, B)
+        if self.hierarchical:
+            rank_dists = compute_rank_dists(rank_keys)
+            targs      = 1 - 0.5 * rank_dists
+            targs      = targs.to(self.device)
         else:
-            ValueError("targ_type must be one of: {pairwise, multipos}")
+            if self.sig_targ_type == "pairwise":
+                B     = logits.size(0)
+                targs = torch.eye(B, device=self.device)  # --------------------------------------------------- Tensor(B, B)
+            elif self.sig_targ_type == "multipos":
+                targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)  # --- Tensor(B, B)
+            else:
+                raise ValueError("targ_type must be one of: {pairwise, multipos}")
 
         # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
         rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # -------------------- Tensor(B, B); "re-weighting" weights
@@ -301,7 +316,7 @@ class VLMWrapper(abc.ABC):
         W = rw_wts * posneg_wts * foc_wts
 
         loss_raw   = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # --------------- Tensor(B, B); unweighted loss matrix
-        loss_batch = (W * loss_raw).sum() / W.sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though) -- detach? (should gradients be flowing through .sum() denominator?)
+        loss_batch = (W * loss_raw).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though, might even want to prenorm the individual terms)
 
         # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
         with torch.no_grad():

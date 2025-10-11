@@ -1,7 +1,8 @@
 seed:       42
-split_name: S29-42-3
+split_name: S29-42
+# split_name: dev
 
-allow_overwrite: false
+allow_overwrite: false  # <-- guess this doesn't matter now (verify)
 
 pct_eval:    0.29
 pct_ood_tol: 0.0001  # tolerance for how close OOD sample volume must be to target percentage; careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)

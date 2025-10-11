@@ -72,7 +72,8 @@ class ImageTextDataset(Dataset):
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
-        self.sids2commons = load_pickle("metadata_o/species_ids/sids2commons.pkl")
+        self.sids2commons   = load_pickle("metadata_o/species_ids/sids2commons.pkl")
+        self.rank_keys_dict = load_pickle("metadata_o/rank_keys/nymph.pkl")
 
     def __len__(self):
         return self.n_samples
@@ -97,6 +98,12 @@ class ImageTextDataset(Dataset):
         pos       = self.index_pos[idx]
         sex       = self.index_sex[idx]
 
+        genus = sid.split("_")[0]
+
+        rank_key_species = self.rank_keys_dict["species"][sid]
+        rank_key_genus   = self.rank_keys_dict["genus"][genus]
+        rank_keys        = [rank_key_genus, rank_key_species]
+
         text = gen_text(sid, self.text_preps, pos, sex, sids2commons=self.sids2commons)
 
         if self.cached_imgs == "pp":
@@ -109,18 +116,18 @@ class ImageTextDataset(Dataset):
             img   = Image.open(paths["nymph"] / "images" / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
-        return img_t, class_enc, text
+        return img_t, class_enc, text, rank_keys
 
 def collate_fn(batch):
     """
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
     augmentation can be done here methinks
     """
-    imgs_b, class_encs_b, texts_b = zip(*batch)
+    imgs_b, class_encs_b, texts_b, rank_keys = zip(*batch)
 
     imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
 
-    return imgs_b, class_encs_b, list(texts_b)
+    return imgs_b, class_encs_b, list(texts_b), torch.Tensor(rank_keys)
 
 def assemble_indexes(data_index):
     index_rfpaths = data_index["rfpaths"]

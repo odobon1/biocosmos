@@ -98,11 +98,8 @@ class VLMWrapper(abc.ABC):
         self.focal_alpha_pos = cfg_focal["alpha_pos"]
         self.focal_comp_type = cfg_focal["comp_type"]
 
-    def set_sigmoid_targ_type(self, sig_targ_type):
-        self.sig_targ_type = sig_targ_type
-
-    def set_hierarchical(self, hierarchical):
-        self.hierarchical = hierarchical
+    def set_targ_type(self, targ_type):
+        self.targ_type = targ_type
 
     @classmethod
     def build(cls, config):
@@ -120,21 +117,21 @@ class VLMWrapper(abc.ABC):
             print("Loading fresh model...")
 
         if config.model_type in CLIP_MODELS:
-            inst = CLIPWrapper(config)
+            modelw = CLIPWrapper(config)
         elif config.model_type in SIGLIP_MODELS:
-            inst = SigLIPWrapper(config)
+            modelw = SigLIPWrapper(config)
         elif config.model_type in VITAMIN_MODELS:
-            inst = ViTaminWrapper(config)
+            modelw = ViTaminWrapper(config)
         else:
             raise ValueError(f"Unknown model_type: '{config.model_type}'")
 
-        inst.loss_type = config.loss_type
+        modelw.loss_type = config.loss_type
         if model_state_dict is not None:
-            inst.model.load_state_dict(model_state_dict)
+            modelw.model.load_state_dict(model_state_dict)
 
         print("Model loaded!\n")
 
-        return inst
+        return modelw
 
     @property
     def embed_dim(self):
@@ -232,14 +229,21 @@ class VLMWrapper(abc.ABC):
         Note: may need to be adjusted for multiple GPUs (wrt reduction)
         """
 
-        B = logits.size(0)
-        if self.hierarchical:
+        if self.targ_type == "pairwise":
+            B     = logits.size(0)
+            targs = torch.eye(B, device=self.device)  # --- Tensor(B, B)
+        elif self.targ_type == "multipos":
+            targs_raw = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
+            targs     = targs_raw / targs_raw.sum(dim=1, keepdim=True)
+            targs     = targs.to(self.device)  # ---------- Tensor(B, B)
+        elif self.targ_type == "hierarchical":
             rank_dists = compute_rank_dists(rank_keys)
             targs_raw  = 1 - 0.5 * rank_dists
             targs      = targs_raw / targs_raw.sum(dim=1, keepdim=True)
-            targs      = targs.to(self.device)
+            targs      = targs.to(self.device)  # --------- Tensor(B, B)
         else:
-            targs = torch.eye(B, device=self.device)  # --- Tensor(B, B)
+            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
+
         rw_wts = self.class_wts[class_encs_b]  # "re-weighting" weights
 
         loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")
@@ -271,6 +275,44 @@ class VLMWrapper(abc.ABC):
 
         return loss_batch
 
+    def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
+        
+        if self.targ_type == "pairwise":
+            B     = logits.size(0)
+            targs = torch.eye(B, device=self.device)  # ----------------------------------- Tensor(B, B)
+        elif self.targ_type == "multipos":
+            targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()  # --- Tensor(B, B)
+            targs = targs.to(self.device)
+        elif self.targ_type == "hierarchical":
+            rank_dists = compute_rank_dists(rank_keys)
+            targs      = 1 - 0.5 * rank_dists
+            targs      = targs.to(self.device)
+        else:
+            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
+
+        # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
+        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # ---- Tensor(B, B); "re-weighting" weights
+
+        if self.focal:
+            foc_wts = self._sigmoid_focal_modulate(logits, targs)  # ---------------------- Tensor(B, B)
+        else:
+            foc_wts = torch.ones_like(targs)
+
+        alpha_pos  = self.focal_alpha_pos
+        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical
+
+        W = rw_wts * posneg_wts * foc_wts
+
+        loss_raw   = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # --- Tensor(B, B); unweighted loss matrix
+        loss_batch = (W * loss_raw).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though, might even want to prenorm the individual terms)
+
+        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
+        with torch.no_grad():
+            norm = loss_raw.mean() / loss_batch
+        loss_batch = norm * loss_batch
+
+        return loss_batch
+
     def _sigmoid_focal_modulate(self, logits, targs):
         p = torch.sigmoid(logits)
         if self.focal_comp_type == 1:
@@ -280,50 +322,9 @@ class VLMWrapper(abc.ABC):
         elif self.focal_comp_type == 3:
             p_t = 1 - torch.abs(targs - p)
         else:
-            raise ValueError("Focal loss comp_type must be one of: {1, 2, 3}")
+            raise ValueError(f"Unknown focal_comp_type: '{self.focal_comp_type}', must be one of {{1, 2, 3}}")
         foc = (1 - p_t).pow(self.focal_gamma)
         return foc
-
-    def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
-        """
-        targ_type options: {pairwise, multipos}
-        """
-
-        if self.hierarchical:
-            rank_dists = compute_rank_dists(rank_keys)
-            targs      = 1 - 0.5 * rank_dists
-            targs      = targs.to(self.device)
-        else:
-            if self.sig_targ_type == "pairwise":
-                B     = logits.size(0)
-                targs = torch.eye(B, device=self.device)  # --------------------------------------------------- Tensor(B, B)
-            elif self.sig_targ_type == "multipos":
-                targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float().to(self.device)  # --- Tensor(B, B)
-            else:
-                raise ValueError("targ_type must be one of: {pairwise, multipos}")
-
-        # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
-        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # -------------------- Tensor(B, B); "re-weighting" weights
-
-        if self.focal:
-            foc_wts = self._sigmoid_focal_modulate(logits, targs)  # -------------------------------------- Tensor(B, B)
-        else:
-            foc_wts = torch.ones_like(targs)
-
-        alpha_pos  = self.focal_alpha_pos
-        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical
-
-        W = rw_wts * posneg_wts * foc_wts
-
-        loss_raw   = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # --------------- Tensor(B, B); unweighted loss matrix
-        loss_batch = (W * loss_raw).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though, might even want to prenorm the individual terms)
-
-        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
-        with torch.no_grad():
-            norm = loss_raw.mean() / loss_batch
-        loss_batch = norm * loss_batch
-
-        return loss_batch
 
     def freeze(self, freeze_txt, freeze_img):
         if freeze_txt: self.freeze_text_encoder()

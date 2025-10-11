@@ -59,8 +59,7 @@ class TrainConfig:
 
     model_type: str
     loss_type: str
-    sig_targ_type: str
-    hierarchical: bool
+    targ_type: str
     class_weighting: dict
     focal: dict
 
@@ -236,7 +235,7 @@ class LRSchedulerWrapper:
         elif self.type == "coswrXexp":
             self.sched = CosineWRExponentialLR(self.opt, **args)
         else:
-            raise ValueError(f"Unknown scheduler type: '{self.type}'")
+            raise ValueError(f"Unknown LR scheduler type: '{self.type}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
 
     def step(self, scores_val):
 
@@ -353,7 +352,7 @@ class TrainPipeline:
             class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
         else:
-            raise ValueError("class_weighting['type'] must be one of: {null, inv_freq, class_balanced}")
+            raise ValueError(f"Unknown class weighting type: '{cfg_cw['type']}', must be one of {{null, inv_freq, class_balanced}}")
 
         # normalize s.t. mean(wts) == 1.0
         # class_wts /= class_wts.mean()
@@ -368,8 +367,8 @@ class TrainPipeline:
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing
             class_pair_wts = class_pair_wts / tri_vals.mean()
         else:
-            raise ValueError("cp_type must be one of: {1, 2}")
-
+            raise ValueError(f"Unknown class-pair weighting computation type cp_type: '{cfg_cw['cp_type']}', must be one of {{1, 2}}")
+        
         class_wt_clip = cfg_cw.get("class_wt_clip", None)
         if class_wt_clip is not None:
             class_wts      = np.minimum(class_wts, class_wt_clip)
@@ -383,8 +382,7 @@ class TrainPipeline:
 
         self.modelw.set_class_wts(class_wts, class_pair_wts)
         self.modelw.set_focal(self.cfg.focal)
-        self.modelw.set_sigmoid_targ_type(self.cfg.sig_targ_type)
-        self.modelw.set_hierarchical(self.cfg.hierarchical)
+        self.modelw.set_targ_type(self.cfg.targ_type)
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(

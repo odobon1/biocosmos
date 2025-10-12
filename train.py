@@ -92,6 +92,19 @@ class TrainConfig:
             raise ValueError("Text and image encoders are both set to frozen!")
         # if self.lr_sched_type == "plat" and self.lr_sched["args"]["valid_type"] not in ("loss", "perf"):
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
+        if self.loss_type not in ("infonce", "sigmoid"):
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce, sigmoid}}")
+        if self.targ_type not in ("pairwise", "multipos", "hierarchical"):
+            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
+        if self.focal["comp_type"] not in (1, 2, 3):
+            raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2, 3}}")
+        if self.lr_sched_type not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
+            raise ValueError(f"Unknown LR scheduler type: '{self.lr_sched_type}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
+        if self.class_weighting["type"] not in (None, "inv_freq", "class_balanced"):
+            raise ValueError(f"Unknown class weighting type: '{self.class_weighting['type']}', must be one of {{null, inv_freq, class_balanced}}")
+        if self.class_weighting["cp_type"] not in (1, 2):
+            raise ValueError(f"Unknown class weighting type: '{self.class_weighting['type']}', must be one of {{1, 2}}")
+
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
@@ -234,8 +247,6 @@ class LRSchedulerWrapper:
             self.sched = CosineExponentialLR(self.opt, **args)
         elif self.type == "coswrXexp":
             self.sched = CosineWRExponentialLR(self.opt, **args)
-        else:
-            raise ValueError(f"Unknown LR scheduler type: '{self.type}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
 
     def step(self, scores_val):
 
@@ -351,8 +362,6 @@ class TrainPipeline:
             eps            = 1e-8
             class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
-        else:
-            raise ValueError(f"Unknown class weighting type: '{cfg_cw['type']}', must be one of {{null, inv_freq, class_balanced}}")
 
         # normalize s.t. mean(wts) == 1.0
         # class_wts /= class_wts.mean()
@@ -366,8 +375,6 @@ class TrainPipeline:
             tri_vals = class_pair_wts[mask]
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing
             class_pair_wts = class_pair_wts / tri_vals.mean()
-        else:
-            raise ValueError(f"Unknown class-pair weighting computation type cp_type: '{cfg_cw['cp_type']}', must be one of {{1, 2}}")
         
         class_wt_clip = cfg_cw.get("class_wt_clip", None)
         if class_wt_clip is not None:

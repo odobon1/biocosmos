@@ -205,8 +205,6 @@ class VLMWrapper(abc.ABC):
             return self.compute_logits_clip(sim)
         elif self.loss_type == "sigmoid":
             return self.compute_logits_siglip(sim)
-        else:
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce, sigmoid}}")
 
     def compute_logits_clip(self, sim):
         logits = sim * self.model.logit_scale.exp()
@@ -241,8 +239,6 @@ class VLMWrapper(abc.ABC):
             targs_raw  = 1 - 0.5 * rank_dists
             targs      = targs_raw / targs_raw.sum(dim=1, keepdim=True)
             targs      = targs.to(self.device)  # --------- Tensor(B, B)
-        else:
-            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
 
         rw_wts = self.class_wts[class_encs_b]  # "re-weighting" weights
 
@@ -276,7 +272,7 @@ class VLMWrapper(abc.ABC):
         return loss_batch
 
     def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
-        
+
         if self.targ_type == "pairwise":
             B     = logits.size(0)
             targs = torch.eye(B, device=self.device)  # ----------------------------------- Tensor(B, B)
@@ -287,8 +283,6 @@ class VLMWrapper(abc.ABC):
             rank_dists = compute_rank_dists(rank_keys)
             targs      = 1 - 0.5 * rank_dists
             targs      = targs.to(self.device)
-        else:
-            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
 
         # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
         rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # ---- Tensor(B, B); "re-weighting" weights
@@ -314,16 +308,18 @@ class VLMWrapper(abc.ABC):
         return loss_batch
 
     def _sigmoid_focal_modulate(self, logits, targs):
+        
         p = torch.sigmoid(logits)
+
         if self.focal_comp_type == 1:
             p_t = torch.where(targs > 0, p, 1 - p)
         elif self.focal_comp_type == 2:
             p_t = (1 - p) + targs * (2 * p - 1)
         elif self.focal_comp_type == 3:
             p_t = 1 - torch.abs(targs - p)
-        else:
-            raise ValueError(f"Unknown focal_comp_type: '{self.focal_comp_type}', must be one of {{1, 2, 3}}")
+        
         foc = (1 - p_t).pow(self.focal_gamma)
+        
         return foc
 
     def freeze(self, freeze_txt, freeze_img):

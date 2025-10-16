@@ -1,16 +1,28 @@
-# rdpath_trial: null  # which trial to load from (set null for original model)
-rdpath_trial: artifacts_delivery/o2/bioclip/42
+# *** split_name, model_type, loss_type are overridden if rdpath_trial is specified ***
+rdpath_trial: null  # which trial to load from (set null for original model)
+# rdpath_trial: artifacts_delivery/o2/bioclip/42
 save_crit:    comp  # options: comp / img2img; model save criterion (only applicable if rdpath_trial != null)
+
+split_name: S29-42
 
 verbose_batch_loss: false
 
-# params that get overridden if rdpath_trial is specified
 model_type: bioclip
 loss_type:  infonce
-split_name: S29-0
+targ_type:  pairwise  # options: {pairwise, multipos, hierarchical}
+class_weighting:
+  type:     inv_freq  # options: {null, inv_freq, class_balanced}
+  if_gamma: 0.5
+  cb_beta:  0.9999
+  cp_type:  2
+focal:
+  enabled:   false
+  gamma:     2.0
+  alpha_pos: 0.5
+  comp_type: 1
 
 batch_size: 1024
 text_preps_type: bioclip_sci
 
-cached_imgs: null  # options: null / pl / pp
-act_chkpt  : true
+cached_imgs: null  # options: {null, pl, pp}
+act_chkpt:   true

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from models import VLMWrapper
 from utils_eval import ValidationPipeline
 from utils import paths, compute_dataloader_workers_prefetch, get_text_preps, load_json
+from utils_imb import compute_class_wts
 
 import pdb
 
@@ -15,12 +16,15 @@ class EvalConfig:
     rdpath_trial: str | None
     save_crit: str  # model save criterion (only applicable if DPATH_TRIAL != None)
 
+    split_name: str  # overridden if rdpath_trial is specified
+
     verbose_batch_loss: bool
 
-    # params that get overridden if rdpath_trial is specified
     model_type: str
     loss_type: str
-    split_name: str
+    targ_type: str
+    class_weighting: dict
+    focal: dict
 
     batch_size: int
     text_preps_type: str
@@ -84,6 +88,11 @@ def main():
     config_eval = get_config_eval()
 
     modelw = VLMWrapper.build(config_eval)
+
+    class_wts, class_pair_wts = compute_class_wts(config_eval)
+    modelw.set_class_wts(class_wts, class_pair_wts)
+    modelw.set_focal(config_eval.focal)
+    modelw.set_targ_type(config_eval.targ_type)
 
     text_preps = get_text_preps(config_eval.text_preps_type)
     val_pipe   = ValidationPipeline(

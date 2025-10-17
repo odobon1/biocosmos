@@ -3,6 +3,7 @@ import torch  # type: ignore[import]
 import transformers.modeling_utils as _mu  # type: ignore[import]
 _mu.check_torch_load_is_safe = lambda *args, **kwargs: None
 
+import torch.nn as nn  # type: ignore[import]
 import torch.nn.functional as F  # type: ignore[import]
 import open_clip  # type: ignore[import]
 import abc
@@ -87,6 +88,21 @@ class VLMWrapper(abc.ABC):
 
         if config.act_chkpt:
             self.model.set_grad_checkpointing(True)
+
+        if config.loss_type in ("mse_tb", "huber_tb"):
+
+            if hasattr(self.model, "regr_aff"):  # useful function
+                raise ValueError("regr_aff already exists!")
+            else:
+                self.model.regr_aff = nn.ParameterDict({
+                    "scale": nn.Parameter(torch.tensor(10.0)),
+                    "bias":  nn.Parameter(torch.tensor(0.0)),
+                })
+            self.regr_scale = self.model.regr_aff["scale"]  # might want to clamp this (similar reason as described in seminal CLIP work e.g. upper clamp @ 100)
+            self.regr_bias  = self.model.regr_aff["bias"]
+
+        if config.loss_type in ("huber", "huber_tb"):
+            self.huber_beta = getattr(config, "huber_beta", 0.1)  # add to config
 
     def set_class_wts(self, class_wts, class_pair_wts):
         self.class_wts      = class_wts.to(self.device)
@@ -205,9 +221,11 @@ class VLMWrapper(abc.ABC):
             return self.compute_logits_clip(sim)
         elif self.loss_type == "sigmoid":
             return self.compute_logits_siglip(sim)
+        elif self.loss_type in ("mse", "mse_tb", "huber", "huber_tb"):
+            return sim
 
     def compute_logits_clip(self, sim):
-        logits = sim * self.model.logit_scale.exp()
+        logits = sim * self.model.logit_scale.exp()  # need to clamp this to 100?
         return logits
 
     def compute_logits_siglip(self, sim):
@@ -220,6 +238,23 @@ class VLMWrapper(abc.ABC):
             return self.compute_loss_infonce(logits, class_encs_b, rank_keys)
         elif self.loss_type == "sigmoid":
             return self.compute_loss_sigmoid(logits, class_encs_b, rank_keys)
+        elif self.loss_type in ("mse", "mse_tb", "huber", "huber_tb"):
+            return self.compute_loss_regression(logits, class_encs_b, rank_keys)
+
+    def compute_targets(self, logits, class_encs_b, rank_keys):
+
+        if self.targ_type == "pairwise":
+            B     = logits.size(0)
+            targs = torch.eye(B, device=self.device)  # ----------------------------------- Tensor(B, B)
+        elif self.targ_type == "multipos":
+            targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()  # --- Tensor(B, B)
+            targs = targs.to(self.device)
+        elif self.targ_type == "hierarchical":
+            rank_dists = compute_rank_dists(rank_keys)
+            targs      = 1 - 0.5 * rank_dists
+            targs      = targs.to(self.device)  # ----------------------------------------- Tensor(B, B)
+
+        return targs
 
     def compute_loss_infonce(self, logits, class_encs_b, rank_keys):
 
@@ -227,23 +262,19 @@ class VLMWrapper(abc.ABC):
         Note: may need to be adjusted for multiple GPUs (wrt reduction)
         """
 
-        if self.targ_type == "pairwise":
-            B     = logits.size(0)
-            targs = torch.eye(B, device=self.device)  # --- Tensor(B, B)
-        elif self.targ_type == "multipos":
-            targs_raw = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
-            targs     = targs_raw / targs_raw.sum(dim=1, keepdim=True)
-            targs     = targs.to(self.device)  # ---------- Tensor(B, B)
-        elif self.targ_type == "hierarchical":
-            rank_dists = compute_rank_dists(rank_keys)
-            targs_raw  = 1 - 0.5 * rank_dists
-            targs      = targs_raw / targs_raw.sum(dim=1, keepdim=True)
-            targs      = targs.to(self.device)  # --------- Tensor(B, B)
+        targs = self.compute_targets(logits, class_encs_b, rank_keys)
+        targs = targs / targs.sum(dim=1, keepdim=True)
 
         rw_wts = self.class_wts[class_encs_b]  # "re-weighting" weights
 
-        loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")
-        loss_t2i_b = F.cross_entropy(logits.T, targs.T, reduction="none")
+        loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")  # --- Tensor(B)
+        loss_t2i_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # --- Tensor(B)
+
+        # more decomposed form of the above:
+        # log_prob_i2t_b = F.log_softmax(logits, dim=1)
+        # log_prob_t2i_b = F.log_softmax(logits.T, dim=1)
+        # loss_i2t_b     = -(targs * log_prob_i2t_b).sum(dim=1)
+        # loss_t2i_b     = -(targs * log_prob_t2i_b).sum(dim=1)
 
         if self.focal:
             """
@@ -271,24 +302,57 @@ class VLMWrapper(abc.ABC):
 
         return loss_batch
 
-    def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
+    def compute_loss_regression(self, logits, class_encs_b, rank_keys):
 
-        if self.targ_type == "pairwise":
-            B     = logits.size(0)
-            targs = torch.eye(B, device=self.device)  # ----------------------------------- Tensor(B, B)
-        elif self.targ_type == "multipos":
-            targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()  # --- Tensor(B, B)
-            targs = targs.to(self.device)
-        elif self.targ_type == "hierarchical":
-            rank_dists = compute_rank_dists(rank_keys)
-            targs      = 1 - 0.5 * rank_dists
-            targs      = targs.to(self.device)
+        targs = self.compute_targets(logits, class_encs_b, rank_keys)
+
+        if self.loss_type in ("mse", "huber"):
+            preds = (logits + 1.0) * 0.5
+            # preds = logits.sigmoid()
+        elif self.loss_type in ("mse_tb", "huber_tb"):
+            preds = ((logits * self.regr_scale + self.regr_bias).tanh() + 1.0) * 0.5
+            # put configs for all of these:
+            # preds = ((logits * self.regr_scale).tanh() + 1.0) * 0.5
+            # preds = (logits * self.regression_scale + self.regression_bias).sigmoid()
+            # preds = (logits * self.regression_scale).sigmoid()
+        preds = preds.clamp(0.0, 1.0)
 
         # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
-        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # ---- Tensor(B, B); "re-weighting" weights
+        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # -------- Tensor(B, B); "re-weighting" weights
 
         if self.focal:
-            foc_wts = self._sigmoid_focal_modulate(logits, targs)  # ---------------------- Tensor(B, B)
+            foc_wts = self._focal_modulate_2d(preds, targs)  # -------------------------------- Tensor(B, B)
+        else:
+            foc_wts = torch.ones_like(targs)
+            
+        alpha_pos  = self.focal_alpha_pos
+        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical
+
+        W = rw_wts * posneg_wts * foc_wts
+
+        if self.loss_type in ("mse", "mse_tb"):
+            loss_raw = F.mse_loss(preds, targs, reduction="none")
+        elif self.loss_type in ("huber", "huber_tb"):
+            loss_raw = F.smooth_l1_loss(preds, targs, beta=self.huber_beta, reduction="none")
+
+        loss_batch = (W * loss_raw).sum() / W.detach().sum().clamp_min(1e-12)  # weighted mean loss
+
+        with torch.no_grad():
+            norm = loss_raw.mean() / loss_batch
+        loss_batch = norm * loss_batch
+
+        return loss_batch
+
+    def compute_loss_sigmoid(self, logits, class_encs_b, rank_keys):
+
+        targs = self.compute_targets(logits, class_encs_b, rank_keys)
+
+        # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
+        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # -------- Tensor(B, B); "re-weighting" weights
+
+        if self.focal:
+            preds   = torch.sigmoid(logits)
+            foc_wts = self._focal_modulate_2d(preds, targs)  # -------------------------------- Tensor(B, B)
         else:
             foc_wts = torch.ones_like(targs)
 
@@ -307,17 +371,17 @@ class VLMWrapper(abc.ABC):
 
         return loss_batch
 
-    def _sigmoid_focal_modulate(self, logits, targs):
-        
-        p = torch.sigmoid(logits)
+    def _focal_modulate_2d(self, preds, targs):
 
         if self.focal_comp_type == 1:
-            p_t = torch.where(targs > 0, p, 1 - p)
+            p_t = torch.where(targs > 0, preds, 1 - preds)
         elif self.focal_comp_type == 2:
-            p_t = (1 - p) + targs * (2 * p - 1)
+            p_t = (1 - preds) + targs * (2 * preds - 1)
         elif self.focal_comp_type == 3:
-            p_t = 1 - torch.abs(targs - p)
+            p_t = 1 - torch.abs(targs - preds)
         
+        # p_t = p_t.clamp(1e-12, 1 - 1e-12)
+
         foc = (1 - p_t).pow(self.focal_gamma)
         
         return foc

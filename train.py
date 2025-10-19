@@ -93,12 +93,12 @@ class TrainConfig:
             raise ValueError("Text and image encoders are both set to frozen!")
         # if self.lr_sched_type == "plat" and self.lr_sched["args"]["valid_type"] not in ("loss", "perf"):
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
-        if self.loss_type not in ("infonce", "sigmoid", "mse", "mse_tb", "huber", "huber_tb"):
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce, sigmoid, mse, mse_tb, huber, huber_tb}}")
+        # if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "mse_tb", "huber", "huber_tb"):
+        #     raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, mse_tb, huber, huber_tb}}")
         if self.targ_type not in ("pairwise", "multipos", "hierarchical"):
             raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
-        if self.focal["comp_type"] not in (1, 2, 3):
-            raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2, 3}}")
+        if self.focal["comp_type"] not in (1, 2):
+            raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2}}")
         if self.lr_sched_type not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
             raise ValueError(f"Unknown LR scheduler type: '{self.lr_sched_type}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
         if self.class_weighting["type"] not in (None, "inv_freq", "class_balanced"):

@@ -14,9 +14,9 @@ allow_overwrite_trial: true
 allow_diff_study:      true
 allow_diff_experiment: true
 
-model_type: clip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
-loss_type:  huber  # options: {infonce, sigmoid, mse, mse_tb, huber, huber_tb}
-targ_type:  hierarchical  # options: {pairwise, multipos, hierarchical}
+model_type: bioclip  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+loss_type:  infonce1  # options: {infonce1, infonce2, sigmoid, mse, mse_tb, huber, huber_tb}
+targ_type:  pairwise  # options: {pairwise, multipos, hierarchical}
 class_weighting:
   type:     inv_freq  # options: {null, inv_freq, class_balanced}
   if_gamma: 0.5  # (0.0, 1.0]; "inverse-frequency gamma", only used for type: inv_freq; 1 / n_c^(if_gamma); if_gamma = 1.0 --> 1 / n_c (classic scheme), if_gamma = 0.5 --> 1 / sqrt(n_c), if_gamma = 0.0 --> no weighting (uniform)
@@ -26,7 +26,7 @@ focal:
   enabled:   true
   gamma:     2.0  # [0, inf); down-weights easy samples, larger gamma --> stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid; FL reduces to CE when gamma = 0
   alpha_pos: 0.5  # [0, 1]; only relevant for sigmoid; 0.5 equivalent to no pos/neg weighting; alpha_neg = 1 - alpha_pos
-  comp_type: 2  # options: {1, 2, 3}; focal loss computation type; 1: discrete targets only (positive/negative), 2/3: proposed continuous alternatives in support of hierarchical loss; nearly identical behavior for all 3 variants when targets=0/1; only relevant for sigmoid-based losses
+  comp_type: 2  # options: {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1
 
 n_epochs:    100
 chkpt_every: 1

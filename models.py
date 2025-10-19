@@ -217,7 +217,7 @@ class VLMWrapper(abc.ABC):
         return pred_classes_enc_txts, scores
 
     def compute_logits(self, sim):
-        if self.loss_type == "infonce":
+        if self.loss_type in ("infonce1", "infonce2"):
             return self.compute_logits_clip(sim)
         elif self.loss_type == "sigmoid":
             return self.compute_logits_siglip(sim)
@@ -234,8 +234,10 @@ class VLMWrapper(abc.ABC):
 
     def compute_loss(self, logits, class_encs_b, rank_keys):
         class_encs_b = torch.tensor(class_encs_b).to(self.device)
-        if self.loss_type == "infonce":
+        if self.loss_type == "infonce1":
             return self.compute_loss_infonce(logits, class_encs_b, rank_keys)
+        if self.loss_type == "infonce2":
+            return self.compute_loss_infonce_2Dwtd(logits, class_encs_b, rank_keys)
         elif self.loss_type == "sigmoid":
             return self.compute_loss_sigmoid(logits, class_encs_b, rank_keys)
         elif self.loss_type in ("mse", "mse_tb", "huber", "huber_tb"):
@@ -270,18 +272,15 @@ class VLMWrapper(abc.ABC):
         loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")  # --- Tensor(B)
         loss_t2i_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # --- Tensor(B)
 
-        # more decomposed form of the above:
-        # log_prob_i2t_b = F.log_softmax(logits, dim=1)
-        # log_prob_t2i_b = F.log_softmax(logits.T, dim=1)
-        # loss_i2t_b     = -(targs * log_prob_i2t_b).sum(dim=1)
-        # loss_t2i_b     = -(targs * log_prob_t2i_b).sum(dim=1)
-
         if self.focal:
             """
             p_t = exp(-CE)
             focal factor: (1 - p_t)^gamma
             expm1 has better precision when p_t ~ 1 (CE ~ 0)
             expm1(x) = e^x - 1
+
+            AX THIS STYLE
+            only supports 0/1 targets
             """
             g       = self.focal_gamma
             foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(g)
@@ -295,8 +294,49 @@ class VLMWrapper(abc.ABC):
 
         num_i2t = (w_i2t * loss_i2t_b).sum()
         num_t2i = (w_t2i * loss_t2i_b).sum()
-        den_i2t = w_i2t.detach().sum().clamp_min(1e-12)
-        den_t2i = w_t2i.detach().sum().clamp_min(1e-12)
+        den_i2t = w_i2t.detach().sum()
+        den_t2i = w_t2i.detach().sum()
+
+        loss_batch = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
+
+        return loss_batch
+
+    def compute_loss_infonce_2Dwtd(self, logits, class_encs_b, rank_keys):
+
+        """
+        Note: may need to be adjusted for multiple GPUs (wrt reduction)
+        """
+
+        targs = self.compute_targets(logits, class_encs_b, rank_keys)
+        targs = targs / targs.sum(dim=1, keepdim=True)
+
+        rw_wts = self.class_pair_wts[class_encs_b][:, class_encs_b].to(self.device)  # --- Tensor(B, B); "re-weighting" weights
+
+        log_p_i2t = F.log_softmax(logits,   dim=-1)
+        log_p_t2i = F.log_softmax(logits.T, dim=-1)
+
+        loss_i2t = -(targs * log_p_i2t)
+        loss_t2i = -(targs.T * log_p_t2i)
+
+        if self.focal:
+
+            p_i2t = log_p_i2t.exp()
+            p_t2i = log_p_t2i.exp()
+
+            foc_i2t = self._focal_modulate_2d(p_i2t, targs)
+            foc_t2i = self._focal_modulate_2d(p_t2i, targs)
+
+            w_i2t = foc_i2t * rw_wts
+            w_t2i = foc_t2i * rw_wts
+        else:
+            w_i2t = rw_wts
+            w_t2i = rw_wts
+
+        num_i2t = (w_i2t * loss_i2t).sum()
+        num_t2i = (w_t2i * loss_t2i).sum()
+        B       = logits.size(0)
+        den_i2t = w_i2t.detach().sum() / B  # divided by batch size for apples-to-apples w/ infonce1
+        den_t2i = w_t2i.detach().sum() / B
 
         loss_batch = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
@@ -374,10 +414,8 @@ class VLMWrapper(abc.ABC):
     def _focal_modulate_2d(self, preds, targs):
 
         if self.focal_comp_type == 1:
-            p_t = torch.where(targs > 0, preds, 1 - preds)
-        elif self.focal_comp_type == 2:
             p_t = (1 - preds) + targs * (2 * preds - 1)
-        elif self.focal_comp_type == 3:
+        elif self.focal_comp_type == 2:
             p_t = 1 - torch.abs(targs - preds)
         
         # p_t = p_t.clamp(1e-12, 1 - 1e-12)

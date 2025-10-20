@@ -5,7 +5,7 @@ from utils import paths
 
 FPATH_OUT = Path("tools/full_src.txt")
 
-dpath_repo_root = paths["repo_root"]
+dpath_root = paths["root"]
 
 RFPATHS = [
     "config/train/lr_sched.yaml",
@@ -29,14 +29,14 @@ RFPATHS = [
     "utils.py",
 ]
 
-fpaths = [dpath_repo_root / rfpath for rfpath in RFPATHS]
+fpaths = [dpath_root / rfpath for rfpath in RFPATHS]
 
 def main():
     out_lines: list[str] = []
 
     for rfpath in RFPATHS:
 
-        fpath = dpath_repo_root / rfpath
+        fpath = dpath_root / rfpath
 
         if not fpath.exists():
             print(f"Warning: {fpath} not found, skipping")

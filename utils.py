@@ -8,22 +8,25 @@ import json
 import subprocess
 import re
 
+import pdb
 
-""" CONFIG PARAMS """
 
 # CLUSTER = "pace"
 CLUSTER = "hpg"
 
 
 if CLUSTER == "pace":
+
+    dpath_root = Path(os.getcwd())
+
     paths = {
-        "repo_root": Path("/home/hice1/odobon3/Documents/biocosmos"),
-        "vlm4bio": Path("VLM4Bio/datasets")
+        "root":    dpath_root,
+        "vlm4bio": dpath_root / "VLM4Bio/datasets"
     }
 elif CLUSTER == "hpg":
 
     dpath_group          = Path("/blue/arthur.porto-biocosmos")
-    dpath_repo_root      = dpath_group / "odobon3.gatech/biocosmos"
+    dpath_root           = Path(os.getcwd())
     dpath_data           = dpath_group / "data"
     dpath_nymph          = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
     fpath_nymph_metadata = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
@@ -32,9 +35,9 @@ elif CLUSTER == "hpg":
     paths = {
         "hf_cache":       dpath_data / "cache/huggingface/hub",
         "group":          dpath_group,
-        "repo_root":      dpath_repo_root,
-        "metadata":       dpath_repo_root / "metadata",
-        "artifacts":      dpath_repo_root / "artifacts",
+        "root":           dpath_root,
+        "metadata":       dpath_root / "metadata",
+        "artifacts":      dpath_root / "artifacts",
         "nymph":          dpath_nymph,
         "nymph_imgs":     dpath_nymph / "images",
         "nymph_metadata": fpath_nymph_metadata,

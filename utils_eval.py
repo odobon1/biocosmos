@@ -176,9 +176,6 @@ class EvaluationPipeline:
                 if verbose_batch_loss:
                     print(f"Batch Loss: {batch_loss:.4f}")
 
-                loss_total     += loss_b.detach().item() * B
-                n_samples_loss += B
-
         # prepare image embedding and class encoding tensors for mAP computation
         embs_imgs        = torch.cat(embs_imgs, dim=0)  # ---------- Tensor(Q, D)
         classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)

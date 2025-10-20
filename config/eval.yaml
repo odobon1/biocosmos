@@ -8,7 +8,7 @@ split_name: S29-42
 verbose_batch_loss: false
 
 model_type: bioclip
-loss_type:  infonce
+loss_type:  infonce1
 targ_type:  pairwise  # options: {pairwise, multipos, hierarchical}
 class_weighting:
   type:     inv_freq  # options: {null, inv_freq, class_balanced}

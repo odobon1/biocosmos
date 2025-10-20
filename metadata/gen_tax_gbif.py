@@ -111,9 +111,9 @@ def get_tax_metadata(sids, verbose=False):
 
 def main():
 
-    sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+    sids = load_pickle(paths["metadata"] / "species_ids/known.pkl")
     metadata = get_tax_metadata(sids, verbose=True)
-    save_pickle(metadata, paths["metadata_o"] / "tax/gbif.pkl")
+    save_pickle(metadata, paths["metadata"] / "tax/gbif.pkl")
 
 if __name__ == "__main__":
     main()

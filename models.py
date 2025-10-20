@@ -123,7 +123,7 @@ class VLMWrapper(abc.ABC):
         model_state_dict = None
         if config.has_field("rdpath_trial") and config.rdpath_trial is not None:
             print(f"Loading '{config.rdpath_trial}' ({config.save_crit})...")
-            fpath_model_state_dict = paths["repo_o"] / config.rdpath_trial / f"models/best_{config.save_crit}/state_dict_model.pt"
+            fpath_model_state_dict = paths["repo_root"] / config.rdpath_trial / f"models/best_{config.save_crit}/state_dict_model.pt"
             model_state_dict       = torch.load(
                 fpath_model_state_dict, 
                 # map_location=device,

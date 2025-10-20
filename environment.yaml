@@ -1,4 +1,4 @@
-name: biocosmos_o
+name: biocosmos
 channels:
   - pytorch
   - nvidia
@@ -9,6 +9,7 @@ dependencies:
   - accelerate
   - bidict
   - biopython
+  - git-lfs
   - ipykernel
   - numpy
   - pandas
@@ -17,6 +18,7 @@ dependencies:
   - pytorch=2.5.1
   - pytorch-cuda=12.1
   - scikit-learn
+  - tensorboard
   - torchvision=0.20.1
   - tqdm
   - requests

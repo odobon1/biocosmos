@@ -12,7 +12,7 @@ from utils import paths, load_pickle, save_pickle
 import pdb
 
 
-sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+sids = load_pickle(paths["metadata"] / "species_ids/known.pkl")
 nymph_metadata = pd.read_csv(paths["nymph_metadata"])
 unique_species = nymph_metadata["species"].unique().tolist()
 
@@ -61,4 +61,4 @@ for sid in tqdm(sids):
         
         metadata["missing"].add(sid)
 
-save_pickle(metadata, paths["metadata_o"] / "tax/nymph.pkl")
+save_pickle(metadata, paths["metadata"] / "tax/nymph.pkl")

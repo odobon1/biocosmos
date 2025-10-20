@@ -3,25 +3,25 @@ artifacts/*
 !artifacts/clip_o1/
 !artifacts/clip_o1/**
 
-metadata_o/splits/*
-!metadata_o/splits/.gitkeep
+metadata/splits/*
+!metadata/splits/.gitkeep
 
-metadata_o/rank_keys/*
-!metadata_o/rank_keys/.gitkeep
+metadata/rank_keys/*
+!metadata/rank_keys/.gitkeep
 
-metadata_o/species_ids/*
-!metadata_o/species_ids/.gitkeep
+metadata/species_ids/*
+!metadata/species_ids/.gitkeep
 
-metadata_o/tax/*
-!metadata_o/tax/.gitkeep
+metadata/tax/*
+!metadata/tax/.gitkeep
 
 archive/*
 
 class_spread.ipynb
 data_update_checker.ipynb
-metadata_o_cheatsheet.ipynb
+metadata_cheatsheet.ipynb
 nymph_data_exploration.ipynb
 useful_gadgets.ipynb
 
 __pycache__/
-metadata_o/__pycache__/
+metadata/__pycache__/

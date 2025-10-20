@@ -1,4 +1,4 @@
-name: biocosmos_o_b200
+name: biocosmos_b200
 channels:
   - conda-forge
   - defaults
@@ -7,12 +7,14 @@ dependencies:
   - accelerate
   - bidict
   - biopython
+  - git-lfs
   - ipykernel
   - numpy
   - pandas
   - pillow
   - pygbif
   - scikit-learn
+  - tensorboard
   - tqdm
   - requests
   - pip

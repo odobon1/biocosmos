@@ -17,28 +17,28 @@ CLUSTER = "hpg"
 
 if CLUSTER == "pace":
     paths = {
-        "repo_o": Path("/home/hice1/odobon3/Documents/biocosmos"),
+        "repo_root": Path("/home/hice1/odobon3/Documents/biocosmos"),
         "vlm4bio": Path("VLM4Bio/datasets")
     }
 elif CLUSTER == "hpg":
 
-    dpath_biocosmos        = Path("/blue/arthur.porto-biocosmos")
-    dpath_repo_o           = dpath_biocosmos / "odobon3.gatech/biocosmos"
-    dpath_data             = dpath_biocosmos / "data"
-    dpath_nymph            = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    fpath_nymph_metadata   = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
-    dpath_vlm4bio          = dpath_data / "datasets/VLM4Bio"
+    dpath_group          = Path("/blue/arthur.porto-biocosmos")
+    dpath_repo_root      = dpath_group / "odobon3.gatech/biocosmos"
+    dpath_data           = dpath_group / "data"
+    dpath_nymph          = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
+    fpath_nymph_metadata = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
+    dpath_vlm4bio        = dpath_data / "datasets/VLM4Bio"
 
     paths = {
-        "hf_cache":         dpath_data / "cache/huggingface/hub",
-        "biocosmos":        dpath_biocosmos,
-        "repo_o":           dpath_repo_o,
-        "metadata_o":       dpath_repo_o / "metadata_o",
-        "artifacts":        dpath_repo_o / "artifacts",
-        "nymph":            dpath_nymph,
-        "nymph_imgs":       dpath_nymph / "images",
-        "nymph_metadata":   fpath_nymph_metadata,
-        "vlm4bio":          dpath_vlm4bio,
+        "hf_cache":       dpath_data / "cache/huggingface/hub",
+        "group":          dpath_group,
+        "repo_root":      dpath_repo_root,
+        "metadata":       dpath_repo_root / "metadata",
+        "artifacts":      dpath_repo_root / "artifacts",
+        "nymph":          dpath_nymph,
+        "nymph_imgs":     dpath_nymph / "images",
+        "nymph_metadata": fpath_nymph_metadata,
+        "vlm4bio":        dpath_vlm4bio,
     }
 
 def seed_libs(seed):
@@ -73,7 +73,7 @@ def load_pickle(picklepath):
     return obj
 
 def load_split(split_name):
-    split = load_pickle(paths["metadata_o"] / f"splits/{split_name}/split.pkl")
+    split = load_pickle(paths["metadata"] / f"splits/{split_name}/split.pkl")
     return split
 
 def get_text_preps(text_preps_type):

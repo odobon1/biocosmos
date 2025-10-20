@@ -35,6 +35,6 @@ for sid in sids:
     else:
         sids_known.append(sid)
         
-save_pickle(sids, paths["metadata_o"] / "species_ids/all.pkl")
-save_pickle(sids_known, paths["metadata_o"] / "species_ids/known.pkl")
-save_pickle(sids_unknown, paths["metadata_o"] / "species_ids/unknown.pkl")
+save_pickle(sids, paths["metadata"] / "species_ids/all.pkl")
+save_pickle(sids_known, paths["metadata"] / "species_ids/known.pkl")
+save_pickle(sids_unknown, paths["metadata"] / "species_ids/unknown.pkl")

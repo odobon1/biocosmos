@@ -157,7 +157,7 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
     return insts_rem, insts_val, insts_test
 
 
-dpath_split = paths["metadata_o"] / f"splits/{cfg.split_name}"
+dpath_split = paths["metadata"] / f"splits/{cfg.split_name}"
 dpath_figs  = dpath_split / "figures"
 
 if os.path.isdir(dpath_split) and not cfg.allow_overwrite:
@@ -167,7 +167,7 @@ print(F"Split Name: '{cfg.split_name}'")
 
 pct_ood_eval = pct_id_eval = cfg.pct_eval / 2  # OOD per set percentage
 
-tax_nymph       = load_pickle(paths["metadata_o"] / "tax/nymph.pkl")
+tax_nymph       = load_pickle(paths["metadata"] / "tax/nymph.pkl")
 sids            = set(tax_nymph["found"].keys())  # OOD sets: insts
 n_sids          = len(sids)
 n_sids_ood_eval = round(n_sids * pct_ood_eval)
@@ -446,7 +446,7 @@ skeys_sets = {
 }
 
 # load species id's
-sids = load_pickle(paths["metadata_o"] / "species_ids/known.pkl")
+sids = load_pickle(paths["metadata"] / "species_ids/known.pkl")
 
 """
 `img_ptrs` structure:

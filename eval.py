@@ -39,11 +39,11 @@ class EvalConfig:
         self.ram    = slurm_alloc["ram"]
 
         if self.rdpath_trial is not None:
-            metadata_experiment = load_json(paths["repo_o"] / self.rdpath_trial / "../metadata_experiment.json")
+            metadata_experiment = load_json(paths["repo_root"] / self.rdpath_trial / "../metadata_experiment.json")
             self.model_type     = metadata_experiment["model_type"]  # override model_type
             self.loss_type      = metadata_experiment["loss_type"]  # override loss_type
 
-            metadata_study  = load_json(paths["repo_o"] / self.rdpath_trial / "../../metadata_study.json")
+            metadata_study  = load_json(paths["repo_root"] / self.rdpath_trial / "../../metadata_study.json")
             self.split_name = metadata_study["split_name"]
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

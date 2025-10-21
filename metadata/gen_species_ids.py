@@ -1,10 +1,10 @@
-"""
-Must be run on HiPerGator
-"""
-
 import os
+from tqdm import tqdm
 
 from utils import paths, load_pickle, save_pickle
+from utils_data import gbif_common_name
+
+import pdb
 
 
 non_alpha_valids = ["polygonia_c-aureum", "polygonia_c-album", "nymphalis_l-album"]
@@ -35,6 +35,13 @@ for sid in sids:
     else:
         sids_known.append(sid)
         
-save_pickle(sids, paths["metadata"] / "species_ids/all.pkl")
-save_pickle(sids_known, paths["metadata"] / "species_ids/known.pkl")
-save_pickle(sids_unknown, paths["metadata"] / "species_ids/unknown.pkl")
+sids2commons = {}
+for sid in tqdm(sids_known, desc="Retrieving Common Names"):
+    common = gbif_common_name(sid.replace("_", " "))
+    sids2commons[sid] = common
+
+dpath_species_ids = paths["metadata"] / "species_ids"
+save_pickle(sids, dpath_species_ids / "all.pkl")
+save_pickle(sids_known, dpath_species_ids / "known.pkl")
+save_pickle(sids_unknown, dpath_species_ids / "unknown.pkl")
+save_pickle(sids2commons, dpath_species_ids / "sids2commons.pkl")

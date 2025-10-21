@@ -7,6 +7,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import requests
 
 from utils import paths, load_pickle, load_split
 
@@ -283,3 +284,20 @@ def gen_text(sid, combo_temp, pos=None, sex=None, sids2commons=None):
         prompt = seg + prompt  # select random prepending from prepending-category, prepend to text
 
     return prompt
+
+def gbif_common_name(scientific_name: str, lang: str = "eng") -> str | None:
+    m = requests.get(
+        "https://api.gbif.org/v1/species/match",
+        params={"name": scientific_name},
+        timeout=10
+    ).json()
+    key = m.get("usageKey") or m.get("speciesKey") or m.get("acceptedUsageKey")
+    if not key:
+        return None
+
+    data = requests.get(
+        f"https://api.gbif.org/v1/species/{key}/vernacularNames",
+        timeout=10
+    ).json()
+    items = [x for x in data.get("results", []) if (x.get("language") or "").lower() == lang.lower()]
+    return (items[0].get("vernacularName").strip() or None) if items else None

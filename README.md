@@ -1,114 +1,113 @@
-# metadata_o Data Structure Generation
+# (IN PROGRESS)
 
-All commands must be executed from the project root e.g.
+# Setup
 
-```bash
-python -m metadata_o.gen_tax_gbif
+Setup is intended for use with B200s on HiPerGator.
+
+Pull repo and navigate:
+```
+git clone https://github.com/odobon1/biocosmos.git
+cd biocosmos
 ```
 
----
+Create and activate env:
+```
+conda env create -f environment_b200.yaml
+conda activate biocosmos_b200
+```
+Note: `environment.yaml` can be used for non-B200 sessions.
 
-## 1. Generate Species IDs
 
-```bash
-python -m metadata_o.gen_species_ids
+Run setup script (this takes about an hour to run):
+```
+./setup.sh
 ```
 
-**Requires:**
-- Nymphalidae data
+`setup.sh` generates metadata, including split S29-42 (by default), generates various data indexing structures needed for train and eval. See [metadata/README.md](metadata/README.md) for details.
 
-**Produces:**
-- `metadata_o/species_ids/all`
-- `metadata_o/species_ids/known`
-- `metadata_o/species_ids/unknown`
-
----
-
-## 2. Generate Taxonomic structure
-
-```bash
-python -m metadata_o.gen_tax_nymph
+To link jupyter notebooks with environment via ipykernel:
+```
+python -m ipykernel install --user --name biocosmos_b200 --display-name "Python (biocosmos_b200)"
 ```
 
-**Requires:**
-- `metadata_o/species_ids/known`
-
-**Produces:**
-- `metadata_o/tax/nymph`
-
----
-
-## 3. Generate Rank Keys & Splits
-_Run in any order:_
-
-```bash
-python -m metadata_o.gen_rank_keys
-python -m metadata_o.gen_splits  # make sure to set split parameters first
-```
-
-**Requires:**
-- `metadata_o/tax/nymph`
-
-**Produces:**
-- `metadata_o/rank_keys/nymph`
-- `metadata_o/splits/*`
-
----
-
-## 4. Generate Data Indexes
-
-```bash
-python -m metadata_o.gen_data_indexes  # designate split first
-```
-
-**Requires:**
-- `metadata_o/splits/<SPLIT_NAME>/*`
-
-**Produces:**
-- `metadata_o/data_indexes/<SPLIT_NAME>/*`
-
----
 
 <br>
 
 # Supported Model Types
 
-| Model Type              | Current Max Batch Size (1xB200 Train w/ MP) |
-|-------------------------|---------------------------------------------|
-| `bioclip`               | 2048                                        |
-| `bioclip2`              | 512                                         |
-| `clip_vitb32`           | 2048                                        |
-| `clip_vitb16`           | 1024                                        |
-| `clip_vitl14`           | 512                                         |
-| `clip_vitl14_336`       | 256                                         |
-| `clip_rn50`             | 2048                                        |
-| `clip_rn101`            | 1024                                        |
-| `clip_rn101_yfcc15m`    | 1024                                        |
-| `clip_rn50x4`           | 1024                                        |
-| `clip_rn50x16`          | 256                                         |
-| `clip_rn50x64`          | 128                                         |
-| `siglip_vitb16`         | 1024                                        |
-| `siglip_vitb16_384`     | -                                           |
-| `siglip_vitl16_384`     | -                                           |
-| `siglip_vitso400m14`    | -                                           |
-| `siglip2_vitb16`        | -                                           |
-| `siglip2_vitb16_384`    | -                                           |
-| `siglip2_vitl16_384`    | -                                           |
-| `siglip2_vitso400m14`   | -                                           |
-| `siglip2_vitgopt16_384` | -                                           |
-| `vitamin_s`             | -                                           |
-| `vitamin_s_ltt`         | -                                           |
-| `vitamin_b`             | -                                           |
-| `vitamin_b_ltt`         | -                                           |
-| `vitamin_l`             | -                                           |
-| `vitamin_l_256`         | -                                           |
-| `vitamin_l_336`         | -                                           |
-| `vitamin_l_384`         | -                                           |
-| `vitamin_l2`            | -                                           |
-| `vitamin_l2_384`        | -                                           |
-| `vitamin_xl_384`        | -                                           |
+**Max Batch Size** indicates max batch size whilst training on a single B200 using mixed precision and activation checkpointing.
 
-# Supported Loss Types
+## CLIP - ViT Variants
+
+| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain  | Num Params |
+|--------------------------|-------------------------------|----------------|-----------|------------|
+| `bioclip`                | `hf-hub:imageomics/bioclip`   |                | NA        |            |
+| `bioclip2`               | `hf-hub:imageomics/bioclip-2` |                | NA        |            |
+| `clip_vitb32`            | `ViT-B-32`                    |                | **(\*1)** |            |
+| `clip_vitb16`            | `ViT-B-16`                    |                | **(\*2)** |            |
+| `clip_vitl14`            | `ViT-L-14`                    |                | **(\*3)** |            |
+| `clip_vitl14_336`        | `ViT-L-14-336`                |                | `openai`  |            |
+
+**(\*1)** `ViT-B-32` Pretrain-Dataset Model Weights Available:
+`openai`, `laion400m_e31`, `laion400m_e32`, `laion2b_e16`, `laion2b_s34b_b79k`, `datacomp_xl_s13b_b90k`, `datacomp_m_s128m_b4k`, `commonpool_m_clip_s128m_b4k`, `commonpool_m_laion_s128m_b4k`, `commonpool_m_image_s128m_b4k`, `commonpool_m_text_s128m_b4k`, `commonpool_m_basic_s128m_b4k`, `commonpool_m_s128m_b4k`, `datacomp_s_s13m_b4k`, `commonpool_s_clip_s13m_b4k`, `commonpool_s_laion_s13m_b4k`, `commonpool_s_image_s13m_b4k`, `commonpool_s_text_s13m_b4k`, `commonpool_s_basic_s13m_b4k`, `commonpool_s_s13m_b4k`, `metaclip_400m`, `metaclip_fullcc`
+
+**(\*2)** `ViT-B-16` Pretrain-Dataset Model Weights Available: `openai`, `laion400m_e31`, `laion400m_e32`, `laion2b_s34b_b88k`, `datacomp_xl_s13b_b90k`, `datacomp_l_s1b_b8k`, `commonpool_l_clip_s1b_b8k`, `commonpool_l_laion_s1b_b8k`, `commonpool_l_image_s1b_b8k`, `commonpool_l_text_s1b_b8k`, `commonpool_l_basic_s1b_b8k`, `commonpool_l_s1b_b8k`, `dfn2b`, `metaclip_400m`, `metaclip_fullcc`
+
+**(\*3)** `ViT-L-14` Pretrain-Dataset Model Weights Available: `openai`, `laion400m_e31`, `laion400m_e32`, `laion2b_s32b_b82k`, `datacomp_xl_s13b_b90k`, `commonpool_xl_clip_s13b_b90k`, `commonpool_xl_laion_s13b_b90k`, `commonpool_xl_s13b_b90k`, `metaclip_400m`, `metaclip_fullcc`, `dfn2b`, `dfn2b_s39b`
+
+As we can see the CLIP ViT-series have received quite a lot of attention (no pun attended).
+
+Note: despite the name, both the open-source OpenCLIP and the not-so-open OpenAI CLIP model weights are available through `open_clip`. Pretrain dataset = "openai" --> **OpenAI CLIP** (a.k.a. "original CLIP"), trained on private dataset. Pretrain dataset = <anything other than "openai"> --> **OpenCLIP** ~ community replications of CLIP trained on open sourced datasets as specified in the Pretrain column.
+
+## CLIP - ResNet Variants
+
+| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain                     | Num Params |
+|--------------------------|-------------------------------|----------------|------------------------------|------------|
+| `clip_rn50`              | `RN50`                        |                | `openai`, `yfcc15m`, `cc12m` |            |
+| `clip_rn101`             | `RN101`                       |                | `openai`, `yfcc15m`          |            |
+| `clip_rn50x4`            | `RN50x4`                      |                | `openai`                     |            |
+| `clip_rn50x16`           | `RN50x16`                     |                | `openai`                     |            |
+| `clip_rn50x64`           | `RN50x64`                     |                | `openai`                     |            |
+
+## SigLIP Variants
+
+| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain | Num Params |
+|--------------------------|-------------------------------|----------------|----------|------------|
+| `siglip_vitb16`          | `ViT-B-16-SigLIP`             |                | `webli`  |            |
+| `siglip_vitb16_384`      | `ViT-B-16-SigLIP-384`         |                | `webli`  |            |
+| `siglip_vitl16_384`      | `ViT-L-16-SigLIP-384`         |                | `webli`  |            |
+| `siglip_vitso400m14`     | `ViT-SO400M-14-SigLIP`        |                | `webli`  |            |
+| `siglip2_vitb16`         | `ViT-B-16-SigLIP2`            |                | `webli`  |            |
+| `siglip2_vitb16_384`     | `ViT-B-16-SigLIP2-384`        |                | `webli`  |            |
+| `siglip2_vitl16_384`     | `ViT-L-16-SigLIP2-384`        |                | `webli`  |            |
+| `siglip2_vitso400m14`    | `ViT-SO400M-14-SigLIP2`       |                | `webli`  |            |
+| `siglip2_vitgopt16_384`  | `ViT-gopt-16-SigLIP2-384`     |                | `webli`  |            |
+
+## ViTamin Variants
+
+| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain     | Num Params |
+|--------------------------|-------------------------------|----------------|--------------|------------|
+| `vitamin_s`              | `ViTamin-S`                   |                | `datacomp1b` |            |
+| `vitamin_s_ltt`          | `ViTamin-S-LTT`               |                | `datacomp1b` |            |
+| `vitamin_b`              | `ViTamin-B`                   |                | `datacomp1b` |            |
+| `vitamin_b_ltt`          | `ViTamin-B-LTT`               |                | `datacomp1b` |            |
+| `vitamin_l`              | `ViTamin-L`                   |                | `datacomp1b` |            |
+| `vitamin_l_256`          | `ViTamin-L-256`               |                | `datacomp1b` |            |
+| `vitamin_l_336`          | `ViTamin-L-336`               |                | `datacomp1b` |            |
+| `vitamin_l_384`          | `ViTamin-L-384`               |                | `datacomp1b` |            |
+| `vitamin_l2`             | `ViTamin-L2`                  |                | `datacomp1b` |            |
+| `vitamin_l2_384`         | `ViTamin-L2-384`              |                | `datacomp1b` |            |
+| `vitamin_xl_384`         | `ViTamin-XL-384`              |                | `datacomp1b` |            |
+
+## And Many More
+
+More model types can be viewed via running the following at the command line or in a jupyter notebook:
+```python
+import open_clip
+open_clip.list_pretrained()
+```
+
+# Supported Loss Types (outdated)
 
 | Loss Type                   | Notes                                          |
 |-----------------------------|------------------------------------------------|

@@ -7,7 +7,6 @@ dependencies:
   - accelerate
   - bidict
   - biopython
-  - git-lfs
   - ipykernel
   - numpy
   - pandas

@@ -18,9 +18,11 @@ RFPATHS = [
     "metadata/gen_tax_gbif.py",
     "metadata/gen_tax_ncbi.py",
     "metadata/gen_tax_nymph.py",
+    "metadata/README.md",
     "environment_b200.yaml",
     "eval.py",
     "models.py",
+    "README.md",
     "train.py",
     "utils_data.py",
     "utils_eval.py",
@@ -42,11 +44,7 @@ def main():
             print(f"Warning: {fpath} not found, skipping")
             continue
 
-        try:
-            file_content = fpath.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            print(f"Warning: {fpath} is not UTF-8 decodable; skipping.")
-            continue
+        file_content = fpath.read_text(encoding="utf-8")
 
         out_lines.append("=== " + rfpath + " ===")
         out_lines.append("")
@@ -56,7 +54,6 @@ def main():
 
     FPATH_OUT.parent.mkdir(parents=True, exist_ok=True)
     FPATH_OUT.write_text("\n".join(out_lines).rstrip() + "\n", encoding="utf-8")
-    print(f"Wrote combined file to: {FPATH_OUT.resolve()}")
 
 if __name__ == "__main__":
     main()

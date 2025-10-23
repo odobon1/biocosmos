@@ -124,11 +124,11 @@ def collate_fn(batch):
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
     augmentation can be done here methinks
     """
-    imgs_b, class_encs_b, texts_b, rank_keys = zip(*batch)
+    imgs_b, class_encs_b, texts_b, rank_keys_b = zip(*batch)
 
     imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
 
-    return imgs_b, class_encs_b, list(texts_b), torch.Tensor(rank_keys)
+    return imgs_b, class_encs_b, list(texts_b), torch.Tensor(rank_keys_b)
 
 def assemble_indexes(data_index):
     index_rfpaths = data_index["rfpaths"]

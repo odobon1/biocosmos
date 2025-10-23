@@ -1,3 +1,5 @@
+# python -m tools.full_src_compiler
+
 from pathlib import Path
 
 from utils import paths
@@ -23,10 +25,12 @@ RFPATHS = [
     "eval.py",
     "models.py",
     "README.md",
+    "setup.sh",
     "train.py",
     "utils_data.py",
     "utils_eval.py",
     "utils_imb.py",
+    "utils_loss.py",
     "utils_pp.py",
     "utils.py",
 ]

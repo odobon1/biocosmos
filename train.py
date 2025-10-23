@@ -61,8 +61,10 @@ class TrainConfig:
     model_type: str
     loss_type: str
     targ_type: str
+    regression: dict
     class_weighting: dict
     focal: dict
+    alpha_pos: float
 
     n_epochs: int
     chkpt_every: int
@@ -93,8 +95,8 @@ class TrainConfig:
             raise ValueError("Text and image encoders are both set to frozen!")
         # if self.lr_sched_type == "plat" and self.lr_sched["args"]["valid_type"] not in ("loss", "perf"):
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
-        # if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "mse_tb", "huber", "huber_tb"):
-        #     raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, mse_tb, huber, huber_tb}}")
+        if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "huber"):
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, huber}}")
         if self.targ_type not in ("pairwise", "multipos", "hierarchical"):
             raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
         if self.focal["comp_type"] not in (1, 2):
@@ -649,19 +651,19 @@ class TrainPipeline:
             time_train_start = time.time()
             self.modelw.model.train()
             loss_train_total = 0.0
-            for imgs_b, class_encs_b, texts_b, rank_keys in tqdm(self.dataloader, desc="Train", leave=False):
+            for imgs_b, class_encs_b, texts_b, rank_keys_b in tqdm(self.dataloader, desc="Train", leave=False):
                 imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
 
                 self.optimizer.zero_grad()
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys)
+                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys)
+                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
                     loss_train_b.backward()
                     self.optimizer.step()
 
@@ -742,7 +744,7 @@ class TrainPipeline:
             sep="\n"
         )
 
-    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys):
+    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b):
 
         # normalized embeddings
         embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
@@ -750,7 +752,7 @@ class TrainPipeline:
 
         sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
         logits       = self.modelw.compute_logits(sim)
-        loss_train_b = self.modelw.compute_loss(logits, class_encs_b, rank_keys)
+        loss_train_b = self.modelw.compute_batch_loss(logits, class_encs_b, rank_keys_b)
 
         return loss_train_b
 
@@ -765,6 +767,7 @@ def main():
     modelw.set_class_wts(class_wts, class_pair_wts)
     modelw.set_focal(config_train.focal)
     modelw.set_targ_type(config_train.targ_type)
+    modelw.set_alpha_pos(config_train.alpha_pos)
 
     train_pipe = TrainPipeline(modelw, config_train)
     train_pipe.train()

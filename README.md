@@ -10,12 +10,18 @@ git clone https://github.com/odobon1/biocosmos.git
 cd biocosmos
 ```
 
-Create and activate env:
+Place environment_b200.yaml in your home directory `/home/<user>`.
+Navigate to home directory and create env:
 ```
 conda env create -f environment_b200.yaml
+```
+Note: `environment.yaml` can be used for non-B200 jobs.
+
+Navigate back to repo directory and activate env:
+```
 conda activate biocosmos_b200
 ```
-Note: `environment.yaml` can be used for non-B200 sessions.
+
 
 
 Run setup script (this takes about an hour to run):
@@ -25,7 +31,7 @@ Run setup script (this takes about an hour to run):
 
 `setup.sh` generates metadata, including split S29-42 (by default), generates various data indexing structures needed for train and eval. See [metadata/README.md](metadata/README.md) for details.
 
-To link jupyter notebooks with environment via ipykernel:
+To link jupyter notebooks with environment via ipykernel (with environment activated):
 ```
 python -m ipykernel install --user --name biocosmos_b200 --display-name "Python (biocosmos_b200)"
 ```
@@ -33,7 +39,7 @@ python -m ipykernel install --user --name biocosmos_b200 --display-name "Python 
 
 <br>
 
-# Supported Model Types
+# Supported Architectures
 
 **Max Batch Size** indicates max batch size whilst training on a single B200 using mixed precision and activation checkpointing.
 

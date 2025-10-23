@@ -7,9 +7,14 @@ split_name: S29-42
 
 verbose_batch_loss: false
 
-model_type: bioclip
-loss_type:  infonce1
+model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+loss_type:  mse  # options: {infonce1, infonce2, sigmoid, mse, huber}
 targ_type:  pairwise  # options: {pairwise, multipos, hierarchical}
+regression:
+  temp:  true
+  bias:  true
+  scale: 1
+  huber_beta: 0.1
 class_weighting:
   type:     inv_freq  # options: {null, inv_freq, class_balanced}
   if_gamma: 0.5
@@ -18,8 +23,8 @@ class_weighting:
 focal:
   enabled:   false
   gamma:     2.0
-  alpha_pos: 0.5
   comp_type: 1
+alpha_pos: 0.5
 
 batch_size: 1024
 text_preps_type: bioclip_sci

@@ -153,6 +153,9 @@ class VLMWrapper(abc.ABC):
         if model_state_dict is not None:
             modelw.model.load_state_dict(model_state_dict)
 
+        if config.non_causal:
+            modelw.disable_causal_mask_text()
+
         print("Model loaded!\n")
 
         return modelw
@@ -296,6 +299,9 @@ class CLIPWrapper(VLMWrapper):
             ):
                 param.requires_grad = False
 
+    def disable_causal_mask_text(self):
+        self.model.attn_mask.zero_()  # convert causal attention mask to non-causal
+
 class SigLIPWrapper(VLMWrapper):
     def __init__(self, config):
         model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.model_type]
@@ -319,3 +325,6 @@ class ViTaminWrapper(VLMWrapper):
         for name, param in self.model.named_parameters():
             if name.startswith("text."):
                 param.requires_grad = False
+
+    def disable_causal_mask_text(self):
+        self.model.text.attn_mask.zero_()  # convert causal attention mask to non-causal

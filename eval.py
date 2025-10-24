@@ -21,6 +21,7 @@ class EvalConfig:
     verbose_batch_loss: bool
 
     model_type: str
+    
     loss_type: str
     targ_type: str
     regression: dict
@@ -33,6 +34,8 @@ class EvalConfig:
 
     cached_imgs: bool
     act_chkpt:   bool
+
+    non_causal: bool = False
     
     def __post_init__(self):
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
@@ -44,6 +47,7 @@ class EvalConfig:
             metadata_experiment = load_json(paths["root"] / self.rdpath_trial / "../metadata_experiment.json")
             self.model_type     = metadata_experiment["model_type"]  # override model_type
             self.loss_type      = metadata_experiment["loss_type"]  # override loss_type
+            self.non_causal     = metadata_experiment["non_causal"]  # override non_causal
 
             metadata_study  = load_json(paths["root"] / self.rdpath_trial / "../../metadata_study.json")
             self.split_name = metadata_study["split_name"]

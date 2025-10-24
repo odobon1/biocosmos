@@ -59,6 +59,8 @@ class TrainConfig:
     allow_diff_experiment: bool
 
     model_type: str
+    non_causal: bool
+
     loss_type: str
     targ_type: str
     regression: dict

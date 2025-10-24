@@ -181,12 +181,12 @@ def compute_loss_regression(targ_type, loss_type, logits, class_encs_b, rank_key
     B     = logits.size(0)
     targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, device)
 
-    if cfg_regr["scale"] == 1:
+    if cfg_regr["scale_type"] == 1:
         if cfg_regr["temp"] or cfg_regr["bias"]:
             logits = logits.tanh()
         preds = (logits + 1.0) * 0.5
         preds = preds.clamp(0.0, 1.0)
-    elif cfg_regr["scale"] == 2:
+    elif cfg_regr["scale_type"] == 2:
         preds = logits.sigmoid()
 
     # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)

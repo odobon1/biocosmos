@@ -1,7 +1,7 @@
-# study_name:      dev
-study_name:      class_imb_sig
-# experiment_name: dev
-experiment_name: mp_posneg_if-1-0_cp2
+study_name:      dev
+# study_name:      class_imb_sig
+experiment_name: dev
+# experiment_name: mp_posneg_if-1-0_cp2
 seed:            42
 split_name:      S29-42
 # split_name:      dev
@@ -16,25 +16,10 @@ allow_diff_experiment: true
 model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
 non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
-loss_type: sigmoid  # options: {infonce1, infonce2, sigmoid, mse, huber}
-targ_type: multipos  # options: {pairwise, multipos, hierarchical}
-regression:
-  temp:       true  # analog to CLIP + SigLIP temperature (scales logits)
-  bias:       true  # analog to SigLIP bias (shifts logits)
-  scale_type: 1  # options: {1, 2}; computation type used for scaling logits to range [0, 1]; type 1 uses an affine tranform, preceded by a tanh if temp and/or bias are used, type 2 uses a sigmoid
-  huber_beta: 0.1
-class_weighting:
-  type:     inv_freq  # options: {null, inv_freq, class_balanced}
-  if_gamma: 1.0  # (0.0, 1.0]; "inverse-frequency gamma", only used for type: inv_freq; 1 / n_c^(if_gamma); if_gamma = 1.0 --> 1 / n_c (classic scheme), if_gamma = 0.5 --> 1 / sqrt(n_c), if_gamma = 0.0 --> no weighting (uniform)
-  cb_beta:  0.9999  # [0.0, 1.0); only used for type: class_balanced; controls aggressiveness
-  cp_type:  2  # options: {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
-focal:
-  enabled:   false
-  gamma:     2.0  # [0, inf); down-weights easy samples, larger gamma --> stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid; FL reduces to CE when gamma = 0
-  comp_type: 2  # options: {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1
-alpha_pos: 0.5  # [0, 1]; only relevant for sigmoid (and maybe regression); 0.5 equivalent to no pos/neg weighting; alpha_neg = 1 - alpha_pos
-# alpha_pos: 0.9995117188  # (pairwise ratio for batch size = 2048) --- can get rid of this if it's not compatible with hierarchical
-dyn_posneg: true  # dynamic reweighting of pos/neg  overrides alpha_pos; intended for use with multi-pos, also convenient for pairwise (verify equivalence), not compatible with hierarchical
+loss_type:   mse  # options: {infonce1, infonce2, sigmoid, mse, huber}
+targ_type:   pairwise  # options: {pairwise, multipos, hierarchical}
+class_wting: true
+focal:       true
 
 n_epochs:    200
 chkpt_every: 1

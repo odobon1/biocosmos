@@ -70,6 +70,8 @@ class VLMWrapper(abc.ABC):
         - quick_gelu --- [bool] ------------------------ 
         """
 
+        self.cfg = config
+
         model, img_pp_train, img_pp_val = open_clip.create_model_and_transforms(
             model_name, 
             pretrained      =pretrained, 
@@ -89,42 +91,30 @@ class VLMWrapper(abc.ABC):
         if config.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        self.regr_temp = config.regression["temp"]  # ideally models not using regression losses wouldn't get assigned these params
-        if self.regr_temp:
+        if config.loss_type in ("mse", "huber"):
             if hasattr(self.model, "regr_temp"):
                 raise ValueError("regr_temp already exists!")
-            else:
-                self.model.regr_temp = nn.Parameter(torch.tensor(1.0))  # might want to clamp this (similar reason as described in seminal CLIP work e.g. upper clamp @ 100)
-
-        self.regr_bias = config.regression["bias"]
-        if self.regr_bias:
             if hasattr(self.model, "regr_bias"):
                 raise ValueError("regr_bias already exists!")
+            cfg_loss = config.cfg_loss
+            if cfg_loss["regression"]["temp"]:
+                self.model.regr_temp = nn.Parameter(torch.tensor(1.0))
             else:
+                self.model.regr_temp = 1.0
+            if cfg_loss["regression"]["bias"]:
                 self.model.regr_bias = nn.Parameter(torch.tensor(0.0))
-
-        if config.loss_type == "huber":
-            cfg_regr        = getattr(config, "regression", SimpleNamespace())
-            self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
-
-        self.cfg_focal = config.focal
-        self.cfg_regr  = config.regression
+            else:
+                self.model.regr_bias = 0.0
+            if config.loss_type == "huber":
+                cfg_regr        = getattr(config, "regression", SimpleNamespace())
+                self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
 
     def set_class_wts(self, class_wts, class_pair_wts):
         self.class_wts      = class_wts.to(self.device)
         self.class_pair_wts = class_pair_wts.to(self.device)
 
-    def set_focal(self, cfg_focal):
-        self.focal           = cfg_focal["enabled"]
-        self.focal_gamma     = cfg_focal["gamma"]
-        self.focal_comp_type = cfg_focal["comp_type"]
-
     def set_targ_type(self, targ_type):
         self.targ_type = targ_type
-
-    def set_posneg(self, alpha_pos, dyn_posneg):
-        self.alpha_pos = alpha_pos
-        self.dyn_posneg = dyn_posneg
 
     @classmethod
     def build(cls, config):
@@ -245,11 +235,7 @@ class VLMWrapper(abc.ABC):
         return logits
 
     def compute_logits_regression(self, sim):
-        logits = sim
-        if self.regr_temp:
-            logits = logits * self.model.regr_temp
-        if self.regr_bias:
-            logits = logits + self.model.regr_bias
+        logits = sim * self.model.regr_temp + self.model.regr_bias
         return logits
 
     def compute_batch_loss(self, logits, class_encs_b, rank_keys_b):
@@ -262,11 +248,8 @@ class VLMWrapper(abc.ABC):
             rank_keys_b, 
             self.class_wts, 
             self.class_pair_wts, 
-            self.cfg_focal, 
-            self.cfg_regr, 
-            self.alpha_pos, 
-            self.dyn_posneg,
             self.device,
+            self.cfg,
         )
 
     def freeze(self, freeze_txt, freeze_img):

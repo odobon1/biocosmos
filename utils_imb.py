@@ -1,7 +1,8 @@
 import torch  # type: ignore[import]
-import numpy as np
+import numpy as np  # type: ignore[import]
 
 from utils import load_split
+
 
 def compute_class_wts(cfg):
 
@@ -11,7 +12,7 @@ def compute_class_wts(cfg):
     pair_counts = np.outer(counts, counts)
     n_classes   = len(counts)
 
-    cfg_cw = cfg.class_weighting
+    cfg_cw = cfg.cfg_loss["class_weighting"]
 
     if cfg_cw["cp_type"] == 2:
         neg_mult2 = np.full((n_classes, n_classes), 2)

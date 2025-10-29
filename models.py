@@ -122,8 +122,9 @@ class VLMWrapper(abc.ABC):
     def set_targ_type(self, targ_type):
         self.targ_type = targ_type
 
-    def set_alpha_pos(self, alpha_pos):
+    def set_posneg(self, alpha_pos, dyn_posneg):
         self.alpha_pos = alpha_pos
+        self.dyn_posneg = dyn_posneg
 
     @classmethod
     def build(cls, config):
@@ -264,6 +265,7 @@ class VLMWrapper(abc.ABC):
             self.cfg_focal, 
             self.cfg_regr, 
             self.alpha_pos, 
+            self.dyn_posneg,
             self.device,
         )
 

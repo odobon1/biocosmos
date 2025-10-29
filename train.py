@@ -67,6 +67,7 @@ class TrainConfig:
     class_weighting: dict
     focal: dict
     alpha_pos: float
+    dyn_posneg: bool
 
     n_epochs: int
     chkpt_every: int
@@ -769,7 +770,7 @@ def main():
     modelw.set_class_wts(class_wts, class_pair_wts)
     modelw.set_focal(config_train.focal)
     modelw.set_targ_type(config_train.targ_type)
-    modelw.set_alpha_pos(config_train.alpha_pos)
+    modelw.set_posneg(config_train.alpha_pos, config_train.dyn_posneg)
 
     train_pipe = TrainPipeline(modelw, config_train)
     train_pipe.train()

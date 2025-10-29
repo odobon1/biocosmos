@@ -27,7 +27,8 @@ focal:
   enabled:   false
   gamma:     2.0
   comp_type: 1
-alpha_pos: 0.5
+alpha_pos:  0.5
+dyn_posneg: false
 
 batch_size: 1024
 text_preps_type: bioclip_sci

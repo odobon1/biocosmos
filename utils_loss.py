@@ -18,7 +18,7 @@ def compute_targets(targ_type, batch_size, class_encs_b, rank_keys_b, device):
         targs      = targs.to(device)  # ---------------------------------------------- Tensor(B, B)
     return targs
 
-def compute_loss(targ_type, loss_type, logits, class_encs_b, rank_keys_b, class_wts, class_pair_wts, cfg_focal, cfg_regr, alpha_pos, device):
+def compute_loss(targ_type, loss_type, logits, class_encs_b, rank_keys_b, class_wts, class_pair_wts, cfg_focal, cfg_regr, alpha_pos, dyn_posneg, device):
     class_encs_b = torch.tensor(class_encs_b).to(device)
     if loss_type == "infonce1":
         loss = compute_loss_infonce(
@@ -51,6 +51,7 @@ def compute_loss(targ_type, loss_type, logits, class_encs_b, rank_keys_b, class_
             class_pair_wts, 
             cfg_focal, 
             alpha_pos, 
+            dyn_posneg,
             device,
         )
         return loss
@@ -143,14 +144,15 @@ def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, cla
 
     num_i2t = (w_i2t * loss_i2t).sum()
     num_t2i = (w_t2i * loss_t2i).sum()
-    den_i2t = w_i2t.detach().sum() / B  # divided by batch size for apples-to-apples w/ infonce1
+    
+    den_i2t = w_i2t.detach().sum() / B  # divided by batch size for apples-to-apples w/ infonce1 ~ this needs to be investigated
     den_t2i = w_t2i.detach().sum() / B
 
     loss_batch = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
     return loss_batch
 
-def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, class_pair_wts, cfg_focal, alpha_pos, device):
+def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, class_pair_wts, cfg_focal, alpha_pos, dyn_posneg, device):
     B     = logits.size(0)
     targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, device)
 
@@ -163,7 +165,15 @@ def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, class_pai
     else:
         foc_wts = torch.ones_like(targs)
 
-    posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical
+    if dyn_posneg:
+        num_pos = torch.sum(targs).item()
+        num_neg = B**2 - num_pos
+        # scaling (numerical stability measure)
+        wt_neg = num_pos / (B**2 / 2)  # (equivalent to dividing by mean of num_pos and num_neg)
+        wt_pos = num_neg / (B**2 / 2)
+        posneg_wts = targs * wt_pos + (1 - targs) * wt_neg
+    else:
+        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical ~  review this
 
     W = rw_wts * posneg_wts * foc_wts
 

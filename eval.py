@@ -28,6 +28,7 @@ class EvalConfig:
     class_weighting: dict
     focal: dict
     alpha_pos: float
+    dyn_posneg: bool
 
     batch_size: int
     text_preps_type: str
@@ -99,7 +100,7 @@ def main():
     modelw.set_class_wts(class_wts, class_pair_wts)
     modelw.set_focal(config_eval.focal)
     modelw.set_targ_type(config_eval.targ_type)
-    modelw.set_alpha_pos(config_eval.alpha_pos)
+    modelw.set_posneg(config_eval.alpha_pos, config_eval.dyn_posneg)
 
     text_preps = get_text_preps(config_eval.text_preps_type)
     val_pipe   = ValidationPipeline(

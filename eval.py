@@ -12,10 +12,8 @@ def main():
     config_eval = get_config_eval()
 
     modelw = VLMWrapper.build(config_eval)
-
-    if config_eval.class_wting:
-        class_wts, class_pair_wts = compute_class_wts(config_eval)
-        modelw.set_class_wts(class_wts, class_pair_wts)
+    class_wts, class_pair_wts = compute_class_wts(config_eval)
+    modelw.set_class_wts(class_wts, class_pair_wts)
     modelw.set_targ_type(config_eval.targ_type)
 
     text_preps = get_text_preps(config_eval.text_preps_type)

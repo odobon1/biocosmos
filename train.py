@@ -283,15 +283,22 @@ class TrainPipeline:
     def save_metadata_experiment(self):
         
         def clean_metadata(metadata):
+
             del metadata["study_name"]
             del metadata["experiment_name"]
             del metadata["seed"]
             del metadata["split_name"]
+
+            del metadata["verbose_batch_loss"]
+
             del metadata["allow_overwrite_trial"]
             del metadata["allow_diff_study"]
             del metadata["allow_diff_experiment"]
+
             del metadata["chkpt_every"]
-            del metadata["verbose_batch_loss"]
+            
+            del metadata["class_wting"]
+            del metadata["focal"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
@@ -616,10 +623,8 @@ def main():
     seed_libs(config_train.seed)
 
     modelw = VLMWrapper.build(config_train)
-
-    if config_train.class_wting:
-        class_wts, class_pair_wts = compute_class_wts(config_train)
-        modelw.set_class_wts(class_wts, class_pair_wts)
+    class_wts, class_pair_wts = compute_class_wts(config_train)
+    modelw.set_class_wts(class_wts, class_pair_wts)
     modelw.set_targ_type(config_train.targ_type)
 
     train_pipe = TrainPipeline(modelw, config_train)

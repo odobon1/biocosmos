@@ -1,5 +1,5 @@
 import torch  # type: ignore[import]
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import yaml  # type: ignore[import]
 
@@ -25,6 +25,7 @@ class TrainConfig:
     targ_type: str
     class_wting: bool
     focal: bool
+    cfg_loss: dict = field(init=False, default_factory=dict)
 
     n_epochs: int
     chkpt_every: int
@@ -63,8 +64,8 @@ class TrainConfig:
         #     raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2}}")
         if self.lr_sched_type not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
             raise ValueError(f"Unknown LR scheduler type: '{self.lr_sched_type}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
-        # if self.class_weighting["type"] not in (None, "inv_freq", "class_balanced"):
-        #     raise ValueError(f"Unknown class weighting type: '{self.class_weighting['type']}', must be one of {{null, inv_freq, class_balanced}}")
+        # if self.class_weighting["type"] not in ("inv_freq", "class_balanced"):
+        #     raise ValueError(f"Unknown class weighting type: '{self.class_weighting['type']}', must be one of {{inv_freq, class_balanced}}")
         # if self.class_weighting["cp_type"] not in (1, 2):
         #     raise ValueError(f"Unknown class weighting type: '{self.class_weighting['type']}', must be one of {{1, 2}}")
 

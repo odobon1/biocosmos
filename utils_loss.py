@@ -149,8 +149,9 @@ def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, cla
     return loss_batch
 
 def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, class_pair_wts, device, cfg):
-    alpha_pos  = cfg.cfg_loss["alpha_pos"]
-    dyn_posneg = cfg.cfg_loss["dyn_posneg"]
+
+    alpha_pos   = getattr(cfg.cfg_loss, "alpha_pos",  0.5)
+    dyn_posneg  = getattr(cfg.cfg_loss, "dyn_posneg", False)
 
     B     = logits.size(0)
     targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, device)

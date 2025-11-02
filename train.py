@@ -519,12 +519,12 @@ class TrainPipeline:
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
+                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
+                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
                     loss_train_b.backward()
                     self.optimizer.step()
 
@@ -604,18 +604,6 @@ class TrainPipeline:
             f"LR ----- {self.lr_schedw.get_lr():.2e}",
             sep="\n"
         )
-
-    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b):
-
-        # normalized embeddings
-        embs_imgs = self.modelw.embed_images(imgs_b)  # ------- Tensor(B, D)
-        embs_txts = self.modelw.embed_texts(texts_b)  # ------- Tensor(B, D)
-
-        sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
-        logits       = self.modelw.compute_logits(sim)
-        loss_train_b = self.modelw.compute_batch_loss(logits, class_encs_b, rank_keys_b)
-
-        return loss_train_b
 
 def main():
 

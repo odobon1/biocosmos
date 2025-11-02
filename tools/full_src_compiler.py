@@ -1,4 +1,6 @@
-# python -m tools.full_src_compiler
+"""
+python -m tools.full_src_compiler
+"""
 
 from pathlib import Path
 
@@ -44,12 +46,7 @@ def main():
 
     for rfpath in RFPATHS:
 
-        fpath = dpath_root / rfpath
-
-        if not fpath.exists():
-            print(f"Warning: {fpath} not found, skipping")
-            continue
-
+        fpath        = dpath_root / rfpath
         file_content = fpath.read_text(encoding="utf-8")
 
         out_lines.append("=== " + rfpath + " ===")

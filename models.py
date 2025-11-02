@@ -266,6 +266,18 @@ class VLMWrapper(abc.ABC):
     def freeze_text_encoder(self):
         raise NotImplementedError
 
+    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b):
+
+        # normalized embeddings
+        embs_imgs = self.embed_images(imgs_b)  # ------- Tensor(B, D)
+        embs_txts = self.embed_texts(texts_b)  # ------- Tensor(B, D)
+
+        sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
+        logits       = self.compute_logits(sim)
+        loss_train_b = self.compute_batch_loss(logits, class_encs_b, rank_keys_b)
+
+        return loss_train_b
+
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config):
         model_name, pretrained, quick_gelu = CLIP_MODELS[config.model_type]

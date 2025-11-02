@@ -4,6 +4,7 @@ channels:
   - defaults
 dependencies:
   - python=3.10
+  - pip
   - accelerate
   - bidict
   - biopython
@@ -16,12 +17,15 @@ dependencies:
   - tensorboard
   - tqdm
   - requests
-  - pip
   - pip:
-    - --extra-index-url https://download.pytorch.org/whl/cu128
-    - torch==2.7.1+cu128
-    - torchvision==0.22.1+cu128
-    - torchaudio==2.7.1+cu128
-    - transformers
-    - datasets
-    - open_clip_torch
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.7.1+cu128
+      - torchvision==0.22.1+cu128
+      - torchaudio==2.7.1+cu128
+      - transformers
+      - datasets
+      - "timm>=1.0.0"
+      - "open-clip-torch>=2.24.0"
+      - ftfy
+      - regex
+      - huggingface_hub

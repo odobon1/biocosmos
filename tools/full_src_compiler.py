@@ -20,8 +20,6 @@ RFPATHS = [
     "metadata/gen_rank_keys.py",
     "metadata/gen_species_ids.py",
     "metadata/gen_split.py",
-    "metadata/gen_tax_gbif.py",
-    "metadata/gen_tax_ncbi.py",
     "metadata/gen_tax_nymph.py",
     "metadata/README.md",
     "environment_b200.yaml",

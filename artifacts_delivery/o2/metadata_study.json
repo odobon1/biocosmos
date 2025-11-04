@@ -1,8 +1,0 @@
-{
-    "split_name": "S29-0",
-    "n_gpus": 1,
-    "n_cpus": 16,
-    "ram": "256 GB",
-    "n_workers": 16,
-    "prefetch_factor": 8
-}

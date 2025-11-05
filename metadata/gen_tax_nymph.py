@@ -2,10 +2,9 @@
 Must be run on HiPerGator
 """
 
-import os
 import glob
-import pandas as pd
-from tqdm import tqdm
+import pandas as pd  # type: ignore[import]
+from tqdm import tqdm  # type: ignore[import]
 
 from utils import paths, load_pickle, save_pickle
 
@@ -21,7 +20,7 @@ metadata = {
     "missing": set(),
 }
 
-dirpath_sids = paths["nymph"] / "images"
+dirpath_sids = paths["nymph_imgs"]
 for sid in tqdm(sids):
     
     if sid in unique_species:

@@ -1,7 +1,7 @@
 import os
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
 
-from utils import paths, load_pickle, save_pickle
+from utils import paths, save_pickle
 from utils_data import gbif_common_name
 
 import pdb
@@ -22,7 +22,7 @@ def is_odd(sid):
         
     return False
 
-sids = [sid for sid in os.listdir(paths["nymph"] / "images")]
+sids = [sid for sid in os.listdir(paths["nymph_imgs"])]
 
 sids_known = []
 sids_unknown = []

@@ -2,7 +2,7 @@ import pickle
 from pathlib import Path
 import random
 import os
-import numpy as np
+import numpy as np  # type: ignore[import]
 import torch  # type: ignore[import]
 import json
 import subprocess
@@ -25,23 +25,22 @@ if CLUSTER == "pace":
     }
 elif CLUSTER == "hpg":
 
-    dpath_group          = Path("/blue/arthur.porto-biocosmos")
-    dpath_root           = Path(os.getcwd())
-    dpath_data           = dpath_group / "data"
-    dpath_nymph          = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    fpath_nymph_metadata = dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv"
-    dpath_vlm4bio        = dpath_data / "datasets/VLM4Bio"
+    dpath_group   = Path("/blue/arthur.porto-biocosmos")
+    dpath_root    = Path(os.getcwd())
+    dpath_data    = dpath_group / "data"
+    dpath_nymph   = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
+    dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
 
     paths = {
-        "hf_cache":       dpath_data / "cache/huggingface/hub",
-        "group":          dpath_group,
-        "root":           dpath_root,
-        "metadata":       dpath_root / "metadata",
-        "artifacts":      dpath_root / "artifacts",
-        "nymph":          dpath_nymph,
-        "nymph_imgs":     dpath_nymph / "images",
-        "nymph_metadata": fpath_nymph_metadata,
-        "vlm4bio":        dpath_vlm4bio,
+        "hf_cache":         dpath_data / "cache/huggingface/hub",
+        "group":            dpath_group,
+        "root":             dpath_root,
+        "metadata":         dpath_root / "metadata",
+        "artifacts":        dpath_root / "artifacts",
+        "nymph_imgs":       dpath_nymph / "images",
+        "nymph_metadata":   dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
+        "nymph_phylo_tree": dpath_root / "tree_nymphalidae_chazot2021_all.tree",
+        "vlm4bio":          dpath_vlm4bio,
     }
 
 def seed_libs(seed):

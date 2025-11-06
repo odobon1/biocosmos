@@ -22,6 +22,7 @@ RFPATHS = [
     "metadata/gen_split.py",
     "metadata/gen_tax_nymph.py",
     "metadata/README.md",
+    "tools/probe_batch_size.py",
     "environment_b200.yaml",
     "eval.py",
     "models.py",

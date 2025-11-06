@@ -58,8 +58,8 @@ class TrainConfig:
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
         if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "huber"):
             raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, huber}}")
-        if self.targ_type not in ("pairwise", "multipos", "hierarchical"):
-            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{pairwise, multipos, hierarchical}}")
+        if self.targ_type not in ("aligned", "multipos", "hierarchical", "phylo"):
+            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{aligned, multipos, hierarchical, phylo}}")
         # if self.focal["comp_type"] not in (1, 2):
         #     raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2}}")
         if self.lr_sched_type not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
@@ -138,6 +138,34 @@ class TrainConfig:
             sep="\n"
         )
 
+def get_config_train():
+    with open(paths["config"] / "train/train.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg = TrainConfig(**cfg_dict)
+    cfg.lr_sched_params = get_config_lr_sched(cfg.lr_sched_type)
+    cfg.cfg_loss        = get_config_loss(cfg)
+    return cfg
+
+def get_config_lr_sched(lr_sched_type):
+    with open(paths["config"] / "train/lr_sched.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    return cfg_dict[lr_sched_type]
+
+def get_config_loss(cfg_train):
+    with open(paths["config"] / "loss.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    if not cfg_train.class_wting:
+        del cfg_dict["class_weighting"]
+    if not cfg_train.focal:
+        del cfg_dict["focal"]
+    if cfg_train.loss_type not in ("sigmoid", "mse", "huber"):
+        del cfg_dict["alpha_pos"]
+    if cfg_train.loss_type != "sigmoid":
+        del cfg_dict["dyn_posneg"]
+    if cfg_train.loss_type not in ("mse", "huber"):
+        del cfg_dict["regression"]
+    return cfg_dict
+
 @dataclass
 class EvalConfig:
     rdpath_trial: str | None
@@ -208,37 +236,29 @@ class EvalConfig:
             sep="\n"
         )
 
-def get_config_train():
-    with open(Path(__file__).parent / "config/train/train.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    cfg = TrainConfig(**cfg_dict)
-    cfg.lr_sched_params = get_config_lr_sched(cfg.lr_sched_type)
-    cfg.cfg_loss        = get_config_loss(cfg)
-    return cfg
-
 def get_config_eval():
-    with open(Path(__file__).parent / "config/eval.yaml") as f:
+    with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = EvalConfig(**cfg_dict)
-    cfg.cfg_loss        = get_config_loss(cfg)
+    cfg.cfg_loss = get_config_loss(cfg)
     return cfg
 
-def get_config_lr_sched(lr_sched_type):
-    with open(Path(__file__).parent / "config/train/lr_sched.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    return cfg_dict[lr_sched_type]
+@dataclass
+class GenSplitConfig:
 
-def get_config_loss(cfg_train):
-    with open(Path(__file__).parent / "config/loss.yaml") as f:
+    seed: int
+    split_name: str
+
+    allow_overwrite: bool
+
+    pct_eval: float
+    pct_ood_tol: float
+
+    nst_names: list
+    nst_seps: list
+
+def get_config_gen_split():
+    with open(paths["config"] / "gen_split.yaml") as f:
         cfg_dict = yaml.safe_load(f)
-    if not cfg_train.class_wting:
-        del cfg_dict["class_weighting"]
-    if not cfg_train.focal:
-        del cfg_dict["focal"]
-    if cfg_train.loss_type not in ("sigmoid", "mse", "huber"):
-        del cfg_dict["alpha_pos"]
-    if cfg_train.loss_type != "sigmoid":
-        del cfg_dict["dyn_posneg"]
-    if cfg_train.loss_type not in ("mse", "huber"):
-        del cfg_dict["regression"]
-    return cfg_dict
+    cfg = GenSplitConfig(**cfg_dict)
+    return cfg

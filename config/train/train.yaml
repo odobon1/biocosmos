@@ -1,9 +1,8 @@
 study_name:      dev
-# study_name:      class_imb_sig
 experiment_name: dev
-# experiment_name: mp_posneg_if-1-0_cp2
 seed:            42
-split_name:      S29-42
+# split_name:      S29-42
+split_name:      P38-42
 # split_name:      dev
 
 verbose_batch_loss: false
@@ -13,20 +12,20 @@ allow_overwrite_trial: true
 allow_diff_study:      true
 allow_diff_experiment: true
 
-model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+model_type: clip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
 non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
-loss_type:   mse  # options: {infonce1, infonce2, sigmoid, mse, huber}
-targ_type:   pairwise  # options: {pairwise, multipos, hierarchical}
-class_wting: true
-focal:       true
+loss_type:   infonce1  # options: {infonce1, infonce2, sigmoid, mse, huber}
+targ_type:   phylo  # options: {aligned, multipos, hierarchical, phylo}
+class_wting: false
+focal:       false
 
 n_epochs:    200
 chkpt_every: 1
 # batch_size:  32
 # batch_size:  512
-# batch_size:  1024
-batch_size:  2048
+batch_size:  1024
+# batch_size:  2048
 # batch_size:  4096
 # batch_size:  8192
 # batch_size:  16384

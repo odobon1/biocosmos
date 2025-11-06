@@ -238,7 +238,7 @@ class VLMWrapper(abc.ABC):
         logits = sim * self.model.regr_temp + self.model.regr_bias
         return logits
 
-    def compute_batch_loss(self, logits, class_encs_b, rank_keys_b):
+    def compute_batch_loss(self, logits, class_encs_b, rank_keys_b, sids_b):
 
         return compute_loss(
             self.targ_type, 
@@ -246,6 +246,7 @@ class VLMWrapper(abc.ABC):
             logits, 
             class_encs_b, 
             rank_keys_b, 
+            sids_b,
             self.class_wts, 
             self.class_pair_wts, 
             self.device,
@@ -266,7 +267,7 @@ class VLMWrapper(abc.ABC):
     def freeze_text_encoder(self):
         raise NotImplementedError
 
-    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b):
+    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b):
 
         # normalized embeddings
         embs_imgs = self.embed_images(imgs_b)  # ------- Tensor(B, D)
@@ -274,7 +275,7 @@ class VLMWrapper(abc.ABC):
 
         sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
         logits       = self.compute_logits(sim)
-        loss_train_b = self.compute_batch_loss(logits, class_encs_b, rank_keys_b)
+        loss_train_b = self.compute_batch_loss(logits, class_encs_b, rank_keys_b, sids_b)
 
         return loss_train_b
 

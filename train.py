@@ -512,19 +512,19 @@ class TrainPipeline:
             time_train_start = time.time()
             self.modelw.model.train()
             loss_train_total = 0.0
-            for imgs_b, class_encs_b, texts_b, rank_keys_b in tqdm(self.dataloader, desc="Train", leave=False):
+            for imgs_b, class_encs_b, texts_b, rank_keys_b, sids_b in tqdm(self.dataloader, desc="Train", leave=False):
                 imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
 
                 self.optimizer.zero_grad()
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
+                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b)
+                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b)
                     loss_train_b.backward()
                     self.optimizer.step()
 

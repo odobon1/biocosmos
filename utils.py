@@ -35,6 +35,7 @@ elif CLUSTER == "hpg":
         "hf_cache":         dpath_data / "cache/huggingface/hub",
         "group":            dpath_group,
         "root":             dpath_root,
+        "config":           dpath_root / "config",
         "metadata":         dpath_root / "metadata",
         "artifacts":        dpath_root / "artifacts",
         "nymph_imgs":       dpath_nymph / "images",

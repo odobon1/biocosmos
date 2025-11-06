@@ -4,19 +4,21 @@ rdpath_trial: null  # which trial to load from (set null for original model)
 # rdpath_trial: artifacts/dev/dev/42
 save_crit:    comp  # options: comp / img2img; model save criterion (only applicable if rdpath_trial != null)
 
-split_name: S29-42
+# split_name: S29-42
+split_name: P38-42
 
 verbose_batch_loss: false
 
-model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+model_type: clip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
 non_causal: false
 
-loss_type:   mse  # options: {infonce1, infonce2, sigmoid, mse, huber}
-targ_type:   pairwise  # options: {pairwise, multipos, hierarchical}
-class_wting: true
-focal:       true
+loss_type:   infonce1  # options: {infonce1, infonce2, sigmoid, mse, huber}
+targ_type:   phylo  # options: {aligned, multipos, hierarchical, phylo}
+class_wting: false
+focal:       false
 
-batch_size: 1024
+# batch_size: 1024
+batch_size: 4096
 text_preps_type: bioclip_sci
 
 cached_imgs: null  # options: {null, pl, pp}

@@ -145,7 +145,7 @@ class EvaluationPipeline:
         loss_total       = 0.0
         n_samples_loss   = 0  # only full batches accumulated for loss computation
         n_correct        = 0
-        for imgs_b, targ_classes_enc_b, texts_b, rank_keys_b in tqdm(self.dataloader, desc=f"Eval ({self.split_type})", leave=False):
+        for imgs_b, targ_classes_enc_b, texts_b, rank_keys_b, sids_b in tqdm(self.dataloader, desc=f"Eval ({self.split_type})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
             with torch.no_grad(), autocast(device_type=modelw.device.type):
@@ -168,7 +168,7 @@ class EvaluationPipeline:
                     embs_txts_b = modelw.embed_texts(texts_b)
                     sim_b       = embs_imgs_b @ embs_txts_b.T
                     logits_b    = modelw.compute_logits(sim_b)
-                    loss_b      = modelw.compute_batch_loss(logits_b, targ_classes_enc_b, rank_keys_b)
+                    loss_b      = modelw.compute_batch_loss(logits_b, targ_classes_enc_b, rank_keys_b, sids_b)
 
                 batch_loss = loss_b.detach().item() * B
                 loss_total += batch_loss

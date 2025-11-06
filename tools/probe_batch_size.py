@@ -34,7 +34,7 @@ def simulate_batch_train(
 
     modelw.model.zero_grad(set_to_none=True)
     with amp.autocast(device_type="cuda"):
-        loss = modelw.batch_forward(imgs, texts, labels, None)
+        loss = modelw.batch_forward(imgs, texts, labels, None, None)
 
     opt = torch.optim.SGD((p for p in modelw.model.parameters() if p.requires_grad), lr=1e-5)
     loss.backward(); opt.step()
@@ -52,7 +52,7 @@ def probe_model(
 ):
     print(f"\n=== {model_id} ===")
 
-    targ_type = "pairwise"
+    targ_type = "aligned"
 
     config_train = ConfigDummy(
         model_type   = model_id,

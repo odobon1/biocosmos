@@ -1,10 +1,11 @@
 seed:       42
-split_name: S29-42
+# split_name: S29-42
+split_name: P37-42
 # split_name: dev
 
-allow_overwrite: false  # <-- guess this doesn't matter now (verify)
+allow_overwrite: true  # <-- guess this doesn't matter now (verify) ~ bc given the same params it should generate the same exact split
 
-pct_eval:    0.29
+pct_eval:    0.37
 pct_ood_tol: 0.0001  # tolerance for how close OOD sample volume must be to target percentage; careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low is no no (0.0001 is good)
 
 nst_names: ["1-19", "20-99", "100-499", "500+"]

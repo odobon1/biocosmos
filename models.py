@@ -91,23 +91,39 @@ class VLMWrapper(abc.ABC):
         if config.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        if config.loss_type in ("mse", "huber"):
-            if hasattr(self.model, "regr_temp"):
-                raise ValueError("regr_temp already exists!")
-            if hasattr(self.model, "regr_bias"):
-                raise ValueError("regr_bias already exists!")
-            cfg_loss = config.cfg_loss
-            if cfg_loss["regression"]["temp"]:
-                self.model.regr_temp = nn.Parameter(torch.tensor(1.0))
+        cfg_logits = config.cfg_loss["logits"]
+        if cfg_logits["scale_init"] is None:
+            if not hasattr(self.model, "logit_scale"):
+                self.model.register_buffer("logit_scale", torch.tensor(0.0, device=self.device))
+        else:
+            if hasattr(self.model, "logit_scale"):
+                with torch.no_grad():
+                    self.model.logit_scale.fill_(cfg_logits["scale_init"])
             else:
-                self.model.regr_temp = 1.0
-            if cfg_loss["regression"]["bias"]:
-                self.model.regr_bias = nn.Parameter(torch.tensor(0.0))
+                self.model.register_parameter("logit_scale", nn.Parameter(torch.tensor(cfg_logits["scale_init"], device=self.device)))
+        if cfg_logits["bias_init"] is None:
+            if not hasattr(self.model, "logit_bias"):
+                self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
+        else:
+            if hasattr(self.model, "logit_bias"):
+                if isinstance(self.model.logit_bias, nn.Parameter):
+                    with torch.no_grad():
+                        self.model.logit_bias.fill_(cfg_logits["bias_init"])
+                else:
+                    delattr(self.model, "logit_bias")
+                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
             else:
-                self.model.regr_bias = 0.0
-            if config.loss_type == "huber":
-                cfg_regr        = getattr(config, "regression", SimpleNamespace())
-                self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
+                self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
+        if cfg_logits["freeze_scale"] and isinstance(self.model.logit_scale, nn.Parameter):
+            self.model.logit_scale.requires_grad_(False)
+        if cfg_logits["freeze_bias"] and isinstance(self.model.logit_bias, nn.Parameter):
+            self.model.logit_bias.requires_grad_(False)
+
+        if config.loss_type == "huber":
+            cfg_regr        = getattr(config, "regression", SimpleNamespace())
+            self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
+
+        self.sim_type = config.sim_type
 
     def set_class_wts(self, class_wts, class_pair_wts):
         self.class_wts      = class_wts.to(self.device)
@@ -129,7 +145,7 @@ class VLMWrapper(abc.ABC):
                 map_location="cpu",  # map_location = "cpu" avoids loading two copies of the entire state dict into VRAM at once
             )
         else:
-            print("Loading fresh model...")
+            print("Loading base model...")
 
         if config.model_type in CLIP_MODELS:
             modelw = CLIPWrapper(config)
@@ -218,25 +234,23 @@ class VLMWrapper(abc.ABC):
 
         return pred_classes_enc_txts, scores
 
+    def compute_sim(self, embs_img, embs_txt):
+        """
+        Whether cosine similarity or geodesic distance is used, outputs are cast to range [-1, 1]
+        for application of logit scale and bias.
+        """
+        cos_sim = embs_img @ embs_txt.T
+
+        if self.sim_type == "cos":
+            sim = cos_sim
+        elif self.sim_type == "geo":
+            geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
+            sim = (1.0 - (geo_dist / torch.pi)) * 2.0 - 1.0  # (_ / pi) to scale to range [0, 1], reverse, (_ * 2 - 1) to scale to range [-1, 1]
+
+        return sim
+
     def compute_logits(self, sim):
-        if self.loss_type in ("infonce1", "infonce2"):
-            return self.compute_logits_infonce(sim)
-        elif self.loss_type == "sigmoid":
-            return self.compute_logits_sigmoid(sim)
-        elif self.loss_type in ("mse", "huber"):
-            return self.compute_logits_regression(sim)
-
-    def compute_logits_infonce(self, sim):
-        logits = sim * self.model.logit_scale.exp()  # need to clamp this to 100? (probably need to do this yourself, see where temp param winds up for existing models)
-        return logits
-
-    def compute_logits_sigmoid(self, sim):
-        logits = sim * self.model.logit_scale.exp() + self.model.logit_bias
-        return logits
-
-    def compute_logits_regression(self, sim):
-        logits = sim * self.model.regr_temp + self.model.regr_bias
-        return logits
+        return sim * self.model.logit_scale.exp() + self.model.logit_bias
 
     def compute_batch_loss(self, logits, class_encs_b, rank_keys_b, sids_b):
 
@@ -270,10 +284,10 @@ class VLMWrapper(abc.ABC):
     def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b):
 
         # normalized embeddings
-        embs_imgs = self.embed_images(imgs_b)  # ------- Tensor(B, D)
-        embs_txts = self.embed_texts(texts_b)  # ------- Tensor(B, D)
+        embs_img_b = self.embed_images(imgs_b)  # -------------------- Tensor(B, D)
+        embs_txt_b = self.embed_texts(texts_b)  # -------------------- Tensor(B, D)
 
-        sim          = embs_imgs @ embs_txts.T  # ------------- Tensor(B, B)
+        sim          = self.compute_sim(embs_img_b, embs_txt_b)  # --- Tensor(B, B)
         logits       = self.compute_logits(sim)
         loss_train_b = self.compute_batch_loss(logits, class_encs_b, rank_keys_b, sids_b)
 

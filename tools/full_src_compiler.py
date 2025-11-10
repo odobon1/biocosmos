@@ -34,7 +34,9 @@ RFPATHS = [
     "utils_eval.py",
     "utils_imb.py",
     "utils_loss.py",
+    "utils_phylo.py",
     "utils_pp.py",
+    "utils_train.py",
     "utils.py",
 ]
 

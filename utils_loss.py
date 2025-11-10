@@ -17,7 +17,7 @@ def compute_targets(targ_type, batch_size, class_encs_b, rank_keys_b, sids_b, de
     elif targ_type == "hierarchical":
         rank_dists = compute_rank_dists(rank_keys_b)
         targs      = 1 - 0.5 * rank_dists
-    elif targ_type == "phylo":
+    elif targ_type == "phylogenetic":
         targs = phylo_vcv.get_targs_batch(sids_b)
     targs = targs.to(device)  # --- Tensor(B, B)
 
@@ -159,8 +159,7 @@ def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, sid
 
 def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, sids_b, class_pair_wts, device, cfg):
 
-    alpha_pos   = getattr(cfg.cfg_loss, "alpha_pos",  0.5)
-    dyn_posneg  = getattr(cfg.cfg_loss, "dyn_posneg", False)
+    dyn_posneg = cfg.cfg_loss.get("dyn_posneg", False)
 
     B     = logits.size(0)
     targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
@@ -178,11 +177,11 @@ def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, sids_b, c
         num_pos = torch.sum(targs).item()
         num_neg = B**2 - num_pos
         # scaling (numerical stability measure)
-        wt_neg = num_pos / (B**2 / 2)  # (equivalent to dividing by mean of num_pos and num_neg)
+        wt_neg = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
         wt_pos = num_neg / (B**2 / 2)
         posneg_wts = targs * wt_pos + (1 - targs) * wt_neg
     else:
-        posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical ~  review this
+        posneg_wts = torch.ones_like(targs)
 
     W = rw_wts * posneg_wts * foc_wts
 
@@ -198,18 +197,24 @@ def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, sids_b, c
 
 def compute_loss_regression(targ_type, loss_type, logits, class_encs_b, rank_keys_b, sids_b, class_pair_wts, device, cfg):
     cfg_regr  = cfg.cfg_loss["regression"]
-    alpha_pos = cfg.cfg_loss["alpha_pos"]
 
     B     = logits.size(0)
     targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
 
-    if cfg_regr["scale_type"] == 1:
-        if cfg_regr["temp"] or cfg_regr["bias"]:
-            logits = logits.tanh()
-        preds = (logits + 1.0) * 0.5
-        preds = preds.clamp(0.0, 1.0)
-    elif cfg_regr["scale_type"] == 2:
-        preds = logits.sigmoid()
+    # compute pop/neg balancing weights before casting targets to range [-1, 1] (discrete targs only)
+    dyn_posneg = cfg.cfg_loss.get("dyn_posneg", False)
+    if dyn_posneg:
+        num_pos = torch.sum(targs).item()
+        num_neg = B**2 - num_pos
+        # scaling (numerical stability measure)
+        wt_neg = num_pos / (B**2 / 2)  # (equivalent to dividing by mean of num_pos and num_neg)
+        wt_pos = num_neg / (B**2 / 2)
+        posneg_wts = targs * wt_pos + (1 - targs) * wt_neg
+    else:
+        posneg_wts = torch.ones_like(targs)
+
+    targs = targs * 2.0 - 1.0  # range [0, 1] --> [-1, 1]
+    preds = logits
 
     # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
     rw_wts = class_pair_wts[class_encs_b][:, class_encs_b]  # --- Tensor(B, B); "re-weighting" weights
@@ -218,8 +223,6 @@ def compute_loss_regression(targ_type, loss_type, logits, class_encs_b, rank_key
         foc_wts = focal_2d(preds, targs, cfg.cfg_loss["focal"])  # ---------- Tensor(B, B)
     else:
         foc_wts = torch.ones_like(targs)
-        
-    posneg_wts = targs * alpha_pos + (1 - targs) * (1 - alpha_pos)  # continuous i.e. compatible with hierarchical (review this)
 
     W = rw_wts * posneg_wts * foc_wts
 

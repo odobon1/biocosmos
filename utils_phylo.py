@@ -34,12 +34,12 @@ class PhyloVCV:
         self._sids:       List[str]      = sorted(list(self._sid_to_clade.keys()))
         self._sid_to_idx: Dict[str, int] = {sid: i for i, sid in enumerate(self._sids)}
 
-        vcv  = self.build_vcv_matrix()
+        vcv = self.build_vcv_matrix()
         """
         Aassuming all tips are at the same depth, all elements along the diagonal (variances) are of the same value and 
-        dividing by that value equates to the so called correlation matrix e.g. standardizing matrix values to range [0, 1]
+        dividing by that value equates to the so called correlation matrix ~ standardizing matrix values to range [0, 1]
         """
-        self.corr = vcv / vcv[0, 0]
+        self.corr = vcv / max(np.diag(vcv))
 
     def get_sids(self) -> list[str]:
         return self._sids

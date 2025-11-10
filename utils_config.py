@@ -5,6 +5,8 @@ import yaml  # type: ignore[import]
 
 from utils import compute_dataloader_workers_prefetch, load_json, paths
 
+import pdb
+
 
 @dataclass
 class TrainConfig:
@@ -22,6 +24,7 @@ class TrainConfig:
     non_causal: bool
 
     loss_type: str
+    sim_type: str
     targ_type: str
     class_wting: bool
     focal: bool
@@ -58,8 +61,10 @@ class TrainConfig:
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
         if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "huber"):
             raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, huber}}")
-        if self.targ_type not in ("aligned", "multipos", "hierarchical", "phylo"):
-            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{aligned, multipos, hierarchical, phylo}}")
+        if self.sim_type not in ("cos", "geo"):
+            raise ValueError(f"Unknown sim_type: '{self.sim_type}', must be one of {{cos, geo}}")
+        if self.targ_type not in ("aligned", "multipos", "hierarchical", "phylogenetic"):
+            raise ValueError(f"Unknown targ_type: '{self.targ_type}', must be one of {{aligned, multipos, hierarchical, phylogenetic}}")
         # if self.focal["comp_type"] not in (1, 2):
         #     raise ValueError(f"Unknown focal computation type focal['comp_type']: '{self.focal['comp_type']}', must be one of {{1, 2}}")
         if self.lr_sched_type not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
@@ -151,20 +156,28 @@ def get_config_lr_sched(lr_sched_type):
         cfg_dict = yaml.safe_load(f)
     return cfg_dict[lr_sched_type]
 
+# helper for get_config_train()
 def get_config_loss(cfg_train):
     with open(paths["config"] / "loss.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
+        cfg_loss = yaml.safe_load(f)
+
+    if cfg_train.loss_type in ("infonce1", "infonce2", "sigmoid"):
+        if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
+            print(f"\nWARNING: loss_type = '{cfg_train.loss_type}' and logit scale/bias overridden!\n")
+    elif cfg_train.loss_type in ("mse", "huber"):
+        if not (cfg_loss["logits"]["scale_init"] == 0.0 and cfg_loss["logits"]["bias_init"]  == 0.0):
+            print(f"\nWARNING: loss_type = '{cfg_train.loss_type}' and logit scale/bias not initialized to 0.0!\n")
+
     if not cfg_train.class_wting:
-        del cfg_dict["class_weighting"]
+        del cfg_loss["class_weighting"]
     if not cfg_train.focal:
-        del cfg_dict["focal"]
-    if cfg_train.loss_type not in ("sigmoid", "mse", "huber"):
-        del cfg_dict["alpha_pos"]
+        del cfg_loss["focal"]
     if cfg_train.loss_type != "sigmoid":
-        del cfg_dict["dyn_posneg"]
+        del cfg_loss["dyn_posneg"]
     if cfg_train.loss_type not in ("mse", "huber"):
-        del cfg_dict["regression"]
-    return cfg_dict
+        del cfg_loss["regression"]
+
+    return cfg_loss
 
 @dataclass
 class EvalConfig:
@@ -178,6 +191,7 @@ class EvalConfig:
     model_type: str
     
     loss_type: str
+    sim_type: str
     targ_type: str
     class_wting: bool
     focal: bool

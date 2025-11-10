@@ -59,8 +59,8 @@ class TrainConfig:
             raise ValueError("Text and image encoders are both set to frozen!")
         # if self.lr_sched_type == "plat" and self.lr_sched["args"]["valid_type"] not in ("loss", "perf"):
         #     raise ValueError("For plateau LR scheduler, valid_type must be one of: {loss, perf}")
-        if self.loss_type not in ("infonce1", "infonce2", "sigmoid", "mse", "huber"):
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, sigmoid, mse, huber}}")
+        if self.loss_type not in ("infonce1", "infonce2", "bce", "mse", "huber"):
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}', must be one of {{infonce1, infonce2, bce, mse, huber}}")
         if self.sim_type not in ("cos", "geo"):
             raise ValueError(f"Unknown sim_type: '{self.sim_type}', must be one of {{cos, geo}}")
         if self.targ_type not in ("aligned", "multipos", "hierarchical", "phylogenetic"):
@@ -99,6 +99,8 @@ class TrainConfig:
             f"",
             f"Model Type -------------- {self.model_type}",
             f"Loss Type --------------- {self.loss_type}",
+            f"Similarity Type --------- {self.sim_type}",
+            f"Targ Type --------------- {self.targ_type}",
             f"Split ------------------- {self.split_name}",
             f"",
             f"Batch Size -------------- {self.batch_size}",
@@ -161,7 +163,7 @@ def get_config_loss(cfg_train):
     with open(paths["config"] / "loss.yaml") as f:
         cfg_loss = yaml.safe_load(f)
 
-    if cfg_train.loss_type in ("infonce1", "infonce2", "sigmoid"):
+    if cfg_train.loss_type in ("infonce1", "infonce2", "bce"):
         if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
             print(f"\nWARNING: loss_type = '{cfg_train.loss_type}' and logit scale/bias overridden!\n")
     elif cfg_train.loss_type in ("mse", "huber"):
@@ -172,7 +174,7 @@ def get_config_loss(cfg_train):
         del cfg_loss["class_weighting"]
     if not cfg_train.focal:
         del cfg_loss["focal"]
-    if cfg_train.loss_type != "sigmoid":
+    if cfg_train.loss_type not in ("bce", "mse", "huber"):
         del cfg_loss["dyn_posneg"]
     if cfg_train.loss_type not in ("mse", "huber"):
         del cfg_loss["regression"]

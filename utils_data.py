@@ -8,10 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import requests  # type: ignore[import]
-from Bio import Phylo  # type: ignore[import]
-from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
-from itertools import combinations
-from typing import Dict, List
+from typing import Dict, List, Callable, Union
 
 from utils import paths, load_pickle, load_split
 
@@ -26,36 +23,23 @@ class Split:
 
 
 class ImageTextDataset(Dataset):
-    """
-    PyTorch requirements for custom Dataset:
-    - Inheritance from torch.utils.data.Dataset
-    - Implementations of:
-        - __len__(self) --> int
-        - __getitem__(self, idx) --> sample
-    - Everything else is up to you!
-    """
 
     def __init__(
             self, 
-            index_class_encs, 
-            index_rfpaths, 
-            index_sids,
-            index_pos,
-            index_sex,
+            index_data,
             text_preps,
             img_pp, 
-            cached_imgs,
-            n_workers,
+            config,
         ):
         
-        self.index_class_encs = index_class_encs
-        self.index_rfpaths    = index_rfpaths
-        self.index_sids       = index_sids
-        self.index_pos        = index_pos
-        self.index_sex        = index_sex
+        self.index_class_encs = index_data["class_encs"]
+        self.index_rfpaths    = index_data["rfpaths"]
+        self.index_sids       = index_data["sids"]
+        self.index_pos        = index_data["pos"]
+        self.index_sex        = index_data["sex"]
         self.text_preps       = text_preps
         self.img_pp           = img_pp
-        self.cached_imgs      = cached_imgs
+        self.cached_imgs      = config.cached_imgs
 
         self.n_samples = len(self.index_class_encs)
 
@@ -65,11 +49,11 @@ class ImageTextDataset(Dataset):
 
             def load_pp_img(rfpath):
                 img   = Image.open(paths["nymph_imgs"] / rfpath).convert("RGB")
-                return img if cached_imgs == "pl" else img_pp(img)
+                return img if self.cached_imgs == "pl" else img_pp(img)
 
             # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
             self.imgs_mem = []
-            with ThreadPoolExecutor(max_workers=n_workers) as exe:
+            with ThreadPoolExecutor(max_workers=config.n_workers) as exe:
                 for img in tqdm.tqdm(exe.map(load_pp_img, self.index_rfpaths), total=len(self.index_rfpaths), desc="Caching Images"):
                     self.imgs_mem.append(img)
 
@@ -88,7 +72,8 @@ class ImageTextDataset(Dataset):
         Get processed image tensor, class encoding, and generated text.
         idx --> sample (preprocessed image, class encoding, text)
 
-        This method gets called in a background thread/process to prepare batch N+1 while GPU and main process are processing batch N.
+        This method gets called in a background thread/process to prepare batch N+1 while GPU and main process are 
+        processing batch N.
 
         Args:
         - idx --- [int] --- Sample index
@@ -121,20 +106,31 @@ class ImageTextDataset(Dataset):
             img   = Image.open(paths["nymph_imgs"] / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
-        return img_t, class_enc, text, rank_keys, sid
+        # could also add pos and sex here for aux heads
+        targ_data = {
+            "class_enc": class_enc,
+            "rank_keys": rank_keys,
+            "sid":       sid,
+        }
+
+        return img_t, text, class_enc, targ_data
 
 def collate_fn(batch):
     """
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
     augmentation can be done here methinks
     """
-    imgs_b, class_encs_b, texts_b, rank_keys_b, sids_b = zip(*batch)
+    imgs_b, texts_b, class_encs_b, targ_data_b = zip(*batch)
 
-    imgs_b = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
+    imgs_b       = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
+    class_encs_b = torch.tensor(class_encs_b)  # --- Tensor(B)
 
-    return imgs_b, class_encs_b, list(texts_b), torch.Tensor(rank_keys_b), sids_b
+    return imgs_b, texts_b, class_encs_b, targ_data_b
 
 def assemble_indexes(data_index):
+    """
+    overall, this functionality needs to be moved to split gen
+    """
     index_rfpaths = data_index["rfpaths"]
     index_sids    = data_index["sids"]
     index_pos     = data_index["pos"]
@@ -149,9 +145,17 @@ def assemble_indexes(data_index):
             class_enc_new += 1
         index_class_encs.append(sid_2_class_enc[sid])
 
-    return index_class_encs, index_rfpaths, index_sids, sid_2_class_enc, index_pos, index_sex
+    index_data = {
+        "class_encs": index_class_encs,
+        "rfpaths":    index_rfpaths,
+        "sids":       index_sids,
+        "pos":        index_pos,
+        "sex":        index_sex,
+    }
 
-def spawn_indexes(split_name, split_type):
+    return index_data, sid_2_class_enc
+
+def spawn_indexes(split_name, splitset_name):
     """
 
     Args:
@@ -159,7 +163,7 @@ def spawn_indexes(split_name, split_type):
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
     split      = load_split(split_name)
-    data_index = split.data_indexes[split_type]
+    data_index = split.data_indexes[splitset_name]
 
     return assemble_indexes(data_index)
 
@@ -181,59 +185,43 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     return index_txts, index_txts_class_enc
 
 def spawn_dataloader(
-        index_class_encs,
-        index_rfpaths,
-        index_sids,
-        index_pos,
-        index_sex,
-        text_preps,
-        batch_size,
-        shuffle,
-        drop_last,
-        img_pp,
-        cached_imgs,
-        n_workers,
-        prefetch_factor,
+        index_data:      Dict[str, List[Union[int, str]]],
+        text_preps:      List[List[str]],
+        config,
+        shuffle:         bool,
+        drop_last:       bool,
+        img_pp:          Callable,
     ):
     """
 
     Args:
-    - index_class_encs ------ [list(int)] --------- Class encodings (data index)
-    - index_rfpaths --------- [list(int)] --------- Relative filepaths to images (data index)
-    - index_sids ------------ [list(str)] --------- Species Identifiers (data index)
-    - index_pos ------------- [list(str)] --------- 
-    - index_sex ------------- [list(str)] --------- 
-    - text_preps ------------ [list(list(str))] --- List of text prepending selections that are randomly picked from to assemble train texts
-    - batch_size ------------ [int] --------------- Batch size
-    - shuffle --------------- [bool] -------------- Whether to shuffle samples between cycles
-    - drop_last ------------- [bool] -------------- Whether to drop partial batch at the end of epoch (only need this arg for train)
-    - img_pp ---------------- [callable] ---------- The image preprocessor
-    - cached_imgs ----------- [bool] -------------- Whether to cache images in memory
-    - n_workers ------------- [int] --------------- Parallelism
-    - prefetch_factor ------- [int] --------------- How many batches each worker will load in advance;
-                                                    Higher prefetch_factor increases throughput, higher RAM cost;
-                                                    Only takes effect when n_workers > 0
+    - index_data -------- Data indexes: Class encodings, relative filepaths to images, species ID's, position data, sex
+                          data (note: cleanup on aisle 5 needed with the assembly of class_encs at runtime, should be 
+                          in split gen)
+    - text_preps -------- List of text prepending selections that are randomly picked from to assemble train texts
+    - config ------------ contains 1. batch_size (int), 2. cached_imgs (bool) ~ whether to cache images in memory, 
+                          3. n_workers (int) ~ Parallelism, 4. prefetch_factor (int) ~ How many batches each worker 
+                          will load in advance; Higher prefetch_factor increases throughput, higher RAM cost; Only 
+                          takes effect when n_workers > 0
+    - shuffle ----------- Whether to shuffle samples between cycles
+    - drop_last --------- Whether to drop partial batch at the end of epoch (only need this arg for train)
+    - img_pp ------------ The image preprocessor          
     """
 
     dataset = ImageTextDataset(
-        index_class_encs,
-        index_rfpaths,
-        index_sids,
-        index_pos,
-        index_sex,
+        index_data,
         text_preps,
         img_pp,
-        cached_imgs,
-        n_workers,
+        config,
     )
 
     dataloader = DataLoader(
         dataset,
-        batch_size        =batch_size,
+        batch_size        =config.batch_size,
         shuffle           =shuffle,
-        num_workers       =n_workers,
+        num_workers       =config.n_workers,
         pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
-        prefetch_factor   =prefetch_factor,
+        prefetch_factor   =config.prefetch_factor,
         collate_fn        =collate_fn,
         drop_last         =drop_last,
         persistent_workers=True,

@@ -11,8 +11,8 @@ class_weighting:
   cp_type:  1  # options: {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
 
 focal:
-  gamma:     2.0  # [0, inf); down-weights easy samples, larger gamma --> stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid; FL reduces to CE when gamma = 0
-  comp_type: 1  # options: {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1
+  gamma:     2.0  # [0, inf); down-weights easy samples, larger gamma --> stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE when gamma = 0
+  comp_type: 1  # options: {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
 
 # only relevant for BCE (and maybe regression)
 dyn_posneg: true  # dynamic reweighting of pos/neg; intended for use with multi-pos, also convenient for aligned, not compatible with hierarchical

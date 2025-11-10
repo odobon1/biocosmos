@@ -15,9 +15,9 @@ allow_diff_experiment: true
 model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
 non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
-loss_type:   sigmoid  # options: {infonce1, infonce2, sigmoid, mse, huber}
+loss_type:   bce  # options: {infonce1, infonce2, bce, mse, huber}
 sim_type:    cos  # options: {cos, geo}
-targ_type:   multipos  # options: {aligned, multipos, hierarchical, phylogenetic}
+targ_type:   phylogenetic  # options: {aligned, multipos, hierarchical, phylogenetic}
 class_wting: false
 focal:       false
 

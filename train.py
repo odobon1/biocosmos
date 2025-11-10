@@ -187,38 +187,23 @@ class TrainPipeline:
         self.save_metadata_study()
         self.save_metadata_experiment()
 
-        index_class_encs, index_rfpaths, index_sids, _, index_pos, index_sex = spawn_indexes(
-            split_name=self.cfg.split_name,
-            split_type="train",
+        index_data, _ = spawn_indexes(
+            split_name   =self.cfg.split_name,
+            splitset_name="train",
         )
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
         self.dataloader, time_cache_train = spawn_dataloader(
-            index_class_encs=index_class_encs,
-            index_rfpaths   =index_rfpaths,
-            index_sids      =index_sids,
-            index_pos       =index_pos,
-            index_sex       =index_sex,
-            text_preps      =text_preps_train,
-            batch_size      =self.cfg.batch_size,
-            shuffle         =True,
-            drop_last       =self.cfg.drop_partial_batch_train,
-            img_pp          =self.modelw.img_pp_train,
-            cached_imgs     =self.cfg.cached_imgs,
-            n_workers       =self.cfg.n_workers,
-            prefetch_factor =self.cfg.prefetch_factor,
+            index_data=index_data,
+            text_preps=text_preps_train,
+            config    =self.cfg,
+            shuffle   =True,
+            drop_last =self.cfg.drop_partial_batch_train,
+            img_pp    =self.modelw.img_pp_train,
         )
 
         text_preps_val = get_text_preps(self.cfg.text_preps_type_val)
-        self.val_pipe  = ValidationPipeline(
-            split_name     =self.cfg.split_name,
-            text_preps     =text_preps_val,
-            batch_size     =self.cfg.batch_size,
-            img_pp         =self.modelw.img_pp_val,
-            cached_imgs    =self.cfg.cached_imgs,
-            n_workers      =self.cfg.n_workers,
-            prefetch_factor=self.cfg.prefetch_factor,
-        )
+        self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
 
         self.set_time_cache(time_cache_train)
         self.save_metadata_trial()
@@ -391,19 +376,20 @@ class TrainPipeline:
             time_train_start = time.time()
             self.modelw.model.train()
             loss_train_total = 0.0
-            for imgs_b, class_encs_b, texts_b, rank_keys_b, sids_b in tqdm(self.dataloader, desc="Train", leave=False):
-                imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
+            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False):
+                imgs_b       = imgs_b.to(self.cfg.device, non_blocking=True)
+                class_encs_b = class_encs_b.to(self.cfg.device)
 
                 self.optimizer.zero_grad()
 
                 if self.cfg.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b)
+                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, targ_data_b)
                     self.scaler.scale(loss_train_b).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b)
+                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, targ_data_b)
                     loss_train_b.backward()
                     self.optimizer.step()
 

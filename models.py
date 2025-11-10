@@ -8,6 +8,7 @@ import torch.nn.functional as F  # type: ignore[import]
 import open_clip  # type: ignore[import]
 import abc
 from types import SimpleNamespace
+from typing import List
 
 from utils import paths
 from utils_loss import compute_loss
@@ -92,27 +93,30 @@ class VLMWrapper(abc.ABC):
             self.model.set_grad_checkpointing(True)
 
         cfg_logits = config.cfg_loss["logits"]
-        if cfg_logits["scale_init"] is None:
-            if not hasattr(self.model, "logit_scale"):
+        if cfg_logits["scale_init"] is None:  # (scale_init: null) in config
+            if not hasattr(self.model, "logit_scale"):  # logit_scale attribute DNE
                 self.model.register_buffer("logit_scale", torch.tensor(0.0, device=self.device))
-        else:
-            if hasattr(self.model, "logit_scale"):
+        else:  # scale_init set in config
+            if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                 with torch.no_grad():
                     self.model.logit_scale.fill_(cfg_logits["scale_init"])
-            else:
+            else:  # logit_scale attribute DNE
                 self.model.register_parameter("logit_scale", nn.Parameter(torch.tensor(cfg_logits["scale_init"], device=self.device)))
-        if cfg_logits["bias_init"] is None:
-            if not hasattr(self.model, "logit_bias"):
+        if cfg_logits["bias_init"] is None:  # (bias_init: null) in config
+            if not hasattr(self.model, "logit_bias"):  # logit_bias attribute DNE
                 self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
-        else:
-            if hasattr(self.model, "logit_bias"):
-                if isinstance(self.model.logit_bias, nn.Parameter):
+            elif self.model.logit_bias is None:  # logit bias attribute exists and is None (CLIP default)
+                delattr(self.model, "logit_bias")
+                self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
+        else:  # bias_init set in config
+            if hasattr(self.model, "logit_bias"):  # logit_bias attribute exists
+                if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
                     with torch.no_grad():
                         self.model.logit_bias.fill_(cfg_logits["bias_init"])
-                else:
+                else:  # logit_bias attribute is not a nn.Parameter
                     delattr(self.model, "logit_bias")
                     self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
-            else:
+            else:  # logit_bias attribute DNE
                 self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
         if cfg_logits["freeze_scale"] and isinstance(self.model.logit_scale, nn.Parameter):
             self.model.logit_scale.requires_grad_(False)
@@ -196,15 +200,15 @@ class VLMWrapper(abc.ABC):
 
         return embs_imgs_b
 
-    def embed_texts(self, txts):
+    def embed_texts(self, txts: List[str]) -> torch.Tensor:
         """
         Runs texts through text encoder and returns unit-length embeddings.
 
         Args:
-        - txts --- [np.array(str)] --- Array of texts of length L
+        - txts --- List of texts of length L
 
         Returns:
-        - [Tensor(L, D)] ------------- Text embeddings
+        - Text embeddings; Tensor(L, D)
         """
 
         tokens_txts = self.txt_pp(txts)  # ------------- Tensor(L, T) ~ L for num. classes, T for num. tokens i.e. context length
@@ -245,26 +249,39 @@ class VLMWrapper(abc.ABC):
             sim = cos_sim
         elif self.sim_type == "geo":
             geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
-            sim = (1.0 - (geo_dist / torch.pi)) * 2.0 - 1.0  # (_ / pi) to scale to range [0, 1], reverse, (_ * 2 - 1) to scale to range [-1, 1]
+            sim      = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
 
         return sim
+
+
+    # def compute_sim(self, embs_img, embs_txt):
+
+    #     cos_sim = embs_img @ embs_txt.T
+
+    #     if self.sim_type == "cos":
+    #         sim = cos_sim
+    #     elif self.sim_type == "geo":
+    #         eps      = 1e-6  # keeps gradient finite near +/-1, gradients can explode near +/-1 with this implementation (NaN city)
+    #         cos_sim  = torch.clamp(cos_sim, -1.0 + eps, 1.0 - eps)
+    #         geo_dist = torch.acos(cos_sim)  # geodesic distance on range [0, pi]
+    #         sim      = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
+
+    #     return sim
+
 
     def compute_logits(self, sim):
         return sim * self.model.logit_scale.exp() + self.model.logit_bias
 
-    def compute_batch_loss(self, logits, class_encs_b, rank_keys_b, sids_b):
+    def compute_batch_loss(self, logits, class_encs_b, targ_data_b):
 
         return compute_loss(
-            self.targ_type, 
-            self.loss_type, 
+            self.cfg,
             logits, 
-            class_encs_b, 
-            rank_keys_b, 
-            sids_b,
+            class_encs_b,
+            targ_data_b,
             self.class_wts, 
             self.class_pair_wts, 
             self.device,
-            self.cfg,
         )
 
     def freeze(self, freeze_txt, freeze_img):
@@ -281,7 +298,7 @@ class VLMWrapper(abc.ABC):
     def freeze_text_encoder(self):
         raise NotImplementedError
 
-    def batch_forward(self, imgs_b, texts_b, class_encs_b, rank_keys_b, sids_b):
+    def batch_forward(self, imgs_b, texts_b, class_encs_b, targ_data_b):
 
         # normalized embeddings
         embs_img_b = self.embed_images(imgs_b)  # -------------------- Tensor(B, D)
@@ -289,7 +306,7 @@ class VLMWrapper(abc.ABC):
 
         sim          = self.compute_sim(embs_img_b, embs_txt_b)  # --- Tensor(B, B)
         logits       = self.compute_logits(sim)
-        loss_train_b = self.compute_batch_loss(logits, class_encs_b, rank_keys_b, sids_b)
+        loss_train_b = self.compute_batch_loss(logits, class_encs_b, targ_data_b)
 
         return loss_train_b
 

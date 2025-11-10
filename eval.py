@@ -17,15 +17,7 @@ def main():
     modelw.set_targ_type(config_eval.targ_type)
 
     text_preps = get_text_preps(config_eval.text_preps_type)
-    val_pipe   = ValidationPipeline(
-        split_name     =config_eval.split_name,
-        text_preps     =text_preps,
-        batch_size     =config_eval.batch_size,
-        img_pp         =modelw.img_pp_val,
-        cached_imgs    =config_eval.cached_imgs,
-        n_workers      =config_eval.n_workers,
-        prefetch_factor=config_eval.prefetch_factor,
-    )
+    val_pipe   = ValidationPipeline(config_eval, text_preps, modelw.img_pp_val)
 
     val_pipe.run_validation(modelw, verbose_batch_loss=config_eval.verbose_batch_loss)
 

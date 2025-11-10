@@ -1,17 +1,20 @@
-import torch
+import torch  # type: ignore[import]
+from typing import List
 
 
-def compute_rank_dists(tax_vecs_b):
+def compute_rank_dists(targ_data_b: List[List]):
     """
     Computes rank distance between every pair of taxonomy-encoding vectors (e.g. same species = 0, same genus = 1, etc.)
 
     Args:
-    - tax_vecs_b --- [Tensor(B, R)] --- Batch of taxonomy-encoding vectors (R = tree depth considered)
+    - tax_vecs_b ------- (B, R) batch of taxonomy-encoding vectors (R = tree depth considered)
 
     Returns:
-    - [Tensor(B, B)] ------------------ Tensor where entry (i, j) represents the rank at which vectors i and j differ
+    - [Tensor(B, B)] --- Tensor where entry (i, j) represents the rank at which vectors i and j differ
     """
-    B, R = tax_vecs_b.shape
+    tax_vecs_b = torch.tensor([td["rank_keys"] for td in targ_data_b])
+
+    R = tax_vecs_b.size(1)  # number of ranks
     
     # expand dimensions to compare every pair (i, j)
     x1 = tax_vecs_b.unsqueeze(1)  # ----------------- Tensor(B, 1, R)
@@ -35,7 +38,7 @@ def compute_rank_dists(tax_vecs_b):
 
     return rank_dists
 
-def compute_rank_dists_chunked(tax_vecs_b, chunk_size=1024):
+def compute_rank_dists_chunked(targ_data_b, chunk_size=1024):
     """
     Memory-efficient version to compute rank distance in chunks.
     Sacrifices a bit of speed for scalability (e.g. batch size = 32k)
@@ -44,6 +47,8 @@ def compute_rank_dists_chunked(tax_vecs_b, chunk_size=1024):
     This can easily be adapted for parallelization across multiple workers or devices
     Maybe could modify such that computations aren't all duplicated i.e. only need to compute the upper or lower triangle bc rank_dists matrix is symmetric
     """
+    tax_vecs_b = torch.tensor([td["rank_keys"] for td in targ_data_b])
+
     B, R = tax_vecs_b.shape
     rank_dists = torch.empty((B, B), dtype=torch.int16, device=tax_vecs_b.device)
 

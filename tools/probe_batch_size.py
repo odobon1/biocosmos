@@ -103,7 +103,7 @@ def main():
     models_infonce = list(CLIP_MODELS.keys()) + list(VITAMIN_MODELS.keys())
 
     for model_id in models_bce:
-        probe_model(model_id, device, sizes, "sigmoid")
+        probe_model(model_id, device, sizes, "bce")
     for model_id in models_infonce:
         probe_model(model_id, device, sizes, "infonce1")
 

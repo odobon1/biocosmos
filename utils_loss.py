@@ -9,96 +9,89 @@ import pdb
 
 phylo_vcv = PhyloVCV()
 
-def compute_targets(targ_type, batch_size, class_encs_b, rank_keys_b, sids_b, device):
+def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
     if targ_type == "aligned":
         targs = torch.eye(batch_size)
     elif targ_type == "multipos":
         targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
     elif targ_type == "hierarchical":
-        rank_dists = compute_rank_dists(rank_keys_b)
+        rank_dists = compute_rank_dists(targ_data_b)
         targs      = 1 - 0.5 * rank_dists
     elif targ_type == "phylogenetic":
-        targs = phylo_vcv.get_targs_batch(sids_b)
+        targs = phylo_vcv.get_targs_batch(targ_data_b)
     targs = targs.to(device)  # --- Tensor(B, B)
 
     return targs
 
-def compute_loss(targ_type, loss_type, logits, class_encs_b, rank_keys_b, sids_b, class_wts, class_pair_wts, device, cfg):
-    class_encs_b = torch.tensor(class_encs_b).to(device)
-    if loss_type == "infonce1":
+def compute_loss(config, logits, class_encs_b, targ_data_b, class_wts, class_pair_wts, device):
+    # class_encs_b = torch.tensor(class_encs_b).to(device)
+    if config.loss_type == "infonce1":
         loss = compute_loss_infonce(
-            targ_type, 
+            config, 
             logits, 
-            class_encs_b, 
-            rank_keys_b, 
-            sids_b,
+            class_encs_b,
+            targ_data_b,
             class_wts, 
             device,
-            cfg,
         )
         return loss
-    if loss_type == "infonce2":
+    if config.loss_type == "infonce2":
         loss = compute_loss_infonce_2Dwtd(
-            targ_type, 
+            config, 
             logits, 
-            class_encs_b, 
-            rank_keys_b, 
-            sids_b,
+            class_encs_b,
+            targ_data_b,
             class_pair_wts, 
             device,
-            cfg,
         )
         return loss
-    elif loss_type == "sigmoid":
-        loss = compute_loss_sigmoid(
-            targ_type, 
+    elif config.loss_type == "bce":
+        loss = compute_loss_bce(
+            config, 
             logits, 
-            class_encs_b, 
-            rank_keys_b, 
-            sids_b,
+            class_encs_b,
+            targ_data_b,
             class_pair_wts, 
             device,
-            cfg,
         )
         return loss
-    elif loss_type in ("mse", "huber"):
+    elif config.loss_type in ("mse", "huber"):
         loss = compute_loss_regression(
-            targ_type, 
-            loss_type, 
+            config, 
             logits, 
-            class_encs_b, 
-            rank_keys_b, 
-            sids_b,
+            class_encs_b,
+            targ_data_b,
             class_pair_wts, 
             device,
-            cfg,
         )
         return loss
 
-def compute_loss_infonce(targ_type, logits, class_encs_b, rank_keys_b, sids_b, class_wts, device, cfg):
+def compute_loss_infonce(config, logits, class_encs_b, targ_data_b, class_wts, device):
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
     B     = logits.size(0)
-    targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
+    targs = compute_targets(config.targ_type, B, class_encs_b, targ_data_b, device)
     targs = targs / targs.sum(dim=1, keepdim=True)
 
+    class_encs_b = []
+    class_encs_b = torch.tensor(class_encs_b).to(device)
     rw_wts = class_wts[class_encs_b]  # "re-weighting" weights
 
     loss_i2t_b = F.cross_entropy(logits,   targs,   reduction="none")  # --- Tensor(B)
     loss_t2i_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # --- Tensor(B)
 
-    if cfg.focal:
+    if config.focal:
         """
         p_t = exp(-CE)
         focal factor: (1 - p_t)^gamma
         expm1 has better precision when p_t ~ 1 (CE ~ 0)
         expm1(x) = e^x - 1
 
-        AX THIS STYLE
+        think this may be the variant we want to study this variant actually (the numerically stable form) ~ check DL materials
         only supports 0/1 targets
         """
-        gamma   = cfg.cfg_loss["focal"]["gamma"]
+        gamma   = config.cfg_loss["focal"]["gamma"]
         foc_i2t = (-torch.expm1(-loss_i2t_b)).clamp_min(1e-12).pow(gamma)
         foc_t2i = (-torch.expm1(-loss_t2i_b)).clamp_min(1e-12).pow(gamma)
 
@@ -117,12 +110,12 @@ def compute_loss_infonce(targ_type, logits, class_encs_b, rank_keys_b, sids_b, c
 
     return loss_batch
 
-def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, sids_b, class_pair_wts, device, cfg):
+def compute_loss_infonce_2Dwtd(config, logits, class_encs_b, targ_data_b, class_pair_wts, device):
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
     B     = logits.size(0)
-    targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
+    targs = compute_targets(config.targ_type, B, class_encs_b, targ_data_b, device)
     targs = targs / targs.sum(dim=1, keepdim=True)
 
     rw_wts = class_pair_wts[class_encs_b][:, class_encs_b]  # --- Tensor(B, B); "re-weighting" weights
@@ -133,13 +126,13 @@ def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, sid
     loss_i2t = -(targs * log_p_i2t)
     loss_t2i = -(targs.T * log_p_t2i)
 
-    if cfg.focal:
+    if config.focal:
 
         preds_i2t = log_p_i2t.exp()
         preds_t2i = log_p_t2i.exp()
 
-        foc_i2t = focal_2d(preds_i2t, targs, cfg.cfg_loss["focal"])
-        foc_t2i = focal_2d(preds_t2i, targs.T, cfg.cfg_loss["focal"])
+        foc_i2t = focal_2d(preds_i2t, targs,   config.cfg_loss["focal"])
+        foc_t2i = focal_2d(preds_t2i, targs.T, config.cfg_loss["focal"])
 
         w_i2t = foc_i2t * rw_wts
         w_t2i = foc_t2i * rw_wts
@@ -157,19 +150,19 @@ def compute_loss_infonce_2Dwtd(targ_type, logits, class_encs_b, rank_keys_b, sid
 
     return loss_batch
 
-def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, sids_b, class_pair_wts, device, cfg):
+def compute_loss_bce(config, logits, class_encs_b, targ_data_b, class_pair_wts, device):
 
-    dyn_posneg = cfg.cfg_loss.get("dyn_posneg", False)
+    dyn_posneg = config.cfg_loss.get("dyn_posneg", False)
 
     B     = logits.size(0)
-    targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
+    targs = compute_targets(config.targ_type, B, class_encs_b, targ_data_b, device)
 
     # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
     rw_wts = class_pair_wts[class_encs_b][:, class_encs_b]  # ----------------------------- Tensor(B, B); "re-weighting" weights
 
-    if cfg.focal:
+    if config.focal:
         preds   = torch.sigmoid(logits)
-        foc_wts = focal_2d(preds, targs, cfg.cfg_loss["focal"])  # ------------------------------------ Tensor(B, B)
+        foc_wts = focal_2d(preds, targs, config.cfg_loss["focal"])  # ------------------------------------ Tensor(B, B)
     else:
         foc_wts = torch.ones_like(targs)
 
@@ -195,14 +188,14 @@ def compute_loss_sigmoid(targ_type, logits, class_encs_b, rank_keys_b, sids_b, c
 
     return loss_batch
 
-def compute_loss_regression(targ_type, loss_type, logits, class_encs_b, rank_keys_b, sids_b, class_pair_wts, device, cfg):
-    cfg_regr  = cfg.cfg_loss["regression"]
+def compute_loss_regression(config, logits, class_encs_b, targ_data_b, class_pair_wts, device):
+    cfg_regr  = config.cfg_loss["regression"]
 
     B     = logits.size(0)
-    targs = compute_targets(targ_type, B, class_encs_b, rank_keys_b, sids_b, device)
+    targs = compute_targets(config.targ_type, B, class_encs_b, targ_data_b, device)
 
     # compute pop/neg balancing weights before casting targets to range [-1, 1] (discrete targs only)
-    dyn_posneg = cfg.cfg_loss.get("dyn_posneg", False)
+    dyn_posneg = config.cfg_loss.get("dyn_posneg", False)
     if dyn_posneg:
         num_pos = torch.sum(targs).item()
         num_neg = B**2 - num_pos
@@ -219,16 +212,16 @@ def compute_loss_regression(targ_type, loss_type, logits, class_encs_b, rank_key
     # batch class-pair weight matrix; advanced indexing used to extract submatrix as per class_enc indices (row/col selection)
     rw_wts = class_pair_wts[class_encs_b][:, class_encs_b]  # --- Tensor(B, B); "re-weighting" weights
 
-    if cfg.focal:
-        foc_wts = focal_2d(preds, targs, cfg.cfg_loss["focal"])  # ---------- Tensor(B, B)
+    if config.focal:
+        foc_wts = focal_2d(preds, targs, config.cfg_loss["focal"])  # ---------- Tensor(B, B)
     else:
         foc_wts = torch.ones_like(targs)
 
     W = rw_wts * posneg_wts * foc_wts
 
-    if loss_type == "mse":
+    if config.loss_type == "mse":
         loss_raw = F.mse_loss(preds, targs, reduction="none")
-    elif loss_type == "huber":
+    elif config.loss_type == "huber":
         loss_raw = F.smooth_l1_loss(preds, targs, beta=cfg_regr["huber_beta"], reduction="none")
 
     loss_batch = (W * loss_raw).sum() / W.detach().sum().clamp_min(1e-12)  # weighted mean loss

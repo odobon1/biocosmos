@@ -81,7 +81,8 @@ class PhyloVCV:
         j = self._sid_to_idx[sid_b]
         return float(np.clip(self.corr[i, j], 0.0, 1.0))
 
-    def get_targs_batch(self, sids_b) -> torch.Tensor:
+    def get_targs_batch(self, targ_data_b) -> torch.Tensor:
+        sids_b = [td["sid"] for td in targ_data_b]
         idxs_b = [self._sid_to_idx[s] for s in sids_b]
         targs  = self.corr[np.ix_(idxs_b, idxs_b)]
         return torch.from_numpy(targs).float()

@@ -8,15 +8,20 @@ from utils_data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
 import pdb
 
 
-def compute_map_img2img(embs_imgs, classes_enc_imgs):
+def compute_map_img2img(
+    embs_imgs:     torch.Tensor,  # ----------------- Tensor(Q, D)
+    class_encs:    torch.Tensor,  # ----------------- Tensor(Q)
+    embs_imgs_inv: torch.Tensor | None = None,  # --- Tensor(Q, D)
+) -> float:
     """
     Vectorized mAP for evaluating image-to-image retrieval.
     Each image is queried against all others.
     Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
 
     Args:
-    - embs_imgs ---------- [Tensor(Q, D)] --- Image embeddings
-    - classes_enc_imgs --- [Tensor(Q)] ------ Image class encodings (corresponding to image embeddings; 1D tensor of integers)
+    - embs_imgs ------- Image embeddings
+    - class_encs ------ Image class encodings (corresponding to image embeddings; 1D tensor of integers)
+    - embs_imgs_inv --- Image embeddings inverted into text space (OTI)
 
     Returns:
     - [float] ------------------------------- Mean Average Precision (mAP) over all image queries
@@ -26,7 +31,10 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
     N = Q - 1  # num. candidate-samples
     
     # full similarity matrix
-    sim = embs_imgs @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, Q)
+    if embs_imgs_inv is None:
+        sim = embs_imgs @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, Q)
+    else:
+        sim = embs_imgs @ embs_imgs_inv.t()
     # mask self-similarity
     diag_idx                = torch.arange(Q, device=embs_imgs.device)
     sim[diag_idx, diag_idx] = float('-inf')
@@ -35,7 +43,7 @@ def compute_map_img2img(embs_imgs, classes_enc_imgs):
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
 
     # positives mask / boolean relevance mask (True wherever the query-image class matches the candidate-image class)
-    pos_mask = classes_enc_imgs.unsqueeze(1) == classes_enc_imgs[idxs]  # ------------------- Tensor(Q, N)
+    pos_mask = class_encs.unsqueeze(1) == class_encs[idxs]  # ------------------------------- Tensor(Q, N)
     
     ranks    = torch.arange(1, N+1, device=embs_imgs.device)  # ----------------------------- Tensor(N)
     cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision @ each rank --- Tensor(Q, N)
@@ -87,28 +95,25 @@ def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, class
 
     return map_score
 
-class EvaluationPipeline:
+class SplitSetEvalPipeline:
 
     def __init__(
             self, 
-            split_type, 
-            split_name, 
+            splitset_name, 
+            config, 
             text_preps,
             img_pp,
-            cached_imgs,
-            batch_size,
-            n_workers,
-            prefetch_factor,
         ):
 
-        assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), "text_preps: each inner list must contain exactly one element for eval"
+        assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), \
+               "text_preps: each inner list must contain exactly one element for eval"
 
-        self.split_type = split_type
-        self.batch_size = batch_size
+        self.splitset_name = splitset_name
+        self.batch_size    = config.batch_size
 
-        index_class_encs, index_rfpaths, index_sids, sid_2_class_enc, index_pos, index_sex = spawn_indexes(
-            split_name=split_name,
-            split_type=split_type,
+        index_data, sid_2_class_enc = spawn_indexes(
+            split_name   =config.split_name,
+            splitset_name=splitset_name,
         )
         self.index_txts, self.index_txts_class_enc = spawn_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,
@@ -116,19 +121,12 @@ class EvaluationPipeline:
         )
 
         self.dataloader, self.time_cache = spawn_dataloader(
-            index_class_encs=index_class_encs,
-            index_rfpaths   =index_rfpaths,
-            index_sids      =index_sids,
-            index_pos       =index_pos,
-            index_sex       =index_sex,
-            text_preps      =text_preps,
-            batch_size      =batch_size,
-            shuffle         =False,
-            drop_last       =False,
-            img_pp          =img_pp,
-            cached_imgs     =cached_imgs,
-            n_workers       =n_workers,
-            prefetch_factor =prefetch_factor,
+            index_data=index_data,
+            text_preps=text_preps,
+            config    =config,
+            shuffle   =False,
+            drop_last =False,
+            img_pp    =img_pp,
         )
 
     def evaluate_split(self, modelw, verbose_batch_loss=False):
@@ -140,12 +138,12 @@ class EvaluationPipeline:
         with torch.no_grad(), autocast(device_type=modelw.device.type):
             embs_txts_all = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
 
-        embs_imgs        = []
-        classes_enc_imgs = []
-        loss_total       = 0.0
-        n_samples_loss   = 0  # only full batches accumulated for loss computation
-        n_correct        = 0
-        for imgs_b, targ_classes_enc_b, texts_b, rank_keys_b, sids_b in tqdm(self.dataloader, desc=f"Eval ({self.split_type})", leave=False):
+        embs_imgs      = []
+        class_encs     = []
+        loss_total     = 0.0
+        n_samples_loss = 0  # only full batches accumulated for loss computation
+        n_correct      = 0
+        for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc=f"Eval ({self.splitset_name})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
             with torch.no_grad(), autocast(device_type=modelw.device.type):
@@ -153,14 +151,14 @@ class EvaluationPipeline:
                 B           = imgs_b.size(0)
 
             embs_imgs.append(embs_imgs_b.cpu())
-            classes_enc_imgs.append(torch.tensor(targ_classes_enc_b, dtype=torch.long))
+            class_encs.append(class_encs_b)
 
             """
             maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
             """
             pred_classes_enc_txts_b, _ = modelw.img2txt_classify(embs_imgs_b, embs_txts_all, self.index_txts_class_enc)
 
-            n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, targ_classes_enc_b))
+            n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, class_encs_b))
             n_correct += n_correct_b
 
             if B == self.batch_size:  # only compute loss for full batches
@@ -168,7 +166,7 @@ class EvaluationPipeline:
                     embs_txts_b = modelw.embed_texts(texts_b)
                     sim_b       = embs_imgs_b @ embs_txts_b.T
                     logits_b    = modelw.compute_logits(sim_b)
-                    loss_b      = modelw.compute_batch_loss(logits_b, targ_classes_enc_b, rank_keys_b, sids_b)
+                    loss_b      = modelw.compute_batch_loss(logits_b, class_encs_b, targ_data_b)
 
                 batch_loss = loss_b.detach().item() * B
                 loss_total += batch_loss
@@ -177,8 +175,8 @@ class EvaluationPipeline:
                     print(f"Batch Loss: {batch_loss:.4f}")
 
         # prepare image embedding and class encoding tensors for mAP computation
-        embs_imgs        = torch.cat(embs_imgs, dim=0)  # ---------- Tensor(Q, D)
-        classes_enc_imgs = torch.cat(classes_enc_imgs, dim=0)  # --- Tensor(Q)
+        embs_imgs  = torch.cat(embs_imgs, dim=0)  # ---- Tensor(Q, D)
+        class_encs = torch.cat(class_encs, dim=0)  # --- Tensor(Q)
 
         # img2txt precision@1 computation
         n_samps                      = len(self.dataloader.dataset)
@@ -188,7 +186,7 @@ class EvaluationPipeline:
         # img2txt mAP computation
         map_img2txt = compute_map_cross_modal(
             embs_imgs, 
-            classes_enc_imgs, 
+            class_encs, 
             embs_txts_all.cpu(), 
             torch.tensor(self.index_txts_class_enc),
         )
@@ -197,7 +195,7 @@ class EvaluationPipeline:
         # img2img mAP computation
         map_img2img = compute_map_img2img(
             embs_imgs, 
-            classes_enc_imgs,
+            class_encs,
         )
         eval_scores["img2img_map"] = map_img2img
 
@@ -206,7 +204,7 @@ class EvaluationPipeline:
             embs_txts_all.cpu(), 
             torch.tensor(self.index_txts_class_enc), 
             embs_imgs, 
-            classes_enc_imgs,
+            class_encs,
         )
         eval_scores["txt2img_map"] = map_txt2img
 
@@ -224,13 +222,9 @@ class ValidationPipeline:
 
     def __init__(
             self,
-            split_name,
+            config,
             text_preps,
-            batch_size,
             img_pp,
-            cached_imgs,
-            n_workers,
-            prefetch_factor,
             header_tag=None,
         ):
 
@@ -239,26 +233,18 @@ class ValidationPipeline:
         self.best_comp_map    = None
         self.best_img2img_map = None
 
-        self.val_pipe_id = EvaluationPipeline(
-            split_type     ="id_val",
-            split_name     =split_name,
-            text_preps     =text_preps,
-            img_pp         =img_pp,
-            cached_imgs    =cached_imgs,
-            batch_size     =batch_size,
-            n_workers      =n_workers,
-            prefetch_factor=prefetch_factor,
+        self.val_pipe_id = SplitSetEvalPipeline(
+            splitset_name="id_val",
+            config       =config,
+            text_preps   =text_preps,
+            img_pp       =img_pp,
         )
 
-        self.val_pipe_ood = EvaluationPipeline(
-            split_type     ="ood_val",
-            split_name     =split_name,
-            text_preps     =text_preps,
-            img_pp         =img_pp,
-            cached_imgs    =cached_imgs,
-            batch_size     =batch_size,
-            n_workers      =n_workers,
-            prefetch_factor=prefetch_factor,
+        self.val_pipe_ood = SplitSetEvalPipeline(
+            splitset_name="ood_val",
+            config       =config,
+            text_preps   =text_preps,
+            img_pp       =img_pp,
         )
 
         self.set_time_cache()

@@ -3,7 +3,7 @@ exp:
   args:
     lr_min: 1.0e-8
   args_sched:
-    gamma: 0.985  # decay rate
+    gamma: 0.98  # decay rate
 
 # Plateau LR Scheduler
 plat:  # may also want to tweak threshold / eps

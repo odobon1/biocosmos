@@ -11,7 +11,7 @@ verbose_batch_loss: false
 model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
 non_causal: false
 
-loss_type:   sigmoid  # options: {infonce1, infonce2, sigmoid, mse, huber}
+loss_type:   bce  # options: {infonce1, infonce2, bce, mse, huber}
 sim_type:    cos  # options: {cos, geo}
 targ_type:   multipos  # options: {aligned, multipos, hierarchical, phylogenetic}
 class_wting: false

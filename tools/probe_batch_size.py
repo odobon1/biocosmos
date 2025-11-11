@@ -8,13 +8,10 @@ import gc
 from typing import List
 
 from models import VLMWrapper, CLIP_MODELS, SIGLIP_MODELS, VITAMIN_MODELS
+from utils_config import get_config_train
 
 import pdb
 
-
-class ConfigDummy:
-    def __init__(self, **kw): self.__dict__.update(kw)
-    def has_field(self, name: str) -> bool: return hasattr(self, name)
 
 def simulate_batch_train(
     modelw,
@@ -34,7 +31,7 @@ def simulate_batch_train(
 
     modelw.model.zero_grad(set_to_none=True)
     with amp.autocast(device_type="cuda"):
-        loss = modelw.batch_forward(imgs, texts, labels, None, None)
+        loss, _, _, _ = modelw.batch_step(imgs, texts, labels, None)
 
     opt = torch.optim.SGD((p for p in modelw.model.parameters() if p.requires_grad), lr=1e-5)
     loss.backward(); opt.step()
@@ -52,23 +49,13 @@ def probe_model(
 ):
     print(f"\n=== {model_id} ===")
 
-    targ_type = "aligned"
+    config_train = get_config_train(verbose=False)
 
-    config_train = ConfigDummy(
-        model_type   = model_id,
-        device       = device.type,
-        act_chkpt    = True,
-        non_causal   = False,
-        loss_type    = loss_type,
-        targ_type    = targ_type,
-        cfg_loss     = {},
-        class_wting  = False,
-        focal        = False,
-        rdpath_trial = None,
-    )
+    config_train.model_type = model_id
+    config_train.loss_type  = loss_type
 
     modelw = VLMWrapper.build(config_train)
-    modelw.set_targ_type(targ_type)
+    modelw.set_targ_type(config_train.targ_type)
 
     bs_ok   = 0
     vram_ok = 0

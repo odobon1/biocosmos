@@ -16,6 +16,7 @@ RFPATHS = [
     "config/train/train.yaml",
     "config/eval.yaml",
     "config/gen_split.yaml",
+    "config/hardware.yaml",
     "config/loss.yaml",
     "metadata/gen_rank_keys.py",
     "metadata/gen_species_ids.py",

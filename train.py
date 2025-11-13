@@ -80,9 +80,13 @@ class TrialDataTracker:
 
 class LRSchedulerWrapper:
 
-    def __init__(self, optimizer, sched_type, args={}, args_sched={}):
+    def __init__(self, optimizer, config):
+
         self.opt  = optimizer
-        self.type = sched_type
+        self.type = config.opt['lr']['sched']
+
+        args       = config.lr_sched_params.get("args")
+        args_sched = config.lr_sched_params.get("args_sched")
 
         if self.type == "exp":
             self.lr_min = args["lr_min"]
@@ -180,7 +184,7 @@ class TrainPipeline:
         self.modelw = modelw
         self.cfg    = config_train
 
-        self.modelw.freeze(self.cfg.freeze_text_encoder, self.cfg.freeze_image_encoder)
+        self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
         self.set_paths()
         self.create_trial_dirs()
@@ -192,7 +196,7 @@ class TrainPipeline:
             splitset_name="train",
         )
 
-        text_preps_train                  = get_text_preps(self.cfg.text_preps_type_train)
+        text_preps_train                  = get_text_preps(self.cfg.text_preps["train"])
         self.dataloader, time_cache_train = spawn_dataloader(
             index_data=index_data,
             text_preps=text_preps_train,
@@ -202,7 +206,7 @@ class TrainPipeline:
             img_pp    =self.modelw.img_pp_train,
         )
 
-        text_preps_val = get_text_preps(self.cfg.text_preps_type_val)
+        text_preps_val = get_text_preps(self.cfg.text_preps["valid"])
         self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
 
         self.set_time_cache(time_cache_train)
@@ -225,7 +229,7 @@ class TrainPipeline:
             trial_name       = self.cfg.seed
             self.dpath_trial = self.dpath_experiment / str(trial_name)
             if self.dpath_trial.exists():
-                if self.cfg.allow_overwrite_trial:
+                if self.cfg.dev['allow_overwrite_trial']:
                     shutil.rmtree(self.dpath_trial)
                 else:
                     raise ValueError(f"Trial directory '{self.cfg.study_name}/{self.cfg.experiment_name}/{self.cfg.seed}' already exists!")
@@ -257,7 +261,7 @@ class TrainPipeline:
             "n_workers":       self.cfg.n_workers,
             "prefetch_factor": self.cfg.prefetch_factor,
         }
-        if fpath_meta.exists() and not self.cfg.allow_diff_study:
+        if fpath_meta.exists() and not self.cfg.dev['allow_diff_study']:
             metadata_loaded = load_json(fpath_meta)
             assert metadata == metadata_loaded, "Study params changed!"
         else:
@@ -272,21 +276,23 @@ class TrainPipeline:
             del metadata["seed"]
             del metadata["split_name"]
 
-            del metadata["verbose_batch_loss"]
-
-            del metadata["allow_overwrite_trial"]
-            del metadata["allow_diff_study"]
-            del metadata["allow_diff_experiment"]
+            del metadata["dev"]
 
             del metadata["chkpt_every"]
             
-            del metadata["class_wting"]
-            del metadata["focal"]
+            del metadata["loss"]["wting"]
+            del metadata["loss"]["focal"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
+
+        text_preps_full = {}
+        for split_name, text_preps in metadata["text_preps"].items():
+            text_preps_full[split_name] = get_text_preps(text_preps)
+        metadata["text_preps"] = text_preps_full
+
         clean_metadata(metadata)
-        if fpath_meta.exists() and not self.cfg.allow_diff_experiment:
+        if fpath_meta.exists() and not self.cfg.dev['allow_diff_experiment']:
             metadata_loaded = load_json(fpath_meta)
             assert metadata == metadata_loaded, "Experiment params changed!"
         else:
@@ -324,27 +330,25 @@ class TrainPipeline:
             else:
                 params_decay.append(param)
 
-        lr_init_nom = self.cfg.lr_init
+        lr_init_nom = self.cfg.opt["lr"]["init"]
         param_groups = [
-            {"params": params_decay,    "weight_decay": self.cfg.weight_decay, "lr": lr_init_nom},
+            {"params": params_decay,    "weight_decay": self.cfg.opt["l2reg"], "lr": lr_init_nom},
             {"params": params_no_decay, "weight_decay": 0.0,                   "lr": lr_init_nom},
         ]
 
         self.optimizer = torch.optim.AdamW(
             param_groups, 
             lr   =lr_init_nom,
-            betas=(self.cfg.beta1, self.cfg.beta2),
-            eps  =self.cfg.eps,
+            betas=(self.cfg.opt["beta1"], self.cfg.opt["beta2"]),
+            eps  =self.cfg.opt["eps"],
         )
 
         self.lr_schedw = LRSchedulerWrapper(
             self.optimizer, 
-            self.cfg.lr_sched_type,
-            self.cfg.lr_sched_params.get("args"),
-            self.cfg.lr_sched_params.get("args_sched"),
+            self.cfg,
         )
 
-        if self.cfg.mixed_prec:
+        if self.cfg.hw.mixed_prec:
             self.scaler = GradScaler()
 
     def train(self):
@@ -359,7 +363,7 @@ class TrainPipeline:
         scores_val, _, _, _ = self.val_pipe.run_validation(
             self.modelw, 
             verbose           =True, 
-            verbose_batch_loss=self.cfg.verbose_batch_loss
+            verbose_batch_loss=self.cfg.dev['verbose_batch_loss']
         )
         data_tracker.update(scores_val)
 
@@ -382,22 +386,22 @@ class TrainPipeline:
 
                 self.optimizer.zero_grad()
 
-                if self.cfg.mixed_prec:
+                if self.cfg.hw.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, targ_data_b)
-                    self.scaler.scale(loss_train_b).backward()
+                        loss_batch, _, _, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                    self.scaler.scale(loss_batch).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_train_b = self.modelw.batch_forward(imgs_b, texts_b, class_encs_b, targ_data_b)
-                    loss_train_b.backward()
+                    loss_batch, _, _, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                    loss_batch.backward()
                     self.optimizer.step()
 
                 with torch.no_grad():
-                    loss_train_b = loss_train_b.detach().item() * imgs_b.size(0)
-                    loss_train_total += loss_train_b
-                    if self.cfg.verbose_batch_loss:
-                        print(f"Batch Loss: {loss_train_b:.4f}")
+                    loss_batch = loss_batch.detach().item() * imgs_b.size(0)
+                    loss_train_total += loss_batch
+                    if self.cfg.dev['verbose_batch_loss']:
+                        print(f"Batch Loss: {loss_batch:.4f}")
             
             # compute avg. train loss per sample
             if self.cfg.drop_partial_batch_train:
@@ -413,7 +417,7 @@ class TrainPipeline:
             scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
                 self.modelw, 
                 verbose           =True, 
-                verbose_batch_loss=self.cfg.verbose_batch_loss,
+                verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
             )
             data_tracker.update(scores_val, lr=self.lr_schedw.get_lr(), loss_train=loss_train_avg)
 
@@ -478,7 +482,7 @@ def main():
     modelw = VLMWrapper.build(config_train)
     class_wts, class_pair_wts = compute_class_wts(config_train)
     modelw.set_class_wts(class_wts, class_pair_wts)
-    modelw.set_targ_type(config_train.targ_type)
+    modelw.set_targ_type(config_train.loss['targ'])
 
     train_pipe = TrainPipeline(modelw, config_train)
     train_pipe.train()

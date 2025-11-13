@@ -1,0 +1,3 @@
+cached_imgs: null  # commonly used: {null, pl, pp}
+mixed_prec:  true  # mixed precision for training and validation
+act_chkpt:   true  # activation checkpointing

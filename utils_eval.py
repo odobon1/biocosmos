@@ -32,28 +32,28 @@ def compute_map_img2img(
     
     # full similarity matrix
     if embs_imgs_inv is None:
-        sim = embs_imgs @ embs_imgs.t()  # ------------------------------------------------------ Tensor(Q, Q)
+        sim = embs_imgs @ embs_imgs.T  # ----------------------------------------------------- Tensor(Q, Q)
     else:
-        sim = embs_imgs @ embs_imgs_inv.t()
+        sim = embs_imgs @ embs_imgs_inv.T
     # mask self-similarity
     diag_idx                = torch.arange(Q, device=embs_imgs.device)
     sim[diag_idx, diag_idx] = float('-inf')
 
     # get top-N neighbors per query (all of them except query image i.e. N = Q - 1)
-    _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
+    _, idxs = sim.topk(N, dim=1)  # ---------------------------------------------------------- Tensor(Q, N)
 
     # positives mask / boolean relevance mask (True wherever the query-image class matches the candidate-image class)
-    pos_mask = class_encs.unsqueeze(1) == class_encs[idxs]  # ------------------------------- Tensor(Q, N)
+    pos_mask = class_encs.unsqueeze(1) == class_encs[idxs]  # -------------------------------- Tensor(Q, N)
     
-    ranks    = torch.arange(1, N+1, device=embs_imgs.device)  # ----------------------------- Tensor(N)
-    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision @ each rank --- Tensor(Q, N)
+    ranks    = torch.arange(1, N+1, device=embs_imgs.device)  # ------------------------------ Tensor(N)
+    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision at each rank --- Tensor(Q, N)
     
     # compute AP per query: sum(precision@hit) / num. positives (avoid div-by-zero, will produce NaN where pos_counts == 0)
-    pos_counts = pos_mask.sum(dim=1).float()  # --------------------------------------------- Tensor(Q)
-    ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # ------------------- Tensor(Q)
+    pos_counts = pos_mask.sum(dim=1).float()  # ---------------------------------------------- Tensor(Q)
+    ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # -------------------- Tensor(Q)
 
     # mean over queries with >= 1 positive
-    valid     = ~torch.isnan(ap)  # --------------------------------------------------------- Tensor(Q)
+    valid     = ~torch.isnan(ap)  # ---------------------------------------------------------- Tensor(Q)
     map_score = ap[valid].mean().item()
 
     return map_score
@@ -76,7 +76,7 @@ def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, class
     N = embs_cands.size(0)  # num. candidate-samples
 
     # full similarity matrix
-    sim = embs_queries @ embs_cands.t()  # -------------------------------------------------- Tensor(Q, N)
+    sim = embs_queries @ embs_cands.T  # ---------------------------------------------------- Tensor(Q, N)
 
     # get top-N neighbors per query (all of them)
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
@@ -85,7 +85,7 @@ def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, class
     pos_mask = classes_enc_queries.unsqueeze(1) == classes_enc_cands[idxs]  # --------------- Tensor(Q, N)
 
     ranks    = torch.arange(1, N+1, device=sim.device)  # ----------------------------------- Tensor(N)
-    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision @ each rank --- Tensor(Q, N)
+    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision at each rank -- Tensor(Q, N)
 
     # compute AP per query: sum(precision@hit) / num. positives
     pos_counts = pos_mask.sum(dim=1).float()  # --------------------------------------------- Tensor(Q)
@@ -108,8 +108,10 @@ class SplitSetEvalPipeline:
         assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), \
                "text_preps: each inner list must contain exactly one element for eval"
 
+        self.cfg           = config
         self.splitset_name = splitset_name
         self.batch_size    = config.batch_size
+        self.mixed_prec    = config.hw.mixed_prec
 
         index_data, sid_2_class_enc = spawn_indexes(
             split_name   =config.split_name,
@@ -135,9 +137,15 @@ class SplitSetEvalPipeline:
 
         eval_scores = {}  # return structure
 
-        with torch.no_grad(), autocast(device_type=modelw.device.type):
-            embs_txts_all = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
-
+        # text embeddings
+        if self.mixed_prec:
+            with torch.no_grad(), autocast(device_type=modelw.device.type):
+                embs_txts_all = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
+        else:
+            with torch.no_grad():
+                embs_txts_all = modelw.embed_texts(self.index_txts)
+        
+        # image embeddings
         embs_imgs      = []
         class_encs     = []
         loss_total     = 0.0
@@ -146,29 +154,40 @@ class SplitSetEvalPipeline:
         for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc=f"Eval ({self.splitset_name})", leave=False):
             imgs_b = imgs_b.to(modelw.device, non_blocking=True)
 
-            with torch.no_grad(), autocast(device_type=modelw.device.type):
-                embs_imgs_b = modelw.embed_images(imgs_b)  # --------- Tensor(B, D)
-                B           = imgs_b.size(0)
+            if self.mixed_prec:
+                with torch.no_grad(), autocast(device_type=modelw.device.type):
+                    B = imgs_b.size(0)
+                    loss, _, embs_img_b, _ = modelw.batch_step(
+                        imgs_b,
+                        texts_b,
+                        class_encs_b,
+                        targ_data_b,
+                        compute_loss=(B == self.batch_size),
+                    )
+            else:
+                with torch.no_grad():
+                    B = imgs_b.size(0)
+                    loss, _, embs_img_b, _ = modelw.batch_step(
+                        imgs_b,
+                        texts_b,
+                        class_encs_b,
+                        targ_data_b,
+                        compute_loss=(B == self.batch_size),
+                    )
 
-            embs_imgs.append(embs_imgs_b.cpu())
+            embs_imgs.append(embs_img_b.cpu())
             class_encs.append(class_encs_b)
 
             """
             maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
             """
-            pred_classes_enc_txts_b, _ = modelw.img2txt_classify(embs_imgs_b, embs_txts_all, self.index_txts_class_enc)
+            pred_classes_enc_txts_b = modelw.img2txt_classify(embs_img_b, embs_txts_all, self.index_txts_class_enc)
 
             n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, class_encs_b))
             n_correct += n_correct_b
 
             if B == self.batch_size:  # only compute loss for full batches
-                with torch.no_grad(), autocast(device_type=modelw.device.type):
-                    embs_txts_b = modelw.embed_texts(texts_b)
-                    sim_b       = embs_imgs_b @ embs_txts_b.T
-                    logits_b    = modelw.compute_logits(sim_b)
-                    loss_b      = modelw.compute_batch_loss(logits_b, class_encs_b, targ_data_b)
-
-                batch_loss = loss_b.detach().item() * B
+                batch_loss = loss.detach().item() * B
                 loss_total += batch_loss
                 n_samples_loss += B
                 if verbose_batch_loss:

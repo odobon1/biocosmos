@@ -12,11 +12,11 @@ def compute_class_wts(cfg):
     pair_counts = np.outer(counts, counts)
     n_classes   = len(counts)
 
-    if not cfg.class_wting:
+    if not cfg.loss['wting']:
         class_wts      = np.ones_like(counts)
         class_pair_wts = np.ones_like(pair_counts)
     else:
-        cfg_cw = cfg.cfg_loss["class_weighting"]  # pretty brittle, need a better solution
+        cfg_cw = cfg.loss["cfg"]["class_weighting"]  # pretty brittle, need a better solution
         
         if cfg_cw["cp_type"] == 2:
             neg_mult2 = np.full((n_classes, n_classes), 2)
@@ -37,7 +37,7 @@ def compute_class_wts(cfg):
     # class_wts /= class_wts.mean()
     class_wts = class_wts / class_wts.mean()
 
-    if cfg.class_wting:
+    if cfg.loss['wting']:
         if cfg_cw["cp_type"] == 1:
             class_pair_wts = class_pair_wts / class_pair_wts.mean()
         elif cfg_cw["cp_type"] == 2:

@@ -8,7 +8,7 @@ import torch.nn.functional as F  # type: ignore[import]
 import open_clip  # type: ignore[import]
 import abc
 from types import SimpleNamespace
-from typing import List
+from typing import List, Tuple, Any
 
 from utils import paths
 from utils_loss import compute_loss
@@ -81,7 +81,7 @@ class VLMWrapper(abc.ABC):
         )
 
         self.device       = config.device
-        self.type         = config.model_type
+        self.type         = config.arch['model_type']
         self.model        = model.to(self.device).eval()
         self.img_pp_train = img_pp_train
         self.img_pp_val   = img_pp_val
@@ -89,10 +89,10 @@ class VLMWrapper(abc.ABC):
         tokenizer   = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
-        if config.act_chkpt:
+        if config.hw.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        cfg_logits = config.cfg_loss["logits"]
+        cfg_logits = config.loss["cfg"]["logits"]
         if cfg_logits["scale_init"] is None:  # (scale_init: null) in config
             if not hasattr(self.model, "logit_scale"):  # logit_scale attribute DNE
                 self.model.register_buffer("logit_scale", torch.tensor(0.0, device=self.device))
@@ -123,11 +123,11 @@ class VLMWrapper(abc.ABC):
         if cfg_logits["freeze_bias"] and isinstance(self.model.logit_bias, nn.Parameter):
             self.model.logit_bias.requires_grad_(False)
 
-        if config.loss_type == "huber":
+        if config.loss['type'] == "huber":
             cfg_regr        = getattr(config, "regression", SimpleNamespace())
             self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
 
-        self.sim_type = config.sim_type
+        self.sim_type = config.loss["sim"]
 
     def set_class_wts(self, class_wts, class_pair_wts):
         self.class_wts      = class_wts.to(self.device)
@@ -151,20 +151,20 @@ class VLMWrapper(abc.ABC):
         else:
             print("Loading base model...")
 
-        if config.model_type in CLIP_MODELS:
+        if config.arch['model_type'] in CLIP_MODELS:
             modelw = CLIPWrapper(config)
-        elif config.model_type in SIGLIP_MODELS:
+        elif config.arch['model_type'] in SIGLIP_MODELS:
             modelw = SigLIPWrapper(config)
-        elif config.model_type in VITAMIN_MODELS:
+        elif config.arch['model_type'] in VITAMIN_MODELS:
             modelw = ViTaminWrapper(config)
         else:
-            raise ValueError(f"Unknown model_type: '{config.model_type}'")
+            raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
-        modelw.loss_type = config.loss_type
+        modelw.loss_type = config.loss['type']
         if model_state_dict is not None:
             modelw.model.load_state_dict(model_state_dict)
 
-        if config.non_causal:
+        if config.arch['non_causal']:
             modelw.disable_causal_mask_text()
 
         print("Model loaded!\n")
@@ -220,26 +220,32 @@ class VLMWrapper(abc.ABC):
 
         return embs_txts
 
-    def img2txt_classify(self, embs_imgs_b, embs_txts, classes_enc_txts):
+    def img2txt_classify(
+        self, 
+        embs_imgs_b:    torch.Tensor,  # --- Tensor(B, D)
+        embs_txts:      torch.Tensor,  # --- Tensor(L, D)
+        class_encs_txt: List[int],
+    ) -> List[int]:
         """
-
+        
         Args:
-        - embs_imgs_b -------- [Tensor(B, D)] --- Batch of image embeddings (D for dim. embeddings)
-        - embs_txts ---------- [Tensor(L, D)] --- Text embeddings
-        - classes_enc_txts --- [list(int)] ------ Text class encodings
+        - embs_imgs_b ------ Batch of image embeddings (D for dim. embeddings)
+        - embs_txts -------- Text embeddings
+        - class_encs_txt --- Text class encodings
         """
 
-        logits = embs_imgs_b @ embs_txts.T
-        probs  = logits.softmax(dim=-1)
+        sim       = embs_imgs_b @ embs_txts.T
+        idxs_pred = sim.argmax(dim=-1)
 
-        pred_idxs             = probs.argmax(dim=-1)
-        scores                = probs[torch.arange(len(pred_idxs)), pred_idxs].tolist()
-        pred_classes_enc_txts = [classes_enc_txts[i] for i in pred_idxs.tolist()]
+        class_encs_txt_pred = [class_encs_txt[i] for i in idxs_pred.tolist()]  # usage of class_encs_txt here is good example of why each split-set has it's own indexing system.............
+        # class_encs_txt_pred = idxs_pred.tolist()  # equivalent to the above
 
-        return pred_classes_enc_txts, scores
+        return class_encs_txt_pred
 
     def compute_sim(self, embs_img, embs_txt):
         """
+        For batch of image and text embeddings, both of shape (B, D), produces (B, B) similarity matrix
+
         Whether cosine similarity or geodesic distance is used, outputs are cast to range [-1, 1]
         for application of logit scale and bias.
         """
@@ -247,27 +253,15 @@ class VLMWrapper(abc.ABC):
 
         if self.sim_type == "cos":
             sim = cos_sim
-        elif self.sim_type == "geo":
-            geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
-            sim      = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
+        else:
+            if self.sim_type == "geo1":
+                geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
+            elif self.sim_type == "geo2":
+                eps      = 1e-6
+                geo_dist = torch.acos(torch.clamp(cos_sim, -1.0 + eps, 1.0 - eps))  # geodesic distance on range [0, pi]
+            sim = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
 
         return sim
-
-
-    # def compute_sim(self, embs_img, embs_txt):
-
-    #     cos_sim = embs_img @ embs_txt.T
-
-    #     if self.sim_type == "cos":
-    #         sim = cos_sim
-    #     elif self.sim_type == "geo":
-    #         eps      = 1e-6  # keeps gradient finite near +/-1, gradients can explode near +/-1 with this implementation (NaN city)
-    #         cos_sim  = torch.clamp(cos_sim, -1.0 + eps, 1.0 - eps)
-    #         geo_dist = torch.acos(cos_sim)  # geodesic distance on range [0, pi]
-    #         sim      = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
-
-    #     return sim
-
 
     def compute_logits(self, sim):
         return sim * self.model.logit_scale.exp() + self.model.logit_bias
@@ -298,21 +292,31 @@ class VLMWrapper(abc.ABC):
     def freeze_text_encoder(self):
         raise NotImplementedError
 
-    def batch_forward(self, imgs_b, texts_b, class_encs_b, targ_data_b):
-
+    def batch_step(
+        self,
+        imgs_b,
+        txts_b,
+        class_encs_b,
+        targ_data_b,
+        compute_loss: bool = True,
+    ) -> Tuple[Any]:
+        
         # normalized embeddings
-        embs_img_b = self.embed_images(imgs_b)  # -------------------- Tensor(B, D)
-        embs_txt_b = self.embed_texts(texts_b)  # -------------------- Tensor(B, D)
+        embs_img_b = self.embed_images(imgs_b)
+        embs_txt_b = self.embed_texts(txts_b)
 
-        sim          = self.compute_sim(embs_img_b, embs_txt_b)  # --- Tensor(B, B)
-        logits       = self.compute_logits(sim)
-        loss_train_b = self.compute_batch_loss(logits, class_encs_b, targ_data_b)
+        sim    = self.compute_sim(embs_img_b, embs_txt_b)
+        logits = self.compute_logits(sim)
 
-        return loss_train_b
+        loss = None
+        if compute_loss:
+            loss = self.compute_batch_loss(logits, class_encs_b, targ_data_b)
+
+        return loss, logits, embs_img_b, embs_txt_b
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config):
-        model_name, pretrained, quick_gelu = CLIP_MODELS[config.model_type]
+        model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_val.transforms[1].size[0]
@@ -333,7 +337,7 @@ class CLIPWrapper(VLMWrapper):
 
 class SigLIPWrapper(VLMWrapper):
     def __init__(self, config):
-        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.model_type]
+        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_val.transforms[0].size[0]
@@ -345,7 +349,7 @@ class SigLIPWrapper(VLMWrapper):
 
 class ViTaminWrapper(VLMWrapper):
     def __init__(self, config):
-        model_name, pretrained, quick_gelu = VITAMIN_MODELS[config.model_type]
+        model_name, pretrained, quick_gelu = VITAMIN_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_val.transforms[1].size[0]

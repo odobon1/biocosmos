@@ -1,53 +1,50 @@
 study_name:      dev
-experiment_name: dev
+# study_name:      phylo2
+experiment_name: dev7
+# experiment_name: phylogenetic_geo1-mse_t0fb0f
 seed:            42
 # split_name:      S29-42
 split_name:      P38-42
 # split_name:      dev
 
-verbose_batch_loss: false
-
-# whether to allow trials to overwrite data at the study/experiment/trial level (for dev/debug, should otherwise be set to false)
-allow_overwrite_trial: true
-allow_diff_study:      true
-allow_diff_experiment: true
-
-model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
-non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
-
-loss_type:   bce  # options: {infonce1, infonce2, bce, mse, huber}
-sim_type:    cos  # options: {cos, geo}
-targ_type:   phylogenetic  # options: {aligned, multipos, hierarchical, phylogenetic}
-class_wting: false
-focal:       false
-
 n_epochs:    200
 chkpt_every: 1
-# batch_size:  32
-# batch_size:  512
-# batch_size:  1024
-batch_size:  2048
-# batch_size:  4096
-# batch_size:  8192
-# batch_size:  16384
-# batch_size:  32768
+batch_size:  2048  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 
 drop_partial_batch_train: true
 
-lr_init:       2.0e-5
-lr_sched_type: exp
-weight_decay:  0.0  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it
-beta1:         0.9  # CLIP paper recommends Beta1 = 0.9
-beta2:         0.95  # seminal papers recommend Beta2 = 0.999 (CLIP ResNet) / 0.98 (CLIP ViT) / 0.95 (SigLIP) ~ careful, may be for pretraining not fine-tuning
-eps:           1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+dev:
+  verbose_batch_loss:    false
+  # whether to allow trials to overwrite data at the study/experiment/trial level (for dev/debug, should otherwise be set to false)
+  allow_overwrite_trial: true
+  allow_diff_study:      true
+  allow_diff_experiment: true
 
-freeze_text_encoder:  false
-freeze_image_encoder: false
+arch:  # architecture
+  model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
+  non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
-cached_imgs: null  # options: {null, pl, pp}
-mixed_prec:  true  # mixed precision for training and validation
-act_chkpt:   true  # activation checkpointing
+loss:
+  type:  bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
+  sim:   cos  # commonly used: {cos, geo1, geo2}
+  targ:  phylogenetic  # commonly used: {aligned, multipos, hierarchical, phylogenetic}
+  wting: true
+  focal: true
 
-# text_preps_type_train: mixed
-text_preps_type_train: combo_temps
-text_preps_type_val:   bioclip_sci
+opt:  # optimization
+  lr:  # learning rate
+    init:  2.0e-5
+    sched: exp
+  l2reg: 0.0  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it
+  beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
+  beta2: 0.95  # seminal papers recommend Beta2 = 0.999 (CLIP ResNet) / 0.98 (CLIP ViT) / 0.95 (SigLIP) ~ careful, may be for pretraining not fine-tuning
+  eps:   1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)
+
+freeze:
+  image: false
+  text:  false
+
+text_preps:
+  # train: mixed
+  train: combo_temps
+  valid: bioclip_sci

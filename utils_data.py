@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import requests  # type: ignore[import]
-from typing import Dict, List, Callable, Union
+from typing import Dict, List, Callable, Union, Tuple
 
 from utils import paths, load_pickle, load_split
 
@@ -39,7 +39,7 @@ class ImageTextDataset(Dataset):
         self.index_sex        = index_data["sex"]
         self.text_preps       = text_preps
         self.img_pp           = img_pp
-        self.cached_imgs      = config.cached_imgs
+        self.cached_imgs      = config.hw.cached_imgs
 
         self.n_samples = len(self.index_class_encs)
 
@@ -178,20 +178,20 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     """
 
     index_txts_sids      = list(sid_2_class_enc.keys())
-    index_txts_class_enc = np.array(list(sid_2_class_enc.values()))
+    index_txts_class_enc = list(sid_2_class_enc.values())
 
     index_txts = [gen_text(sid, text_preps) for sid in index_txts_sids]
 
     return index_txts, index_txts_class_enc
 
 def spawn_dataloader(
-        index_data:      Dict[str, List[Union[int, str]]],
-        text_preps:      List[List[str]],
-        config,
-        shuffle:         bool,
-        drop_last:       bool,
-        img_pp:          Callable,
-    ):
+    index_data:      Dict[str, List[Union[int, str]]],
+    text_preps:      List[List[str]],
+    config,
+    shuffle:         bool,
+    drop_last:       bool,
+    img_pp:          Callable,
+) -> Tuple[DataLoader, float | None]:
     """
 
     Args:

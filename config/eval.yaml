@@ -6,20 +6,20 @@ save_crit:    comp  # options: comp / img2img; model save criterion (only applic
 # split_name: S29-42
 split_name: P38-42
 
-verbose_batch_loss: false
+batch_size:  2048  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 
-model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
-non_causal: false
+dev:
+  verbose_batch_loss: false
 
-loss_type:   bce  # options: {infonce1, infonce2, bce, mse, huber}
-sim_type:    cos  # options: {cos, geo}
-targ_type:   multipos  # options: {aligned, multipos, hierarchical, phylogenetic}
-class_wting: false
-focal:       false
+arch:
+  model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+  non_causal: false
 
-# batch_size: 1024
-batch_size: 4096
-text_preps_type: bioclip_sci
+loss:
+  type:  bce  # options: {infonce1, infonce2, bce, mse, huber}
+  sim:   cos  # options: {cos, geo1, geo2}
+  targ:  multipos  # options: {aligned, multipos, hierarchical, phylogenetic}
+  wting: false
+  focal: false
 
-cached_imgs: null  # options: {null, pl, pp}
-act_chkpt:   true
+text_preps: bioclip_sci

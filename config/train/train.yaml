@@ -10,8 +10,7 @@ split_name:      P38-42
 n_epochs:    200
 chkpt_every: 1
 batch_size:  2048  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
-
-drop_partial_batch_train: true
+dv_batching: true  # (true) dorsal/ventral-homogeneous batching
 
 dev:
   verbose_batch_loss:    false

@@ -123,12 +123,13 @@ class SplitSetEvalPipeline:
         )
 
         self.dataloader, self.time_cache = spawn_dataloader(
-            index_data=index_data,
-            text_preps=text_preps,
-            config    =config,
-            shuffle   =False,
-            drop_last =False,
-            img_pp    =img_pp,
+            index_data    =index_data,
+            text_preps    =text_preps,
+            config        =config,
+            shuffle       =False,
+            drop_last     =False,
+            img_pp        =img_pp,
+            use_dv_sampler=False,
         )
 
     def evaluate_split(self, modelw, verbose_batch_loss=False):

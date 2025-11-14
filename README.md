@@ -142,3 +142,10 @@ open_clip.list_pretrained()
 ```
 
 (Only CLIP, SigLIP, and ViTamin variants are currently supported. `open_clip` models outside these families likely won't work)
+
+# Notes
+
+## Batching
+During training, partial batches are dropped by default. For more granular batching tactics e.g. dorsal/ventral, partial batches are dropped
+from each category, which may result in fewer batches per epoch. Dorsal/ventral batching can only be toggled for train.
+For eval, loss is computed for full batches only, although performance computation includes partial batches.

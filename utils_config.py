@@ -18,7 +18,7 @@ class TrainConfig:
     n_epochs: int
     chkpt_every: int
     batch_size: int
-    drop_partial_batch_train: bool
+    dv_batching: bool
 
     dev: dict
     arch: dict
@@ -63,16 +63,16 @@ class TrainConfig:
             f"Trial Path --- {self.rdpath_trial}",
             f"Split -------- {self.split_name}",
             f"",
-            f"Batch Size -------------- {self.batch_size}",
+            f"Batch Size --- {self.batch_size}",
             f"",
             f"=== Architecture ===",
             f"Model Type --- {self.arch['model_type']}",
             f"Non-Causal --- {self.arch['non_causal']}",
             f"",
             f"=== Loss ===",
-            f"Type --------------- {self.loss['type']}",
-            f"Similarity Type --------- {self.loss['sim']}",
-            f"Target Type --------------- {self.loss['targ']}",
+            f"Type -------------- {self.loss['type']}",
+            f"Similarity Type --- {self.loss['sim']}",
+            f"Target Type ------- {self.loss['targ']}",
             f"Params: _",
             f"",
             f"=== Optimization ===",

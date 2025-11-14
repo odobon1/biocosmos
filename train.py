@@ -198,12 +198,13 @@ class TrainPipeline:
 
         text_preps_train                  = get_text_preps(self.cfg.text_preps["train"])
         self.dataloader, time_cache_train = spawn_dataloader(
-            index_data=index_data,
-            text_preps=text_preps_train,
-            config    =self.cfg,
-            shuffle   =True,
-            drop_last =self.cfg.drop_partial_batch_train,
-            img_pp    =self.modelw.img_pp_train,
+            index_data    =index_data,
+            text_preps    =text_preps_train,
+            config        =self.cfg,
+            shuffle       =True,
+            drop_last     =True,
+            img_pp        =self.modelw.img_pp_train,
+            use_dv_sampler=getattr(self.cfg, "dv_batching", False),
         )
 
         text_preps_val = get_text_preps(self.cfg.text_preps["valid"])
@@ -404,11 +405,8 @@ class TrainPipeline:
                         print(f"Batch Loss: {loss_batch:.4f}")
             
             # compute avg. train loss per sample
-            if self.cfg.drop_partial_batch_train:
-                n_full_batches = len(self.dataloader.dataset) // self.cfg.batch_size
-                loss_train_avg = loss_train_total / (n_full_batches * self.cfg.batch_size)
-            else:
-                loss_train_avg = loss_train_total / len(self.dataloader.dataset)
+            n_full_batches = len(self.dataloader.dataset) // self.cfg.batch_size
+            loss_train_avg = loss_train_total / (n_full_batches * self.cfg.batch_size)
 
             time_train_end = time.time()
             time_train     = time_train_end - time_train_start

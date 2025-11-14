@@ -21,6 +21,53 @@ class Split:
     id_eval_nshot: dict
     class_counts_train: np.ndarray
 
+class DorsalVentralBatchSampler:
+    """
+    Homogeneous-Position Batch Sampler
+    Batch sampler that yields batches composed entirely of either dorsal or ventral samples, drawn without replacement.
+    """
+    def __init__(
+        self, 
+        index_pos:  List[str], 
+        batch_size: int, 
+    ) -> None:
+        
+        self.batch_size = batch_size
+
+        self.idxs_dorsal  = [i for i, p in enumerate(index_pos) if p == "dorsal"]
+        self.idxs_ventral = [i for i, p in enumerate(index_pos) if p == "ventral"]
+
+        self.n_batches = len(self.idxs_dorsal)  // self.batch_size + len(self.idxs_ventral) // self.batch_size
+
+    def __iter__(self):
+        # freshly shuffled copies each epoch
+        idxs_dorsal_copy  = self.idxs_dorsal.copy()
+        idxs_ventral_copy = self.idxs_ventral.copy()
+        random.shuffle(idxs_dorsal_copy)
+        random.shuffle(idxs_ventral_copy)
+
+        n_batches_dorsal  = len(idxs_dorsal_copy) // self.batch_size
+        n_batches_ventral = len(idxs_ventral_copy) // self.batch_size
+
+        pool_tags = (["dorsal"] * n_batches_dorsal) + (["ventral"] * n_batches_ventral)
+        random.shuffle(pool_tags)
+
+        # batch-start indexes for slicing into pools
+        ib_dorsal  = 0
+        ib_ventral = 0
+
+        for tag in pool_tags:
+            if tag == "dorsal":
+                batch = idxs_dorsal_copy[ib_dorsal:ib_dorsal+self.batch_size]
+                ib_dorsal += self.batch_size
+            elif tag == "ventral":
+                batch = idxs_ventral_copy[ib_ventral:ib_ventral+self.batch_size]
+                ib_ventral += self.batch_size
+
+            yield batch
+
+    def __len__(self) -> int:
+        return self.n_batches
 
 class ImageTextDataset(Dataset):
 
@@ -111,6 +158,8 @@ class ImageTextDataset(Dataset):
             "class_enc": class_enc,
             "rank_keys": rank_keys,
             "sid":       sid,
+            "pos":       pos,
+            "sex":       sex,
         }
 
         return img_t, text, class_enc, targ_data
@@ -191,6 +240,7 @@ def spawn_dataloader(
     shuffle:         bool,
     drop_last:       bool,
     img_pp:          Callable,
+    use_dv_sampler:  bool,
 ) -> Tuple[DataLoader, float | None]:
     """
 
@@ -215,17 +265,30 @@ def spawn_dataloader(
         config,
     )
 
-    dataloader = DataLoader(
-        dataset,
-        batch_size        =config.batch_size,
-        shuffle           =shuffle,
-        num_workers       =config.n_workers,
-        pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
-        prefetch_factor   =config.prefetch_factor,
-        collate_fn        =collate_fn,
-        drop_last         =drop_last,
-        persistent_workers=True,
-    )
+    # conditionally use D/V sampling only when a config flag is set (so eval still uses the normal behaviour)
+    if use_dv_sampler:
+        batch_sampler = DorsalVentralBatchSampler(dataset.index_pos, config.batch_size)
+        dataloader = DataLoader(
+            dataset,
+            batch_sampler     =batch_sampler,
+            num_workers       =config.n_workers,
+            pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
+            prefetch_factor   =config.prefetch_factor,
+            collate_fn        =collate_fn,
+            persistent_workers=True,
+        )
+    else:
+        dataloader = DataLoader(
+            dataset,
+            batch_size        =config.batch_size,
+            shuffle           =shuffle,
+            num_workers       =config.n_workers,
+            pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
+            prefetch_factor   =config.prefetch_factor,
+            collate_fn        =collate_fn,
+            drop_last         =drop_last,
+            persistent_workers=True,
+        )
 
     return dataloader, dataset.time_cache
 

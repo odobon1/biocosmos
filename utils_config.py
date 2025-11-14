@@ -24,6 +24,7 @@ class TrainConfig:
     dev: dict
     arch: dict
     loss: dict
+    loss2: dict
     opt: dict
     freeze: dict
     text_preps: dict
@@ -41,6 +42,8 @@ class TrainConfig:
             raise ValueError(f"Unknown targ_type: '{self.loss['targ']}', must be one of {{aligned, multipos, hierarchical, phylogenetic}}")
         if self.opt['lr']['sched'] not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
             raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
+        if not 0.0 <= self.loss2["mix"] <= 1.0:
+            raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
 
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
         self.n_gpus = slurm_alloc["n_gpus"]
@@ -103,8 +106,10 @@ def get_config_train(verbose=True):
     if verbose:
         cfg.print_init_info()
     cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
-    cfg.loss["cfg"] = get_config_loss(cfg)
-    cfg.hw          = get_config_hardware()
+    cfg.loss["cfg"]  = get_config_loss(cfg)
+    if cfg.loss2["mix"] != 0.0:
+        cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
+    cfg.hw = get_config_hardware()
     return cfg
 
 def get_config_lr_sched(lr_sched_type):
@@ -113,24 +118,31 @@ def get_config_lr_sched(lr_sched_type):
     return cfg_dict[lr_sched_type]
 
 # helper for get_config_train()
-def get_config_loss(cfg_train):
-    with open(paths["config"] / "loss.yaml") as f:
-        cfg_loss = yaml.safe_load(f)
+def get_config_loss(cfg_train, secondary=False):
+    if not secondary:
+        fpath = "loss.yaml"
+        cfg_train_loss = cfg_train.loss
+    else:
+        fpath = "loss2.yaml"
+        cfg_train_loss = cfg_train.loss2
 
-    if cfg_train.loss['type'] in ("infonce1", "infonce2", "bce"):
+    with open(paths["config"] / fpath) as f:
+        cfg_loss = yaml.safe_load(f)  # ok we gotta stop referring to both loss.yaml and the loss portions of train.yaml as cfg_loss...
+
+    if cfg_train_loss["type"] in ("infonce1", "infonce2", "bce"):
         if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
-            print(f"\nWARNING: loss_type = '{cfg_train.loss['type']}' and logit scale/bias overridden!\n")
-    elif cfg_train.loss['type'] in ("mse", "huber"):
+            print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias overridden!\n")
+    elif cfg_train_loss["type"] in ("mse", "huber"):
         if not (cfg_loss["logits"]["scale_init"] == 0.0 and cfg_loss["logits"]["bias_init"]  == 0.0):
-            print(f"\nWARNING: loss_type = '{cfg_train.loss['type']}' and logit scale/bias not initialized to 0.0!\n")
+            print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias not initialized to 0.0!\n")
 
-    if not cfg_train.loss['wting']:
+    if not cfg_train_loss["wting"]:
         del cfg_loss["class_weighting"]
-    if not cfg_train.loss['focal']:
+    if not cfg_train_loss["focal"]:
         del cfg_loss["focal"]
-    if cfg_train.loss['type'] not in ("bce", "mse", "huber"):
+    if cfg_train_loss["type"] not in ("bce", "mse", "huber"):
         del cfg_loss["dyn_posneg"]
-    if cfg_train.loss['type'] not in ("mse", "huber"):
+    if cfg_train_loss["type"] not in ("mse", "huber"):
         del cfg_loss["regression"]
 
     return cfg_loss
@@ -160,6 +172,7 @@ class EvalConfig:
     dev: dict
     arch: dict
     loss: dict
+    loss2: dict
 
     text_preps: str
 
@@ -215,8 +228,10 @@ def get_config_eval():
     with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = EvalConfig(**cfg_dict)
-    cfg.loss["cfg"] = get_config_loss(cfg)
-    cfg.hw          = get_config_hardware()
+    cfg.loss["cfg"]  = get_config_loss(cfg)
+    if cfg.loss2["mix"] != 0.0:
+        cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
+    cfg.hw = get_config_hardware()
     return cfg
 
 @dataclass

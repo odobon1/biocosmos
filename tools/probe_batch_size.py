@@ -19,19 +19,16 @@ def simulate_batch_train(
     device: torch.device,
 ) -> int:
 
-    # dynamic per-batch weights so indexing stays in-bounds
-    modelw.class_wts      = torch.ones(B,   device=device)
-    modelw.class_pair_wts = torch.ones((B, B), device=device)
-
     modelw.model.train()
 
-    labels = list(range(B))
-    imgs   = torch.randn(B, 3, modelw.img_res, modelw.img_res, device=device, requires_grad=True)
-    texts  = ["a photo of a butterfly"] * B
+    n_classes   = modelw.class_wts.size(0)
+    class_enc_b = torch.randint(low=0, high=n_classes, size=(B,), device=device, dtype=torch.long)
+    imgs_b      = torch.randn(B, 3, modelw.img_res, modelw.img_res, device=device, requires_grad=True)
+    txts_b      = ["a photo of a butterfly"] * B
 
     modelw.model.zero_grad(set_to_none=True)
     with amp.autocast(device_type="cuda"):
-        loss, _, _, _ = modelw.batch_step(imgs, texts, labels, None)
+        loss, _ = modelw.batch_step(imgs_b, txts_b, class_enc_b, None)
 
     opt = torch.optim.SGD((p for p in modelw.model.parameters() if p.requires_grad), lr=1e-5)
     loss.backward(); opt.step()
@@ -50,12 +47,17 @@ def probe_model(
     print(f"\n=== {model_id} ===")
 
     config_train = get_config_train(verbose=False)
+    # bandaid ~ override target types to be aligned
+    config_train.loss["targ"]  = "aligned"
+    config_train.loss2["targ"] = "aligned"
 
     config_train.model_type = model_id
     config_train.loss_type  = loss_type
 
     modelw = VLMWrapper.build(config_train)
-    modelw.set_targ_type(config_train.targ_type)
+    modelw.set_class_wts(config_train)
+    if config_train.loss2["mix"] != 0.0:
+        modelw.set_class_wts(config_train, secondary=True)
 
     bs_ok   = 0
     vram_ok = 0

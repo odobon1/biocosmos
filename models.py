@@ -12,6 +12,8 @@ from typing import List, Tuple, Any
 
 from utils import paths
 from utils_loss import compute_loss
+from utils_head import compute_sim
+from utils_imb import compute_class_wts
 
 import pdb
 
@@ -93,35 +95,40 @@ class VLMWrapper(abc.ABC):
             self.model.set_grad_checkpointing(True)
 
         cfg_logits = config.loss["cfg"]["logits"]
-        if cfg_logits["scale_init"] is None:  # (scale_init: null) in config
-            if not hasattr(self.model, "logit_scale"):  # logit_scale attribute DNE
-                self.model.register_buffer("logit_scale", torch.tensor(0.0, device=self.device))
-        else:  # scale_init set in config
+        if cfg_logits["scale_init"] is not None:  # scale_init set in config
             if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                 with torch.no_grad():
                     self.model.logit_scale.fill_(cfg_logits["scale_init"])
-            else:  # logit_scale attribute DNE
-                self.model.register_parameter("logit_scale", nn.Parameter(torch.tensor(cfg_logits["scale_init"], device=self.device)))
         if cfg_logits["bias_init"] is None:  # (bias_init: null) in config
-            if not hasattr(self.model, "logit_bias"):  # logit_bias attribute DNE
-                self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
-            elif self.model.logit_bias is None:  # logit bias attribute exists and is None (CLIP default)
+            if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
                 delattr(self.model, "logit_bias")
                 self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
         else:  # bias_init set in config
-            if hasattr(self.model, "logit_bias"):  # logit_bias attribute exists
-                if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
-                    with torch.no_grad():
-                        self.model.logit_bias.fill_(cfg_logits["bias_init"])
-                else:  # logit_bias attribute is not a nn.Parameter
-                    delattr(self.model, "logit_bias")
-                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
-            else:  # logit_bias attribute DNE
+            if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
+                with torch.no_grad():
+                    self.model.logit_bias.fill_(cfg_logits["bias_init"])
+            else:  # logit_bias attribute is not a nn.Parameter
+                delattr(self.model, "logit_bias")
                 self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
         if cfg_logits["freeze_scale"] and isinstance(self.model.logit_scale, nn.Parameter):
             self.model.logit_scale.requires_grad_(False)
         if cfg_logits["freeze_bias"] and isinstance(self.model.logit_bias, nn.Parameter):
             self.model.logit_bias.requires_grad_(False)
+
+        if config.loss2["mix"] != 0.0:
+            cfg_logits2 = config.loss2["cfg"]["logits"]
+            if cfg_logits2["scale_init"] is None:  # (scale_init: null) in config
+                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
+            else:  # scale_init set in config
+                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(cfg_logits2["scale_init"], device=self.device)))
+            if cfg_logits2["bias_init"] is None:
+                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(self.model.logit_bias.detach().item(), device=self.device)))
+            else:
+                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(cfg_logits2["bias_init"], device=self.device)))
+            if cfg_logits2["freeze_scale"]:
+                self.model.logit_scale2.requires_grad_(False)
+            if cfg_logits2["freeze_bias"]:
+                self.model.logit_bias2.requires_grad_(False)
 
         if config.loss['type'] == "huber":
             cfg_regr        = getattr(config, "regression", SimpleNamespace())
@@ -129,12 +136,15 @@ class VLMWrapper(abc.ABC):
 
         self.sim_type = config.loss["sim"]
 
-    def set_class_wts(self, class_wts, class_pair_wts):
-        self.class_wts      = class_wts.to(self.device)
-        self.class_pair_wts = class_pair_wts.to(self.device)
-
-    def set_targ_type(self, targ_type):
-        self.targ_type = targ_type
+    def set_class_wts(self, config, secondary=False):
+        cfg_loss = config.loss if not secondary else config.loss2
+        cw, cpw  = compute_class_wts(config.split_name, cfg_loss)
+        if not secondary:
+            self.class_wts      = cw.to(self.device)
+            self.class_pair_wts = cpw.to(self.device)
+        else:
+            self.class_wts2      = cw.to(self.device)
+            self.class_pair_wts2 = cpw.to(self.device)
 
     @classmethod
     def build(cls, config):
@@ -234,7 +244,7 @@ class VLMWrapper(abc.ABC):
         - class_encs_txt --- Text class encodings
         """
 
-        sim       = embs_imgs_b @ embs_txts.T
+        sim       = compute_sim(embs_imgs_b, embs_txts, "cos")
         idxs_pred = sim.argmax(dim=-1)
 
         class_encs_txt_pred = [class_encs_txt[i] for i in idxs_pred.tolist()]  # usage of class_encs_txt here is good example of why each split-set has it's own indexing system.............
@@ -242,41 +252,24 @@ class VLMWrapper(abc.ABC):
 
         return class_encs_txt_pred
 
-    def compute_sim(self, embs_img, embs_txt):
-        """
-        For batch of image and text embeddings, both of shape (B, D), produces (B, B) similarity matrix
-
-        Whether cosine similarity or geodesic distance is used, outputs are cast to range [-1, 1]
-        for application of logit scale and bias.
-        """
-        cos_sim = embs_img @ embs_txt.T
-
-        if self.sim_type == "cos":
-            sim = cos_sim
+    def compute_logits(self, sim, secondary=False):
+        if not secondary:
+            return sim * self.model.logit_scale.exp() + self.model.logit_bias
         else:
-            if self.sim_type == "geo1":
-                geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
-            elif self.sim_type == "geo2":
-                eps      = 1e-6
-                geo_dist = torch.acos(torch.clamp(cos_sim, -1.0 + eps, 1.0 - eps))  # geodesic distance on range [0, pi]
-            sim = 1.0 - 2.0 * (geo_dist / torch.pi)  # reverse + map to [-1, 1]
+            return sim * self.model.logit_scale2.exp() + self.model.logit_bias2
 
-        return sim
-
-    def compute_logits(self, sim):
-        return sim * self.model.logit_scale.exp() + self.model.logit_bias
-
-    def compute_batch_loss(self, logits, class_encs_b, targ_data_b):
-
-        return compute_loss(
-            self.cfg,
+    def compute_batch_loss(self, logits, class_encs_b, targ_data_b, cfg_loss, secondary=False):
+        cw, cpw = (self.class_wts, self.class_pair_wts) if not secondary else (self.class_wts2, self.class_pair_wts2)
+        loss = compute_loss(
+            cfg_loss,
             logits, 
             class_encs_b,
             targ_data_b,
-            self.class_wts, 
-            self.class_pair_wts, 
+            cw, 
+            cpw, 
             self.device,
         )
+        return loss
 
     def freeze(self, freeze_txt, freeze_img):
         if freeze_txt: self.freeze_text_encoder()
@@ -300,19 +293,23 @@ class VLMWrapper(abc.ABC):
         targ_data_b,
         compute_loss: bool = True,
     ) -> Tuple[Any]:
-        
         # normalized embeddings
         embs_img_b = self.embed_images(imgs_b)
         embs_txt_b = self.embed_texts(txts_b)
 
-        sim    = self.compute_sim(embs_img_b, embs_txt_b)
-        logits = self.compute_logits(sim)
-
         loss = None
         if compute_loss:
-            loss = self.compute_batch_loss(logits, class_encs_b, targ_data_b)
+            sim    = compute_sim(embs_img_b, embs_txt_b, self.cfg.loss["sim"])
+            logits = self.compute_logits(sim)
+            loss   = self.compute_batch_loss(logits, class_encs_b, targ_data_b, self.cfg.loss)
+            if self.cfg.loss2["mix"] != 0.0:
+                sim2    = compute_sim(embs_img_b, embs_txt_b, self.cfg.loss2["sim"])
+                logits2 = self.compute_logits(sim2, secondary=True)
+                loss2   = self.compute_batch_loss(logits2, class_encs_b, targ_data_b, self.cfg.loss2, secondary=True)
+                mix     = self.cfg.loss2["mix"]
+                loss    = (1.0 - mix) * loss + mix * loss2
 
-        return loss, logits, embs_img_b, embs_txt_b
+        return loss, embs_img_b
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config):

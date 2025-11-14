@@ -4,6 +4,7 @@ import time
 from tqdm import tqdm  # type: ignore[import]
 
 from utils_data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
+from utils_head import compute_sim
 
 import pdb
 
@@ -32,9 +33,9 @@ def compute_map_img2img(
     
     # full similarity matrix
     if embs_imgs_inv is None:
-        sim = embs_imgs @ embs_imgs.T  # ----------------------------------------------------- Tensor(Q, Q)
+        sim = compute_sim(embs_imgs, embs_imgs, "cos")  # ------------------------------------ Tensor(Q, Q)
     else:
-        sim = embs_imgs @ embs_imgs_inv.T
+        sim = compute_sim(embs_imgs, embs_imgs_inv, "cos")  # -------------------------------- Tensor(Q, Q)
     # mask self-similarity
     diag_idx                = torch.arange(Q, device=embs_imgs.device)
     sim[diag_idx, diag_idx] = float('-inf')
@@ -76,7 +77,7 @@ def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, class
     N = embs_cands.size(0)  # num. candidate-samples
 
     # full similarity matrix
-    sim = embs_queries @ embs_cands.T  # ---------------------------------------------------- Tensor(Q, N)
+    sim = compute_sim(embs_queries, embs_cands, "cos")  # ----------------------------------- Tensor(Q, N)
 
     # get top-N neighbors per query (all of them)
     _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
@@ -158,7 +159,7 @@ class SplitSetEvalPipeline:
             if self.mixed_prec:
                 with torch.no_grad(), autocast(device_type=modelw.device.type):
                     B = imgs_b.size(0)
-                    loss, _, embs_img_b, _ = modelw.batch_step(
+                    loss, embs_img_b = modelw.batch_step(
                         imgs_b,
                         texts_b,
                         class_encs_b,
@@ -168,7 +169,7 @@ class SplitSetEvalPipeline:
             else:
                 with torch.no_grad():
                     B = imgs_b.size(0)
-                    loss, _, embs_img_b, _ = modelw.batch_step(
+                    loss, embs_img_b = modelw.batch_step(
                         imgs_b,
                         texts_b,
                         class_encs_b,

@@ -12,9 +12,9 @@ def main():
     config_eval = get_config_eval()
 
     modelw = VLMWrapper.build(config_eval)
-    class_wts, class_pair_wts = compute_class_wts(config_eval)
-    modelw.set_class_wts(class_wts, class_pair_wts)
-    modelw.set_targ_type(config_eval.loss['targ'])
+    modelw.set_class_wts(config_eval)
+    if config_eval.loss2["mix"] != 0.0:
+        modelw.set_class_wts(config_eval, secondary=True)
 
     text_preps = get_text_preps(config_eval.text_preps)
     val_pipe   = ValidationPipeline(config_eval, text_preps, modelw.img_pp_val)

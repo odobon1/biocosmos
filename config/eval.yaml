@@ -22,4 +22,12 @@ loss:
   wting: false
   focal: false
 
+loss2:  # secondary loss
+  mix:  0.1  # set to 0.0 to disable computation
+  type: bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
+  sim:  geo1
+  targ: phylogenetic
+  wting: true
+  focal: true
+
 text_preps: bioclip_sci

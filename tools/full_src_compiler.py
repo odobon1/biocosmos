@@ -18,6 +18,7 @@ RFPATHS = [
     "config/gen_split.yaml",
     "config/hardware.yaml",
     "config/loss.yaml",
+    "config/loss2.yaml",
     "metadata/gen_rank_keys.py",
     "metadata/gen_species_ids.py",
     "metadata/gen_split.py",

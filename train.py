@@ -27,7 +27,6 @@ from utils import (
 from models import VLMWrapper
 from utils_data import spawn_dataloader, spawn_indexes
 from utils_eval import ValidationPipeline
-from utils_imb import compute_class_wts
 from utils_config import get_config_train
 from utils_train import plot_metrics
 
@@ -288,10 +287,14 @@ class TrainPipeline:
             
             del metadata["loss"]["wting"]
             del metadata["loss"]["focal"]
+
+            if metadata["loss2"]["mix"] == 0.0:
+                del metadata["loss2"]
         
         fpath_meta = self.dpath_experiment / "metadata_experiment.json"
         metadata   = asdict(self.cfg)
 
+        # save full text combo-templates themselves and not just the names
         text_preps_full = {}
         for split_name, text_preps in metadata["text_preps"].items():
             text_preps_full[split_name] = get_text_preps(text_preps)
@@ -416,12 +419,12 @@ class TrainPipeline:
 
                 if self.cfg.hw.mixed_prec:
                     with autocast(device_type=self.cfg.device.type):
-                        loss_batch, _, _, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                        loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
                     self.scaler.scale(loss_batch).backward()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    loss_batch, _, _, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                    loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
                     loss_batch.backward()
                     self.optimizer.step()
 
@@ -503,9 +506,9 @@ def main():
     seed_libs(config_train.seed)
 
     modelw = VLMWrapper.build(config_train)
-    class_wts, class_pair_wts = compute_class_wts(config_train)
-    modelw.set_class_wts(class_wts, class_pair_wts)
-    modelw.set_targ_type(config_train.loss['targ'])
+    modelw.set_class_wts(config_train)
+    if config_train.loss2["mix"] != 0.0:
+        modelw.set_class_wts(config_train, secondary=True)
 
     train_pipe = TrainPipeline(modelw, config_train)
     train_pipe.train()

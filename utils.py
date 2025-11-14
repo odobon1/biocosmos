@@ -5,8 +5,6 @@ import os
 import numpy as np  # type: ignore[import]
 import torch  # type: ignore[import]
 import json
-import subprocess
-import re
 
 import pdb
 
@@ -119,35 +117,25 @@ def get_text_preps(text_preps_type):
         ],
     ]
 
-
     if text_preps_type == "combo_temps":
         return COMBO_TEMPS_TRAIN
     if text_preps_type == "mixed":
         return TEXT_PREPS_MIXED
     elif text_preps_type == "bioclip_sci":
         return TEXT_PREPS_BIOCLIP_SCI
+    
+class RunningMean:
+    """
+    Track running mean via Welford's algorithm
+    """
+    def __init__(self):
+        self.n = 0
+        self.mean = 0.0
 
-def get_slurm_alloc():
-    job_id = os.getenv("SLURM_JOB_ID")
-    out    = subprocess.check_output(["scontrol", "show", "job", job_id], text=True)
-    tres   = re.search(r"TRES=([^ ]+)", out)
+    def update(self, x):
+        self.n += 1
+        delta = x - self.mean
+        self.mean += delta / self.n
 
-    info = {}
-    for pair in tres.group(1).split(","):
-        key, val = pair.split("=")
-        info[key] = val
-
-    slurm_alloc = {
-        "n_gpus": int(info.get("gres/gpu", "0")),
-        "n_cpus": int(info.get("cpu", "0")),
-        "ram":    int(info.get("mem", "0").rstrip("G")),
-    }
-
-    return slurm_alloc
-
-def compute_dataloader_workers_prefetch():
-    slurm_alloc     = get_slurm_alloc()
-    n_workers       = slurm_alloc["n_cpus"]
-    prefetch_factor = min(n_workers, 8)
-
-    return n_workers, prefetch_factor, slurm_alloc
+    def value(self):
+        return self.mean

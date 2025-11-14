@@ -34,6 +34,7 @@ opt:  # optimization
   lr:  # learning rate
     init:  2.0e-5
     sched: exp
+    warmup: 100_000  # sample volume for linear LR warmup
   l2reg: 0.0  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
   beta2: 0.95  # seminal papers recommend Beta2 = 0.999 (CLIP ResNet) / 0.98 (CLIP ViT) / 0.95 (SigLIP) ~ careful, may be for pretraining not fine-tuning

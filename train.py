@@ -22,6 +22,7 @@ from utils import (
     save_pickle, 
     seed_libs,
     get_text_preps, 
+    RunningMean,
 )
 from models import VLMWrapper
 from utils_data import spawn_dataloader, spawn_indexes
@@ -214,6 +215,10 @@ class TrainPipeline:
         self.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
+        self.lr_warmup:   int   = self.cfg.opt["lr"]["warmup"]
+        self.samps_seen:  int   = 0
+        self.lr_init_nom: float = self.cfg.opt["lr"]["init"]
+
     def set_time_cache(self, time_cache_train):
         if time_cache_train is not None:
             time_cache      = time_cache_train + self.val_pipe.time_cache
@@ -352,6 +357,16 @@ class TrainPipeline:
         if self.cfg.hw.mixed_prec:
             self.scaler = GradScaler()
 
+    def _update_lr_warmup(self) -> float:
+        if self.lr_warmup == 0 or self.samps_seen >= self.lr_warmup:
+            lr = self.optimizer.param_groups[0]["lr"]
+        else:
+            frac = self.samps_seen / self.lr_warmup
+            lr = self.lr_init_nom * frac
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
+        return lr
+
     def train(self):
         
         print(
@@ -380,10 +395,22 @@ class TrainPipeline:
 
             time_train_start = time.time()
             self.modelw.model.train()
-            loss_train_total = 0.0
+
+            lr_mean   = RunningMean()
+            loss_mean = RunningMean()
+
             for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False):
                 imgs_b       = imgs_b.to(self.cfg.device, non_blocking=True)
                 class_encs_b = class_encs_b.to(self.cfg.device)
+                B            = imgs_b.size(0)
+                self.samps_seen += B
+
+                if self.lr_warmup > 0:
+                    lr = self._update_lr_warmup()
+                else:
+                    lr = self.optimizer.param_groups[0]["lr"]
+
+                lr_mean.update(lr)
 
                 self.optimizer.zero_grad()
 
@@ -399,14 +426,12 @@ class TrainPipeline:
                     self.optimizer.step()
 
                 with torch.no_grad():
-                    loss_batch = loss_batch.detach().item() * imgs_b.size(0)
-                    loss_train_total += loss_batch
+                    loss_batch = loss_batch.detach().item()
+                    loss_mean.update(loss_batch)
                     if self.cfg.dev['verbose_batch_loss']:
                         print(f"Batch Loss: {loss_batch:.4f}")
-            
-            # compute avg. train loss per sample
-            n_full_batches = len(self.dataloader.dataset) // self.cfg.batch_size
-            loss_train_avg = loss_train_total / (n_full_batches * self.cfg.batch_size)
+
+            loss_train_avg = loss_mean.value()
 
             time_train_end = time.time()
             time_train     = time_train_end - time_train_start
@@ -417,7 +442,7 @@ class TrainPipeline:
                 verbose           =True, 
                 verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
             )
-            data_tracker.update(scores_val, lr=self.lr_schedw.get_lr(), loss_train=loss_train_avg)
+            data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
 
             if scores_val["comp_loss"] < loss_val_best:
                 loss_val_best = scores_val["comp_loss"]

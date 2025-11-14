@@ -234,13 +234,13 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     return index_txts, index_txts_class_enc
 
 def spawn_dataloader(
-    index_data:      Dict[str, List[Union[int, str]]],
-    text_preps:      List[List[str]],
+    index_data:     Dict[str, List[Union[int, str]]],
+    text_preps:     List[List[str]],
     config,
-    shuffle:         bool,
-    drop_last:       bool,
-    img_pp:          Callable,
-    use_dv_sampler:  bool,
+    shuffle:        bool,
+    drop_last:      bool,
+    img_pp:         Callable,
+    use_dv_sampler: bool,
 ) -> Tuple[DataLoader, float | None]:
     """
 

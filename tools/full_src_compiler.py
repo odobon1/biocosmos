@@ -33,6 +33,7 @@ RFPATHS = [
     "utils_config.py",
     "utils_data.py",
     "utils_eval.py",
+    "utils_hardware.py",
     "utils_imb.py",
     "utils_loss.py",
     "utils_phylo.py",

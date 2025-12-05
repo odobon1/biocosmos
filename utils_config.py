@@ -268,9 +268,14 @@ class EvalConfig:
 
         if self.rdpath_trial is not None:
             metadata_experiment = load_json(paths["root"] / self.rdpath_trial / "../metadata_experiment.json")
-            self.model_type     = metadata_experiment["model_type"]  # override model_type
-            self.non_causal     = metadata_experiment["non_causal"]  # override non_causal
-            self.loss['type']   = metadata_experiment["loss_type"]  # override loss_type
+            self.arch['model_type'] = metadata_experiment["arch"]["model_type"]  # override model_type
+            self.arch['non_causal'] = metadata_experiment["arch"]["non_causal"]  # override non_causal
+            self.loss['type']       = metadata_experiment["loss"]["type"]  # override loss_type
+
+            if "loss2" in metadata_experiment:
+                self.loss2.update(metadata_experiment["loss2"])
+            else:
+                self.loss2["mix"] = 0.0
 
             metadata_study  = load_json(paths["root"] / self.rdpath_trial / "../../metadata_study.json")
             self.split_name = metadata_study["split_name"]

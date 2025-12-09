@@ -14,6 +14,7 @@ dependencies:
   - pillow
   - pygbif
   - scikit-learn
+  - seaborn
   - tensorboard
   - tqdm
   - requests

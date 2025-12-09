@@ -61,8 +61,8 @@ def _format_loss_block(
     else:
         lines.append("Focal ------------- disabled")
 
-    if "dyn_posneg" in loss['cfg']:
-        lines.append(f"Dyn Pos/Neg ------- {loss['cfg']['dyn_posneg']}")
+    if "dyn_smr" in loss['cfg']:
+        lines.append(f"Dyn SMR ----------- {loss['cfg']['dyn_smr']}")
 
     cfg_logits = loss['cfg']['logits']
     lines_logits: list[str] = [
@@ -115,10 +115,10 @@ class TrainConfig:
         if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
         
-        if self.loss['targ'] not in ("aligned", "multipos", "hierarchical", "phylogenetic"):
-            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{aligned, multipos, hierarchical, phylogenetic}}")
-        if self.loss2['targ'] not in ("aligned", "multipos", "hierarchical", "phylogenetic"):
-            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{aligned, multipos, hierarchical, phylogenetic}}")
+        if self.loss['targ'] not in ("aligned", "multipos", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
+        if self.loss2['targ'] not in ("aligned", "multipos", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
         
         if self.opt['lr']['sched'] not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
             raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
@@ -133,7 +133,7 @@ class TrainConfig:
 
         self.rdpath_trial = f"artifacts/{self.study_name}/{self.experiment_name}/{self.seed}"
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
 
     @classmethod
     def has_field(cls, name_field):
@@ -223,7 +223,7 @@ def get_config_loss(cfg_train, secondary=False):
     if not cfg_train_loss["focal"]:
         del cfg_loss["focal"]
     if cfg_train_loss["type"] not in ("bce", "mse", "huber"):
-        del cfg_loss["dyn_posneg"]
+        del cfg_loss["dyn_smr"]
     if cfg_train_loss["type"] not in ("mse", "huber"):
         del cfg_loss["regression"]
 
@@ -280,7 +280,7 @@ class EvalConfig:
             metadata_study  = load_json(paths["root"] / self.rdpath_trial / "../../metadata_study.json")
             self.split_name = metadata_study["split_name"]
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
 
     @classmethod
     def has_field(cls, name_field):

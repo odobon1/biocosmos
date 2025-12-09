@@ -23,7 +23,7 @@ def get_slurm_alloc():
 
 def compute_dataloader_workers_prefetch():
     slurm_alloc     = get_slurm_alloc()
-    n_workers       = slurm_alloc["n_cpus"]
-    prefetch_factor = min(n_workers, 8)
+    n_workers       = max(1, (slurm_alloc["n_cpus"] // slurm_alloc["n_gpus"]) - 1)
+    prefetch_factor = 2
 
     return n_workers, prefetch_factor, slurm_alloc

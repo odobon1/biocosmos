@@ -1,8 +1,16 @@
 The BioCosmos project aims to develop a multimodal, AI-powered interface for biologists to search a species database via image or text. At it's core is a vision-language model (VLM) trained to capture fine-grained cross-modal relationships: jointly learned image and text encoders bridge the gap between visual data and natural language.
 
-This element of the BioCosmos project focuses on developing fine-tuning methods to obtain robust VLM performance on long-tailed, hierarchically structured data in support of multimodal biodiversity retrieval tasks. Our goal is to systematically experiment with methods best suited to this regime (e.g. class-imbalance handling, hierarchical targets/metrics, n-shot-aware sampling, hard-negative shaping) and to deliver the strongest fine-tuned VLMs possible for downstream use in the BioCosmos app.
+This element of the BioCosmos project focuses on developing fine-tuning methods to obtain robust VLM performance on long-tailed, hierarchically structured data in support of multimodal biodiversity retrieval tasks. Our goal is to systematically experiment with methods best suited to this regime and to deliver the strongest fine-tuned VLMs possible for downstream use in the BioCosmos app.
 
 # Setup
+
+### System Requirements & Assumptions
+
+Hardware: This setup is optimized for NVIDIA B200 GPUs on HiPerGator.
+Runtime: CUDA is mandatory; CPU-only execution is not supported.
+Distributed Training: The codebase assumes Distributed Data Parallel (DDP) execution via `torchrun`. Non-distributed runs are not supported, although the DDP code still supports single-GPU runs.
+
+### Installation
 
 Setup is intended for use with B200s on HiPerGator.
 
@@ -32,7 +40,9 @@ Run setup script (this takes about an hour to run):
 `setup.sh` generates metadata, including split S29-42 (by default), generates various data indexing structures needed for train and eval. See [metadata/README.md](metadata/README.md) for details.
 
 # Train & Eval
-Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The training config lives at `config/train/train.yaml` and the standalone eval config at `config/eval.yaml`. The loader merges `train.yaml` with `lr_sched.yaml` and `loss.yaml` under the hood.
+Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train/train.yaml` and the standalone eval config at `config/eval.yaml`. The loader merges `train.yaml` with `lr_sched.yaml` and `loss.yaml` under the hood.
+
+Note: The full similarity matrix is computed for all model types, including SigLIP (i.e. the chunked implementation described in the seminal SigLIP work is not currently utilized).
 
 ## Train
 1. Edit `config/train/train.yaml`:
@@ -40,7 +50,7 @@ Training and evaluation are config-driven: switch models, losses, LR schedules, 
     * Mixed precision & activation checkpointing can be toggled: `mixed_prec`, `act_chkpt`
 2. Run:
     ```
-    python train.py
+    torchrun --standalone --nproc-per-node=auto -m train
     ```
     This reads `config/train/train.yaml`, seeds, builds the model, applies class weighting (if enabled) and trains.
 
@@ -50,7 +60,7 @@ Training and evaluation are config-driven: switch models, losses, LR schedules, 
 1. In `config/eval.yaml`, set `rdpath_trial` to the trial directory (e.g. `artifacts/dev/dev/42`).
 2. Run:
     ```
-    python eval.py
+    torchrun --standalone --nproc-per-node=auto -m eval
     ```
     When `rdpath_trial` is set, eval overrides `model_type`, `loss_type`, and `split_name` from the trial's saved metadata.
 
@@ -58,7 +68,7 @@ Training and evaluation are config-driven: switch models, losses, LR schedules, 
 1. In `config/eval.yaml`, set `rdpath_trial: null`, then set `model_type`, `loss_type`, `split_name`, etc. as desired.
 2. Run:
     ```
-    python eval.py
+    torchrun --standalone --nproc-per-node=auto -m eval
     ```
 
 <br>
@@ -133,19 +143,23 @@ Note: despite the name, both the open-source OpenCLIP and the OpenAI CLIP model 
 | `vitamin_l2_384`         | `ViTamin-L2-384`          | 512            | `datacomp1b` | 688M       | 1,024                    |
 | `vitamin_xl_384`         | `ViTamin-XL-384`          | 512            | `datacomp1b` | 925M       | 1,152                    |
 
-## More Models
-
-More model types can be viewed via running the following at the command line or in a jupyter notebook:
-```python
-import open_clip
-open_clip.list_pretrained()
-```
-
-(Only CLIP, SigLIP, and ViTamin variants are currently supported. `open_clip` models outside these families likely won't work)
-
 # Notes
 
 ## Batching
-During training, partial batches are dropped by default. For more granular batching tactics e.g. dorsal/ventral, partial batches are dropped
+During training, partial batches are dropped by default. For more granular batching methods e.g. dorsal/ventral, partial batches are dropped
 from each category, which may result in fewer batches per epoch. Dorsal/ventral batching can only be toggled for train.
 For eval, loss is computed for full batches only, although performance computation includes partial batches.
+
+## Tensor Dimensionality Annotation Conventions:
+B: Batch dim. <br>
+C: Channels <br>
+H: Image height <br>
+W: Image width <br>
+L: Num. classes <br>
+D: Embedding dim. <br>
+T: Num. tokens i.e. context length <br>
+P: Num. text sequences <br>
+Q: Num queries (retrieval) <br>
+N: Gallery size (retrieval) <br>
+G: Num. GPUs (DDP) <br>
+U: Chunk size <br>

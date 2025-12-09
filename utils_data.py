@@ -1,5 +1,7 @@
 import torch  # type: ignore[import]
 from torch.utils.data import Dataset, DataLoader  # type: ignore[import]
+from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
+import torch.distributed as dist  # type: ignore[import]
 from PIL import Image  # type: ignore[import]
 import tqdm  # type: ignore[import]
 import numpy as np  # type: ignore[import]
@@ -10,7 +12,7 @@ from dataclasses import dataclass
 import requests  # type: ignore[import]
 from typing import Dict, List, Callable, Union, Tuple
 
-from utils import paths, load_pickle, load_split
+from utils import paths, load_pickle, load_split, shuffle_list
 
 import pdb
 
@@ -25,59 +27,83 @@ class DorsalVentralBatchSampler:
     """
     Homogeneous-Position Batch Sampler
     Batch sampler that yields batches composed entirely of either dorsal or ventral samples, drawn without replacement.
+
+    Only for training
+    
+    Always shuffles
+    Always drops partial batch
     """
+
     def __init__(
-        self, 
-        index_pos:  List[str], 
-        batch_size: int, 
+        self,
+        index_pos:  List[str],
+        batch_size: int,
+        seed:       int,
     ) -> None:
-        
-        self.batch_size = batch_size
 
-        self.idxs_dorsal  = [i for i, p in enumerate(index_pos) if p == "dorsal"]
-        self.idxs_ventral = [i for i, p in enumerate(index_pos) if p == "ventral"]
+        self.n_replicas    = dist.get_world_size()
+        self.subbatch_size = int(batch_size / self.n_replicas)
+        self.rank          = dist.get_rank()
+        self.seed          = seed
+        self.epoch         = 0
 
-        self.n_batches = len(self.idxs_dorsal)  // self.batch_size + len(self.idxs_ventral) // self.batch_size
+        self.idxs_d = [i for i, p in enumerate(index_pos) if p == "dorsal"]
+        self.idxs_v = [i for i, p in enumerate(index_pos) if p == "ventral"]
 
-    def __iter__(self):
-        # freshly shuffled copies each epoch
-        idxs_dorsal_copy  = self.idxs_dorsal.copy()
-        idxs_ventral_copy = self.idxs_ventral.copy()
-        random.shuffle(idxs_dorsal_copy)
-        random.shuffle(idxs_ventral_copy)
-
-        n_batches_dorsal  = len(idxs_dorsal_copy) // self.batch_size
-        n_batches_ventral = len(idxs_ventral_copy) // self.batch_size
-
-        pool_tags = (["dorsal"] * n_batches_dorsal) + (["ventral"] * n_batches_ventral)
-        random.shuffle(pool_tags)
-
-        # batch-start indexes for slicing into pools
-        ib_dorsal  = 0
-        ib_ventral = 0
-
-        for tag in pool_tags:
-            if tag == "dorsal":
-                batch = idxs_dorsal_copy[ib_dorsal:ib_dorsal+self.batch_size]
-                ib_dorsal += self.batch_size
-            elif tag == "ventral":
-                batch = idxs_ventral_copy[ib_ventral:ib_ventral+self.batch_size]
-                ib_ventral += self.batch_size
-
-            yield batch
+        self.n_batches_d = len(self.idxs_d) // batch_size
+        self.n_batches_v = len(self.idxs_v) // batch_size
+        self.n_batches   = self.n_batches_d + self.n_batches_v
 
     def __len__(self) -> int:
         return self.n_batches
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def _get_idxs_pos_local(
+        self,
+        idxs_pos:      List[int],
+        n_batches_pos: int,
+        offset_seed:   int,
+    ) -> List[int]:
+        
+        # shuffle ~ same seeds used across GPUs so shuffling is identical
+        idxs_pos_shuf = shuffle_list(idxs_pos, self.seed + self.epoch + offset_seed)
+
+        n_samps_local = self.subbatch_size * n_batches_pos
+
+        idx_start = self.rank * n_samps_local
+        idx_end   = idx_start + n_samps_local
+        return idxs_pos_shuf[idx_start:idx_end]
+        
+    def __iter__(self):
+        idxs_d_local = self._get_idxs_pos_local(self.idxs_d, self.n_batches_d, offset_seed=0)
+        idxs_v_local = self._get_idxs_pos_local(self.idxs_v, self.n_batches_v, offset_seed=1)
+
+        pool_tags: list[str] = (["dorsal"] * self.n_batches_d) + (["ventral"] * self.n_batches_v)
+        pool_tags = shuffle_list(pool_tags, self.seed + self.epoch + 2)  # shuffle pool tags
+
+        idx_d = 0
+        idx_v = 0
+        for tag in pool_tags:
+            if tag == "dorsal":
+                subbatch = idxs_d_local[idx_d:idx_d+self.subbatch_size]
+                idx_d += self.subbatch_size
+            else:
+                subbatch = idxs_v_local[idx_v:idx_v+self.subbatch_size]
+                idx_v += self.subbatch_size
+
+            yield subbatch
+
 class ImageTextDataset(Dataset):
 
     def __init__(
-            self, 
-            index_data,
-            text_preps,
-            img_pp, 
-            config,
-        ):
+        self, 
+        index_data,
+        text_preps,
+        img_pp, 
+        config,
+    ):
         
         self.index_class_encs = index_data["class_encs"]
         self.index_rfpaths    = index_data["rfpaths"]
@@ -226,12 +252,12 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     - sid_2_class_enc --- [dict(sid --> class enc)] --- generated by spawn_indexes()
     """
 
-    index_txts_sids      = list(sid_2_class_enc.keys())
-    index_txts_class_enc = list(sid_2_class_enc.values())
+    index_text_sids       = list(sid_2_class_enc.keys())
+    index_text_class_encs = list(sid_2_class_enc.values())
 
-    index_txts = [gen_text(sid, text_preps) for sid in index_txts_sids]
+    index_text = [gen_text(sid, text_preps) for sid in index_text_sids]
 
-    return index_txts, index_txts_class_enc
+    return index_text, torch.tensor(index_text_class_encs)
 
 def spawn_dataloader(
     index_data:     Dict[str, List[Union[int, str]]],
@@ -258,36 +284,43 @@ def spawn_dataloader(
     - img_pp ------------ The image preprocessor          
     """
 
-    dataset = ImageTextDataset(
-        index_data,
-        text_preps,
-        img_pp,
-        config,
-    )
+    dataset = ImageTextDataset(index_data, text_preps, img_pp, config)
+
+    bs_local = config.batch_size // dist.get_world_size()
 
     # conditionally use D/V sampling only when a config flag is set (so eval still uses the normal behaviour)
     if use_dv_sampler:
-        batch_sampler = DorsalVentralBatchSampler(dataset.index_pos, config.batch_size)
+        batch_sampler = DorsalVentralBatchSampler(
+            index_pos =dataset.index_pos,
+            batch_size=config.batch_size,
+            seed      =config.seed,
+        )
         dataloader = DataLoader(
             dataset,
             batch_sampler     =batch_sampler,
             num_workers       =config.n_workers,
-            pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
+            pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
             prefetch_factor   =config.prefetch_factor,
             collate_fn        =collate_fn,
             persistent_workers=True,
         )
     else:
+        sampler = DistributedSampler(
+            dataset,
+            shuffle  =shuffle,
+            drop_last=drop_last,
+        )
         dataloader = DataLoader(
             dataset,
-            batch_size        =config.batch_size,
-            shuffle           =shuffle,
+            batch_size        =bs_local,
+            shuffle           =False,
             num_workers       =config.n_workers,
-            pin_memory        =False,  # (True) speeds up host --> GPU copies, higher RAM cost
+            pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
             prefetch_factor   =config.prefetch_factor,
             collate_fn        =collate_fn,
             drop_last         =drop_last,
             persistent_workers=True,
+            sampler           =sampler,
         )
 
     return dataloader, dataset.time_cache

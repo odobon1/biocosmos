@@ -1,7 +1,9 @@
 import torch  # type: ignore[import]
 from torch.amp import autocast  # type: ignore[import]
+import torch.distributed as dist  # type: ignore[import]
 import time
 from tqdm import tqdm  # type: ignore[import]
+from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 
 from utils_data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
 from utils_head import compute_sim
@@ -9,116 +11,24 @@ from utils_head import compute_sim
 import pdb
 
 
-def compute_map_img2img(
-    embs_imgs:     torch.Tensor,  # ----------------- Tensor(Q, D)
-    class_encs:    torch.Tensor,  # ----------------- Tensor(Q)
-    embs_imgs_inv: torch.Tensor | None = None,  # --- Tensor(Q, D)
-) -> float:
-    """
-    Vectorized mAP for evaluating image-to-image retrieval.
-    Each image is queried against all others.
-    Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
-
-    Args:
-    - embs_imgs ------- Image embeddings
-    - class_encs ------ Image class encodings (corresponding to image embeddings; 1D tensor of integers)
-    - embs_imgs_inv --- Image embeddings inverted into text space (OTI)
-
-    Returns:
-    - [float] ------------------------------- Mean Average Precision (mAP) over all image queries
-    """
-
-    Q = embs_imgs.size(0)  # num. queries
-    N = Q - 1  # num. candidate-samples
-    
-    # full similarity matrix
-    if embs_imgs_inv is None:
-        sim = compute_sim(embs_imgs, embs_imgs, "cos")  # ------------------------------------ Tensor(Q, Q)
-    else:
-        sim = compute_sim(embs_imgs, embs_imgs_inv, "cos")  # -------------------------------- Tensor(Q, Q)
-    # mask self-similarity
-    diag_idx                = torch.arange(Q, device=embs_imgs.device)
-    sim[diag_idx, diag_idx] = float('-inf')
-
-    # get top-N neighbors per query (all of them except query image i.e. N = Q - 1)
-    _, idxs = sim.topk(N, dim=1)  # ---------------------------------------------------------- Tensor(Q, N)
-
-    # positives mask / boolean relevance mask (True wherever the query-image class matches the candidate-image class)
-    pos_mask = class_encs.unsqueeze(1) == class_encs[idxs]  # -------------------------------- Tensor(Q, N)
-    
-    ranks    = torch.arange(1, N+1, device=embs_imgs.device)  # ------------------------------ Tensor(N)
-    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision at each rank --- Tensor(Q, N)
-    
-    # compute AP per query: sum(precision@hit) / num. positives (avoid div-by-zero, will produce NaN where pos_counts == 0)
-    pos_counts = pos_mask.sum(dim=1).float()  # ---------------------------------------------- Tensor(Q)
-    ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # -------------------- Tensor(Q)
-
-    # mean over queries with >= 1 positive
-    valid     = ~torch.isnan(ap)  # ---------------------------------------------------------- Tensor(Q)
-    map_score = ap[valid].mean().item()
-
-    return map_score
-
-def compute_map_cross_modal(embs_queries, classes_enc_queries, embs_cands, classes_enc_cands):
-    """
-    Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
-    Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
-    
-    Args:
-    - embs_queries ---------- [Tensor(Q, D)] --- Query embeddings
-    - classes_enc_queries --- [Tensor(Q)] ------ Query class encodings (corresponding to query embeddings)
-    - embs_cands ------------ [Tensor(N, D)] --- Candidate embeddings
-    - classes_enc_cands ----- [Tensor(N)] ------ Candidate class encodings (corresponding to candidate embeddings)
-
-    Returns:
-    - [float] ---------------------------------- Mean Average Precision (mAP) over all queries
-    """
-    
-    N = embs_cands.size(0)  # num. candidate-samples
-
-    # full similarity matrix
-    sim = compute_sim(embs_queries, embs_cands, "cos")  # ----------------------------------- Tensor(Q, N)
-
-    # get top-N neighbors per query (all of them)
-    _, idxs = sim.topk(N, dim=1)  # --------------------------------------------------------- Tensor(Q, N)
-
-    # positives mask / boolean relevance mask (True wherever the query class matches the candidate class)
-    pos_mask = classes_enc_queries.unsqueeze(1) == classes_enc_cands[idxs]  # --------------- Tensor(Q, N)
-
-    ranks    = torch.arange(1, N+1, device=sim.device)  # ----------------------------------- Tensor(N)
-    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # cumulative precision at each rank -- Tensor(Q, N)
-
-    # compute AP per query: sum(precision@hit) / num. positives
-    pos_counts = pos_mask.sum(dim=1).float()  # --------------------------------------------- Tensor(Q)
-    ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # ------------------- Tensor(Q)
-
-    map_score = ap.mean().item()
-
-    return map_score
-
 class SplitSetEvalPipeline:
 
     def __init__(
             self, 
-            splitset_name, 
-            config, 
-            text_preps,
-            img_pp,
-        ):
+            splitset_name: str, 
+            config:        Any, 
+            text_preps:    List[List[str]],
+            img_pp:        Callable,
+        ) -> None:
 
         assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), \
                "text_preps: each inner list must contain exactly one element for eval"
-
-        self.cfg           = config
-        self.splitset_name = splitset_name
-        self.batch_size    = config.batch_size
-        self.mixed_prec    = config.hw.mixed_prec
 
         index_data, sid_2_class_enc = spawn_indexes(
             split_name   =config.split_name,
             splitset_name=splitset_name,
         )
-        self.index_txts, self.index_txts_class_enc = spawn_indexes_txts(
+        self.index_text, self.index_text_class_encs = spawn_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,
             text_preps     =text_preps,
         )
@@ -133,104 +43,113 @@ class SplitSetEvalPipeline:
             use_dv_sampler=False,
         )
 
-    def evaluate_split(self, modelw, verbose_batch_loss=False):
+        self.cfg           = config
+        self.splitset_name = splitset_name
+        self.batch_size    = self.dataloader.batch_size
+        self.mixed_prec    = config.hw.mixed_prec
+
+    @torch.no_grad()
+    def evaluate_split(
+        self, 
+        modelw:             Any, 
+        verbose_batch_loss: bool = False
+    ) -> Tuple[Dict[str, float], float, float]:
+        
         time_start = time.time()
         modelw.model.eval()
 
-        eval_scores = {}  # return structure
+        eval_scores = {}
 
         # text embeddings
         if self.mixed_prec:
-            with torch.no_grad(), autocast(device_type=modelw.device.type):
-                embs_txts_all = modelw.embed_texts(self.index_txts)  # --- Tensor(L, D)
+            with autocast(device_type=modelw.device.type):
+                embs_text_all = modelw.embed_texts(self.index_text)  # --- Tensor(L, D)
         else:
-            with torch.no_grad():
-                embs_txts_all = modelw.embed_texts(self.index_txts)
+            embs_text_all = modelw.embed_texts(self.index_text)
         
         # image embeddings
         embs_imgs      = []
-        class_encs     = []
+        class_encs_img = []
         loss_total     = 0.0
-        n_samples_loss = 0  # only full batches accumulated for loss computation
+        n_samps_loss   = 0  # only full batches accumulated for loss computation
         n_correct      = 0
-        for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc=f"Eval ({self.splitset_name})", leave=False):
-            imgs_b = imgs_b.to(modelw.device, non_blocking=True)
+        n_samps        = 0
+        for imgs_b, texts_b, class_encs_img_b, targ_data_b in tqdm(self.dataloader, desc=f"Eval ({self.splitset_name})", leave=False):
+            imgs_b       = imgs_b.to(modelw.device, non_blocking=True)
+            class_encs_img_b = class_encs_img_b.to(modelw.device, non_blocking=True)
+
+            B = imgs_b.size(0)
+
+            is_full_local  = 1.0 if B == self.batch_size else 0.0  # 1.0 if full sub-batch, 0.0 if partial
+            is_full_tensor = torch.tensor([is_full_local], device=modelw.device)
+
+            dist.all_reduce(is_full_tensor, op=dist.ReduceOp.MIN)  # is_full_tensor is 0.0 if any rank has partial sub-batch
+            is_full_batch = (is_full_tensor.item() == 1.0)
 
             if self.mixed_prec:
-                with torch.no_grad(), autocast(device_type=modelw.device.type):
-                    B = imgs_b.size(0)
+                with autocast(device_type=modelw.device.type):
                     loss, embs_img_b = modelw.batch_step(
                         imgs_b,
                         texts_b,
-                        class_encs_b,
+                        class_encs_img_b,
                         targ_data_b,
-                        compute_loss=(B == self.batch_size),
+                        loss_flag=is_full_batch,
                     )
             else:
-                with torch.no_grad():
-                    B = imgs_b.size(0)
-                    loss, embs_img_b = modelw.batch_step(
-                        imgs_b,
-                        texts_b,
-                        class_encs_b,
-                        targ_data_b,
-                        compute_loss=(B == self.batch_size),
-                    )
+                loss, embs_img_b = modelw.batch_step(
+                    imgs_b,
+                    texts_b,
+                    class_encs_img_b,
+                    targ_data_b,
+                    loss_flag=is_full_batch,
+                )
 
             embs_imgs.append(embs_img_b.cpu())
-            class_encs.append(class_encs_b)
+            class_encs_img.append(class_encs_img_b.cpu())
 
             """
             maybe wait until the end to do the Prec@1 computation so you can divide them up by n-shot buckets
             """
-            pred_classes_enc_txts_b = modelw.img2txt_classify(embs_img_b, embs_txts_all, self.index_txts_class_enc)
+            pred_classes_enc_txts_b = modelw.img2txt_classify(embs_img_b, embs_text_all, self.index_text_class_encs)
 
-            n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, class_encs_b))
+            n_correct_b = sum(p == t for p, t in zip(pred_classes_enc_txts_b, class_encs_img_b))
             n_correct += n_correct_b
+            n_samps += B
 
             if B == self.batch_size:  # only compute loss for full batches
                 batch_loss = loss.detach().item() * B
                 loss_total += batch_loss
-                n_samples_loss += B
+                n_samps_loss += B
                 if verbose_batch_loss:
                     print(f"Batch Loss: {batch_loss:.4f}")
 
-        # prepare image embedding and class encoding tensors for mAP computation
-        embs_imgs  = torch.cat(embs_imgs, dim=0)  # ---- Tensor(Q, D)
-        class_encs = torch.cat(class_encs, dim=0)  # --- Tensor(Q)
+        # local concatenation
+        embs_img_local  = torch.cat(embs_imgs, dim=0).to(modelw.device)  # ------------- Tensor(Q/G, D)
+        class_encs_img_local = torch.cat(class_encs_img, dim=0).to(modelw.device)  # --- Tensor(Q/G)
 
-        # img2txt precision@1 computation
-        n_samps                      = len(self.dataloader.dataset)
+        map_i2t, map_i2i, map_t2i  = self.compute_map_scores(embs_img_local, class_encs_img_local, embs_text_all)
+        eval_scores["img2txt_map"] = map_i2t
+        eval_scores["img2img_map"] = map_i2i
+        eval_scores["txt2img_map"] = map_t2i
+
+        # reduce scalars (loss & accuracy)
+        stats = torch.tensor([
+            loss_total,
+            n_samps_loss,
+            n_correct,
+            n_samps,
+        ], device=modelw.device)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        loss_total   = stats[0].item()
+        n_samps_loss = stats[1].item()
+        n_correct    = stats[2].item()
+        n_samps      = stats[3].item()
+
         prec1_img2txt                = n_correct / n_samps
         eval_scores["img2txt_prec1"] = prec1_img2txt
 
-        # img2txt mAP computation
-        map_img2txt = compute_map_cross_modal(
-            embs_imgs, 
-            class_encs, 
-            embs_txts_all.cpu(), 
-            torch.tensor(self.index_txts_class_enc),
-        )
-        eval_scores["img2txt_map"] = map_img2txt
-
-        # img2img mAP computation
-        map_img2img = compute_map_img2img(
-            embs_imgs, 
-            class_encs,
-        )
-        eval_scores["img2img_map"] = map_img2img
-
-        # txt2img mAP computation
-        map_txt2img = compute_map_cross_modal(
-            embs_txts_all.cpu(), 
-            torch.tensor(self.index_txts_class_enc), 
-            embs_imgs, 
-            class_encs,
-        )
-        eval_scores["txt2img_map"] = map_txt2img
-
-        # loss aggregation
-        loss_avg = loss_total / n_samples_loss
+        loss_avg = loss_total / n_samps_loss
 
         modelw.model.train()
 
@@ -239,15 +158,183 @@ class SplitSetEvalPipeline:
 
         return eval_scores, loss_avg, time_elapsed
 
+    def compute_map_scores(
+        self, 
+        embs_img_local:       torch.Tensor, 
+        class_encs_img_local: torch.Tensor, 
+        embs_text_all:        torch.Tensor
+    ) -> Tuple[float, float, float]:
+
+        # distributed gathering
+        world_size          = dist.get_world_size()
+        embs_img_gath       = [torch.zeros_like(embs_img_local) for _ in range(world_size)]
+        class_encs_img_gath = [torch.zeros_like(class_encs_img_local) for _ in range(world_size)]
+        dist.all_gather(embs_img_gath, embs_img_local)
+        dist.all_gather(class_encs_img_gath, class_encs_img_local)
+
+        embs_img_global       = torch.cat(embs_img_gath, dim=0)
+        class_encs_img_global = torch.cat(class_encs_img_gath, dim=0)
+
+        map_i2t = self.compute_map_cross_modal(
+            embs_q      =embs_img_global.cpu(),
+            class_encs_q=class_encs_img_global.cpu(),
+            embs_g      =embs_text_all.cpu(),
+            class_encs_g=self.index_text_class_encs,
+        )
+        map_i2i = self.compute_map_img2img(
+            embs_q      =embs_img_local,
+            class_encs_q=class_encs_img_local,
+            embs_g      =embs_img_global,
+            class_encs_g=class_encs_img_global,
+        )
+        map_t2i = self.compute_map_cross_modal(
+            embs_q      =embs_text_all.cpu(),
+            class_encs_q=self.index_text_class_encs,
+            embs_g      =embs_img_global.cpu(),
+            class_encs_g=class_encs_img_global.cpu(),
+        )
+
+        return map_i2t, map_i2i, map_t2i
+
+    def compute_map_img2img(
+        self,
+        embs_q:       torch.Tensor,
+        class_encs_q: torch.Tensor,
+        embs_g:       torch.Tensor,
+        class_encs_g: torch.Tensor,
+        chunk_size:   int = 16384,
+    ) -> float:
+        """
+        GPU-accelerated chunked vectorized mAP for evaluating image-to-image retrieval.
+        Computes N x N similarity matrix in chunks on GPU to avoid OOM on GPU and slowness on CPU.
+        Each image is queried against all others.
+
+        Args:
+        - embs_q --------- Query image embeddings
+        - class_encs_q --- Query class encodings (corresponding to query image embeddings; 1D tensor of integers)
+        - embs_g --------- Gallery image embeddings
+        - class_encs_g --- Gallery class encodings (corresponding to gallery image embeddings; 1D tensor of integers)
+        - chunk_size ----- Chunk size for computing massive similarity matrix (to avoid OOM on GPU)
+
+        Returns:
+        - [float] -------- Image-to-image Mean Average Precision (mAP) over all non-singleton queries
+        """
+        rank_offset = dist.get_rank() * embs_q.size(0)
+
+        Q = embs_q.size(0)  # num. query images
+        N = embs_g.size(0)  # num. gallery images
+        
+        ap_sum_local = 0.0
+        n_nsq_local  = 0  # num. non-singleton queries
+        for i in range(0, Q, chunk_size):
+            i_end = min(i + chunk_size, Q)
+            
+            embs_q_chunk       = embs_q[i:i_end]
+            class_encs_q_chunk = class_encs_q[i:i_end]
+            
+            # chunked similarity matrix (chunk x all)
+            sim_chunk = compute_sim(embs_q_chunk, embs_g, "cos")  # --------------------------- Tensor(U, N)
+
+            # mask self-similarity
+            sim_chunk[torch.arange(i_end - i), torch.arange(rank_offset + i, rank_offset + i_end)] = float('-inf')
+
+            # sorted indices of top-N neighbors per query (all of them except query image itself)
+            _, idxs_chunk = sim_chunk.sort(dim=1, descending=True)
+            # positives mask / boolean relevance mask (True wherever the query-image class matches the gallery-image class)
+            pos_mask_chunk = class_encs_q_chunk.unsqueeze(1) == class_encs_g[idxs_chunk]  # --- Tensor(U, N)
+            # Remove self-match column
+            pos_mask_chunk = pos_mask_chunk[:, :N-1]  # --------------------------------------- Tensor(U, N)  
+            
+            # cumulative precision at each rank
+            ranks    = torch.arange(1, N, device=torch.device("cuda")).float()  # ------------- Tensor(N-1)
+            cum_prec = pos_mask_chunk.cumsum(dim=1).float() / ranks  # ------------------------ Tensor(U, N-1)
+
+            # compute AP per query: sum(precision@hit) / num. positives
+            pos_counts_chunk = pos_mask_chunk.sum(dim=1).float()  # --------------------------- Tensor(U)
+            
+            ap_chunk = (cum_prec * pos_mask_chunk.float()).sum(dim=1)  # ---------------------- Tensor(U)
+            
+            # avoid div-by-zero for queries with no positives
+            has_pos = pos_counts_chunk > 0
+            # only divide where pos_counts_chunk > 0
+            ap_chunk[has_pos] /= pos_counts_chunk[has_pos]
+            
+            ap_sum_local += ap_chunk[has_pos].sum().item()
+            n_nsq_local += has_pos.sum().item()
+            
+            # free up VRAM
+            del embs_q_chunk, class_encs_q_chunk, sim_chunk, idxs_chunk, pos_mask_chunk, cum_prec
+        
+        stats = torch.tensor([
+            ap_sum_local,
+            n_nsq_local,
+        ], device=torch.device("cuda"))
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        ap_sum_global = stats[0].item()
+        n_nsq_global  = stats[1].item()
+
+        map_i2i = ap_sum_global / n_nsq_global
+
+        return map_i2i
+
+    def compute_map_cross_modal(
+        self, 
+        embs_q:       torch.Tensor, 
+        class_encs_q: torch.Tensor, 
+        embs_g:       torch.Tensor, 
+        class_encs_g: torch.Tensor,
+    ) -> float:
+        """
+        Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
+        Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
+        
+        Args:
+        - embs_q --------- Query embeddings
+        - class_encs_q --- Query class encodings (corresponding to query embeddings)
+        - embs_g --------- Gallery embeddings
+        - class_encs_g --- Gallery class encodings (corresponding to gallery embeddings)
+
+        Returns:
+        - [float] -------- Mean Average Precision (mAP) over all queries
+        """
+
+        device       = embs_q.device
+        class_encs_g = class_encs_g.to(device)
+        class_encs_q = class_encs_q.to(device)
+
+        N = embs_g.size(0)  # num. gallery embeddings
+
+        # full similarity matrix
+        sim = compute_sim(embs_q, embs_g, "cos")  # ----------------------------- Tensor(Q, N)
+
+        # get top-N neighbors per query (all of them)
+        _, idxs = sim.topk(N, dim=1)  # ----------------------------------------- Tensor(Q, N)
+
+        # positives mask / boolean relevance mask (True wherever the query class matches the candidate class)
+        pos_mask = class_encs_q.unsqueeze(1) == class_encs_g[idxs]  # ----------- Tensor(Q, N)
+
+        # cumulative precision at each rank
+        ranks    = torch.arange(1, N+1, device=sim.device)  # ------------------- Tensor(N)
+        cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # -------------------- Tensor(Q, N)
+
+        # compute AP per query: sum(precision@hit) / num. positives
+        pos_counts = pos_mask.sum(dim=1).float()  # ----------------------------- Tensor(Q)
+        ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # --- Tensor(Q)
+
+        map_score = ap.mean().item()
+
+        return map_score
+
 class ValidationPipeline:
 
     def __init__(
-            self,
-            config,
-            text_preps,
-            img_pp,
-            header_tag=None,
-        ):
+        self,
+        config:     Any,
+        text_preps: List[List[str]],
+        img_pp:     Callable,
+        header_tag: Optional[str] = None,
+    ):
 
         self.header_tag = header_tag
 
@@ -283,13 +370,18 @@ class ValidationPipeline:
             "img2img_map":       [],
         }
 
-    def set_time_cache(self):
+    def set_time_cache(self) -> None:
         if self.val_pipe_id.time_cache is not None:
             self.time_cache = self.val_pipe_id.time_cache + self.val_pipe_ood.time_cache
         else:
             self.time_cache = None
 
-    def run_validation(self, modelw, verbose=True, verbose_batch_loss=False):
+    def run_validation(
+        self, 
+        modelw:             Any, 
+        verbose:            bool = True, 
+        verbose_batch_loss: bool = False,
+    ) -> Tuple[Dict[str, float], bool, bool, float]:
         """
         `is_best` param in the return will dictate when models are saved (early stopping)
         """
@@ -329,7 +421,7 @@ class ValidationPipeline:
 
         return scores_val, is_best_comp, is_best_img2img, time_elapsed_val
 
-    def check_bests(self, comp_map, img2img_map):
+    def check_bests(self, comp_map: float, img2img_map: float) -> Tuple[bool, bool]:
         is_best_comp, is_best_img2img = False, False
         if self.best_comp_map is None:
             self.best_comp_map = comp_map
@@ -343,7 +435,7 @@ class ValidationPipeline:
                 is_best_img2img = True
         return is_best_comp, is_best_img2img
 
-    def print_val(self, scores):
+    def print_val(self, scores: Dict[str, float]) -> None:
 
         header = " Validation "
         if self.header_tag is not None:
@@ -351,15 +443,15 @@ class ValidationPipeline:
 
         print(
             f"{header:=^{75}}",
-            f"ID img2txt mAP ------ {scores['id_img2txt_map']:.4f}",
-            f"ID img2img mAP ------ {scores['id_img2img_map']:.4f}",
-            f"ID txt2img mAP ------ {scores['id_txt2img_map']:.4f}",
-            f"OOD img2txt mAP ----- {scores['ood_img2txt_map']:.4f}",
-            f"OOD img2img mAP ----- {scores['ood_img2img_map']:.4f}",
-            f"OOD txt2img mAP ----- {scores['ood_txt2img_map']:.4f}",
+            f"ID img2txt mAP ---- {scores['id_img2txt_map']:.4f}",
+            f"ID img2img mAP ---- {scores['id_img2img_map']:.4f}",
+            f"ID txt2img mAP ---- {scores['id_txt2img_map']:.4f}",
+            f"OOD img2txt mAP --- {scores['ood_img2txt_map']:.4f}",
+            f"OOD img2img mAP --- {scores['ood_img2img_map']:.4f}",
+            f"OOD txt2img mAP --- {scores['ood_txt2img_map']:.4f}",
             f"{'':-^{75}}",
-            f"Composite mAP ------- {scores['comp_map']:.4f} (best: {self.best_comp_map:.4f})",
-            f"img2img mAP --------- {scores['img2img_map']:.4f} (best: {self.best_img2img_map:.4f})",
+            f"Composite mAP --- {scores['comp_map']:.4f} (best: {self.best_comp_map:.4f})",
+            f"img2img mAP ----- {scores['img2img_map']:.4f} (best: {self.best_img2img_map:.4f})",
             f"{'':-^{75}}",
             f"ID Loss ----- {scores['id_loss']:.4f}",
             f"OOD Loss ---- {scores['ood_loss']:.4f}",

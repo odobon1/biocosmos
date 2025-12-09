@@ -5,6 +5,7 @@ import os
 import numpy as np  # type: ignore[import]
 import torch  # type: ignore[import]
 import json
+from typing import List, Any
 
 import pdb
 
@@ -43,17 +44,16 @@ elif CLUSTER == "hpg":
     }
 
 def seed_libs(seed):
-    if seed is not None:
-        random.seed(seed)
-        os.putenv("PYTHONHASHSEED", str(seed))
-        np.random.seed(seed)
+    random.seed(seed)
+    os.putenv("PYTHONHASHSEED", str(seed))
+    np.random.seed(seed)
 
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-        torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
-        torch.backends.cudnn.benchmark     = False  # (False) trades speed for reproducibility (default is False)
+    torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
+    torch.backends.cudnn.benchmark     = False  # (False) trades speed for reproducibility (default is False)
 
 def save_json(data, fpath):
     with open(fpath, "w") as f:
@@ -139,3 +139,9 @@ class RunningMean:
 
     def value(self):
         return self.mean
+    
+def shuffle_list(input: List[Any], seed: int) -> List[int]:
+    rng        = random.Random(seed)
+    input_shuf = input.copy()
+    rng.shuffle(input_shuf)
+    return input_shuf

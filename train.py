@@ -7,6 +7,9 @@ from torch.optim.lr_scheduler import (  # type: ignore[import]
     CosineAnnealingWarmRestarts,
     LambdaLR,
 )
+import torch.distributed as dist  # type: ignore[import]
+from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[import]
+from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 import time
 from datetime import datetime, timezone
@@ -29,6 +32,7 @@ from utils_data import spawn_dataloader, spawn_indexes
 from utils_eval import ValidationPipeline
 from utils_config import get_config_train
 from utils_train import plot_metrics
+from utils_ddp import setup_ddp
 
 import pdb
 
@@ -178,18 +182,28 @@ class CosineWRExponentialLR(LambdaLR):
 
 class TrainPipeline:
 
-    def __init__(self, modelw, config_train):
+    def __init__(
+        self, 
+        modelw, 
+        config_train,
+        rank:       int = 0,
+        world_size: int = 1,
+    ):
         self.datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
         self.modelw = modelw
         self.cfg    = config_train
 
+        self.rank       = rank  # GPU rank
+        self.world_size = world_size
+
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
         self.set_paths()
-        self.create_trial_dirs()
-        self.save_metadata_study()
-        self.save_metadata_experiment()
+        if self.rank == 0:
+            self.create_trial_dirs()
+            self.save_metadata_study()
+            self.save_metadata_experiment()
 
         index_data, _ = spawn_indexes(
             split_name   =self.cfg.split_name,
@@ -204,19 +218,19 @@ class TrainPipeline:
             shuffle       =True,
             drop_last     =True,
             img_pp        =self.modelw.img_pp_train,
-            use_dv_sampler=getattr(self.cfg, "dv_batching", False),
+            use_dv_sampler=self.cfg.dv_batching,
         )
 
         text_preps_val = get_text_preps(self.cfg.text_preps["valid"])
         self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
 
         self.set_time_cache(time_cache_train)
-        self.save_metadata_trial()
+        if self.rank == 0: self.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
-        self.lr_warmup:   int   = self.cfg.opt["lr"]["warmup"]
-        self.samps_seen:  int   = 0
-        self.lr_init_nom: float = self.cfg.opt["lr"]["init"]
+        self.lr_warmup   = self.cfg.opt["lr"]["warmup"]
+        self.samps_seen  = 0
+        self.lr_init_nom = self.cfg.opt["lr"]["init"]
 
     def set_time_cache(self, time_cache_train):
         if time_cache_train is not None:
@@ -230,23 +244,14 @@ class TrainPipeline:
         self.dpath_study      = paths["artifacts"] / self.cfg.study_name
         self.dpath_experiment = self.dpath_study / self.cfg.experiment_name
 
-        if self.cfg.seed is not None:
-            trial_name       = self.cfg.seed
-            self.dpath_trial = self.dpath_experiment / str(trial_name)
-            if self.dpath_trial.exists():
-                if self.cfg.dev['allow_overwrite_trial']:
-                    shutil.rmtree(self.dpath_trial)
-                else:
-                    raise ValueError(f"Trial directory '{self.cfg.study_name}/{self.cfg.experiment_name}/{self.cfg.seed}' already exists!")
-        else:
-            counter = 0
-            while True:
-                trial_name       = f"seedless{counter}"
-                self.dpath_trial = self.dpath_experiment / trial_name
-                if self.dpath_trial.exists():
-                    counter += 1
-                else:
-                    break
+        trial_name       = self.cfg.seed
+        self.dpath_trial = self.dpath_experiment / str(trial_name)
+
+        if self.dpath_trial.exists() and self.rank == 0:
+            if self.cfg.dev['allow_overwrite_trial']:
+                shutil.rmtree(self.dpath_trial)
+            else:
+                raise ValueError(f"Trial directory '{self.cfg.study_name}/{self.cfg.experiment_name}/{self.cfg.seed}' already exists!")
 
         self.dpath_model_best_comp    = self.dpath_trial / "models/best_comp"
         self.dpath_model_best_img2img = self.dpath_trial / "models/best_img2img"
@@ -370,21 +375,33 @@ class TrainPipeline:
                 pg["lr"] = lr
         return lr
 
+    def _broadcast_obj(self, obj):
+        """
+        DDP ~ broadcast python object from rank 0 to all ranks
+        """
+        if self.world_size == 1:
+            return obj
+        obj_list = [obj]
+        dist.broadcast_object_list(obj_list, src=0)
+        return obj_list[0]
+
     def train(self):
         
-        print(
-            f"{' Fine-Tuning Init ':#^{75}}",
-            f"",
-            sep="\n"
-        )
-        
-        data_tracker        = TrialDataTracker(self.dpath_trial)
+        if self.rank == 0:  # if GPU:0
+            print(
+                f"{' Fine-Tuning Init ':#^{75}}",
+                f"",
+                sep="\n"
+            )
+            data_tracker = TrialDataTracker(self.dpath_trial)
+
         scores_val, _, _, _ = self.val_pipe.run_validation(
             self.modelw, 
-            verbose           =True, 
-            verbose_batch_loss=self.cfg.dev['verbose_batch_loss']
+            verbose           =(self.rank == 0), 
+            verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
         )
-        data_tracker.update(scores_val)
+
+        if self.rank == 0: data_tracker.update(scores_val)
 
         time_train_avg          = 0.0
         time_val_avg            = 0.0
@@ -394,7 +411,15 @@ class TrainPipeline:
         scores_val_best_img2img = {}
         loss_val_best           = np.inf
         for idx_epoch in range(1, self.cfg.n_epochs + 1):
-            self.print_epoch_header(idx_epoch)
+            if self.rank == 0: self.print_epoch_header(idx_epoch)
+
+            # Let samplers know current epoch (crucial for shuffling)
+            sampler = getattr(self.dataloader, "sampler", None)
+            if isinstance(sampler, DistributedSampler):
+                sampler.set_epoch(idx_epoch)
+            batch_sampler = getattr(self.dataloader, "batch_sampler", None)
+            if hasattr(batch_sampler, "set_epoch"):
+                batch_sampler.set_epoch(idx_epoch)
 
             time_train_start = time.time()
             self.modelw.model.train()
@@ -402,7 +427,8 @@ class TrainPipeline:
             lr_mean   = RunningMean()
             loss_mean = RunningMean()
 
-            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False):
+            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False, disable=(self.rank != 0)):
+
                 imgs_b       = imgs_b.to(self.cfg.device, non_blocking=True)
                 class_encs_b = class_encs_b.to(self.cfg.device)
                 B            = imgs_b.size(0)
@@ -434,61 +460,69 @@ class TrainPipeline:
                     if self.cfg.dev['verbose_batch_loss']:
                         print(f"Batch Loss: {loss_batch:.4f}")
 
-            loss_train_avg = loss_mean.value()
+            loss_train_avg = loss_mean.value()  # should be average across all devices, not just rank 0
 
             time_train_end = time.time()
             time_train     = time_train_end - time_train_start
 
-            # validation
             scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
                 self.modelw, 
-                verbose           =True, 
+                verbose           =(self.rank == 0), 
                 verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
             )
-            data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
+
+            # broadcast results from rank 0 to all ranks
+            scores_val      = self._broadcast_obj(scores_val)
+            is_best_comp    = self._broadcast_obj(is_best_comp)
+            is_best_img2img = self._broadcast_obj(is_best_img2img)
+            time_val        = self._broadcast_obj(time_val)
+
+            if self.rank == 0: data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
 
             if scores_val["comp_loss"] < loss_val_best:
                 loss_val_best = scores_val["comp_loss"]
 
             self.lr_schedw.step(scores_val)
 
-            print(
-                f"Train Loss ------ {loss_train_avg:.4f}",
-                f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})",
-                f"",
-                sep="\n"
-            )
+            if self.rank == 0:
+                print(
+                    f"Train Loss ------ {loss_train_avg:.4f}",
+                    f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})",
+                    f"",
+                    sep="\n"
+                )
 
             # track running means via Welford's algorithm
             time_train_avg += (time_train - time_train_avg) / idx_epoch
             time_val_avg += (time_val - time_val_avg) / idx_epoch
 
-            if is_best_comp:
-                self.modelw.save(self.dpath_model_best_comp)
-                idx_epoch_best_comp  = idx_epoch
-                scores_val_best_comp = scores_val
-                print(f"~ Best comp model saved to file ~\n")
-            if is_best_img2img:
-                self.modelw.save(self.dpath_model_best_img2img)
-                idx_epoch_best_img2img  = idx_epoch
-                scores_val_best_img2img = scores_val
-                print(f"~ Best img2img model saved to file ~\n")
-            if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_img2img:
-                self.modelw.save(self.dpath_model_checkpoint)
-                self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch, idx_epoch)
-                self.save_metadata_model(self.dpath_model_best_comp, scores_val_best_comp, idx_epoch_best_comp, idx_epoch)
-                self.save_metadata_model(self.dpath_model_best_img2img, scores_val_best_img2img, idx_epoch_best_img2img, idx_epoch)
-                self.save_metadata_trial(time_train_avg=time_train_avg, time_val_avg=time_val_avg)
-                data_tracker.save()
-                plot_metrics(data_tracker, self.dpath_trial)
+            if self.rank == 0:
+                if is_best_comp:
+                    self.modelw.save(self.dpath_model_best_comp)
+                    idx_epoch_best_comp  = idx_epoch
+                    scores_val_best_comp = scores_val
+                    print(f"~ Best comp model saved to file ~\n")
+                if is_best_img2img:
+                    self.modelw.save(self.dpath_model_best_img2img)
+                    idx_epoch_best_img2img  = idx_epoch
+                    scores_val_best_img2img = scores_val
+                    print(f"~ Best img2img model saved to file ~\n")
+                if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_img2img:
+                    self.modelw.save(self.dpath_model_checkpoint)
+                    self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch, idx_epoch)
+                    self.save_metadata_model(self.dpath_model_best_comp, scores_val_best_comp, idx_epoch_best_comp, idx_epoch)
+                    self.save_metadata_model(self.dpath_model_best_img2img, scores_val_best_img2img, idx_epoch_best_img2img, idx_epoch)
+                    self.save_metadata_trial(time_train_avg=time_train_avg, time_val_avg=time_val_avg)
+                    data_tracker.save()
+                    plot_metrics(data_tracker, self.dpath_trial)
 
-            print(
-                f"{' Elapsed Time ':=^{75}}",
-                f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)",
-                f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)",
-                f"",
-                sep="\n"
-            )
+                print(
+                    f"{' Elapsed Time ':=^{75}}",
+                    f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)",
+                    f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)",
+                    f"",
+                    sep="\n"
+                )
 
     def print_epoch_header(self, idx_epoch):
         header_epoch = f" Epoch {idx_epoch} "
@@ -501,17 +535,24 @@ class TrainPipeline:
         )
 
 def main():
+    rank, world_size, local_rank, device = setup_ddp()
 
-    config_train = get_config_train()
+    config_train        = get_config_train(verbose=False)
+    config_train.device = device  # set local device
     seed_libs(config_train.seed)
 
-    modelw = VLMWrapper.build(config_train)
+    if rank == 0: config_train.print_init_info()
+
+    modelw = VLMWrapper.build(config_train, verbose=(rank == 0))
     modelw.set_class_wts(config_train)
     if config_train.loss2["mix"] != 0.0:
         modelw.set_class_wts(config_train, secondary=True)
 
-    train_pipe = TrainPipeline(modelw, config_train)
+    modelw.model = DDP(modelw.model, device_ids=[local_rank], output_device=local_rank)
+    train_pipe   = TrainPipeline(modelw, config_train, rank=rank, world_size=world_size)
     train_pipe.train()
+
+    dist.destroy_process_group()  # DDP cleanup
 
 if __name__ == "__main__":
     main()

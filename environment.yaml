@@ -17,6 +17,7 @@ dependencies:
   - pytorch=2.5.1
   - pytorch-cuda=12.1
   - scikit-learn
+  - seaborn
   - tensorboard
   - torchvision=0.20.1
   - tqdm

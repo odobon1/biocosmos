@@ -14,10 +14,10 @@ def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
         targs = compute_targs_aligned(batch_size)
     elif targ_type == "multipos":
         targs = compute_targs_multipos(class_encs_b)
-    elif targ_type == "hierarchical":
-        targs = compute_targs_hierarchical(targ_data_b)
-    elif targ_type == "phylogenetic":
-        targs = compute_targs_phylogenetic(targ_data_b)
+    elif targ_type == "tax":
+        targs = compute_targs_tax(targ_data_b)
+    elif targ_type == "phylo":
+        targs = compute_targs_phylo(targ_data_b)
     targs = targs.to(device)  # --- Tensor(B, B)
 
     return targs
@@ -30,12 +30,12 @@ def compute_targs_multipos(class_encs_b):
     targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
     return targs
 
-def compute_targs_hierarchical(targ_data_b):
+def compute_targs_tax(targ_data_b):
     rank_dists = compute_rank_dists(targ_data_b)
     targs      = 1 - 0.5 * rank_dists
     return targs
 
-def compute_targs_phylogenetic(targ_data_b):
+def compute_targs_phylo(targ_data_b):
     targs = phylo_vcv.get_targs_batch(targ_data_b)
     return targs
 
@@ -162,7 +162,7 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
 
 def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_wts, device):
 
-    dyn_posneg = config_loss["cfg"].get("dyn_posneg", False)
+    dyn_smr = config_loss["cfg"].get("dyn_smr", False)
 
     B     = logits.size(0)
     targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
@@ -176,17 +176,17 @@ def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_
     else:
         foc_wts = torch.ones_like(targs)
 
-    if dyn_posneg:
+    if dyn_smr:
         num_pos = torch.sum(targs).item()
         num_neg = B**2 - num_pos
         # scaling (numerical stability measure)
-        wt_neg = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
-        wt_pos = num_neg / (B**2 / 2)
-        posneg_wts = targs * wt_pos + (1 - targs) * wt_neg
+        wt_neg  = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
+        wt_pos  = num_neg / (B**2 / 2)
+        smr_wts = targs * wt_pos + (1 - targs) * wt_neg
     else:
-        posneg_wts = torch.ones_like(targs)
+        smr_wts = torch.ones_like(targs)
 
-    W = rw_wts * posneg_wts * foc_wts
+    W = rw_wts * smr_wts * foc_wts
 
     loss_raw   = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # --- Tensor(B, B); unweighted loss matrix
     loss_batch = (W * loss_raw).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though, might even want to prenorm the individual terms)
@@ -205,16 +205,16 @@ def compute_loss_regression(config_loss, logits, class_encs_b, targ_data_b, clas
     targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
 
     # compute pop/neg balancing weights before casting targets to range [-1, 1] (discrete targs only)
-    dyn_posneg = config_loss["cfg"].get("dyn_posneg", False)
-    if dyn_posneg:
+    dyn_smr = config_loss["cfg"].get("dyn_smr", False)
+    if dyn_smr:
         num_pos = torch.sum(targs).item()
         num_neg = B**2 - num_pos
         # scaling (numerical stability measure)
         wt_neg = num_pos / (B**2 / 2)  # (equivalent to dividing by mean of num_pos and num_neg)
         wt_pos = num_neg / (B**2 / 2)
-        posneg_wts = targs * wt_pos + (1 - targs) * wt_neg
+        smr_wts = targs * wt_pos + (1 - targs) * wt_neg
     else:
-        posneg_wts = torch.ones_like(targs)
+        smr_wts = torch.ones_like(targs)
 
     targs = targs * 2.0 - 1.0  # range [0, 1] --> [-1, 1]
     preds = logits
@@ -226,7 +226,7 @@ def compute_loss_regression(config_loss, logits, class_encs_b, targ_data_b, clas
     else:
         foc_wts = torch.ones_like(targs)
 
-    W = rw_wts * posneg_wts * foc_wts
+    W = rw_wts * smr_wts * foc_wts
 
     if config_loss['type'] == "mse":
         loss_raw = F.mse_loss(preds, targs, reduction="none")

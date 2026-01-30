@@ -1,3 +1,5 @@
+import matplotlib  # type: ignore[import]
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore[import]
 import matplotlib.gridspec as gridspec  # type: ignore[import]
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator, NullLocator  # type: ignore[import]

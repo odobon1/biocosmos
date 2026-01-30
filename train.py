@@ -32,7 +32,7 @@ from utils_data import spawn_dataloader, spawn_indexes
 from utils_eval import ValidationPipeline
 from utils_config import get_config_train
 from utils_train import plot_metrics
-from utils_ddp import setup_ddp
+from utils_ddp import setup_ddp, cleanup_ddp
 
 import pdb
 
@@ -186,21 +186,21 @@ class TrainPipeline:
         self, 
         modelw, 
         config_train,
-        rank:       int = 0,
-        world_size: int = 1,
+        gpu_rank:       int = 0,
+        gpu_world_size: int = 1,
     ):
         self.datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
         self.modelw = modelw
         self.cfg    = config_train
 
-        self.rank       = rank  # GPU rank
-        self.world_size = world_size
+        self.gpu_rank       = gpu_rank
+        self.gpu_world_size = gpu_world_size
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
         self.set_paths()
-        if self.rank == 0:
+        if self.gpu_rank == 0:
             self.create_trial_dirs()
             self.save_metadata_study()
             self.save_metadata_experiment()
@@ -225,7 +225,7 @@ class TrainPipeline:
         self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
 
         self.set_time_cache(time_cache_train)
-        if self.rank == 0: self.save_metadata_trial()
+        if self.gpu_rank == 0: self.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
         self.lr_warmup   = self.cfg.opt["lr"]["warmup"]
@@ -247,7 +247,7 @@ class TrainPipeline:
         trial_name       = self.cfg.seed
         self.dpath_trial = self.dpath_experiment / str(trial_name)
 
-        if self.dpath_trial.exists() and self.rank == 0:
+        if self.dpath_trial.exists() and self.gpu_rank == 0:
             if self.cfg.dev['allow_overwrite_trial']:
                 shutil.rmtree(self.dpath_trial)
             else:
@@ -377,9 +377,9 @@ class TrainPipeline:
 
     def _broadcast_obj(self, obj):
         """
-        DDP ~ broadcast python object from rank 0 to all ranks
+        DDP ~ broadcast python object from GPU rank 0 to all ranks
         """
-        if self.world_size == 1:
+        if self.gpu_world_size == 1:
             return obj
         obj_list = [obj]
         dist.broadcast_object_list(obj_list, src=0)
@@ -387,7 +387,7 @@ class TrainPipeline:
 
     def train(self):
         
-        if self.rank == 0:  # if GPU:0
+        if self.gpu_rank == 0:
             print(
                 f"{' Fine-Tuning Init ':#^{75}}",
                 f"",
@@ -397,12 +397,11 @@ class TrainPipeline:
 
         scores_val, _, _, _ = self.val_pipe.run_validation(
             self.modelw, 
-            verbose           =(self.rank == 0), 
+            verbose           =(self.gpu_rank == 0), 
             verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
         )
 
-        if self.rank == 0: data_tracker.update(scores_val)
-
+        if self.gpu_rank == 0: data_tracker.update(scores_val)
         time_train_avg          = 0.0
         time_val_avg            = 0.0
         idx_epoch_best_comp     = 0
@@ -411,7 +410,7 @@ class TrainPipeline:
         scores_val_best_img2img = {}
         loss_val_best           = np.inf
         for idx_epoch in range(1, self.cfg.n_epochs + 1):
-            if self.rank == 0: self.print_epoch_header(idx_epoch)
+            if self.gpu_rank == 0: self.print_epoch_header(idx_epoch)
 
             # Let samplers know current epoch (crucial for shuffling)
             sampler = getattr(self.dataloader, "sampler", None)
@@ -427,7 +426,7 @@ class TrainPipeline:
             lr_mean   = RunningMean()
             loss_mean = RunningMean()
 
-            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False, disable=(self.rank != 0)):
+            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0)):
 
                 imgs_b       = imgs_b.to(self.cfg.device, non_blocking=True)
                 class_encs_b = class_encs_b.to(self.cfg.device)
@@ -460,31 +459,31 @@ class TrainPipeline:
                     if self.cfg.dev['verbose_batch_loss']:
                         print(f"Batch Loss: {loss_batch:.4f}")
 
-            loss_train_avg = loss_mean.value()  # should be average across all devices, not just rank 0
+            loss_train_avg = loss_mean.value()  # should be average across all devices, not just GPU rank 0
 
             time_train_end = time.time()
             time_train     = time_train_end - time_train_start
 
             scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
                 self.modelw, 
-                verbose           =(self.rank == 0), 
+                verbose           =(self.gpu_rank == 0), 
                 verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
             )
 
-            # broadcast results from rank 0 to all ranks
+            # broadcast results from GPU rank 0 to all ranks
             scores_val      = self._broadcast_obj(scores_val)
             is_best_comp    = self._broadcast_obj(is_best_comp)
             is_best_img2img = self._broadcast_obj(is_best_img2img)
             time_val        = self._broadcast_obj(time_val)
 
-            if self.rank == 0: data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
+            if self.gpu_rank == 0: data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
 
             if scores_val["comp_loss"] < loss_val_best:
                 loss_val_best = scores_val["comp_loss"]
 
             self.lr_schedw.step(scores_val)
 
-            if self.rank == 0:
+            if self.gpu_rank == 0:
                 print(
                     f"Train Loss ------ {loss_train_avg:.4f}",
                     f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})",
@@ -496,7 +495,7 @@ class TrainPipeline:
             time_train_avg += (time_train - time_train_avg) / idx_epoch
             time_val_avg += (time_val - time_val_avg) / idx_epoch
 
-            if self.rank == 0:
+            if self.gpu_rank == 0:
                 if is_best_comp:
                     self.modelw.save(self.dpath_model_best_comp)
                     idx_epoch_best_comp  = idx_epoch
@@ -535,24 +534,24 @@ class TrainPipeline:
         )
 
 def main():
-    rank, world_size, local_rank, device = setup_ddp()
+    gpu_rank, gpu_world_size, local_gpu_rank, device = setup_ddp()
 
     config_train        = get_config_train(verbose=False)
     config_train.device = device  # set local device
     seed_libs(config_train.seed)
 
-    if rank == 0: config_train.print_init_info()
+    if gpu_rank == 0: config_train.print_init_info()
 
-    modelw = VLMWrapper.build(config_train, verbose=(rank == 0))
+    modelw = VLMWrapper.build(config_train, verbose=(gpu_rank == 0))
     modelw.set_class_wts(config_train)
     if config_train.loss2["mix"] != 0.0:
         modelw.set_class_wts(config_train, secondary=True)
 
-    modelw.model = DDP(modelw.model, device_ids=[local_rank], output_device=local_rank)
-    train_pipe   = TrainPipeline(modelw, config_train, rank=rank, world_size=world_size)
+    modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
+    train_pipe   = TrainPipeline(modelw, config_train, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size)
     train_pipe.train()
 
-    dist.destroy_process_group()  # DDP cleanup
+    cleanup_ddp()
 
 if __name__ == "__main__":
     main()

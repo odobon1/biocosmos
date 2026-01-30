@@ -31,6 +31,7 @@ elif CLUSTER == "hpg":
     dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
 
     paths = {
+        "data":             dpath_data,
         "hf_cache":         dpath_data / "cache/huggingface/hub",
         "group":            dpath_group,
         "root":             dpath_root,

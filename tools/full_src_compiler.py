@@ -26,6 +26,7 @@ RFPATHS = [
     "metadata/README.md",
     "tools/full_src_compiler.py",
     "tools/probe_batch_size.py",
+    "tools/protos.py",
     "tools/vis_manifold.py",
     "environment_b200.yaml",
     "eval.py",

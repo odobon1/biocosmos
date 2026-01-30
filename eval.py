@@ -4,18 +4,18 @@ from models import VLMWrapper
 from utils_eval import ValidationPipeline
 from utils import get_text_preps
 from utils_config import get_config_eval
-from utils_ddp import setup_ddp
+from utils_ddp import setup_ddp, cleanup_ddp
 
 import pdb
 
 
 def main():
-    rank, _, _, device = setup_ddp()
+    gpu_rank, _, _, device = setup_ddp()
 
-    config_eval = get_config_eval(verbose=(rank==0))
+    config_eval = get_config_eval(verbose=(gpu_rank==0))
     config_eval.device = device  # set local device
 
-    modelw = VLMWrapper.build(config_eval, verbose=(rank==0))
+    modelw = VLMWrapper.build(config_eval, verbose=(gpu_rank==0))
     modelw.set_class_wts(config_eval)
     if config_eval.loss2["mix"] != 0.0:
         modelw.set_class_wts(config_eval, secondary=True)
@@ -25,7 +25,7 @@ def main():
 
     val_pipe.run_validation(modelw, verbose_batch_loss=config_eval.dev['verbose_batch_loss'])
 
-    dist.destroy_process_group()  # DDP cleanup
+    cleanup_ddp()
 
 if __name__ == "__main__":
     main()

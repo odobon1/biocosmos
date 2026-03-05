@@ -4,7 +4,126 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 import matplotlib.gridspec as gridspec  # type: ignore[import]
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator, NullLocator  # type: ignore[import]
 import numpy as np  # type: ignore[import]
+import shutil
+from dataclasses import asdict
 
+from utils import (
+    paths, 
+    save_json, 
+    load_json, 
+    get_text_preps, 
+)
+
+
+class ArtifactManager:
+
+    dpath_study = None
+    dpath_experiment = None
+    dpath_trial = None
+    dpath_model_best_comp = None
+    dpath_model_best_img2img = None
+    dpath_model_checkpoint = None
+
+    @staticmethod
+    def set_paths(cfg_train):
+
+        ArtifactManager.dpath_study = paths["artifacts"] / cfg_train.study_name
+        ArtifactManager.dpath_experiment = ArtifactManager.dpath_study / cfg_train.experiment_name
+
+        trial_name = cfg_train.seed
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_experiment / str(trial_name)
+
+        if ArtifactManager.dpath_trial.exists():
+            if cfg_train.dev['allow_overwrite_trial']:
+                shutil.rmtree(ArtifactManager.dpath_trial)
+            else:
+                raise ValueError(f"Trial directory '{cfg_train.study_name}/{cfg_train.experiment_name}/{cfg_train.seed}' already exists!")
+
+        ArtifactManager.dpath_model_best_comp    = ArtifactManager.dpath_trial / "models/best_comp"
+        ArtifactManager.dpath_model_best_img2img = ArtifactManager.dpath_trial / "models/best_img2img"
+        ArtifactManager.dpath_model_checkpoint   = ArtifactManager.dpath_trial / "models/checkpoint"
+
+    @staticmethod
+    def create_trial_dirs():
+        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
+            (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
+
+    @staticmethod
+    def save_metadata_study(cfg_train):
+        fpath_meta = ArtifactManager.dpath_study / "metadata_study.json"
+        metadata   = {
+            "split_name":      cfg_train.split_name,
+            "n_gpus":          cfg_train.n_gpus,
+            "n_cpus":          cfg_train.n_cpus,
+            "ram":             f"{cfg_train.ram} GB",
+            "n_workers":       cfg_train.n_workers,
+            "prefetch_factor": cfg_train.prefetch_factor,
+        }
+        if fpath_meta.exists() and not cfg_train.dev['allow_diff_study']:
+            metadata_loaded = load_json(fpath_meta)
+            assert metadata == metadata_loaded, "Study params changed!"
+        else:
+            save_json(metadata, fpath_meta)
+
+    @staticmethod
+    def save_metadata_experiment(cfg_train):
+        
+        def clean_metadata(metadata):
+
+            del metadata["study_name"]
+            del metadata["experiment_name"]
+            del metadata["seed"]
+            del metadata["split_name"]
+
+            del metadata["dev"]
+
+            del metadata["chkpt_every"]
+            
+            del metadata["loss"]["wting"]
+            del metadata["loss"]["focal"]
+
+            if metadata["loss2"]["mix"] == 0.0:
+                del metadata["loss2"]
+        
+        fpath_meta = ArtifactManager.dpath_experiment / "metadata_experiment.json"
+        metadata   = asdict(cfg_train)
+
+        # save full text combo-templates themselves and not just the names
+        text_preps_full = {}
+        for split_name, text_preps in metadata["text_preps"].items():
+            text_preps_full[split_name] = get_text_preps(text_preps)
+        metadata["text_preps"] = text_preps_full
+
+        clean_metadata(metadata)
+        if fpath_meta.exists() and not cfg_train.dev['allow_diff_experiment']:
+            metadata_loaded = load_json(fpath_meta)
+            assert metadata == metadata_loaded, "Experiment params changed!"
+        else:
+            save_json(metadata, fpath_meta)
+
+    @staticmethod
+    def save_metadata_trial(time_train_mean=None, time_val_mean=None):
+        fpath_meta = ArtifactManager.dpath_trial / "metadata_trial.json"
+        if time_train_mean is not None:
+            time_train_mean = f"{time_train_mean:.2f}"
+            time_val_mean   = f"{time_val_mean:.2f}"
+        metadata = {
+            "runtime_perf": {
+                "train_mean": time_train_mean, 
+                "val_mean": time_val_mean,
+            },
+        }
+        save_json(metadata, fpath_meta)
+
+    @staticmethod
+    def save_metadata_model(dpath_model, scores_val, idx_epoch_chkpt, idx_epoch):
+        fpath_meta = dpath_model / "metadata_model.json"
+        scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
+        metadata = {
+            "scores_val": scores_val,
+            "idx_epoch":  f"{idx_epoch_chkpt}/{idx_epoch}",
+        }
+        save_json(metadata, fpath_meta)
 
 def plot_metrics(
         data_tracker, 

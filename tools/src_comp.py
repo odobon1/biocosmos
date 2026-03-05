@@ -1,5 +1,5 @@
 """
-python -m tools.full_src_compiler
+python -m tools.src_comp
 """
 
 from pathlib import Path
@@ -7,11 +7,13 @@ from pathlib import Path
 from utils import paths
 
 
-FPATH_OUT = Path("tools/full_src.txt")
+FPATH_OUT = Path("tools/src.txt")
 
 dpath_root = paths["root"]
 
 RFPATHS = [
+    "artifacts/dev/dev/42/logs/batch.log",
+    "artifacts/dev/dev/42/logs/epoch.log",
     "config/train/lr_sched.yaml",
     "config/train/train.yaml",
     "config/eval.yaml",
@@ -24,7 +26,7 @@ RFPATHS = [
     "metadata/gen_split.py",
     "metadata/gen_tax_nymph.py",
     "metadata/README.md",
-    "tools/full_src_compiler.py",
+    "tools/src_comp.py",
     "tools/probe_batch_size.py",
     "tools/protos.py",
     "tools/vis_manifold.py",

@@ -12,26 +12,21 @@ from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[imp
 from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 import time
-from datetime import datetime, timezone
-from dataclasses import asdict
-import shutil
 import numpy as np  # type: ignore[import]
 import math
 
 from utils import (
-    paths, 
-    save_json, 
-    load_json, 
     save_pickle, 
     seed_libs,
     get_text_preps, 
     RunningMean,
+    PrintLog,
 )
 from models import VLMWrapper
 from utils_data import spawn_dataloader, spawn_indexes
 from utils_eval import ValidationPipeline
 from utils_config import get_config_train
-from utils_train import plot_metrics
+from utils_train import ArtifactManager, plot_metrics
 from utils_ddp import setup_ddp, cleanup_ddp
 
 import pdb
@@ -185,33 +180,26 @@ class TrainPipeline:
     def __init__(
         self, 
         modelw, 
-        config_train,
+        config,
         gpu_rank:       int = 0,
         gpu_world_size: int = 1,
     ):
-        self.datetime_init = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
         self.modelw = modelw
-        self.cfg    = config_train
+        self.cfg    = config
 
         self.gpu_rank       = gpu_rank
         self.gpu_world_size = gpu_world_size
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
-        self.set_paths()
-        if self.gpu_rank == 0:
-            self.create_trial_dirs()
-            self.save_metadata_study()
-            self.save_metadata_experiment()
-
         index_data, _ = spawn_indexes(
             split_name   =self.cfg.split_name,
             splitset_name="train",
         )
 
-        text_preps_train                  = get_text_preps(self.cfg.text_preps["train"])
-        self.dataloader, time_cache_train = spawn_dataloader(
+        text_preps_train = get_text_preps(self.cfg.text_preps["train"])
+        self.dataloader, _ = spawn_dataloader(
             index_data    =index_data,
             text_preps    =text_preps_train,
             config        =self.cfg,
@@ -224,113 +212,13 @@ class TrainPipeline:
         text_preps_val = get_text_preps(self.cfg.text_preps["valid"])
         self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
 
-        self.set_time_cache(time_cache_train)
-        if self.gpu_rank == 0: self.save_metadata_trial()
+        if self.gpu_rank == 0:
+            ArtifactManager.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
         self.lr_warmup   = self.cfg.opt["lr"]["warmup"]
         self.samps_seen  = 0
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
-
-    def set_time_cache(self, time_cache_train):
-        if time_cache_train is not None:
-            time_cache      = time_cache_train + self.val_pipe.time_cache
-            self.time_cache = f"{time_cache:.2f}"
-        else:
-            self.time_cache = None
-
-    def set_paths(self):
-
-        self.dpath_study      = paths["artifacts"] / self.cfg.study_name
-        self.dpath_experiment = self.dpath_study / self.cfg.experiment_name
-
-        trial_name       = self.cfg.seed
-        self.dpath_trial = self.dpath_experiment / str(trial_name)
-
-        if self.dpath_trial.exists() and self.gpu_rank == 0:
-            if self.cfg.dev['allow_overwrite_trial']:
-                shutil.rmtree(self.dpath_trial)
-            else:
-                raise ValueError(f"Trial directory '{self.cfg.study_name}/{self.cfg.experiment_name}/{self.cfg.seed}' already exists!")
-
-        self.dpath_model_best_comp    = self.dpath_trial / "models/best_comp"
-        self.dpath_model_best_img2img = self.dpath_trial / "models/best_img2img"
-        self.dpath_model_checkpoint   = self.dpath_trial / "models/checkpoint"
-
-    def create_trial_dirs(self):
-        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
-            (self.dpath_trial / subdir).mkdir(parents=True)
-
-    def save_metadata_study(self):
-        fpath_meta = self.dpath_study / "metadata_study.json"
-        metadata   = {
-            "split_name":      self.cfg.split_name,
-            "n_gpus":          self.cfg.n_gpus,
-            "n_cpus":          self.cfg.n_cpus,
-            "ram":             f"{self.cfg.ram} GB",
-            "n_workers":       self.cfg.n_workers,
-            "prefetch_factor": self.cfg.prefetch_factor,
-        }
-        if fpath_meta.exists() and not self.cfg.dev['allow_diff_study']:
-            metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Study params changed!"
-        else:
-            save_json(metadata, fpath_meta)
-
-    def save_metadata_experiment(self):
-        
-        def clean_metadata(metadata):
-
-            del metadata["study_name"]
-            del metadata["experiment_name"]
-            del metadata["seed"]
-            del metadata["split_name"]
-
-            del metadata["dev"]
-
-            del metadata["chkpt_every"]
-            
-            del metadata["loss"]["wting"]
-            del metadata["loss"]["focal"]
-
-            if metadata["loss2"]["mix"] == 0.0:
-                del metadata["loss2"]
-        
-        fpath_meta = self.dpath_experiment / "metadata_experiment.json"
-        metadata   = asdict(self.cfg)
-
-        # save full text combo-templates themselves and not just the names
-        text_preps_full = {}
-        for split_name, text_preps in metadata["text_preps"].items():
-            text_preps_full[split_name] = get_text_preps(text_preps)
-        metadata["text_preps"] = text_preps_full
-
-        clean_metadata(metadata)
-        if fpath_meta.exists() and not self.cfg.dev['allow_diff_experiment']:
-            metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Experiment params changed!"
-        else:
-            save_json(metadata, fpath_meta)
-
-    def save_metadata_trial(self, time_train_avg=None, time_val_avg=None):
-        fpath_meta = self.dpath_trial / "metadata_trial.json"
-        if time_train_avg is not None:
-            time_train_avg = f"{time_train_avg:.2f}"
-            time_val_avg   = f"{time_val_avg:.2f}"
-        metadata = {
-            "runtime_perf":  {"cache": self.time_cache, "train_avg": time_train_avg, "val_avg": time_val_avg},      
-            "datetime_init": self.datetime_init,
-        }
-        save_json(metadata, fpath_meta)
-
-    def save_metadata_model(self, dpath_model, scores_val, idx_epoch_chkpt, idx_epoch):
-        fpath_meta = dpath_model / "metadata_model.json"
-        scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
-        metadata   = {
-            "scores_val": scores_val,
-            "idx_epoch":  f"{idx_epoch_chkpt}/{idx_epoch}",
-        }
-        save_json(metadata, fpath_meta)
 
     def init_opt_and_lr_sched(self):
 
@@ -386,169 +274,177 @@ class TrainPipeline:
         return obj_list[0]
 
     def train(self):
-        
-        if self.gpu_rank == 0:
-            print(
-                f"{' Fine-Tuning Init ':#^{75}}",
-                f"",
-                sep="\n"
-            )
-            data_tracker = TrialDataTracker(self.dpath_trial)
+        try:
+            scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw)
+            if self.gpu_rank == 0:
+                data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
+                data_tracker.update(scores_val)
+                PrintLog.eval(scores_val, header="Base")
 
-        scores_val, _, _, _ = self.val_pipe.run_validation(
-            self.modelw, 
-            verbose           =(self.gpu_rank == 0), 
-            verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
-        )
+                time_train_mean = RunningMean()
+                time_val_mean = RunningMean()
 
-        if self.gpu_rank == 0: data_tracker.update(scores_val)
-        time_train_avg          = 0.0
-        time_val_avg            = 0.0
-        idx_epoch_best_comp     = 0
-        idx_epoch_best_img2img  = 0
-        scores_val_best_comp    = {}
-        scores_val_best_img2img = {}
-        loss_val_best           = np.inf
-        for idx_epoch in range(1, self.cfg.n_epochs + 1):
-            if self.gpu_rank == 0: self.print_epoch_header(idx_epoch)
+            idx_epoch_best_comp = 0
+            idx_epoch_best_img2img = 0
+            scores_val_best_comp = {}
+            scores_val_best_img2img = {}
+            loss_val_best = np.inf
+            for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
-            # Let samplers know current epoch (crucial for shuffling)
-            sampler = getattr(self.dataloader, "sampler", None)
-            if isinstance(sampler, DistributedSampler):
-                sampler.set_epoch(idx_epoch)
-            batch_sampler = getattr(self.dataloader, "batch_sampler", None)
-            if hasattr(batch_sampler, "set_epoch"):
-                batch_sampler.set_epoch(idx_epoch)
+                if self.gpu_rank == 0:
+                    PrintLog.epoch_header(idx_epoch)
+                    lr = self.lr_schedw.get_lr()
+                    PrintLog.train_header(lr)
 
-            time_train_start = time.time()
-            self.modelw.model.train()
+                # Let samplers know current epoch (crucial for shuffling)
+                sampler = getattr(self.dataloader, "sampler", None)
+                if isinstance(sampler, DistributedSampler):
+                    sampler.set_epoch(idx_epoch)
+                batch_sampler = getattr(self.dataloader, "batch_sampler", None)
+                if hasattr(batch_sampler, "set_epoch"):
+                    batch_sampler.set_epoch(idx_epoch)
 
-            lr_mean   = RunningMean()
-            loss_mean = RunningMean()
+                time_train_start = time.time()
+                self.modelw.model.train()
 
-            for imgs_b, texts_b, class_encs_b, targ_data_b in tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0)):
+                lr_mean   = RunningMean()
+                loss_mean = RunningMean()
 
-                imgs_b       = imgs_b.to(self.cfg.device, non_blocking=True)
-                class_encs_b = class_encs_b.to(self.cfg.device)
-                B            = imgs_b.size(0)
-                self.samps_seen += B
+                for idx_batch, data_b in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
+                    imgs_b, texts_b, class_encs_b, targ_data_b = data_b
 
-                if self.lr_warmup > 0:
-                    lr = self._update_lr_warmup()
-                else:
-                    lr = self.optimizer.param_groups[0]["lr"]
+                    imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
+                    class_encs_b = class_encs_b.to(self.cfg.device)
+                    B = imgs_b.size(0)
+                    self.samps_seen += B
 
-                lr_mean.update(lr)
+                    if self.lr_warmup > 0:
+                        lr = self._update_lr_warmup()
+                    else:
+                        lr = self.optimizer.param_groups[0]["lr"]
 
-                self.optimizer.zero_grad()
+                    lr_mean.update(lr)
 
-                if self.cfg.hw.mixed_prec:
-                    with autocast(device_type=self.cfg.device.type):
+                    self.optimizer.zero_grad()
+
+                    if self.cfg.hw.mixed_prec:
+                        with autocast(device_type=self.cfg.device.type):
+                            loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                        self.scaler.scale(loss_batch).backward()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
                         loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
-                    self.scaler.scale(loss_batch).backward()
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
-                    loss_batch.backward()
-                    self.optimizer.step()
+                        loss_batch.backward()
+                        self.optimizer.step()
 
-                with torch.no_grad():
-                    loss_batch = loss_batch.detach().item()
-                    loss_mean.update(loss_batch)
-                    if self.cfg.dev['verbose_batch_loss']:
-                        print(f"Batch Loss: {loss_batch:.4f}")
+                    with torch.no_grad():
+                        loss_batch = loss_batch.detach().item()
+                        loss_mean.update(loss_batch)
 
-            loss_train_avg = loss_mean.value()  # should be average across all devices, not just GPU rank 0
+                    if self.gpu_rank == 0:
+                        PrintLog.batch(idx_batch, lr, loss_batch)
 
-            time_train_end = time.time()
-            time_train     = time_train_end - time_train_start
+                loss_train_avg = loss_mean.value()  # should be average across all devices, not just GPU rank 0
 
-            scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(
-                self.modelw, 
-                verbose           =(self.gpu_rank == 0), 
-                verbose_batch_loss=self.cfg.dev['verbose_batch_loss'],
-            )
+                time_train_end = time.time()
+                time_train = time_train_end - time_train_start
 
-            # broadcast results from GPU rank 0 to all ranks
-            scores_val      = self._broadcast_obj(scores_val)
-            is_best_comp    = self._broadcast_obj(is_best_comp)
-            is_best_img2img = self._broadcast_obj(is_best_img2img)
-            time_val        = self._broadcast_obj(time_val)
+                scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(self.modelw)
 
-            if self.gpu_rank == 0: data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
+                # broadcast results from GPU rank 0 to all ranks
+                scores_val = self._broadcast_obj(scores_val)
+                is_best_comp = self._broadcast_obj(is_best_comp)
+                is_best_img2img = self._broadcast_obj(is_best_img2img)
+                time_val = self._broadcast_obj(time_val)
 
-            if scores_val["comp_loss"] < loss_val_best:
-                loss_val_best = scores_val["comp_loss"]
+                if self.gpu_rank == 0:
+                    data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
 
-            self.lr_schedw.step(scores_val)
+                if scores_val["comp_loss"] < loss_val_best:
+                    loss_val_best = scores_val["comp_loss"]
 
+                self.lr_schedw.step(scores_val)
+
+                if self.gpu_rank == 0:
+
+                    time_train_mean.update(time_train)
+                    time_val_mean.update(time_val)
+
+                    if is_best_comp:
+                        self.modelw.save(ArtifactManager.dpath_model_best_comp)
+                        idx_epoch_best_comp  = idx_epoch
+                        scores_val_best_comp = scores_val
+                    if is_best_img2img:
+                        self.modelw.save(ArtifactManager.dpath_model_best_img2img)
+                        idx_epoch_best_img2img  = idx_epoch
+                        scores_val_best_img2img = scores_val
+                    if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_img2img:
+                        self.modelw.save(ArtifactManager.dpath_model_checkpoint)
+                        ArtifactManager.save_metadata_model(
+                            ArtifactManager.dpath_model_checkpoint, 
+                            scores_val, 
+                            idx_epoch, 
+                            idx_epoch
+                        )
+                        ArtifactManager.save_metadata_model(
+                            ArtifactManager.dpath_model_best_comp, 
+                            scores_val_best_comp, 
+                            idx_epoch_best_comp, 
+                            idx_epoch
+                        )
+                        ArtifactManager.save_metadata_model(
+                            ArtifactManager.dpath_model_best_img2img, 
+                            scores_val_best_img2img, 
+                            idx_epoch_best_img2img, 
+                            idx_epoch
+                        )
+                        ArtifactManager.save_metadata_trial(time_train_mean=time_train_mean.value(), time_val_mean=time_val_mean.value())
+                        data_tracker.save()
+                        plot_metrics(data_tracker, ArtifactManager.dpath_trial)
+
+                    PrintLog.epoch(
+                        time_train, 
+                        time_train_mean.value(), 
+                        time_val, 
+                        time_val_mean.value(), 
+                        loss_train_avg,
+                        scores_val,
+                        loss_val_best
+                    )
+                    PrintLog.eval(
+                        scores_val, 
+                        self.val_pipe.best_comp_map, 
+                        self.val_pipe.best_img2img_map
+                    )
+
+        finally:
             if self.gpu_rank == 0:
-                print(
-                    f"Train Loss ------ {loss_train_avg:.4f}",
-                    f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})",
-                    f"",
-                    sep="\n"
-                )
-
-            # track running means via Welford's algorithm
-            time_train_avg += (time_train - time_train_avg) / idx_epoch
-            time_val_avg += (time_val - time_val_avg) / idx_epoch
-
-            if self.gpu_rank == 0:
-                if is_best_comp:
-                    self.modelw.save(self.dpath_model_best_comp)
-                    idx_epoch_best_comp  = idx_epoch
-                    scores_val_best_comp = scores_val
-                    print(f"~ Best comp model saved to file ~\n")
-                if is_best_img2img:
-                    self.modelw.save(self.dpath_model_best_img2img)
-                    idx_epoch_best_img2img  = idx_epoch
-                    scores_val_best_img2img = scores_val
-                    print(f"~ Best img2img model saved to file ~\n")
-                if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_img2img:
-                    self.modelw.save(self.dpath_model_checkpoint)
-                    self.save_metadata_model(self.dpath_model_checkpoint, scores_val, idx_epoch, idx_epoch)
-                    self.save_metadata_model(self.dpath_model_best_comp, scores_val_best_comp, idx_epoch_best_comp, idx_epoch)
-                    self.save_metadata_model(self.dpath_model_best_img2img, scores_val_best_img2img, idx_epoch_best_img2img, idx_epoch)
-                    self.save_metadata_trial(time_train_avg=time_train_avg, time_val_avg=time_val_avg)
-                    data_tracker.save()
-                    plot_metrics(data_tracker, self.dpath_trial)
-
-                print(
-                    f"{' Elapsed Time ':=^{75}}",
-                    f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)",
-                    f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)",
-                    f"",
-                    sep="\n"
-                )
-
-    def print_epoch_header(self, idx_epoch):
-        header_epoch = f" Epoch {idx_epoch} "
-        print(
-            f"{header_epoch:#^{75}}{'' if self.cfg.experiment_name is None else ' (' + self.cfg.rdpath_trial + ')'}",
-            f"",
-            f"{' Train ':=^{75}}",
-            f"LR ----- {self.lr_schedw.get_lr():.2e}",
-            sep="\n"
-        )
+                PrintLog.close_logs()
 
 def main():
     gpu_rank, gpu_world_size, local_gpu_rank, device = setup_ddp()
 
-    config_train        = get_config_train(verbose=False)
-    config_train.device = device  # set local device
-    seed_libs(config_train.seed)
+    cfg = get_config_train()
+    cfg.device = device  # set local device
+    seed_libs(cfg.seed)
 
-    if gpu_rank == 0: config_train.print_init_info()
+    if gpu_rank == 0:
+        ArtifactManager.set_paths(cfg)
+        ArtifactManager.create_trial_dirs()
+        ArtifactManager.save_metadata_study(cfg)
+        ArtifactManager.save_metadata_experiment(cfg)
+        if cfg.logging:
+            PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
+        PrintLog.init_train(cfg)
 
-    modelw = VLMWrapper.build(config_train, verbose=(gpu_rank == 0))
-    modelw.set_class_wts(config_train)
-    if config_train.loss2["mix"] != 0.0:
-        modelw.set_class_wts(config_train, secondary=True)
-
+    modelw = VLMWrapper.build(cfg, verbose=(gpu_rank == 0))
+    modelw.set_class_wts(cfg)
+    if cfg.loss2["mix"] != 0.0:
+        modelw.set_class_wts(cfg, secondary=True)
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
-    train_pipe   = TrainPipeline(modelw, config_train, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size)
+
+    train_pipe = TrainPipeline(modelw, cfg, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size)
     train_pipe.train()
 
     cleanup_ddp()

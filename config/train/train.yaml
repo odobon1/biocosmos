@@ -1,7 +1,7 @@
+# study_name:      phylo_nvidia
+# experiment_name: mix1-0_all-geo
 study_name:      dev
-# study_name:      phylo2
-experiment_name: dev7
-# experiment_name: phylogenetic_geo1-mse_t0fb0f
+experiment_name: dev
 seed:            42
 # split_name:      S29-42
 split_name:      P38-42
@@ -9,12 +9,10 @@ split_name:      P38-42
 
 n_epochs:    200
 chkpt_every: 1
-batch_size:  2048  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size:  1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 dv_batching: true  # (true) dorsal/ventral-homogeneous batching
 
 dev:
-  verbose_batch_loss:    false
-  # whether to allow trials to overwrite data at the study/experiment/trial level (for dev/debug, should otherwise be set to false)
   allow_overwrite_trial: true
   allow_diff_study:      true
   allow_diff_experiment: true
@@ -26,16 +24,16 @@ arch:  # architecture
 loss:
   type:  bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
   sim:   cos  # commonly used: {cos, geo1, geo2}
-  targ:  multipos  # commonly used: {aligned, multipos, hierarchical, phylogenetic}
+  targ:  multipos  # commonly used: {aligned, multipos, tax, phylo}
   wting: true
   focal: true
 
 # same settings should be equivalent
 loss2:  # secondary loss
-  mix:  0.1  # set to 0.0 to disable computation
-  type: bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
-  sim:  geo1
-  targ: phylogenetic
+  mix:   0.0  # set to 0.0 to disable computation
+  type:  bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
+  sim:   geo1
+  targ:  phylo
   wting: true
   focal: true
 
@@ -57,3 +55,5 @@ text_preps:
   # train: mixed
   train: combo_temps
   valid: bioclip_sci
+
+logging: true

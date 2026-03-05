@@ -51,8 +51,7 @@ class SplitSetEvalPipeline:
     @torch.no_grad()
     def evaluate_split(
         self, 
-        modelw:             Any, 
-        verbose_batch_loss: bool = False
+        modelw: Any,
     ) -> Tuple[Dict[str, float], float, float]:
         
         time_start = time.time()
@@ -120,8 +119,6 @@ class SplitSetEvalPipeline:
                 batch_loss = loss.detach().item() * B
                 loss_total += batch_loss
                 n_samps_loss += B
-                if verbose_batch_loss:
-                    print(f"Batch Loss: {batch_loss:.4f}")
 
         # local concatenation
         embs_img_local  = torch.cat(embs_imgs, dim=0).to(modelw.device)  # ------------- Tensor(Q/G, D)
@@ -378,16 +375,11 @@ class ValidationPipeline:
 
     def run_validation(
         self, 
-        modelw:             Any, 
-        verbose:            bool = True, 
-        verbose_batch_loss: bool = False,
-    ) -> Tuple[Dict[str, float], bool, bool, float]:
-        """
-        `is_best` param in the return will dictate when models are saved (early stopping)
-        """
+        modelw: Any, 
+    ) -> Tuple[Dict[str, float], bool, bool, float, Optional[str]]:
 
-        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw, verbose_batch_loss)
-        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw, verbose_batch_loss)
+        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw)
+        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw)
 
         comp_map = (scores_id["img2txt_map"] + \
                     scores_id["img2img_map"] + \
@@ -414,8 +406,6 @@ class ValidationPipeline:
             "img2img_map":       img2img_map,
             "comp_loss":         (loss_avg_id + loss_avg_ood) / 2
         }
-        if verbose:
-            self.print_val(scores_val)
 
         time_elapsed_val = time_elapsed_id + time_elapsed_ood
 
@@ -434,28 +424,3 @@ class ValidationPipeline:
                 self.best_img2img_map = img2img_map
                 is_best_img2img = True
         return is_best_comp, is_best_img2img
-
-    def print_val(self, scores: Dict[str, float]) -> None:
-
-        header = " Validation "
-        if self.header_tag is not None:
-            header += f"({self.header_tag}) "
-
-        print(
-            f"{header:=^{75}}",
-            f"ID img2txt mAP ---- {scores['id_img2txt_map']:.4f}",
-            f"ID img2img mAP ---- {scores['id_img2img_map']:.4f}",
-            f"ID txt2img mAP ---- {scores['id_txt2img_map']:.4f}",
-            f"OOD img2txt mAP --- {scores['ood_img2txt_map']:.4f}",
-            f"OOD img2img mAP --- {scores['ood_img2img_map']:.4f}",
-            f"OOD txt2img mAP --- {scores['ood_txt2img_map']:.4f}",
-            f"{'':-^{75}}",
-            f"Composite mAP --- {scores['comp_map']:.4f} (best: {self.best_comp_map:.4f})",
-            f"img2img mAP ----- {scores['img2img_map']:.4f} (best: {self.best_img2img_map:.4f})",
-            f"{'':-^{75}}",
-            f"ID Loss ----- {scores['id_loss']:.4f}",
-            f"OOD Loss ---- {scores['ood_loss']:.4f}",
-            f"Comp Loss --- {scores['comp_loss']:.4f}",
-            f"",
-            sep="\n"
-        )

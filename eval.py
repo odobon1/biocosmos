@@ -2,7 +2,7 @@ import torch.distributed as dist  # type: ignore[import]
 
 from models import VLMWrapper
 from utils_eval import ValidationPipeline
-from utils import get_text_preps
+from utils import get_text_preps, PrintLog
 from utils_config import get_config_eval
 from utils_ddp import setup_ddp, cleanup_ddp
 
@@ -23,7 +23,10 @@ def main():
     text_preps = get_text_preps(config_eval.text_preps)
     val_pipe   = ValidationPipeline(config_eval, text_preps, modelw.img_pp_val)
 
-    val_pipe.run_validation(modelw, verbose_batch_loss=config_eval.dev['verbose_batch_loss'])
+    scores_val, _, _, _ = val_pipe.run_validation(modelw)
+
+    if gpu_rank == 0:
+        PrintLog.eval(scores_val)
 
     cleanup_ddp()
 

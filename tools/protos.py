@@ -1,5 +1,5 @@
 """
-torchrun --standalone --nproc-per-node=auto -m tools2.protos
+torchrun --standalone --nproc-per-node=auto -m tools.protos
 
 Note: only tested with 1 GPU
 """

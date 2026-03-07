@@ -29,6 +29,7 @@ RFPATHS = [
     "metadata/README.md",
     "tools/probe_batch_size.py",
     "tools/protos.py",
+    "tools/readable_tree.py",
     "tools/src_comp.py",
     "tools/vis_manifold.py",
     "utils/config.py",

@@ -40,7 +40,7 @@ elif CLUSTER == "hpg":
         "artifacts":        dpath_root / "artifacts",
         "nymph_imgs":       dpath_nymph / "images",
         "nymph_metadata":   dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
-        "nymph_phylo_tree": dpath_root / "tree_nymphalidae_chazot2021_all.tree",
+        "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
         "vlm4bio":          dpath_vlm4bio,
     }
 

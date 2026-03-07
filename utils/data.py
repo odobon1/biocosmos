@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import requests  # type: ignore[import]
 from typing import Dict, List, Callable, Union, Tuple
 
-from utils import paths, load_pickle, load_split, shuffle_list
+from utils.utils import paths, load_pickle, load_split, shuffle_list
 
 import pdb
 

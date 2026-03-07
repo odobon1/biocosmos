@@ -6,7 +6,7 @@ import glob
 import pandas as pd  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
-from utils import paths, load_pickle, save_pickle
+from utils.utils import paths, load_pickle, save_pickle
 
 import pdb
 

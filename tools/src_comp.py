@@ -4,7 +4,7 @@ python -m tools.src_comp
 
 from pathlib import Path
 
-from utils import paths
+from utils.utils import paths
 
 
 FPATH_OUT = Path("tools/src.txt")
@@ -14,6 +14,7 @@ dpath_root = paths["root"]
 RFPATHS = [
     "artifacts/dev/dev/42/logs/batch.log",
     "artifacts/dev/dev/42/logs/epoch.log",
+    "artifacts/dev/dev/42/logs/init.log",
     "config/train/lr_sched.yaml",
     "config/train/train.yaml",
     "config/eval.yaml",
@@ -26,27 +27,27 @@ RFPATHS = [
     "metadata/gen_split.py",
     "metadata/gen_tax_nymph.py",
     "metadata/README.md",
-    "tools/src_comp.py",
     "tools/probe_batch_size.py",
     "tools/protos.py",
+    "tools/src_comp.py",
     "tools/vis_manifold.py",
+    "utils/config.py",
+    "utils/data.py",
+    "utils/ddp.py",
+    "utils/eval.py",
+    "utils/hardware.py",
+    "utils/imb.py",
+    "utils/loss.py",
+    "utils/phylo.py",
+    "utils/pp.py",
+    "utils/train.py",
+    "utils/utils.py",
     "environment_b200.yaml",
     "eval.py",
     "models.py",
     "README.md",
     "setup.sh",
     "train.py",
-    "utils_config.py",
-    "utils_data.py",
-    "utils_ddp.py",
-    "utils_eval.py",
-    "utils_hardware.py",
-    "utils_imb.py",
-    "utils_loss.py",
-    "utils_phylo.py",
-    "utils_pp.py",
-    "utils_train.py",
-    "utils.py",
 ]
 
 fpaths = [dpath_root / rfpath for rfpath in RFPATHS]

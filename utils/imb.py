@@ -1,7 +1,7 @@
 import torch  # type: ignore[import]
 import numpy as np  # type: ignore[import]
 
-from utils import load_split
+from utils.utils import load_split
 
 
 def compute_class_wts(split_name, cfg_loss):

@@ -5,8 +5,8 @@ import time
 from tqdm import tqdm  # type: ignore[import]
 from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 
-from utils_data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
-from utils_head import compute_sim
+from utils.data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
+from utils.head import compute_sim
 
 import pdb
 

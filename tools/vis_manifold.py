@@ -13,9 +13,9 @@ from tqdm import tqdm  # type: ignore[import]
 import random
 
 from models import VLMWrapper
-from utils_config import get_config_eval
-from utils_data import spawn_dataloader, spawn_indexes, sid_to_genus
-from utils import paths, get_text_preps
+from utils.config import get_config_eval
+from utils.data import spawn_dataloader, spawn_indexes, sid_to_genus
+from utils.utils import paths, get_text_preps
 
 def get_embs_and_labels(modelw, dataloader, device, mixed_prec):
     """

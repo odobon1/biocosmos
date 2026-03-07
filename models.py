@@ -12,10 +12,10 @@ from types import SimpleNamespace
 from typing import List, Tuple, Any, Dict
 from pathlib import Path
 
-from utils import paths
-from utils_loss import compute_loss
-from utils_head import compute_sim
-from utils_imb import compute_class_wts
+from utils.utils import paths
+from utils.loss import compute_loss
+from utils.head import compute_sim
+from utils.imb import compute_class_wts
 
 import pdb
 

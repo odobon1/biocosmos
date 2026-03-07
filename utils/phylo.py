@@ -6,7 +6,7 @@ from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
 from itertools import combinations
 from typing import Dict, List
 
-from utils import paths
+from utils.utils import paths
 
 import pdb
 
@@ -77,6 +77,10 @@ class PhyloVCV:
         return vcv
     
     def get_targ(self, sid_a: str, sid_b: str) -> float:
+        """
+        Returns the phylogenetic correlation between two samples.
+        Currently only used for verification purposes.
+        """
         i = self._sid_to_idx[sid_a]
         j = self._sid_to_idx[sid_b]
         return float(np.clip(self.corr[i, j], 0.0, 1.0))

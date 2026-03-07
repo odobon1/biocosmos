@@ -7,7 +7,7 @@ import numpy as np  # type: ignore[import]
 import shutil
 from dataclasses import asdict
 
-from utils import (
+from utils.utils import (
     paths, 
     save_json, 
     load_json, 

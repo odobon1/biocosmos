@@ -2,9 +2,9 @@
 Takes metadata/tax/nymph structure and produces metadata/rank_keys/nymph structure
 """
 
-from bidict import bidict
+from bidict import bidict  # type: ignore[import]
 
-from utils import paths, load_pickle, save_pickle
+from utils.utils import paths, load_pickle, save_pickle
 
 import pdb
 

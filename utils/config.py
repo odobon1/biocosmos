@@ -2,8 +2,8 @@ import torch  # type: ignore[import]
 from dataclasses import dataclass, field
 import yaml  # type: ignore[import]
 
-from utils import PrintLog, load_json, paths
-from utils_hardware import compute_dataloader_workers_prefetch
+from utils.utils import PrintLog, load_json, paths
+from utils.hardware import compute_dataloader_workers_prefetch
 
 import pdb
 

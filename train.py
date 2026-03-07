@@ -15,7 +15,7 @@ import time
 import numpy as np  # type: ignore[import]
 import math
 
-from utils import (
+from utils.utils import (
     save_pickle, 
     seed_libs,
     get_text_preps, 
@@ -23,11 +23,11 @@ from utils import (
     PrintLog,
 )
 from models import VLMWrapper
-from utils_data import spawn_dataloader, spawn_indexes
-from utils_eval import ValidationPipeline
-from utils_config import get_config_train
-from utils_train import ArtifactManager, plot_metrics
-from utils_ddp import setup_ddp, cleanup_ddp
+from utils.data import spawn_dataloader, spawn_indexes
+from utils.eval import ValidationPipeline
+from utils.config import get_config_train
+from utils.train import ArtifactManager, plot_metrics
+from utils.ddp import setup_ddp, cleanup_ddp
 
 import pdb
 

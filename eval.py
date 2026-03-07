@@ -1,10 +1,10 @@
 import torch.distributed as dist  # type: ignore[import]
 
 from models import VLMWrapper
-from utils_eval import ValidationPipeline
-from utils import get_text_preps, PrintLog
-from utils_config import get_config_eval
-from utils_ddp import setup_ddp, cleanup_ddp
+from utils.eval import ValidationPipeline
+from utils.utils import get_text_preps, PrintLog
+from utils.config import get_config_eval
+from utils.ddp import setup_ddp, cleanup_ddp
 
 import pdb
 

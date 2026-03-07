@@ -1,8 +1,8 @@
 import os
 from tqdm import tqdm  # type: ignore[import]
 
-from utils import paths, save_pickle
-from utils_data import gbif_common_name
+from utils.utils import paths, save_pickle
+from utils.data import gbif_common_name
 
 import pdb
 

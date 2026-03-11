@@ -79,29 +79,11 @@ class SplitSetEvalPipeline:
 
             B = imgs_b.size(0)
 
-            is_full_local  = 1.0 if B == self.batch_size else 0.0  # 1.0 if full sub-batch, 0.0 if partial
-            is_full_tensor = torch.tensor([is_full_local], device=modelw.device)
-
-            dist.all_reduce(is_full_tensor, op=dist.ReduceOp.MIN)  # is_full_tensor is 0.0 if any rank has partial sub-batch
-            is_full_batch = (is_full_tensor.item() == 1.0)
-
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, embs_img_b = modelw.batch_step(
-                        imgs_b,
-                        texts_b,
-                        class_encs_img_b,
-                        targ_data_b,
-                        loss_flag=is_full_batch,
-                    )
+                    loss, embs_img_b = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
             else:
-                loss, embs_img_b = modelw.batch_step(
-                    imgs_b,
-                    texts_b,
-                    class_encs_img_b,
-                    targ_data_b,
-                    loss_flag=is_full_batch,
-                )
+                loss, embs_img_b = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())
@@ -115,10 +97,9 @@ class SplitSetEvalPipeline:
             n_correct += n_correct_b
             n_samps += B
 
-            if B == self.batch_size:  # only compute loss for full batches
-                batch_loss = loss.detach().item() * B
-                loss_total += batch_loss
-                n_samps_loss += B
+            batch_loss = loss.detach().item() * B
+            loss_total += batch_loss
+            n_samps_loss += B
 
         # local concatenation
         embs_img_local  = torch.cat(embs_imgs, dim=0).to(modelw.device)  # ------------- Tensor(Q/G, D)
@@ -376,7 +357,7 @@ class ValidationPipeline:
     def run_validation(
         self, 
         modelw: Any, 
-    ) -> Tuple[Dict[str, float], bool, bool, float, Optional[str]]:
+    ) -> Tuple[Dict[str, float], bool, bool, float]:
 
         scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw)
         scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw)

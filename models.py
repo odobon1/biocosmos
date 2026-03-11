@@ -432,24 +432,57 @@ class VLMWrapper(abc.ABC):
         """
         Turn the local batch on this rank into a global batch across all ranks.
         Works for both single GPU (no-op) and DDP.
+        Supports uneven local batch sizes by padding to the max local size,
+        gathering, then trimming back to the true sizes.
         """
         if self.world_size == 1:
-            return embs_img_b, embs_txt_b, class_encs_b, targ_data_b  # single GPU no-op
+            return embs_img_b, embs_txt_b, class_encs_b, targ_data_b
 
-        # Embeddings (need gradients)
-        img_parts    = _AllGather.apply(embs_img_b)  # Tuple(G)
-        txt_parts    = _AllGather.apply(embs_txt_b)
-        embs_img_all = torch.cat(img_parts, dim=0)
-        embs_txt_all = torch.cat(txt_parts, dim=0)
+        device = embs_img_b.device
+        B_local = embs_img_b.size(0)
 
-        # Class encodings (no grad)
-        class_list = [torch.empty_like(class_encs_b) for _ in range(self.world_size)]
-        dist.all_gather(class_list, class_encs_b)
-        class_encs_all = torch.cat(class_list, dim=0)
+        # gather true local batch sizes from all ranks
+        sizes_t = torch.tensor([B_local], device=device, dtype=torch.long)
+        sizes_list = [torch.zeros_like(sizes_t) for _ in range(self.world_size)]
+        dist.all_gather(sizes_list, sizes_t)
+        sizes = [int(x.item()) for x in sizes_list]
 
-        # Target metadata (Python objects)
+        B_max = max(sizes)
+
+        def pad_rows(x: torch.Tensor, B_target: int) -> torch.Tensor:
+            B = x.size(0)
+            if B == B_target:
+                return x
+            pad_shape = (B_target - B, *x.shape[1:])
+            pad = torch.zeros(pad_shape, device=x.device, dtype=x.dtype)
+            return torch.cat([x, pad], dim=0)
+
+        # pad tensors so all_gather can handle the last uneven batch
+        embs_img_pad   = pad_rows(embs_img_b, B_max)
+        embs_txt_pad   = pad_rows(embs_txt_b, B_max)
+        class_encs_pad = pad_rows(class_encs_b, B_max)
+
+        # embeddings (need gradients)
+        img_parts_pad = _AllGather.apply(embs_img_pad)
+        txt_parts_pad = _AllGather.apply(embs_txt_pad)
+
+        # class encodings (no grad)
+        class_parts_pad = [torch.empty_like(class_encs_pad) for _ in range(self.world_size)]
+        dist.all_gather(class_parts_pad, class_encs_pad)
+
+        # target metadata (Python objects) already supports variable-length lists
         obj_list = [None] * self.world_size
-        dist.all_gather_object(obj_list, targ_data_b)
+        dist.all_gather_object(obj_list, list(targ_data_b))
+
+        # trim each gathered shard back to its true local size
+        img_parts   = [part[:sizes[r]] for r, part in enumerate(img_parts_pad)]
+        txt_parts   = [part[:sizes[r]] for r, part in enumerate(txt_parts_pad)]
+        class_parts = [part[:sizes[r]] for r, part in enumerate(class_parts_pad)]
+
+        embs_img_all   = torch.cat(img_parts, dim=0)
+        embs_txt_all   = torch.cat(txt_parts, dim=0)
+        class_encs_all = torch.cat(class_parts, dim=0)
+
         targ_data_all = []
         for td in obj_list:
             targ_data_all.extend(td)
@@ -462,7 +495,6 @@ class VLMWrapper(abc.ABC):
         txts_b:       Tuple[str],
         class_encs_b: torch.Tensor,
         targ_data_b:  Tuple[Any],
-        loss_flag:    bool = True,
     ) -> Tuple[Any]:
         """
         Performs a single forward pass step. Encodes images and text, computes loss if flag is set.
@@ -484,14 +516,12 @@ class VLMWrapper(abc.ABC):
         embs_img_b = F.normalize(output[0], dim=1)
         embs_txt_b = F.normalize(output[1], dim=1)
 
-        loss = None
-        if loss_flag:
-            loss = self._global_batch_loss(
-                embs_img_b,
-                embs_txt_b,
-                class_encs_b,
-                targ_data_b,
-            )
+        loss = self._global_batch_loss(
+            embs_img_b,
+            embs_txt_b,
+            class_encs_b,
+            targ_data_b,
+        )
 
         return loss, embs_img_b
 

@@ -100,21 +100,22 @@ def get_config_loss(cfg_train, secondary=False):
     with open(paths["config"] / fpath) as f:
         cfg_loss = yaml.safe_load(f)
 
-    if cfg_train_loss["type"] in ("infonce1", "infonce2", "bce"):
-        if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
-            print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias overridden!\n")
-    elif cfg_train_loss["type"] in ("mse", "huber"):
-        if not (cfg_loss["logits"]["scale_init"] == 0.0 and cfg_loss["logits"]["bias_init"]  == 0.0):
-            print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias not initialized to 0.0!\n")
+    if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
+        print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias overridden!\n")
 
-    if not cfg_train_loss["wting"]:
+    wting = cfg_train_loss.get("wting", False)
+    focal = cfg_train_loss.get("focal", False)
+    dyn_smr = cfg_train_loss.get("dyn_smr", False)
+
+    if not wting and "class_weighting" in cfg_loss:
         del cfg_loss["class_weighting"]
-    if not cfg_train_loss["focal"]:
+    if not focal and "focal" in cfg_loss:
         del cfg_loss["focal"]
-    if cfg_train_loss["type"] not in ("bce", "mse", "huber"):
+
+    if cfg_train_loss["type"] == "bce":
+        cfg_loss["dyn_smr"] = dyn_smr
+    elif "dyn_smr" in cfg_loss:
         del cfg_loss["dyn_smr"]
-    if cfg_train_loss["type"] not in ("mse", "huber"):
-        del cfg_loss["regression"]
 
     return cfg_loss
 

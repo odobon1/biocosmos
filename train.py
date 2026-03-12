@@ -47,24 +47,25 @@ class TrialDataTracker:
         self.fpath_data = dpath_trial / "data_trial.pkl"
 
         self.data = {
-            "id_img2txt_prec1":  [],
-            "id_img2txt_map":    [],
-            "id_img2img_map":    [],
-            "id_txt2img_map":    [],
-            "id_loss":           [],
+            "id_img2txt_prec1": [],
+            "id_img2txt_map": [],
+            "id_img2img_map": [],
+            "id_txt2img_map": [],
+            "id_loss": [],
             "ood_img2txt_prec1": [],
-            "ood_img2txt_map":   [],
-            "ood_img2img_map":   [],
-            "ood_txt2img_map":   [],
-            "ood_loss":          [],
-            "comp_map":          [],
-            "img2img_map":       [],
-            "comp_loss":         [],
-            "lr":                [],
-            "loss_train":        [],
+            "ood_img2txt_map": [],
+            "ood_img2img_map": [],
+            "ood_txt2img_map": [],
+            "ood_loss": [],
+            "comp_map": [],
+            "img2img_map": [],
+            "comp_loss": [],
+            "lr": [],
+            "loss_train": [],
+            "loss_raw_train": [],
         }
 
-    def update(self, scores_val, lr=None, loss_train=None):
+    def update(self, scores_val, lr=None, loss_train=None, loss_raw_train=None):
 
         for score in scores_val.keys():
             self.data[score].append(float(scores_val[score]))
@@ -73,6 +74,8 @@ class TrialDataTracker:
             self.data["lr"].append(lr)
         if loss_train is not None:
             self.data["loss_train"].append(loss_train)
+        if loss_raw_train is not None:
+            self.data["loss_raw_train"].append(loss_raw_train)
 
     def save(self):
         save_pickle(self.data, self.fpath_data)
@@ -131,11 +134,11 @@ class CosineExponentialLR(LambdaLR):
 
     def __init__(self, optimizer, gamma, period, peak_ratio, lr_nom_min):
 
-        self.lr_init     = optimizer.param_groups[0]["lr"]
-        self.gamma       = gamma
-        self.peak_ratio  = peak_ratio
-        self.period      = period
-        self.lr_nom_min  = lr_nom_min
+        self.lr_init = optimizer.param_groups[0]["lr"]
+        self.gamma = gamma
+        self.peak_ratio = peak_ratio
+        self.period = period
+        self.lr_nom_min = lr_nom_min
 
         super().__init__(optimizer, lr_lambda=self._lr_lambda)
 
@@ -307,8 +310,9 @@ class TrainPipeline:
                 time_train_start = time.time()
                 self.modelw.model.train()
 
-                lr_mean   = RunningMean()
+                lr_mean = RunningMean()
                 loss_mean = RunningMean()
+                loss_raw_mean = RunningMean()
 
                 for idx_batch, data_b in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
                     imgs_b, texts_b, class_encs_b, targ_data_b = data_b
@@ -322,30 +326,33 @@ class TrainPipeline:
                         lr = self._update_lr_warmup()
                     else:
                         lr = self.optimizer.param_groups[0]["lr"]
-
                     lr_mean.update(lr)
 
-                    self.optimizer.zero_grad()
+                    self.optimizer.zero_grad(set_to_none=True)
 
                     if self.cfg.hw.mixed_prec:
                         with autocast(device_type=self.cfg.device.type):
-                            loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
-                        self.scaler.scale(loss_batch).backward()
+                            loss, loss_raw, embs_img_b, embs_txt_b, logits = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                        self.scaler.scale(loss).backward()
+                        self.scaler.unscale_(self.optimizer)
+                        if self.gpu_rank == 0:
+                            PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
                     else:
-                        loss_batch, _ = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
-                        loss_batch.backward()
+                        loss, loss_raw, embs_img_b, embs_txt_b, logits = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                        loss.backward()
+                        if self.gpu_rank == 0:
+                            PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.optimizer.step()
 
                     with torch.no_grad():
-                        loss_batch = loss_batch.detach().item()
-                        loss_mean.update(loss_batch)
+                        loss = loss.detach().item()
+                        loss_raw = loss_raw.detach().item()
+                        loss_mean.update(loss)
+                        loss_raw_mean.update(loss_raw)
 
-                    if self.gpu_rank == 0:
-                        PrintLog.batch(idx_batch, lr, loss_batch)
-
-                loss_train_avg = loss_mean.value()  # should be average across all devices, not just GPU rank 0
+                loss_train_avg = loss_mean.value()
 
                 time_train_end = time.time()
                 time_train = time_train_end - time_train_start
@@ -359,7 +366,12 @@ class TrainPipeline:
                 time_val = self._broadcast_obj(time_val)
 
                 if self.gpu_rank == 0:
-                    data_tracker.update(scores_val, lr=lr_mean.value(), loss_train=loss_train_avg)
+                    data_tracker.update(
+                        scores_val, 
+                        lr=lr_mean.value(), 
+                        loss_train=loss_mean.value(), 
+                        loss_raw_train=loss_raw_mean.value(),
+                    )
 
                 if scores_val["comp_loss"] < loss_val_best:
                     loss_val_best = scores_val["comp_loss"]
@@ -410,12 +422,12 @@ class TrainPipeline:
                         time_val_mean.value(), 
                         loss_train_avg,
                         scores_val,
-                        loss_val_best
+                        loss_val_best,
                     )
                     PrintLog.eval(
                         scores_val, 
                         self.val_pipe.best_comp_map, 
-                        self.val_pipe.best_img2img_map
+                        self.val_pipe.best_img2img_map,
                     )
 
         finally:

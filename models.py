@@ -331,7 +331,7 @@ class VLMWrapper(abc.ABC):
         Computes loss for a batch given logits and target data.
         """
         cw, cpw = (self.class_wts, self.class_pair_wts) if not secondary else (self.class_wts2, self.class_pair_wts2)
-        loss = compute_loss(
+        loss, loss_raw = compute_loss(
             cfg_loss,
             logits, 
             class_encs_b,
@@ -339,8 +339,9 @@ class VLMWrapper(abc.ABC):
             cw, 
             cpw, 
             self.device,
+            train=self.model.training,
         )
-        return loss
+        return loss, loss_raw
 
     def freeze(self, freeze_txt: bool, freeze_img: bool) -> None:
         """
@@ -376,11 +377,11 @@ class VLMWrapper(abc.ABC):
         """
         Computes loss for the full global batch according to a given loss configuration (primary or secondary).
         """
-        sim    = compute_sim(embs_img_all, embs_txt_all, cfg_loss["sim"])
+        sim = compute_sim(embs_img_all, embs_txt_all, cfg_loss["sim"])
         logits = self.compute_logits(sim, secondary=secondary)
-        loss   = self.compute_batch_loss(logits, class_encs_all, targ_data_all, cfg_loss, secondary=secondary)
+        loss, loss_raw = self.compute_batch_loss(logits, class_encs_all, targ_data_all, cfg_loss, secondary=secondary)
 
-        return loss
+        return loss, loss_raw, logits
 
     def _global_batch_loss(
         self,
@@ -399,7 +400,7 @@ class VLMWrapper(abc.ABC):
             embs_img_b, embs_txt_b, class_encs_b, targ_data_b
         )
 
-        loss1 = self._loss_for_cfg_full_batch(
+        loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
             embs_img_all,
             embs_txt_all,
             class_encs_all,
@@ -407,10 +408,12 @@ class VLMWrapper(abc.ABC):
             self.cfg.loss,
             secondary=False,
         )
+        if logits1.requires_grad:
+            logits1.retain_grad()
 
         mix = self.cfg.loss2["mix"]
         if mix != 0.0:
-            loss2 = self._loss_for_cfg_full_batch(
+            loss2, loss2_raw, logits2 = self._loss_for_cfg_full_batch(
                 embs_img_all,
                 embs_txt_all,
                 class_encs_all,
@@ -418,9 +421,15 @@ class VLMWrapper(abc.ABC):
                 self.cfg.loss2,
                 secondary=True,
             )
-            return (1.0 - mix) * loss1 + mix * loss2
+            if logits2.requires_grad:
+                logits2.retain_grad()  # for batch-level logging of logit-level gradient norm
 
-        return loss1
+            loss = (1.0 - mix) * loss1 + mix * loss2
+            loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
+
+            return loss, loss_raw, (logits1, logits2)
+
+        return loss1, loss1_raw, (logits1, None)
 
     def _gather_batch(
         self,
@@ -516,14 +525,19 @@ class VLMWrapper(abc.ABC):
         embs_img_b = F.normalize(output[0], dim=1)
         embs_txt_b = F.normalize(output[1], dim=1)
 
-        loss = self._global_batch_loss(
+        if embs_img_b.requires_grad:
+            embs_img_b.retain_grad()  # for batch-level logging of image embeddings gradient norm
+        if embs_txt_b.requires_grad:
+            embs_txt_b.retain_grad()  # for batch-level logging of text embeddings gradient norm
+
+        loss, loss_raw, logits = self._global_batch_loss(
             embs_img_b,
             embs_txt_b,
             class_encs_b,
             targ_data_b,
         )
 
-        return loss, embs_img_b
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Any) -> None:

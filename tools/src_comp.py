@@ -11,10 +11,12 @@ FPATH_OUT = Path("tools/src.txt")
 
 dpath_root = paths["root"]
 
+dpath_logs = "artifacts/dev/dev3-test2/42/logs/"
+
 RFPATHS = [
-    "artifacts/dev/dev/42/logs/batch.log",
-    "artifacts/dev/dev/42/logs/epoch.log",
-    "artifacts/dev/dev/42/logs/init.log",
+    dpath_logs + "batch.log",
+    dpath_logs + "epoch.log",
+    dpath_logs + "init.log",
     "config/train/lr_sched.yaml",
     "config/train/train.yaml",
     "config/eval.yaml",

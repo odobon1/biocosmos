@@ -6,6 +6,7 @@ import numpy as np  # type: ignore[import]
 import torch  # type: ignore[import]
 import json
 from typing import List, Any, Dict, Optional
+import math
 
 import pdb
 
@@ -28,20 +29,26 @@ elif CLUSTER == "hpg":
     dpath_root    = Path(os.getcwd())
     dpath_data    = dpath_group / "data"
     dpath_nymph   = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
+    dpath_lepit   = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
     dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
 
     paths = {
-        "data":             dpath_data,
-        "hf_cache":         dpath_data / "cache/huggingface/hub",
-        "group":            dpath_group,
-        "root":             dpath_root,
-        "config":           dpath_root / "config",
-        "metadata":         dpath_root / "metadata",
-        "artifacts":        dpath_root / "artifacts",
-        "nymph_imgs":       dpath_nymph / "images",
-        "nymph_metadata":   dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
+        "data": dpath_data,
+        "hf_cache": dpath_data / "cache/huggingface/hub",
+        "group": dpath_group,
+        "root": dpath_root,
+        "config": dpath_root / "config",
+        "metadata": dpath_root / "metadata",
+        "artifacts": dpath_root / "artifacts",
+        "nymph_imgs": dpath_nymph / "images",
+        "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
         "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
-        "vlm4bio":          dpath_vlm4bio,
+        "lepit_imgs": dpath_lepit / "images",
+        "lepit_metadata": dpath_lepit / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+        "lepit_metadata_r": dpath_lepit / "metadata/data_tree_renamed_full.csv",
+        "lepit_phylo_tree": dpath_lepit / "metadata/tree_orig.tre",
+        "lepit_phylo_tree_r": dpath_lepit / "metadata/tree_renamed_full.tre",
+        "vlm4bio": dpath_vlm4bio,
     }
 
 def seed_libs(seed):
@@ -201,13 +208,39 @@ class PrintLog:
             PrintLog.log_epoch.write(epoch_info)
 
     @staticmethod
-    def batch(idx_batch, lr, loss_batch):
+    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model):
+
+        def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
+            if x is None:
+                return float("nan")
+            if x.grad is None:
+                return float("nan")
+            return x.grad.detach().pow(2).sum().sqrt().item()
+
+        def model_grad_l2_norm(model: torch.nn.Module) -> float:
+            total = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    total += p.grad.detach().pow(2).sum().item()
+            return math.sqrt(total)
+
+        logits1 = logits[0]
+        logits2 = logits[1]
+
+        logits_line = f"gn_logits1={tensor_grad_l2_norm(logits1):.3e}"
+        if logits2 is not None:
+            logits_line += f" gn_logits2={tensor_grad_l2_norm(logits2):.3e}"
+
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
             PrintLog.log_batch.write(
                 f"{batch_str:<10} "
                 f"lr={lr:.3e} "
                 f"loss={loss_batch:.3e} "
+                f"gn_img={tensor_grad_l2_norm(embs_img_b):.3e} "
+                f"gn_txt={tensor_grad_l2_norm(embs_txt_b):.3e} "
+                f"{logits_line} "
+                f"gn_model={model_grad_l2_norm(model):.3e} "
                 f"\n"
             )
 
@@ -250,9 +283,9 @@ class PrintLog:
             f"Composite mAP --- {scores_eval['comp_map']:.4f}{best_comp_map_str}\n"
             f"img2img mAP ----- {scores_eval['img2img_map']:.4f}{best_img2img_map_str}\n"
             f"{'':-^{75}}\n"
-            f"ID Loss ----- {scores_eval['id_loss']:.4f}\n"
-            f"OOD Loss ---- {scores_eval['ood_loss']:.4f}\n"
-            f"Comp Loss --- {scores_eval['comp_loss']:.4f}\n"
+            f"ID Loss ----- {scores_eval['id_loss']:.3e}\n"
+            f"OOD Loss ---- {scores_eval['ood_loss']:.3e}\n"
+            f"Comp Loss --- {scores_eval['comp_loss']:.3e}\n"
             f"\n"
         )
         print(eval_printout)

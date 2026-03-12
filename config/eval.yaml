@@ -13,15 +13,13 @@ arch:
   non_causal: false
 
 loss:
-  type:  bce  # options: {infonce1, infonce2, bce, mse, huber}
+  type:  bce  # options: {infonce1, infonce2, bce}
   sim:   cos  # options: {cos, geo1, geo2}
   targ:  multipos  # options: {aligned, multipos, tax, phylo}
-  wting: false
-  focal: false
 
 loss2:  # secondary loss
   mix:  0.1  # set to 0.0 to disable computation
-  type: bce  # commonly used: {infonce1, infonce2, bce, mse, huber}
+  type: bce  # commonly used: {infonce1, infonce2, bce}
   sim:  geo1
   targ: phylo
   wting: true

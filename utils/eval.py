@@ -70,7 +70,7 @@ class SplitSetEvalPipeline:
         embs_imgs      = []
         class_encs_img = []
         loss_total     = 0.0
-        n_samps_loss   = 0  # only full batches accumulated for loss computation
+        n_samps_loss   = 0
         n_correct      = 0
         n_samps        = 0
         for imgs_b, texts_b, class_encs_img_b, targ_data_b in tqdm(self.dataloader, desc=f"Eval ({self.splitset_name})", leave=False):
@@ -81,9 +81,9 @@ class SplitSetEvalPipeline:
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, embs_img_b = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
+                    loss, _, embs_img_b, _, _ = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
             else:
-                loss, embs_img_b = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
+                loss, _, embs_img_b, _, _ = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())

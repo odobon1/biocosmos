@@ -198,7 +198,7 @@ def plot_metrics(
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
 
     ax3.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
-    ax3.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Nominal)")
+    ax3.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
     ax3.plot(x, data["id_loss"], label="ID Val Loss")
     ax3.plot(x, data["ood_loss"], label="OOD Val Loss")
     ax3.plot(x, data["comp_loss"], label="Comp Val Loss")

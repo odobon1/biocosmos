@@ -1,5 +1,5 @@
 study_name:      dev
-experiment_name: dev
+experiment_name: dev_clip_cb-foc-2D
 seed:            42
 # split_name:      S29-42
 split_name:      P37-42
@@ -16,16 +16,16 @@ dev:
   allow_diff_experiment: true
 
 arch:  # architecture
-  model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: clip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
 loss:
-  type: bce  # {infonce1, infonce2, bce}
+  type: infonce2  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: multipos  # {aligned, multipos, tax, phylo}
-  wting: false
-  focal: false
-  dyn_smr: false  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE (and perhaps regression)
+  wting: true
+  focal: true
+  dyn_smr: false  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 # same settings should be equivalent
 loss2:  # secondary loss
@@ -35,7 +35,7 @@ loss2:  # secondary loss
   targ: phylo
   wting: true
   focal: true
-  dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE (and perhaps regression)
+  dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 opt:  # optimization
   lr:  # learning rate
@@ -44,7 +44,7 @@ opt:  # optimization
     # init: 5.0e-7
     sched: exp
     warmup: 100_000  # sample volume for linear LR warmup
-  l2reg: 0.2  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it
+  l2reg: 0.2  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it; SigLIP paper recommends 0.0 for finetuning
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
   beta2: 0.98  # seminal papers recommend Beta2 = 0.999 (CLIP ResNet) / 0.98 (CLIP ViT) / 0.95 (SigLIP) ~ careful, may be for pretraining not fine-tuning
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-8 (ResNet) / 1.0e-6 (ViT)

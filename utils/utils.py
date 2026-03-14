@@ -192,11 +192,12 @@ class PrintLog:
             PrintLog.log_epoch.write(header_train)
 
     @staticmethod
-    def epoch(time_train, time_train_avg, time_val, time_val_avg, loss_train_avg, scores_val, loss_val_best):
+    def epoch(time_train, time_train_avg, time_val, time_val_avg, loss_train_avg, loss_train_raw_avg, scores_val, loss_val_best):
 
         epoch_info = (
-            f"Train Loss ------ {loss_train_avg:.4f}\n"
-            f"Val Loss -------- {scores_val['comp_loss']:.4f} (Best: {loss_val_best:.4f})\n"
+            f"Train Loss --------- {loss_train_avg:.3e}\n"
+            f"Train Loss (raw) --- {loss_train_raw_avg:.3e}\n"
+            f"Val Loss ----------- {scores_val['comp_loss']:.3e} (Best: {loss_val_best:.3e})\n"
             f"\n"
             f"{' Elapsed Time ':=^{75}}\n"
             f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)\n"

@@ -421,6 +421,7 @@ class TrainPipeline:
                         time_val, 
                         time_val_mean.value(), 
                         loss_train_avg,
+                        loss_raw_mean.value(),
                         scores_val,
                         loss_val_best,
                     )

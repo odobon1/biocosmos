@@ -225,23 +225,46 @@ class PrintLog:
                     total += p.grad.detach().pow(2).sum().item()
             return math.sqrt(total)
 
+        def tensor_scalar_item(x) -> float:
+            if x is None:
+                return float("nan")
+            if isinstance(x, torch.Tensor):
+                return x.detach().item()
+            return float(x)
+
         logits1 = logits[0]
         logits2 = logits[1]
+        if logits2 is None:
+            logits_line = f"log={tensor_grad_l2_norm(logits1):.2e}, "
+        else:
+            logits_line = f"log1={tensor_grad_l2_norm(logits1):.2e}, "
+            logits_line += f"log2={tensor_grad_l2_norm(logits2):.2e}, "
 
-        logits_line = f"gn_logits1={tensor_grad_l2_norm(logits1):.3e}"
-        if logits2 is not None:
-            logits_line += f" gn_logits2={tensor_grad_l2_norm(logits2):.3e}"
+        grad_line = (
+            f"gn(img={tensor_grad_l2_norm(embs_img_b):.2e}, "
+            f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}, "
+            f"{logits_line}"
+            f"model={model_grad_l2_norm(model):.2e}), "
+        )
+
+        logits_param_line = ""
+        if hasattr(model.module, "logit_scale") and model.module.logit_scale is not None:
+            logits_param_line += f"s1={model.module.logit_scale.detach().exp().item():.2e}, "
+        if hasattr(model.module, "logit_scale2") and model.module.logit_scale2 is not None:
+            logits_param_line += f"s2={model.module.logit_scale2.detach().exp().item():.2e}, "
+        if hasattr(model.module, "logit_bias") and model.module.logit_bias is not None:
+            logits_param_line += f"b1={tensor_scalar_item(model.module.logit_bias):.2e}, "
+        if hasattr(model.module, "logit_bias2") and model.module.logit_bias2 is not None:
+            logits_param_line += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e}, "
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
             PrintLog.log_batch.write(
                 f"{batch_str:<10} "
-                f"lr={lr:.3e} "
-                f"loss={loss_batch:.3e} "
-                f"gn_img={tensor_grad_l2_norm(embs_img_b):.3e} "
-                f"gn_txt={tensor_grad_l2_norm(embs_txt_b):.3e} "
-                f"{logits_line} "
-                f"gn_model={model_grad_l2_norm(model):.3e} "
+                f"lr={lr:.2e} "
+                f"loss={loss_batch:.2e} "
+                f"{grad_line}"
+                f"{logits_param_line}"
                 f"\n"
             )
 

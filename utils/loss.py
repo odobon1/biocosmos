@@ -154,8 +154,8 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
     num_i2t = (W_i2t * loss_i2t_raw).sum()
     num_t2i = (W_t2i * loss_t2i_raw).sum()
 
-    den_i2t = (W_i2t.detach().sum() / B).clamp_min(1e-12)
-    den_t2i = (W_t2i.detach().sum() / B).clamp_min(1e-12)
+    den_i2t = W_i2t.detach().sum().clamp_min(1e-12)
+    den_t2i = W_t2i.detach().sum().clamp_min(1e-12)
 
     loss = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 

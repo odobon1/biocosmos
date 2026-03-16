@@ -47,18 +47,20 @@ class TrialDataTracker:
         self.fpath_data = dpath_trial / "data_trial.pkl"
 
         self.data = {
-            "id_img2txt_prec1": [],
-            "id_img2txt_map": [],
-            "id_img2img_map": [],
-            "id_txt2img_map": [],
+            "id_i2t_prec1": [],
+            "id_i2t_map": [],
+            "id_i2i_map": [],
+            "id_t2i_map": [],
+            "id_map": [],
             "id_loss": [],
-            "ood_img2txt_prec1": [],
-            "ood_img2txt_map": [],
-            "ood_img2img_map": [],
-            "ood_txt2img_map": [],
+            "ood_i2t_prec1": [],
+            "ood_i2t_map": [],
+            "ood_i2i_map": [],
+            "ood_t2i_map": [],
+            "ood_map": [],
             "ood_loss": [],
             "comp_map": [],
-            "img2img_map": [],
+            "i2i_map": [],
             "comp_loss": [],
             "lr": [],
             "loss_train": [],
@@ -67,8 +69,10 @@ class TrialDataTracker:
 
     def update(self, scores_val, lr=None, loss_train=None, loss_raw_train=None):
 
-        for score in scores_val.keys():
-            self.data[score].append(float(scores_val[score]))
+        for score_name, score_value in scores_val.items():
+            if score_name not in self.data:
+                self.data[score_name] = []
+            self.data[score_name].append(float(score_value))
 
         if lr is not None:
             self.data["lr"].append(lr)
@@ -282,15 +286,15 @@ class TrainPipeline:
             if self.gpu_rank == 0:
                 data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
                 data_tracker.update(scores_val)
-                PrintLog.eval(scores_val, header="Base")
+                PrintLog.eval(scores_val, header="Base", nshot_bucket_names=self.val_pipe.val_pipe_id.nshot_bucket_names)
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()
 
             idx_epoch_best_comp = 0
-            idx_epoch_best_img2img = 0
+            idx_epoch_best_i2i = 0
             scores_val_best_comp = {}
-            scores_val_best_img2img = {}
+            scores_val_best_i2i = {}
             loss_val_best = np.inf
             for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
@@ -357,12 +361,12 @@ class TrainPipeline:
                 time_train_end = time.time()
                 time_train = time_train_end - time_train_start
 
-                scores_val, is_best_comp, is_best_img2img, time_val = self.val_pipe.run_validation(self.modelw)
+                scores_val, is_best_comp, is_best_i2i, time_val = self.val_pipe.run_validation(self.modelw)
 
                 # broadcast results from GPU rank 0 to all ranks
                 scores_val = self._broadcast_obj(scores_val)
                 is_best_comp = self._broadcast_obj(is_best_comp)
-                is_best_img2img = self._broadcast_obj(is_best_img2img)
+                is_best_i2i = self._broadcast_obj(is_best_i2i)
                 time_val = self._broadcast_obj(time_val)
 
                 if self.gpu_rank == 0:
@@ -387,11 +391,11 @@ class TrainPipeline:
                         self.modelw.save(ArtifactManager.dpath_model_best_comp)
                         idx_epoch_best_comp  = idx_epoch
                         scores_val_best_comp = scores_val
-                    if is_best_img2img:
-                        self.modelw.save(ArtifactManager.dpath_model_best_img2img)
-                        idx_epoch_best_img2img  = idx_epoch
-                        scores_val_best_img2img = scores_val
-                    if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_img2img:
+                    if is_best_i2i:
+                        self.modelw.save(ArtifactManager.dpath_model_best_i2i)
+                        idx_epoch_best_i2i  = idx_epoch
+                        scores_val_best_i2i = scores_val
+                    if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_i2i:
                         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
                         ArtifactManager.save_metadata_model(
                             ArtifactManager.dpath_model_checkpoint, 
@@ -406,9 +410,9 @@ class TrainPipeline:
                             idx_epoch
                         )
                         ArtifactManager.save_metadata_model(
-                            ArtifactManager.dpath_model_best_img2img, 
-                            scores_val_best_img2img, 
-                            idx_epoch_best_img2img, 
+                            ArtifactManager.dpath_model_best_i2i, 
+                            scores_val_best_i2i, 
+                            idx_epoch_best_i2i, 
                             idx_epoch
                         )
                         ArtifactManager.save_metadata_trial(time_train_mean=time_train_mean.value(), time_val_mean=time_val_mean.value())
@@ -428,7 +432,8 @@ class TrainPipeline:
                     PrintLog.eval(
                         scores_val, 
                         self.val_pipe.best_comp_map, 
-                        self.val_pipe.best_img2img_map,
+                        self.val_pipe.best_i2i_map,
+                        nshot_bucket_names=self.val_pipe.val_pipe_id.nshot_bucket_names,
                     )
 
         finally:

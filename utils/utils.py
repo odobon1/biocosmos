@@ -272,8 +272,9 @@ class PrintLog:
     def eval(
         scores_eval: Dict[str, float],
         best_comp_map: float = None,
-        best_img2img_map: float = None,
+        best_i2i_map: float = None,
         header: Optional[str] = None,
+        nshot_bucket_names: Optional[List[str]] = None,
     ) -> None:
         
         if header is not None:
@@ -288,28 +289,47 @@ class PrintLog:
 
         if best_comp_map is not None:
             best_comp_map_str = f" (best: {best_comp_map:.4f})"
-            best_img2img_map_str = f" (best: {best_img2img_map:.4f})"
+            best_i2i_map_str = f" (best: {best_i2i_map:.4f})"
         else:
             best_comp_map_str = ""
-            best_img2img_map_str = ""
+            best_i2i_map_str = ""
+
+        bucket_comp_keys = []
+        nshot_comp_lines = ""
+        if nshot_bucket_names is not None:
+            bucket_comp_keys = [
+                f"id_{bucket_name}_comp"
+                for bucket_name in nshot_bucket_names
+                if f"id_{bucket_name}_comp" in scores_eval
+            ]
+            nshot_comp_lines = f"{' N-Shot Composite mAP ':-^{75}}\n"
+            labels = [f"({k.removeprefix('id_').removesuffix('_comp').upper()})-shot" for k in bucket_comp_keys]
+            len_max = max([len(label) for label in labels])
+            for k, label in zip(bucket_comp_keys, labels):
+                n_dashes = len_max - len(label) + 3
+                nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval[k]:.4f}\n"
 
         header = " Eval "
-
         eval_printout = (
             f"{header:=^{75}}\n"
-            f"ID img2txt mAP ---- {scores_eval['id_img2txt_map']:.4f}\n"
-            f"ID img2img mAP ---- {scores_eval['id_img2img_map']:.4f}\n"
-            f"ID txt2img mAP ---- {scores_eval['id_txt2img_map']:.4f}\n"
-            f"OOD img2txt mAP --- {scores_eval['ood_img2txt_map']:.4f}\n"
-            f"OOD img2img mAP --- {scores_eval['ood_img2img_map']:.4f}\n"
-            f"OOD txt2img mAP --- {scores_eval['ood_txt2img_map']:.4f}\n"
-            f"{'':-^{75}}\n"
-            f"Composite mAP --- {scores_eval['comp_map']:.4f}{best_comp_map_str}\n"
-            f"img2img mAP ----- {scores_eval['img2img_map']:.4f}{best_img2img_map_str}\n"
-            f"{'':-^{75}}\n"
-            f"ID Loss ----- {scores_eval['id_loss']:.3e}\n"
-            f"OOD Loss ---- {scores_eval['ood_loss']:.3e}\n"
-            f"Comp Loss --- {scores_eval['comp_loss']:.3e}\n"
+            f"{' ID mAP ':-^{75}}\n"
+            f"I2T --- {scores_eval['id_i2t_map']:.4f}\n"
+            f"I2I --- {scores_eval['id_i2i_map']:.4f}\n"
+            f"T2I --- {scores_eval['id_t2i_map']:.4f}\n"
+            f"{nshot_comp_lines}"
+            f"{' OOD mAP ':-^{75}}\n"
+            f"I2T --- {scores_eval['ood_i2t_map']:.4f}\n"
+            f"I2I --- {scores_eval['ood_i2i_map']:.4f}\n"
+            f"T2I --- {scores_eval['ood_t2i_map']:.4f}\n"
+            f"{' Composite mAP ':-^{75}}\n"
+            f"All --- {scores_eval['comp_map']:.4f}{best_comp_map_str}\n"
+            f"I2I --- {scores_eval['i2i_map']:.4f}{best_i2i_map_str}\n"
+            f"ID ---- {scores_eval['id_map']:.4f}\n"
+            f"OOD --- {scores_eval['ood_map']:.4f}\n"
+            f"{' Loss ':-^{75}}\n"
+            f"ID ----- {scores_eval['id_loss']:.3e}\n"
+            f"OOD ---- {scores_eval['ood_loss']:.3e}\n"
+            f"Comp --- {scores_eval['comp_loss']:.3e}\n"
             f"\n"
         )
         print(eval_printout)

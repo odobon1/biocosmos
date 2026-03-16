@@ -21,7 +21,7 @@ class ArtifactManager:
     dpath_experiment = None
     dpath_trial = None
     dpath_model_best_comp = None
-    dpath_model_best_img2img = None
+    dpath_model_best_i2i = None
     dpath_model_checkpoint = None
 
     @staticmethod
@@ -40,7 +40,7 @@ class ArtifactManager:
                 raise ValueError(f"Trial directory '{cfg_train.study_name}/{cfg_train.experiment_name}/{cfg_train.seed}' already exists!")
 
         ArtifactManager.dpath_model_best_comp    = ArtifactManager.dpath_trial / "models/best_comp"
-        ArtifactManager.dpath_model_best_img2img = ArtifactManager.dpath_trial / "models/best_img2img"
+        ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
         ArtifactManager.dpath_model_checkpoint   = ArtifactManager.dpath_trial / "models/checkpoint"
 
     @staticmethod
@@ -138,12 +138,12 @@ def plot_metrics(
         fontsize_ticks      =8, 
         fontsize_legend     =8,
         subplot_border_width=1,
-        figsize             =(10, 12),
-        height_ratios       =[2, 2, 2, 2, 1],
+        figsize             =(10, 14),
+        height_ratios       =[2, 2, 2, 2, 2, 1],
     ):
     data = data_tracker.data
 
-    x_len = len(data["id_img2txt_prec1"])
+    x_len = len(data["id_i2t_prec1"])
     x     = list(range(0, x_len))
 
     fig = plt.figure(figsize=figsize)
@@ -154,12 +154,12 @@ def plot_metrics(
     # Plot 1: mAP Scores
     ax0 = fig.add_subplot(gs[0, 0])
 
-    ax0.plot(x, data["id_img2txt_map"],  label="ID img2txt mAP",  color="blue")
-    ax0.plot(x, data["id_img2img_map"],  label="ID img2img mAP",  color="red")
-    ax0.plot(x, data["id_txt2img_map"],  label="ID txt2img mAP",  color="green")
-    ax0.plot(x, data["ood_img2txt_map"], label="OOD img2txt mAP", color="blue",  linestyle="--")
-    ax0.plot(x, data["ood_img2img_map"], label="OOD img2img mAP", color="red",   linestyle="--")
-    ax0.plot(x, data["ood_txt2img_map"], label="OOD txt2img mAP", color="green", linestyle="--")
+    ax0.plot(x, data["id_i2t_map"],  label="ID I2T",  color="blue")
+    ax0.plot(x, data["id_i2i_map"],  label="ID I2I",  color="red")
+    ax0.plot(x, data["id_t2i_map"],  label="ID T2I",  color="green")
+    ax0.plot(x, data["ood_i2t_map"], label="OOD I2T", color="blue",  linestyle="--")
+    ax0.plot(x, data["ood_i2i_map"], label="OOD I2I", color="red",   linestyle="--")
+    ax0.plot(x, data["ood_t2i_map"], label="OOD T2I", color="green", linestyle="--")
 
     ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
@@ -170,9 +170,11 @@ def plot_metrics(
     ##########################################################################################################
     # Plot 2: mAP Composites
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-
-    ax1.plot(x, data["comp_map"], label="Composite", color="black")
-    ax1.plot(x, data["img2img_map"], label="img2img Composite", color="#B22222")
+    
+    ax1.plot(x, data["id_map"], label="ID", color="teal")
+    ax1.plot(x, data["ood_map"], label="OOD", color="teal", linestyle="--")
+    ax1.plot(x, data["i2i_map"], label="I2I", color="#B22222")
+    ax1.plot(x, data["comp_map"], label="All", color="black")
 
     ax1.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
@@ -181,62 +183,87 @@ def plot_metrics(
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
     ##########################################################################################################
-    # Plot 3: Precision@1
+    # Plot 3: N-Shot mAP Composites
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
 
-    ax2.plot(x, data["id_img2txt_prec1"], label="ID img2txt Prec@1", color="blue")
-    ax2.plot(x, data["ood_img2txt_prec1"], label="OOD img2txt Prec@1", color="blue", linestyle="--")
+    bucket_comp_keys = sorted(
+        k for k in data.keys()
+        if k.startswith("id_") and k.endswith("_comp") and k != "id_comp"
+    )
 
-    ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
+    for key in bucket_comp_keys:
+        maybe_plot(
+            ax2,
+            x,
+            data,
+            key,
+            key.replace("_", " "),
+            linestyle=":"
+        )
+
+    ax2.set_ylabel("N-Shot mAP", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
 
     ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
     ##########################################################################################################
-    # Plot 4: Loss
+    # Plot 4: Precision@1
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
 
-    ax3.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
-    ax3.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
-    ax3.plot(x, data["id_loss"], label="ID Val Loss")
-    ax3.plot(x, data["ood_loss"], label="OOD Val Loss")
-    ax3.plot(x, data["comp_loss"], label="Comp Val Loss")
+    ax3.plot(x, data["id_i2t_prec1"], label="ID I2T Prec@1", color="blue")
+    ax3.plot(x, data["ood_i2t_prec1"], label="OOD I2T Prec@1", color="blue", linestyle="--")
 
-    ax3.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
-    ax3.set_yscale("log")
-    # for plotting minor gridlines on the y axis
-    ax3.minorticks_on()
-    ax3.grid(which="minor", axis="y")
+    ax3.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
+    ax3.set_ylim(0, 1)
 
-    ax3.legend(loc="upper right", fontsize=fontsize_legend)
+    ax3.legend(loc="lower right", fontsize=fontsize_legend)
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
     ##########################################################################################################
-    # Plot 5: Learning Rate
+    # Plot 5: Loss
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
 
-    ax4.plot(x, [np.nan] + data["lr"])
+    ax4.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
+    ax4.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
+    ax4.plot(x, data["id_loss"], label="ID Val Loss")
+    ax4.plot(x, data["ood_loss"], label="OOD Val Loss")
+    ax4.plot(x, data["comp_loss"], label="Comp Val Loss")
 
-    ax4.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax4.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax4.yaxis.set_offset_position("right")
-    ax4.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax4.yaxis.get_offset_text().set_visible(False)
+    ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
+    ax4.set_yscale("log")
+    # for plotting minor gridlines on the y axis
+    ax4.minorticks_on()
+    ax4.grid(which="minor", axis="y")
 
-    ax4.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")  # last subgraph gets the x label
-    ax4.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax4.xaxis.set_minor_locator(NullLocator())
-
+    ax4.legend(loc="upper right", fontsize=fontsize_legend)
     ax4.grid(True)
-    ax4.tick_params(labelsize=fontsize_ticks)
+    ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+    ##########################################################################################################
+    # Plot 6: Learning Rate
+    ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
+
+    ax5.plot(x, [np.nan] + data["lr"])
+
+    ax5.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax5.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax5.yaxis.set_offset_position("right")
+    ax5.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax5.yaxis.get_offset_text().set_visible(False)
+
+    ax5.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")  # last subgraph gets the x label
+    ax5.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax5.xaxis.set_minor_locator(NullLocator())
+
+    ax5.grid(True)
+    ax5.tick_params(labelsize=fontsize_ticks)
     ##########################################################################################################
 
-    for ax in (ax0, ax1, ax2, ax3):
+    for ax in (ax0, ax1, ax2, ax3, ax4, ax5):
         ax.label_outer()
 
     # thick black borders on all subplots
-    for idx_ax, ax in enumerate([ax0, ax1, ax2, ax3, ax4]):
+    for idx_ax, ax in enumerate([ax0, ax1, ax2, ax3, ax4, ax5]):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")
@@ -252,3 +279,10 @@ def plot_metrics(
     savepath = dpath_trial / "plots" / f"train_metrics.png"
     fig.savefig(savepath)
     plt.close(fig)
+
+def maybe_plot(ax, x, data, key, label, **kwargs):
+    """
+    Helper for plot_metrics() (N-Shot Composites)
+    """
+    if key in data and len(data[key]) > 0:
+        ax.plot(x, data[key], label=label, **kwargs)

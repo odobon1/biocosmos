@@ -323,7 +323,7 @@ class TrainPipeline:
 
                     imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
                     class_encs_b = class_encs_b.to(self.cfg.device)
-                    B = imgs_b.size(0)
+                    B = imgs_b.size(0) * self.gpu_world_size
                     self.samps_seen += B
 
                     if self.lr_warmup > 0:

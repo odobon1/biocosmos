@@ -134,7 +134,7 @@ class ImageTextDataset(Dataset):
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
-        self.sids2commons   = load_pickle("metadata/species_ids/sids2commons.pkl")
+        self.sids2commons   = load_pickle("metadata/sids2commons/sids2commons.pkl")
         self.rank_keys_dict = load_pickle("metadata/rank_keys/nymph.pkl")
 
     def __len__(self):

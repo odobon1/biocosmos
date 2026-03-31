@@ -34,17 +34,11 @@ for sid in sids:
         sids_unknown.append(sid)
     else:
         sids_known.append(sid)
-        
-sids2commons = {}
-for sid in tqdm(sids_known, desc="Retrieving Common Names"):
-    common = gbif_common_name(sid.replace("_", " "))
-    sids2commons[sid] = common
 
 dpath_species_ids = paths["metadata"] / "species_ids"
 save_pickle(sids, dpath_species_ids / "all.pkl")
 save_pickle(sids_known, dpath_species_ids / "known.pkl")
 save_pickle(sids_unknown, dpath_species_ids / "unknown.pkl")
-save_pickle(sids2commons, dpath_species_ids / "sids2commons.pkl")
 
 
 ################################## PHYLO #################################

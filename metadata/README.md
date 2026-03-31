@@ -18,9 +18,6 @@ python -m metadata.gen_species_ids
 - `metadata/species_ids/all.pkl`
 - `metadata/species_ids/known.pkl`
 - `metadata/species_ids/unknown.pkl`
-- `metadata/species_ids/sids2commons.pkl`
-
-Despite the name, this file is also currently rigged up to generate the mapping from species IDs to common names (`sids2commons.pkl`).
 
 
 ## Generate Taxonomic structure

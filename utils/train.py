@@ -190,18 +190,19 @@ def plot_metrics(
         k for k in data.keys()
         if k.startswith("id_") and k.endswith("_comp") and k != "id_comp"
     )
+    labels = [f"({k.removeprefix('id_').removesuffix('_comp').upper()})-shot" for k in bucket_comp_keys]
 
-    for key in bucket_comp_keys:
+    for key, label in zip(bucket_comp_keys, labels):
         maybe_plot(
             ax2,
             x,
             data,
             key,
-            key.replace("_", " "),
+            label,
             linestyle=":"
         )
 
-    ax2.set_ylabel("N-Shot mAP", fontsize=fontsize_axes, fontweight="bold")
+    ax2.set_ylabel("N-Shot mAP Composites", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
 
     ax2.legend(loc="lower right", fontsize=fontsize_legend)

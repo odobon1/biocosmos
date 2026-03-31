@@ -67,7 +67,8 @@ def ascii_tree_lines(
 
 if __name__ == "__main__":
     
-    FPATH_TREE = paths["nymph_phylo_tree"]
+    # FPATH_TREE = paths["nymph_phylo_tree"]
+    FPATH_TREE = paths["lepid_phylo_tree_r"]
     FPATH_READABLE_TREE = "tools/readable_tree.txt"
 
     tree = Phylo.read(FPATH_TREE, "newick")

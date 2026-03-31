@@ -1,44 +1,21 @@
 from collections import Counter, defaultdict
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore[import]
 import os
 import bisect
 import glob
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
 import random
-import numpy as np
-from sklearn.model_selection import train_test_split
+import numpy as np  # type: ignore[import]
+from sklearn.model_selection import train_test_split  # type: ignore[import]
 import copy
-from dataclasses import dataclass
-import yaml
-from pathlib import Path
-import pandas as pd
+import pandas as pd  # type: ignore[import]
 
-from utils import paths, load_pickle, save_pickle
-from utils_data import Split, assemble_indexes
+from utils.utils import paths, load_pickle, save_pickle
+from utils.data import Split, assemble_indexes, sid_to_genus
+from utils.config import get_config_gen_split
 
 import pdb
 
-
-@dataclass
-class GenSplitConfig:
-
-    seed: int
-    split_name: str
-
-    allow_overwrite: bool
-
-    pct_eval: float
-    pct_ood_tol: float
-
-    nst_names: list
-    nst_seps: list
-
-
-def get_config_gen_split():
-    with open(Path(__file__).parent.parent / "config/gen_split.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    cfg = GenSplitConfig(**cfg_dict)
-    return cfg
 
 cfg = get_config_gen_split()
 
@@ -153,7 +130,6 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
     insts_rem -= insts_val
     insts_rem -= insts_test
 
-    # insts_val and insts_test appear to be getting sorted in alphabetical order, but not insts_rem -- why??? (upon viewing vars in jupyter notebook)
     return insts_rem, insts_val, insts_test
 
 
@@ -168,7 +144,12 @@ print(F"Split Name: '{cfg.split_name}'")
 pct_ood_eval = pct_id_eval = cfg.pct_eval / 2  # OOD per set percentage
 
 tax_nymph       = load_pickle(paths["metadata"] / "tax/nymph.pkl")
-sids            = set(tax_nymph["found"].keys())  # OOD sets: insts
+
+
+# sids            = set(tax_nymph["found"].keys())  # OOD sets: insts
+sids = set(load_pickle(paths["metadata"] / "species_ids/phylo_present.pkl"))
+
+
 n_sids          = len(sids)
 n_sids_ood_eval = round(n_sids * pct_ood_eval)
 
@@ -184,7 +165,7 @@ n_samps_eval = round(n_samps_total * cfg.pct_eval)  # OOD sets: n_draws
 genera       = []
 genus_2_sids = defaultdict(list)  # OOD sets: class_2_insts
 for sid in sorted(sids):
-    genus = tax_nymph["found"][sid]["tax"]["genus"]
+    genus = sid_to_genus(sid)
     genera.append(genus)
     genus_2_sids[genus].append(sid)
 
@@ -445,9 +426,6 @@ skeys_sets = {
     "ood_test": skeys_ood_test,
 }
 
-# load species id's
-sids = load_pickle(paths["metadata"] / "species_ids/known.pkl")
-
 """
 `img_ptrs` structure:
 
@@ -514,7 +492,8 @@ for set_name in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
 # CLASS COUNTS (FOR CLASS IMBALANCE)
 
 # note: this all needs to get untangled....
-index_class_encs, _, _, _, _, _ = assemble_indexes(data_indexes["train"])
+data_index, _    = assemble_indexes(data_indexes["train"])
+index_class_encs = data_index["class_encs"]
 
 n_classes          = len(set(index_class_encs))
 class_counts_train = np.bincount(index_class_encs, minlength=n_classes)  # counts[c] is number of samples with class encoding c

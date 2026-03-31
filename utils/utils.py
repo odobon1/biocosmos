@@ -29,7 +29,7 @@ elif CLUSTER == "hpg":
     dpath_root    = Path(os.getcwd())
     dpath_data    = dpath_group / "data"
     dpath_nymph   = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    dpath_lepit   = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
+    dpath_lepid   = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
     dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
 
     paths = {
@@ -43,11 +43,11 @@ elif CLUSTER == "hpg":
         "nymph_imgs": dpath_nymph / "images",
         "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
         "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
-        "lepit_imgs": dpath_lepit / "images",
-        "lepit_metadata": dpath_lepit / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
-        "lepit_metadata_r": dpath_lepit / "metadata/data_tree_renamed_full.csv",
-        "lepit_phylo_tree": dpath_lepit / "metadata/tree_orig.tre",
-        "lepit_phylo_tree_r": dpath_lepit / "metadata/tree_renamed_full.tre",
+        "lepid_imgs": dpath_lepid / "images",
+        "lepid_metadata": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+        "lepid_metadata_r": dpath_lepid / "metadata/data_tree_renamed_full.csv",
+        "lepid_phylo_tree": dpath_lepid / "metadata/tree_orig.tre",
+        "lepid_phylo_tree_r": dpath_lepid / "metadata/tree_renamed_full.tre",
         "vlm4bio": dpath_vlm4bio,
     }
 

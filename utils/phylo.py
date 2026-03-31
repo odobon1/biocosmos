@@ -1,4 +1,3 @@
-from functools import lru_cache
 import numpy as np  # type: ignore[import]
 import torch  # type: ignore[import]
 from Bio import Phylo  # type: ignore[import]

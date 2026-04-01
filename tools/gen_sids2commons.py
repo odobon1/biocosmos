@@ -9,8 +9,8 @@ from utils.data import gbif_common_name
 
 
 # Nymphalidae
-FPATH_SIDS = paths["metadata"] / "species_ids/known.pkl"
-FPATH_SIDS2COMMONS = paths["metadata"] / "sids2commons/sids2commons.pkl"
+FPATH_SIDS = paths["preproc"]["nymph"] / "intermediaries/sids/known.pkl"
+FPATH_SIDS2COMMONS = paths["metadata"]["nymph"] / "sids2commons.pkl"
 
 
 sids = load_pickle(FPATH_SIDS)

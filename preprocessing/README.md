@@ -1,51 +1,51 @@
-# Metadata Generation
+# Nymphalidae Metadata Generation
 
 Note: everything described in this file is executed when `./setup.sh` is run from the root as described in the setup procedure.
 
 ## Species ID Generation
 
-**metadata/gen_species_ids.py**
+**preprocessing/nymph/gen_species_ids.py**
 
 To execute from root:
 ```
-python -m metadata.gen_species_ids
+python -m preprocessing.nymph.gen_species_ids
 ```
 
 **Requires:**
 - Butterflies data on HiPerGator
 
 **Produces:**
-- `metadata/species_ids/all.pkl`
-- `metadata/species_ids/known.pkl`
-- `metadata/species_ids/unknown.pkl`
+- `preprocessing/nymph/intermediaries/sids/all.pkl`
+- `preprocessing/nymph/intermediaries/sids/known.pkl`
 
 
 ## Generate Taxonomic structure
-**metadata/gen_tax_nymph.py**
+**preprocessing/nymph/gen_tax.py**
 
 To execute from root:
 ```
-python -m metadata.gen_tax_nymph
+python -m preprocessing.nymph.gen_tax
 ```
 **Requires:**
-- `metadata/species_ids/known.pkl`
+- `preprocessing/nymph/intermediaries/sids/known.pkl`
 
 **Produces:**
-- `metadata/tax/nymph.pkl`
+- `preprocessing/nymph/intermediaries/tax.pkl`
 
 
 ## Generate Data Split
-**metadata/gen_split.py**
+**preprocessing/nymph/gen_split.py**
 
 To execute from root:
 ```
-python -m metadata.gen_split
+python -m preprocessing.nymph.gen_split
 ```
 **Requires:**
-- `metadata/tax/nymph.pkl`
+- `preprocessing/nymph/intermediaries/tax.pkl`
 
 **Produces:**
-- `metadata/splits/<split_name>/*`
+- `metadata/nymph/splits/<split_name>/split.pkl`
+- `metadata/nymph/splits/<split_name>/figures/*`
 
 This is configured to generate split S29-42 by default, but can be adjusted in `config/gen_split.yaml`.
 
@@ -70,17 +70,17 @@ Note: The first stage of stratification (sparse) is done to ensure a well-distri
 Datastructures are created for tracking n-shot subsets of ID splits for monitoring robustness to class imbalance and the assessing the effectiveness of class imbalance methods utilized. Stats regarding the variety (num. species) and volume (num. samples) of n-shot ID eval subsets are produced to get an idea of the statistical significance of the different n-shot subsets (subsets with lower volume are less significant) and are used to adjust the bounds of the n-shot buckets such that they are more statistically significant.
 
 ## Generate Rank Keys
-**metadata/gen_rank_keys.py**
+**preprocessing/nymph/gen_rank_keys.py**
 
 To execute from root:
 ```
-python -m metadata.gen_rank_keys
+python -m preprocessing.nymph.gen_rank_keys
 ```
 **Requires:**
-- `metadata/tax/nymph.pkl`
+- `preprocessing/nymph/intermediaries/tax.pkl`
 
 **Produces:**
-- `metadata/rank_keys/nymph.pkl`
+- `metadata/nymph/rank_keys.pkl`
 
 Rank keys are used for generating intermediate targets for use with hierarchical loss. Future work involves experimentation with phylogenetic distance metrics to provide a higher fidelity learning signal.
 
@@ -182,3 +182,7 @@ The CSV file at `paths["group"] / "data/datasets/butterflies_whole_specimen-clea
 3  abisara  
 4  abisara
 ```
+
+# Common Names
+
+`python -m tools.gen_sids2commons` was run to generate the data structure `metadata/sids2commons/sids2commons.pkl` (takes about an hour to run for Nymphalidae).

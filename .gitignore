@@ -3,17 +3,22 @@ artifacts/*
 !artifacts/clip_o1/
 !artifacts/clip_o1/**
 
-metadata/splits/*
-!metadata/splits/.gitkeep
+# metadata/*
+# !metadata/nymph/
+# !metadata/nymph/sids2commons.pkl
+# !metadata/nymph/splits/
+# !metadata/nymph/splits/.gitkeep
 
-metadata/rank_keys/*
-!metadata/rank_keys/.gitkeep
+metadata/nymph/*
+!metadata/nymph/sids2commons.pkl
+!metadata/nymph/splits/
+metadata/nymph/splits/*
+!metadata/nymph/splits/.gitkeep
 
-metadata/species_ids/*
-!metadata/species_ids/.gitkeep
-
-metadata/tax/*
-!metadata/tax/.gitkeep
+preprocessing/nymph/intermediaries/*
+!preprocessing/nymph/intermediaries/sids/
+preprocessing/nymph/intermediaries/sids/*
+!preprocessing/nymph/intermediaries/sids/.gitkeep
 
 archive/*
 
@@ -24,4 +29,4 @@ tools/readable_tree.txt
 tools/src.txt
 
 __pycache__/
-metadata/__pycache__/
+preprocessing/nymph/__pycache__/

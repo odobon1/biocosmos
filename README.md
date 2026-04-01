@@ -37,7 +37,7 @@ Run setup script (this takes about an hour to run):
 ./setup.sh
 ```
 
-`setup.sh` generates metadata, including split S29-42 (by default), generates various data indexing structures needed for train and eval. See [metadata/README.md](metadata/README.md) for details.
+`setup.sh` generates metadata (including split) and various data indexing structures needed for train and eval. See [preprocessing/README.md](preprocessing/README.md) for details.
 
 # Train & Eval
 Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train/train.yaml` and the standalone eval config at `config/eval.yaml`. The loader merges `train.yaml` with `lr_sched.yaml` and `loss.yaml` under the hood.

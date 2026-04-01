@@ -1,5 +1,5 @@
 """
-Takes metadata/tax/nymph structure and produces metadata/rank_keys/nymph structure
+Takes preprocessing/nymph/intermediaries/tax.pkl structure and produces metadata/nymph/rank_keys.pkl structure
 """
 
 from bidict import bidict  # type: ignore[import]
@@ -33,7 +33,7 @@ rank_keys_nymph = {
 }
 """
 
-tax_nymph = load_pickle(paths["metadata"] / "tax/nymph.pkl")
+tax_nymph = load_pickle(paths["preproc"]["nymph"] / "intermediaries/tax.pkl")
 
 for rkey_species, sid in enumerate(tax_nymph["found"].keys()):
 
@@ -45,4 +45,4 @@ for rkey_species, sid in enumerate(tax_nymph["found"].keys()):
         rkey_genus = len(rank_keys_nymph["genus"].keys())
         rank_keys_nymph["genus"][genus_str] = rkey_genus
 
-save_pickle(rank_keys_nymph, paths["metadata"] / "rank_keys/nymph.pkl")
+save_pickle(rank_keys_nymph, paths["metadata"]["nymph"] / "rank_keys.pkl")

@@ -11,11 +11,11 @@ from utils.utils import paths, load_pickle, save_pickle
 import pdb
 
 
-sids = load_pickle(paths["metadata"] / "species_ids/known.pkl")
+sids = load_pickle(paths["preproc"]["nymph"] / "intermediaries/sids/known.pkl")
 nymph_metadata = pd.read_csv(paths["nymph_metadata"])
 unique_species = nymph_metadata["species"].unique().tolist()
 
-metadata = {
+tax_nymph = {
     "found": {},
     "missing": set(),
 }
@@ -43,7 +43,7 @@ for sid in tqdm(sids):
             if png_file in png_files_metadata:
                 num_imgs_matched += 1
 
-        metadata["found"][sid] = {
+        tax_nymph["found"][sid] = {
             "tax": {
                 "subfamily": df_metadata_sid["subfamily"].iloc[0],
                 "genus": df_metadata_sid["species"].iloc[0].split("_")[0],
@@ -57,7 +57,6 @@ for sid in tqdm(sids):
         }
         
     else:
-        
-        metadata["missing"].add(sid)
+        tax_nymph["missing"].add(sid)
 
-save_pickle(metadata, paths["metadata"] / "tax/nymph.pkl")
+save_pickle(tax_nymph, paths["preproc"]["nymph"] / "intermediaries/tax.pkl")

@@ -11,12 +11,19 @@ FPATH_OUT = Path("tools/src.txt")
 
 dpath_root = paths["root"]
 
-dpath_logs = "artifacts/dev/dev3-test2/42/logs/"
+dpaths_logs = [
+    # "artifacts/dev/dev_clip_cb-foc-2D/42/logs/",
+    # "artifacts/dev/dev_clip_cb-foc/42/logs/",
+    "artifacts/dev/dev/42/logs/",
+]
 
-RFPATHS = [
-    dpath_logs + "batch.log",
-    dpath_logs + "epoch.log",
-    dpath_logs + "init.log",
+fpaths_logs = []
+# for dpath_logs in dpaths_logs:
+#     # fpaths_logs.append(dpath_logs + "batch.log")
+#     fpaths_logs.append(dpath_logs + "epoch.log")
+#     fpaths_logs.append(dpath_logs + "init.log")
+
+RFPATHS = fpaths_logs + [
     "config/train/lr_sched.yaml",
     "config/train/train.yaml",
     "config/eval.yaml",
@@ -24,11 +31,11 @@ RFPATHS = [
     "config/hardware.yaml",
     "config/loss.yaml",
     "config/loss2.yaml",
-    "metadata/gen_rank_keys.py",
-    "metadata/gen_species_ids.py",
-    "metadata/gen_split.py",
-    "metadata/gen_tax_nymph.py",
-    "metadata/README.md",
+    "preprocessing/nymph/gen_rank_keys.py",
+    "preprocessing/nymph/gen_species_ids.py",
+    "preprocessing/nymph/gen_split.py",
+    "preprocessing/nymph/gen_tax.py",
+    "preprocessing/README.md",
     "tools/probe_batch_size.py",
     "tools/protos.py",
     "tools/readable_tree.py",

@@ -20,7 +20,7 @@ from utils.utils import load_pickle, save_pickle, paths
 import pdb
 
 
-split_p = load_pickle(paths["metadata"] / "splits/P38-42/split.pkl")
+split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
 
 splitset = ["id"] * len(split_p.data_indexes["id_val"]["sids"])
 sids = split_p.data_indexes["id_val"]["sids"]

@@ -1,9 +1,10 @@
 #!/bin/bash
 
-python -m metadata.gen_species_ids
+echo "Generating Nymphalidae metadata..."
+python -m preprocessing.nymph.gen_species_ids
 echo "gen_species_ids complete"
-python -m metadata.gen_tax_nymph
-echo "gen_tax_nymph complete"
-python -m metadata.gen_rank_keys
+python -m preprocessing.nymph.gen_tax
+echo "gen_tax complete"
+python -m preprocessing.nymph.gen_rank_keys
 echo "gen_rank_keys complete"
-python -m metadata.gen_split
+python -m preprocessing.nymph.gen_split

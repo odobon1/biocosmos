@@ -35,10 +35,9 @@ for sid in sids:
     else:
         sids_known.append(sid)
 
-dpath_species_ids = paths["metadata"] / "species_ids"
+dpath_species_ids = paths["preproc"]["nymph"] / "intermediaries/sids"
 save_pickle(sids, dpath_species_ids / "all.pkl")
 save_pickle(sids_known, dpath_species_ids / "known.pkl")
-save_pickle(sids_unknown, dpath_species_ids / "unknown.pkl")
 
 
 ################################## PHYLO #################################
@@ -56,9 +55,5 @@ for sid_p in sids_phylo:
     else:
         sids_phylo_absent.append(sid_p)
 
-"""
-sids_phylo_present --- sIDs present in both the phylogenetic tree and the known species list
-sids_phylo_absent  --- sIDs present in the phylogenetic tree but absent from the known species list
-"""
-save_pickle(sids_phylo_present, paths["metadata"] / "species_ids/phylo_present.pkl")
-save_pickle(sids_phylo_absent,  paths["metadata"] / "species_ids/phylo_absent.pkl")
+# sIDs present in both the phylogenetic tree and the known species list
+save_pickle(sids_phylo_present, paths["preproc"]["nymph"] / "intermediaries/sids/phylo.pkl")

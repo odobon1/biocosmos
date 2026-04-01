@@ -38,7 +38,12 @@ elif CLUSTER == "hpg":
         "group": dpath_group,
         "root": dpath_root,
         "config": dpath_root / "config",
-        "metadata": dpath_root / "metadata",
+        "metadata": {
+            "nymph": dpath_root / "metadata/nymph",
+        },
+        "preproc": {
+            "nymph": dpath_root / "preprocessing/nymph",
+        },
         "artifacts": dpath_root / "artifacts",
         "nymph_imgs": dpath_nymph / "images",
         "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
@@ -81,7 +86,7 @@ def load_pickle(picklepath):
     return obj
 
 def load_split(split_name):
-    split = load_pickle(paths["metadata"] / f"splits/{split_name}/split.pkl")
+    split = load_pickle(paths["metadata"]["nymph"] / f"splits/{split_name}/split.pkl")
     return split
 
 def get_text_preps(text_preps_type):

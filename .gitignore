@@ -17,11 +17,11 @@ metadata/tax/*
 
 archive/*
 
-class_spread.ipynb
-data_update_checker.ipynb
-metadata_cheatsheet.ipynb
-nymph_data_exploration.ipynb
-useful_gadgets.ipynb
+temp_lr_explorer.ipynb
+temp_tax_dist.ipynb
+temp.ipynb
+tools/readable_tree.txt
+tools/src.txt
 
 __pycache__/
 metadata/__pycache__/

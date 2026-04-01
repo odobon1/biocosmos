@@ -44,10 +44,9 @@ elif CLUSTER == "hpg":
         "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
         "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
         "lepid_imgs": dpath_lepid / "images",
-        "lepid_metadata": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
-        "lepid_metadata_r": dpath_lepid / "metadata/data_tree_renamed_full.csv",
-        "lepid_phylo_tree": dpath_lepid / "metadata/tree_orig.tre",
-        "lepid_phylo_tree_r": dpath_lepid / "metadata/tree_renamed_full.tre",
+        "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+        "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
+        "lepid_phylo_tree": dpath_lepid / "metadata/tree_renamed_full.tre",
         "vlm4bio": dpath_vlm4bio,
     }
 

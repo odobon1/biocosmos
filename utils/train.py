@@ -11,7 +11,7 @@ from utils.utils import (
     paths, 
     save_json, 
     load_json, 
-    get_text_preps, 
+    get_text_template, 
 )
 
 
@@ -95,10 +95,10 @@ class ArtifactManager:
         metadata   = asdict(cfg_train)
 
         # save full text combo-templates themselves and not just the names
-        text_preps_full = {}
-        for split_name, text_preps in metadata["text_preps"].items():
-            text_preps_full[split_name] = get_text_preps(text_preps)
-        metadata["text_preps"] = text_preps_full
+        text_template_full = {}
+        for split_name, text_template in metadata["text_template"].items():
+            text_template_full[split_name] = get_text_template(text_template)
+        metadata["text_template"] = text_template_full
 
         clean_metadata(metadata)
         if fpath_meta.exists() and not cfg_train.dev['allow_diff_experiment']:

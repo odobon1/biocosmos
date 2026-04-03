@@ -22,11 +22,11 @@ import pdb
 
 split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
 
-splitset = ["id"] * len(split_p.data_indexes["id_val"]["sids"])
+partition = ["id"] * len(split_p.data_indexes["id_val"]["sids"])
 sids = split_p.data_indexes["id_val"]["sids"]
 rfpaths = split_p.data_indexes["id_val"]["rfpaths"]
 
-splitset += ["ood"] * len(split_p.data_indexes["ood_val"]["sids"])
+partition += ["ood"] * len(split_p.data_indexes["ood_val"]["sids"])
 sids += split_p.data_indexes["ood_val"]["sids"]
 rfpaths += split_p.data_indexes["ood_val"]["rfpaths"]
 
@@ -46,7 +46,7 @@ for i in tqdm(range(len(sids) // config_eval.batch_size + 1)):
     if start >= end:
         break
 
-    splitset_b = splitset[start:end]
+    partition_b = partition[start:end]
     sids_b = sids[start:end]
     rfpaths_b = rfpaths[start:end]
 
@@ -55,29 +55,29 @@ for i in tqdm(range(len(sids) // config_eval.batch_size + 1)):
     imgs = torch.stack(imgs).to(device)
 
     with torch.no_grad():
-        img_embs = modelw.model.encode_image(imgs)  # --- Tensor(B, D)
+        img_embs = modelw.model.encode_image(imgs)  # pt[B, D]
         img_embs = F.normalize(img_embs, p=2, dim=1)  # normalized to unit length
 
     for j in range(n_imgs):
-        splitset_j = splitset_b[j]
+        partition_j = partition_b[j]
         sid_j = sids_b[j]
         emb_j = img_embs[j].cpu()
 
-        if sid_j not in protos[splitset_j]:
-            protos[splitset_j][sid_j] = {"embs": [], "count": 0}
+        if sid_j not in protos[partition_j]:
+            protos[partition_j][sid_j] = {"embs": [], "count": 0}
 
-        protos[splitset_j][sid_j]["embs"].append(emb_j)
-        protos[splitset_j][sid_j]["count"] += 1
+        protos[partition_j][sid_j]["embs"].append(emb_j)
+        protos[partition_j][sid_j]["count"] += 1
 
-for splitset_k in tqdm(protos.keys()):
-    for sid_k in protos[splitset_k].keys():
+for partition_k in tqdm(protos.keys()):
+    for sid_k in protos[partition_k].keys():
 
-        n_samps = protos[splitset_k][sid_k]["count"]
-        embs_k = torch.stack(protos[splitset_k][sid_k]["embs"])  # --- Tensor(N, D)
-        proto_k = torch.mean(embs_k, dim=0)  # ----------------------- Tensor(D)
+        n_samps = protos[partition_k][sid_k]["count"]
+        embs_k = torch.stack(protos[partition_k][sid_k]["embs"])  # pt[N, D]
+        proto_k = torch.mean(embs_k, dim=0)  # pt[D]
         proto_k = F.normalize(proto_k, p=2, dim=0)  # normalized to unit length
 
-        protos[splitset_k][sid_k] = {"prototype": proto_k, "n_samples": n_samps}
+        protos[partition_k][sid_k] = {"prototype": proto_k, "n_samples": n_samps}
 
 save_pickle(protos, "prototypes_cos-cos_1-0.pkl")
 

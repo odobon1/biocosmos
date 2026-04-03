@@ -2,35 +2,32 @@
 
 Note: everything described in this file is executed when `./setup.sh` is run from the root as described in the setup procedure.
 
-## Species ID Generation
-
-**preprocessing/nymph/gen_species_ids.py**
+## Generate common names
+**preprocessing/nymph/gen_sids2commons.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_species_ids
+python -m preprocessing.nymph.gen_sids2commons
 ```
-
 **Requires:**
 - Butterflies data on HiPerGator
 
 **Produces:**
-- `preprocessing/nymph/intermediaries/sids/all.pkl`
-- `preprocessing/nymph/intermediaries/sids/known.pkl`
+- `preprocessing/nymph/intermediaries/sids2commons.pkl`
 
 
-## Generate Taxonomic structure
-**preprocessing/nymph/gen_tax.py**
+## Generate class data
+**preprocessing/nymph/gen_class_data.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_tax
+python -m preprocessing.nymph.gen_class_data
 ```
 **Requires:**
-- `preprocessing/nymph/intermediaries/sids/known.pkl`
+- `preprocessing/nymph/intermediaries/sids2commons.pkl`
 
 **Produces:**
-- `preprocessing/nymph/intermediaries/tax.pkl`
+- `metadata/nymph/class_data.pkl`
 
 
 ## Generate Data Split
@@ -41,7 +38,7 @@ To execute from root:
 python -m preprocessing.nymph.gen_split
 ```
 **Requires:**
-- `preprocessing/nymph/intermediaries/tax.pkl`
+- `preprocessing/nymph/intermediaries/class_data.pkl`
 
 **Produces:**
 - `metadata/nymph/splits/<split_name>/split.pkl`
@@ -77,7 +74,7 @@ To execute from root:
 python -m preprocessing.nymph.gen_rank_keys
 ```
 **Requires:**
-- `preprocessing/nymph/intermediaries/tax.pkl`
+- `metadata/nymph/class_data.pkl`
 
 **Produces:**
 - `metadata/nymph/rank_keys.pkl`
@@ -182,7 +179,3 @@ The CSV file at `paths["group"] / "data/datasets/butterflies_whole_specimen-clea
 3  abisara  
 4  abisara
 ```
-
-# Common Names
-
-`python -m tools.gen_sids2commons` was run to generate the data structure `metadata/sids2commons/sids2commons.pkl` (takes about an hour to run for Nymphalidae).

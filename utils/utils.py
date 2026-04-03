@@ -89,17 +89,9 @@ def load_split(split_name):
     split = load_pickle(paths["metadata"]["nymph"] / f"splits/{split_name}/split.pkl")
     return split
 
-def get_text_preps(text_preps_type):
+def get_text_template(text_template_type):
 
-    TEXT_PREPS_MIXED = [
-        [
-            "",
-            "a photo of ",  # BioCLIP-style prepending
-            "a photo of a ",  # OpenAI CLIP-style prepending
-        ],
-    ]
-
-    TEXT_PREPS_BIOCLIP_SCI = [["a photo of $SCI$"]]  # scientific name, BioCLIP-style prepending
+    TEXT_TEMPLATE_BIOCLIP_SCI = [["a photo of $SCI$"]]  # scientific name, BioCLIP-style prepending
 
     COMBO_TEMPS_TRAIN = [
         [
@@ -108,7 +100,7 @@ def get_text_preps(text_preps_type):
         ],
         [
             "",
-            "$AAN$ ",
+            "$AAN$ ",  # OpenAI CLIP-style prepending
         ],
         [
             "",
@@ -129,12 +121,10 @@ def get_text_preps(text_preps_type):
         ],
     ]
 
-    if text_preps_type == "combo_temps":
+    if text_template_type == "train":
         return COMBO_TEMPS_TRAIN
-    if text_preps_type == "mixed":
-        return TEXT_PREPS_MIXED
-    elif text_preps_type == "bioclip_sci":
-        return TEXT_PREPS_BIOCLIP_SCI
+    elif text_template_type == "bioclip_sci":
+        return TEXT_TEMPLATE_BIOCLIP_SCI
     
 class RunningMean:
     """
@@ -171,6 +161,13 @@ class PrintLog:
         PrintLog.log_batch = open(dpath_logs / "batch.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_init  = open(dpath_logs / "init.log",  "a", buffering=1)
+        PrintLog.log_text  = open(dpath_logs / "text.log",  "a", buffering=1)
+
+    @staticmethod
+    def texts(texts_sb):
+        text_printout = "\n".join(texts_sb)
+        if PrintLog.logging:
+            PrintLog.log_text.write(text_printout)
 
     @staticmethod
     def epoch_header(idx_epoch):

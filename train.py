@@ -18,7 +18,7 @@ import math
 from utils.utils import (
     save_pickle, 
     seed_libs,
-    get_text_preps, 
+    get_text_template, 
     RunningMean,
     PrintLog,
 )
@@ -202,22 +202,22 @@ class TrainPipeline:
 
         index_data, _ = spawn_indexes(
             split_name   =self.cfg.split_name,
-            splitset_name="train",
+            partition_name="train",
         )
 
-        text_preps_train = get_text_preps(self.cfg.text_preps["train"])
+        text_template_train = get_text_template(self.cfg.text_template["train"])
         self.dataloader, _ = spawn_dataloader(
-            index_data    =index_data,
-            text_preps    =text_preps_train,
-            config        =self.cfg,
-            shuffle       =True,
-            drop_last     =True,
-            img_pp        =self.modelw.img_pp_train,
+            index_data=index_data,
+            text_template=text_template_train,
+            config=self.cfg,
+            shuffle=True,
+            drop_last=True,
+            img_pp=self.modelw.img_pp_train,
             use_dv_sampler=self.cfg.dv_batching,
         )
 
-        text_preps_val = get_text_preps(self.cfg.text_preps["valid"])
-        self.val_pipe  = ValidationPipeline(self.cfg, text_preps_val, self.modelw.img_pp_val)
+        text_template_val = get_text_template(self.cfg.text_template["valid"])
+        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val)
 
         if self.gpu_rank == 0:
             ArtifactManager.save_metadata_trial()
@@ -318,12 +318,15 @@ class TrainPipeline:
                 loss_mean = RunningMean()
                 loss_raw_mean = RunningMean()
 
-                for idx_batch, data_b in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
-                    imgs_b, texts_b, class_encs_b, targ_data_b = data_b
+                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
+                    imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
 
-                    imgs_b = imgs_b.to(self.cfg.device, non_blocking=True)
-                    class_encs_b = class_encs_b.to(self.cfg.device)
-                    B = imgs_b.size(0) * self.gpu_world_size
+                    if self.gpu_rank == 0 and idx_batch == 0:
+                        PrintLog.texts(texts_sb)
+
+                    imgs_sb = imgs_sb.to(self.cfg.device, non_blocking=True)
+                    class_encs_sb = class_encs_sb.to(self.cfg.device)
+                    B = imgs_sb.size(0) * self.gpu_world_size
                     self.samps_seen += B
 
                     if self.lr_warmup > 0:
@@ -336,7 +339,9 @@ class TrainPipeline:
 
                     if self.cfg.hw.mixed_prec:
                         with autocast(device_type=self.cfg.device.type):
-                            loss, loss_raw, embs_img_b, embs_txt_b, logits = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                            loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+                                imgs_sb, texts_sb, class_encs_sb, targ_data_sb
+                            )
                         self.scaler.scale(loss).backward()
                         self.scaler.unscale_(self.optimizer)
                         if self.gpu_rank == 0:
@@ -344,7 +349,9 @@ class TrainPipeline:
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
                     else:
-                        loss, loss_raw, embs_img_b, embs_txt_b, logits = self.modelw.batch_step(imgs_b, texts_b, class_encs_b, targ_data_b)
+                        loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+                            imgs_sb, texts_sb, class_encs_sb, targ_data_sb
+                        )
                         loss.backward()
                         if self.gpu_rank == 0:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)

@@ -27,7 +27,7 @@ class TrainConfig:
     loss2: dict
     opt: dict
     freeze: dict
-    text_preps: dict
+    text_template: dict
 
     logging: bool
 
@@ -145,7 +145,7 @@ class EvalConfig:
     loss: dict
     loss2: dict
 
-    text_preps: str
+    text_template: str
 
     hw: dict = field(init=False, default_factory=dict)
     

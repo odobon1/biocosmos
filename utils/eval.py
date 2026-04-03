@@ -14,22 +14,22 @@ from utils.utils import load_split
 import pdb
 
 
-class SplitSetEvalPipeline:
+class SplitPartitionEvalPipeline:
 
     def __init__(
             self, 
-            splitset_name: str, 
-            config:        Any, 
-            text_preps:    List[List[str]],
-            img_pp:        Callable,
+            partition_name: str, 
+            config: Any, 
+            text_template: List[List[str]],
+            img_pp: Callable,
         ) -> None:
 
-        assert all(len(text_preps_cat) == 1 for text_preps_cat in text_preps), \
-               "text_preps: each inner list must contain exactly one element for eval"
+        assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
+               "text_template: each inner list must contain exactly one element for eval"
 
         index_data, sid_2_class_enc = spawn_indexes(
-            split_name   =config.split_name,
-            splitset_name=splitset_name,
+            split_name=config.split_name,
+            partition_name=partition_name,
         )
 
         self.index_data = index_data
@@ -37,25 +37,25 @@ class SplitSetEvalPipeline:
 
         self.index_text, self.index_text_class_encs = spawn_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,
-            text_preps     =text_preps,
+            text_template=text_template,
         )
 
         self.dataloader, self.time_cache = spawn_dataloader(
-            index_data    =index_data,
-            text_preps    =text_preps,
-            config        =config,
-            shuffle       =False,
-            drop_last     =False,
-            img_pp        =img_pp,
+            index_data=index_data,
+            text_template=text_template,
+            config=config,
+            shuffle=False,
+            drop_last=False,
+            img_pp=img_pp,
             use_dv_sampler=False,
         )
 
-        self.cfg           = config
-        self.splitset_name = splitset_name
-        self.batch_size    = self.dataloader.batch_size
-        self.mixed_prec    = config.hw.mixed_prec
+        self.cfg = config
+        self.partition_name = partition_name
+        self.batch_size = self.dataloader.batch_size
+        self.mixed_prec = config.hw.mixed_prec
 
-        if self.splitset_name == "id_val":
+        if self.partition_name == "id_val":
             split = load_split(config.split_name)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
@@ -88,21 +88,21 @@ class SplitSetEvalPipeline:
         loss_total     = 0.0
         n_samps_loss   = 0
 
-        for imgs_b, texts_b, class_encs_img_b, targ_data_b in tqdm(
+        for imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb in tqdm(
             self.dataloader, 
-            desc=f"Eval ({self.splitset_name})", 
+            desc=f"Eval ({self.partition_name})", 
             leave=False
         ):
-            imgs_b = imgs_b.to(modelw.device, non_blocking=True)
-            class_encs_img_b = class_encs_img_b.to(modelw.device, non_blocking=True)
+            imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
+            class_encs_img_sb = class_encs_img_sb.to(modelw.device, non_blocking=True)
 
-            B = imgs_b.size(0)
+            B = imgs_sb.size(0)
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, _, embs_img_b, _, _ = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
+                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb)
             else:
-                loss, _, embs_img_b, _, _ = modelw.batch_step(imgs_b, texts_b, class_encs_img_b, targ_data_b)
+                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb)
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())
@@ -111,11 +111,10 @@ class SplitSetEvalPipeline:
             loss_total += batch_loss
             n_samps_loss += B
 
-        # local concatenation
-        embs_img_local = torch.cat(embs_imgs, dim=0).to(modelw.device)  # pt[Q/G, D]
-        class_encs_img_local = torch.cat(class_encs_img, dim=0).to(modelw.device)  # pt[Q/G]
+        embs_img_all = torch.cat(embs_imgs, dim=0).to(modelw.device)  # pt[Q, D]
+        class_encs_img_all = torch.cat(class_encs_img, dim=0).to(modelw.device)  # pt[Q]
 
-        eval_scores  = self.compute_map_scores(embs_img_local, class_encs_img_local, embs_text_all)
+        eval_scores  = self.compute_map_scores(embs_img_all, class_encs_img_all, embs_text_all)
 
         # reduce scalars (loss & accuracy)
         stats = torch.tensor([
@@ -138,38 +137,28 @@ class SplitSetEvalPipeline:
 
     def compute_map_scores(
         self, 
-        embs_img_local:       torch.Tensor, 
-        class_encs_img_local: torch.Tensor, 
-        embs_text_all:        torch.Tensor
+        embs_img_all: torch.Tensor, 
+        class_encs_img_all: torch.Tensor, 
+        embs_text_all: torch.Tensor
     ) -> Dict[str, float]:
 
-        # distributed gathering
-        world_size          = dist.get_world_size()
-        embs_img_gath       = [torch.zeros_like(embs_img_local) for _ in range(world_size)]
-        class_encs_img_gath = [torch.zeros_like(class_encs_img_local) for _ in range(world_size)]
-        dist.all_gather(embs_img_gath, embs_img_local)
-        dist.all_gather(class_encs_img_gath, class_encs_img_local)
-
-        embs_img_global       = torch.cat(embs_img_gath, dim=0)
-        class_encs_img_global = torch.cat(class_encs_img_gath, dim=0)
-
         scores_i2t = self.compute_map_cross_modal(
-            embs_q=embs_img_global.cpu(),
-            class_encs_q=class_encs_img_global.cpu(),
+            embs_q=embs_img_all.cpu(),
+            class_encs_q=class_encs_img_all.cpu(),
             embs_g=embs_text_all.cpu(),
             class_encs_g=self.index_text_class_encs,
         )
         scores_i2i = self.compute_map_img2img(
-            embs_q=embs_img_local,
-            class_encs_q=class_encs_img_local,
-            embs_g=embs_img_global,
-            class_encs_g=class_encs_img_global,
+            embs_q=embs_img_all,
+            class_encs_q=class_encs_img_all,
+            embs_g=embs_img_all,
+            class_encs_g=class_encs_img_all,
         )
         scores_t2i = self.compute_map_cross_modal(
             embs_q=embs_text_all.cpu(),
             class_encs_q=self.index_text_class_encs,
-            embs_g=embs_img_global.cpu(),
-            class_encs_g=class_encs_img_global.cpu(),
+            embs_g=embs_img_all.cpu(),
+            class_encs_g=class_encs_img_all.cpu(),
         )
 
         eval_scores = {
@@ -179,16 +168,16 @@ class SplitSetEvalPipeline:
             "t2i_map":   scores_t2i["map"],
         }
 
-        if self.splitset_name == "id_val":
+        if self.partition_name == "id_val":
             bucket_i2t_prec1 = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_global.cpu(),
+                class_encs_q=class_encs_img_all.cpu(),
                 values=scores_i2t["prec1"],
                 class_enc_to_bucket=self.class_enc_to_bucket,
                 bucket_names=self.nshot_bucket_names,
             )
 
             bucket_i2t_map = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_global.cpu(),
+                class_encs_q=class_encs_img_all.cpu(),
                 values=scores_i2t["ap"],
                 class_enc_to_bucket=self.class_enc_to_bucket,
                 bucket_names=self.nshot_bucket_names,
@@ -202,7 +191,7 @@ class SplitSetEvalPipeline:
             )
 
             bucket_i2i_map = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_local.cpu(),
+                class_encs_q=class_encs_img_all.cpu(),
                 values=scores_i2i["ap"],
                 class_enc_to_bucket=self.class_enc_to_bucket,
                 bucket_names=self.nshot_bucket_names,
@@ -380,9 +369,9 @@ class ValidationPipeline:
 
     def __init__(
         self,
-        config:     Any,
-        text_preps: List[List[str]],
-        img_pp:     Callable,
+        config: Any,
+        text_template: List[List[str]],
+        img_pp: Callable,
         header_tag: Optional[str] = None,
     ):
 
@@ -391,18 +380,18 @@ class ValidationPipeline:
         self.best_comp_map = None
         self.best_i2i_map = None
 
-        self.val_pipe_id = SplitSetEvalPipeline(
-            splitset_name="id_val",
-            config       =config,
-            text_preps   =text_preps,
-            img_pp       =img_pp,
+        self.val_pipe_id = SplitPartitionEvalPipeline(
+            partition_name="id_val",
+            config=config,
+            text_template=text_template,
+            img_pp=img_pp,
         )
 
-        self.val_pipe_ood = SplitSetEvalPipeline(
-            splitset_name="ood_val",
-            config       =config,
-            text_preps   =text_preps,
-            img_pp       =img_pp,
+        self.val_pipe_ood = SplitPartitionEvalPipeline(
+            partition_name="ood_val",
+            config=config,
+            text_template=text_template,
+            img_pp=img_pp,
         )
 
         self.set_time_cache()

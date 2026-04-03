@@ -385,10 +385,10 @@ class VLMWrapper(abc.ABC):
 
     def _global_batch_loss(
         self,
-        embs_img_b:   torch.Tensor,
-        embs_txt_b:   torch.Tensor,
-        class_encs_b: torch.Tensor,
-        targ_data_b:  List[Any],
+        embs_img_sb:   torch.Tensor,
+        embs_txt_sb:   torch.Tensor,
+        class_encs_sb: torch.Tensor,
+        targ_data_sb:  List[Any],
     ) -> torch.Tensor:
         """
         Compute loss using the full global batch:
@@ -396,15 +396,15 @@ class VLMWrapper(abc.ABC):
         - applies primary + secondary loss configs.
         Works for single GPU as well (gather is a no-op).
         """
-        embs_img_all, embs_txt_all, class_encs_all, targ_data_all = self._gather_batch(
-            embs_img_b, embs_txt_b, class_encs_b, targ_data_b
+        embs_img_b, embs_txt_b, class_encs_b, targ_data_b = self._gather_batch(
+            embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
         )
 
         loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
-            embs_img_all,
-            embs_txt_all,
-            class_encs_all,
-            targ_data_all,
+            embs_img_b,
+            embs_txt_b,
+            class_encs_b,
+            targ_data_b,
             self.cfg.loss,
             secondary=False,
         )
@@ -414,10 +414,10 @@ class VLMWrapper(abc.ABC):
         mix = self.cfg.loss2["mix"]
         if mix != 0.0:
             loss2, loss2_raw, logits2 = self._loss_for_cfg_full_batch(
-                embs_img_all,
-                embs_txt_all,
-                class_encs_all,
-                targ_data_all,
+                embs_img_b,
+                embs_txt_b,
+                class_encs_b,
+                targ_data_b,
                 self.cfg.loss2,
                 secondary=True,
             )
@@ -427,16 +427,16 @@ class VLMWrapper(abc.ABC):
             loss = (1.0 - mix) * loss1 + mix * loss2
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
 
-            return loss, loss_raw, (logits1, logits2)
+            return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b
 
-        return loss1, loss1_raw, (logits1, None)
+        return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b
 
     def _gather_batch(
         self,
-        embs_img_b:   torch.Tensor,
-        embs_txt_b:   torch.Tensor,
-        class_encs_b: torch.Tensor,
-        targ_data_b:  List[Any],
+        embs_img_sb:   torch.Tensor,
+        embs_txt_sb:   torch.Tensor,
+        class_encs_sb: torch.Tensor,
+        targ_data_sb:  List[Any],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Any]]:
         """
         Turn the local batch on this rank into a global batch across all ranks.
@@ -445,10 +445,10 @@ class VLMWrapper(abc.ABC):
         gathering, then trimming back to the true sizes.
         """
         if self.world_size == 1:
-            return embs_img_b, embs_txt_b, class_encs_b, targ_data_b
+            return embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
 
-        device = embs_img_b.device
-        B_local = embs_img_b.size(0)
+        device = embs_img_sb.device
+        B_local = embs_img_sb.size(0)
 
         # gather true local batch sizes from all ranks
         sizes_t = torch.tensor([B_local], device=device, dtype=torch.long)
@@ -467,9 +467,9 @@ class VLMWrapper(abc.ABC):
             return torch.cat([x, pad], dim=0)
 
         # pad tensors so all_gather can handle the last uneven batch
-        embs_img_pad   = pad_rows(embs_img_b, B_max)
-        embs_txt_pad   = pad_rows(embs_txt_b, B_max)
-        class_encs_pad = pad_rows(class_encs_b, B_max)
+        embs_img_pad   = pad_rows(embs_img_sb, B_max)
+        embs_txt_pad   = pad_rows(embs_txt_sb, B_max)
+        class_encs_pad = pad_rows(class_encs_sb, B_max)
 
         # embeddings (need gradients)
         img_parts_pad = _AllGather.apply(embs_img_pad)
@@ -480,64 +480,67 @@ class VLMWrapper(abc.ABC):
         dist.all_gather(class_parts_pad, class_encs_pad)
 
         # target metadata (Python objects) already supports variable-length lists
-        obj_list = [None] * self.world_size
-        dist.all_gather_object(obj_list, list(targ_data_b))
+        targ_data_sb_list = [None] * self.world_size
+        dist.all_gather_object(targ_data_sb_list, list(targ_data_sb))
 
         # trim each gathered shard back to its true local size
         img_parts   = [part[:sizes[r]] for r, part in enumerate(img_parts_pad)]
         txt_parts   = [part[:sizes[r]] for r, part in enumerate(txt_parts_pad)]
         class_parts = [part[:sizes[r]] for r, part in enumerate(class_parts_pad)]
 
-        embs_img_all   = torch.cat(img_parts, dim=0)
-        embs_txt_all   = torch.cat(txt_parts, dim=0)
-        class_encs_all = torch.cat(class_parts, dim=0)
+        embs_img_b   = torch.cat(img_parts, dim=0)
+        embs_txt_b   = torch.cat(txt_parts, dim=0)
+        class_encs_b = torch.cat(class_parts, dim=0)
 
-        targ_data_all = []
-        for td in obj_list:
-            targ_data_all.extend(td)
+        targ_data_b = []
+        for td_sb in targ_data_sb_list:
+            targ_data_b += td_sb
 
-        return embs_img_all, embs_txt_all, class_encs_all, targ_data_all
+        return embs_img_b, embs_txt_b, class_encs_b, targ_data_b
 
     def batch_step(
         self,
-        imgs_b:       torch.Tensor,
-        txts_b:       Tuple[str],
-        class_encs_b: torch.Tensor,
-        targ_data_b:  Tuple[Any],
+        imgs_sb: torch.Tensor,
+        txts_sb: Tuple[str],
+        class_encs_sb: torch.Tensor,
+        targ_data_sb: Tuple[Any],
     ) -> Tuple[Any]:
         """
         Performs a single forward pass step. Encodes images and text, computes loss if flag is set.
 
         Args:
-        - imgs_b --------- Batch of images; Tensor(B, C, H, W)
-        - txts_b --------- Batch of texts
-        - class_encs_b --- Batch of class encodings; Tensor(B)
-        - targ_data_b ---- Batch of target data
-        - loss_flag ------ Whether to compute loss
+        - imgs_sb --------- Sub-batch of images; pt[B, C, H, W]
+        - txts_sb --------- Sub-batch of texts
+        - class_encs_sb --- Sub-batch of class encodings; pt[B]
+        - targ_data_sb ---- Sub-batch of target data
+        - loss_flag ------- Whether to compute loss
 
         Returns:
         - loss ----------- Scalar loss (or None)
-        - embs_img_b ----- Batch of normalized image embeddings; Tensor(B, D)
+        - embs_img_b ----- Batch of normalized image embeddings; pt[B, D]
+        - embs_txt_b ----- Batch of normalized text embeddings; pt[B, D]
+        - logits --------- (logits1, logits2); Logits computed for the batch; Tuple[pt[B, B], pt[B, B] | None]
+        - class_encs_b --- Batch of class encodings; pt[B]
         """
-        toks_b = self.txt_pp(txts_b)
-        output = self.model(imgs_b, toks_b)
+        toks_sb = self.txt_pp(txts_sb)
+        output = self.model(imgs_sb, toks_sb)
 
-        embs_img_b = F.normalize(output[0], dim=1)
-        embs_txt_b = F.normalize(output[1], dim=1)
+        embs_img_sb = F.normalize(output[0], dim=1)
+        embs_txt_sb = F.normalize(output[1], dim=1)
 
-        if embs_img_b.requires_grad:
-            embs_img_b.retain_grad()  # for batch-level logging of image embeddings gradient norm
-        if embs_txt_b.requires_grad:
-            embs_txt_b.retain_grad()  # for batch-level logging of text embeddings gradient norm
+        if embs_img_sb.requires_grad:
+            embs_img_sb.retain_grad()  # for batch-level logging of image embeddings gradient norm
+        if embs_txt_sb.requires_grad:
+            embs_txt_sb.retain_grad()  # for batch-level logging of text embeddings gradient norm
 
-        loss, loss_raw, logits = self._global_batch_loss(
-            embs_img_b,
-            embs_txt_b,
-            class_encs_b,
-            targ_data_b,
+        loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b = self._global_batch_loss(
+            embs_img_sb,
+            embs_txt_sb,
+            class_encs_sb,
+            targ_data_sb,
         )
 
-        return loss, loss_raw, embs_img_b, embs_txt_b, logits
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Any) -> None:

@@ -3,24 +3,13 @@ artifacts/*
 !artifacts/clip_o1/
 !artifacts/clip_o1/**
 
-# metadata/*
-# !metadata/nymph/
-# !metadata/nymph/sids2commons.pkl
-# !metadata/nymph/splits/
-# !metadata/nymph/splits/.gitkeep
-
 metadata/nymph/*
-!metadata/nymph/sids2commons.pkl
 !metadata/nymph/splits/
 metadata/nymph/splits/*
 !metadata/nymph/splits/.gitkeep
 
 preprocessing/nymph/intermediaries/*
-!preprocessing/nymph/intermediaries/sids/
-preprocessing/nymph/intermediaries/sids/*
-!preprocessing/nymph/intermediaries/sids/.gitkeep
-
-archive/*
+!preprocessing/nymph/intermediaries/.gitkeep
 
 temp_lr_explorer.ipynb
 temp_tax_dist.ipynb

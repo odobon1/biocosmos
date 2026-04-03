@@ -1,5 +1,5 @@
 study_name:      dev
-experiment_name: dev_clip_cb-foc-2D
+experiment_name: dev
 seed:            42
 # split_name:      S29-42
 split_name:      P37-42
@@ -16,26 +16,26 @@ dev:
   allow_diff_experiment: true
 
 arch:  # architecture
-  model_type: clip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP and ViTamin (SigLIP already uses non-causal i.e. bidirectional)
 
 loss:
-  type: infonce2  # {infonce1, infonce2, bce}
+  type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: multipos  # {aligned, multipos, tax, phylo}
+  targ: tax  # {aligned, multipos, tax, phylo}
   wting: true
   focal: true
-  dyn_smr: false  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
+  dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 # same settings should be equivalent
 loss2:  # secondary loss
   mix: 0.0  # set to 0.0 to disable computation
   type: bce  # {infonce1, infonce2, bce}
-  sim: geo1  # {cos, geo1, geo2}
+  sim: cos  # {cos, geo1, geo2}
   targ: phylo
-  wting: true
-  focal: true
-  dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
+  wting: false
+  focal: false
+  dyn_smr: false  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 opt:  # optimization
   lr:  # learning rate
@@ -53,9 +53,8 @@ freeze:
   image: false
   text: false
 
-text_preps:
-  # train: mixed
-  train: combo_temps
+text_template:
+  train: train
   valid: bioclip_sci
 
 logging: true

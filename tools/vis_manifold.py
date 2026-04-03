@@ -15,7 +15,7 @@ import random
 from models import VLMWrapper
 from utils.config import get_config_eval
 from utils.data import spawn_dataloader, spawn_indexes, sid_to_genus
-from utils.utils import paths, get_text_preps
+from utils.utils import paths, get_text_template
 
 def get_embs_and_labels(modelw, dataloader, device, mixed_prec):
     """
@@ -109,16 +109,16 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.savefig(fpath_plot, dpi=300, bbox_inches="tight")
     plt.close()
 
-def get_dataloader(cfg, splitset_name, modelw):
-    text_preps    = get_text_preps(cfg.text_preps)
-    index_data, _ = spawn_indexes(split_name=cfg.split_name, splitset_name=splitset_name)
+def get_dataloader(cfg, partition_name, modelw):
+    text_template = get_text_template(cfg.text_template)
+    index_data, _ = spawn_indexes(split_name=cfg.split_name, partition_name=partition_name)
     dataloader, _ = spawn_dataloader(
-        index_data    =index_data,
-        text_preps    =text_preps,
-        config        =cfg,
-        shuffle       =False,
-        drop_last     =False,
-        img_pp        =modelw.img_pp_val,
+        index_data=index_data,
+        text_template=text_template,
+        config=cfg,
+        shuffle=False,
+        drop_last=False,
+        img_pp=modelw.img_pp_val,
         use_dv_sampler=False,
     )
     return dataloader

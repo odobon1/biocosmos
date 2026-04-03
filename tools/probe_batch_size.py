@@ -1,5 +1,7 @@
 """
 python -m tools.probe_batch_size
+
+Intended to only be run on a single GPU
 """
 
 import torch  # type: ignore[import]
@@ -28,7 +30,7 @@ def simulate_batch_train(
 
     modelw.model.zero_grad(set_to_none=True)
     with amp.autocast(device_type="cuda"):
-        loss, _ = modelw.batch_step(imgs_b, txts_b, class_enc_b, None)
+        loss, _, _, _, _, _ = modelw.batch_step(imgs_b, txts_b, class_enc_b, None)
 
     opt = torch.optim.SGD((p for p in modelw.model.parameters() if p.requires_grad), lr=1e-5)
     loss.backward(); opt.step()

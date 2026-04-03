@@ -25,4 +25,4 @@ loss2:  # secondary loss
   wting: true
   focal: true
 
-text_preps: bioclip_sci
+text_template: bioclip_sci

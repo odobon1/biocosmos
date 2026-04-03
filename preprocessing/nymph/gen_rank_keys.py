@@ -1,5 +1,5 @@
 """
-Takes preprocessing/nymph/intermediaries/tax.pkl structure and produces metadata/nymph/rank_keys.pkl structure
+Takes metadata/nymph/class_data.pkl structure and produces metadata/nymph/rank_keys.pkl structure
 """
 
 from bidict import bidict  # type: ignore[import]
@@ -33,13 +33,13 @@ rank_keys_nymph = {
 }
 """
 
-tax_nymph = load_pickle(paths["preproc"]["nymph"] / "intermediaries/tax.pkl")
+class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
 
-for rkey_species, sid in enumerate(tax_nymph["found"].keys()):
+for rkey_species, sid in enumerate(class_data.keys()):
 
     rank_keys_nymph["species"][sid] = rkey_species  # species uses sid bc over 10% of the species have shared epithets (i.e. different genus, same species epithet) i.e. different rkey for each sid at the species level
     
-    genus_str = tax_nymph["found"][sid]["tax"]["genus"]
+    genus_str = class_data[sid]["genus"]
     if genus_str not in rank_keys_nymph["genus"].keys():
 
         rkey_genus = len(rank_keys_nymph["genus"].keys())

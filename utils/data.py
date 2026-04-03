@@ -100,19 +100,19 @@ class ImageTextDataset(Dataset):
     def __init__(
         self, 
         index_data,
-        text_preps,
+        text_template,
         img_pp, 
         config,
     ):
         
         self.index_class_encs = index_data["class_encs"]
-        self.index_rfpaths    = index_data["rfpaths"]
-        self.index_sids       = index_data["sids"]
-        self.index_pos        = index_data["pos"]
-        self.index_sex        = index_data["sex"]
-        self.text_preps       = text_preps
-        self.img_pp           = img_pp
-        self.cached_imgs      = config.hw.cached_imgs
+        self.index_rfpaths = index_data["rfpaths"]
+        self.index_sids = index_data["sids"]
+        self.index_pos = index_data["pos"]
+        self.index_sex = index_data["sex"]
+        self.text_template = text_template
+        self.img_pp = img_pp
+        self.cached_imgs = config.hw.cached_imgs
 
         self.n_samples = len(self.index_class_encs)
 
@@ -134,8 +134,8 @@ class ImageTextDataset(Dataset):
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
-        self.sids2commons   = load_pickle(paths["metadata"]["nymph"] / "sids2commons.pkl")
-        self.rank_keys_dict = load_pickle(paths["metadata"]["nymph"] / "rank_keys.pkl")
+        self.class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
+        self.rank_keys = load_pickle(paths["metadata"]["nymph"] / "rank_keys.pkl")
 
     def __len__(self):
         return self.n_samples
@@ -163,11 +163,11 @@ class ImageTextDataset(Dataset):
 
         genus = sid.split("_")[0]
 
-        rank_key_species = self.rank_keys_dict["species"][sid]
-        rank_key_genus   = self.rank_keys_dict["genus"][genus]
+        rank_key_species = self.rank_keys["species"][sid]
+        rank_key_genus   = self.rank_keys["genus"][genus]
         rank_keys        = [rank_key_genus, rank_key_species]
 
-        text = gen_text(sid, self.text_preps, pos, sex, sids2commons=self.sids2commons)
+        text = gen_text(sid, self.text_template, pos, sex, common_name=self.class_data[sid]["common_name"])
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
@@ -179,7 +179,6 @@ class ImageTextDataset(Dataset):
             img   = Image.open(paths["nymph_imgs"] / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
-        # could also add pos and sex here for aux heads
         targ_data = {
             "class_enc": class_enc,
             "rank_keys": rank_keys,
@@ -190,17 +189,17 @@ class ImageTextDataset(Dataset):
 
         return img_t, text, class_enc, targ_data
 
-def collate_fn(batch):
+def collate_fn(subbatch):
     """
     collate_fn takes list of individual samples from Dataset and merges them into a single batch
     augmentation can be done here methinks
     """
-    imgs_b, texts_b, class_encs_b, targ_data_b = zip(*batch)
+    imgs_sb, texts_sb, class_encs_sb, targ_data_sb = zip(*subbatch)
 
-    imgs_b       = torch.stack(imgs_b, dim=0)  # --- Tensor(B, C, H, W)
-    class_encs_b = torch.tensor(class_encs_b)  # --- Tensor(B)
+    imgs_sb       = torch.stack(imgs_sb, dim=0)  # pt[B, C, H, W]
+    class_encs_sb = torch.tensor(class_encs_sb)  # pt[B]
 
-    return imgs_b, texts_b, class_encs_b, targ_data_b
+    return imgs_sb, texts_sb, class_encs_sb, targ_data_sb
 
 def assemble_indexes(data_index):
     """
@@ -230,7 +229,7 @@ def assemble_indexes(data_index):
 
     return index_data, sid_2_class_enc
 
-def spawn_indexes(split_name, splitset_name):
+def spawn_indexes(split_name: str, partition_name: str):
     """
 
     Args:
@@ -238,11 +237,11 @@ def spawn_indexes(split_name, splitset_name):
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
     split      = load_split(split_name)
-    data_index = split.data_indexes[splitset_name]
+    data_index = split.data_indexes[partition_name]
 
     return assemble_indexes(data_index)
 
-def spawn_indexes_txts(sid_2_class_enc, text_preps):
+def spawn_indexes_txts(sid_2_class_enc, text_template):
     """
     Think this is still needed but only for eval
 
@@ -255,36 +254,36 @@ def spawn_indexes_txts(sid_2_class_enc, text_preps):
     index_text_sids       = list(sid_2_class_enc.keys())
     index_text_class_encs = list(sid_2_class_enc.values())
 
-    index_text = [gen_text(sid, text_preps) for sid in index_text_sids]
+    index_text = [gen_text(sid, text_template) for sid in index_text_sids]
 
     return index_text, torch.tensor(index_text_class_encs)
 
 def spawn_dataloader(
-    index_data:     Dict[str, List[Union[int, str]]],
-    text_preps:     List[List[str]],
+    index_data: Dict[str, List[Union[int, str]]],
+    text_template: List[List[str]],
     config,
-    shuffle:        bool,
-    drop_last:      bool,
-    img_pp:         Callable,
+    shuffle: bool,
+    drop_last: bool,
+    img_pp: Callable,
     use_dv_sampler: bool,
 ) -> Tuple[DataLoader, float | None]:
     """
 
     Args:
-    - index_data -------- Data indexes: Class encodings, relative filepaths to images, species ID's, position data, sex
-                          data (note: cleanup on aisle 5 needed with the assembly of class_encs at runtime, should be 
-                          in split gen)
-    - text_preps -------- List of text prepending selections that are randomly picked from to assemble train texts
-    - config ------------ contains 1. batch_size (int), 2. cached_imgs (bool) ~ whether to cache images in memory, 
-                          3. n_workers (int) ~ Parallelism, 4. prefetch_factor (int) ~ How many batches each worker 
-                          will load in advance; Higher prefetch_factor increases throughput, higher RAM cost; Only 
-                          takes effect when n_workers > 0
-    - shuffle ----------- Whether to shuffle samples between cycles
-    - drop_last --------- Whether to drop partial batch at the end of epoch (only need this arg for train)
-    - img_pp ------------ The image preprocessor          
+    - index_data ------ Data indexes: Class encodings, relative filepaths to images, species ID's, position data, sex
+                        data (note: cleanup on aisle 5 needed with the assembly of class_encs at runtime, should be 
+                        in split gen)
+    - text_template --- List of text prepending selections that are randomly picked from to assemble train texts
+    - config ---------- contains 1. batch_size (int), 2. cached_imgs (bool) ~ whether to cache images in memory, 
+                        3. n_workers (int) ~ Parallelism, 4. prefetch_factor (int) ~ How many batches each worker 
+                        will load in advance; Higher prefetch_factor increases throughput, higher RAM cost; Only 
+                        takes effect when n_workers > 0
+    - shuffle --------- Whether to shuffle samples between cycles
+    - drop_last ------- Whether to drop partial batch at the end of epoch (only need this arg for train)
+    - img_pp ---------- The image preprocessor          
     """
 
-    dataset = ImageTextDataset(index_data, text_preps, img_pp, config)
+    dataset = ImageTextDataset(index_data, text_template, img_pp, config)
 
     bs_local = config.batch_size // dist.get_world_size()
 
@@ -325,15 +324,11 @@ def spawn_dataloader(
 
     return dataloader, dataset.time_cache
 
-def gen_text(sid, combo_temp, pos=None, sex=None, sids2commons=None):
+def gen_text(sid, combo_temp, pos=None, sex=None, common_name=None):
 
     genus, species_epithet = sid.split("_", 1)
     text_sci = f"{genus} {species_epithet}"
     text_tax = "animalia arthropoda insecta lepidoptera nymphalidae " + text_sci
-    if sids2commons is not None:
-        text_com = sids2commons[sid]
-    else:
-        text_com = None
 
     prompt = ""
 
@@ -342,8 +337,8 @@ def gen_text(sid, combo_temp, pos=None, sex=None, sids2commons=None):
         seg = random.choice(combo_seg)
 
         if "$COM$" in seg:
-            if text_com is not None:
-                seg = seg.replace("$COM$", text_com)
+            if common_name is not None:
+                seg = seg.replace("$COM$", common_name)
             else:
                 if random.choice((True, False)):
                     seg = seg.replace("$COM$", "$SCI$")
@@ -372,23 +367,6 @@ def gen_text(sid, combo_temp, pos=None, sex=None, sids2commons=None):
         prompt = seg + prompt  # select random prepending from prepending-category, prepend to text
 
     return prompt
-
-def gbif_common_name(scientific_name: str, lang: str = "eng") -> str | None:
-    m = requests.get(
-        "https://api.gbif.org/v1/species/match",
-        params={"name": scientific_name},
-        timeout=10
-    ).json()
-    key = m.get("usageKey") or m.get("speciesKey") or m.get("acceptedUsageKey")
-    if not key:
-        return None
-
-    data = requests.get(
-        f"https://api.gbif.org/v1/species/{key}/vernacularNames",
-        timeout=10
-    ).json()
-    items = [x for x in data.get("results", []) if (x.get("language") or "").lower() == lang.lower()]
-    return (items[0].get("vernacularName").strip() or None) if items else None
 
 def sid_to_genus(sid: str) -> str:
     return sid.split("_")[0]

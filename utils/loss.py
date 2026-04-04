@@ -7,7 +7,7 @@ from utils.phylo import PhyloVCV
 import pdb
 
 
-phylo_vcv = PhyloVCV()
+phylo_vcv = PhyloVCV(dataset="nymph")
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
     if targ_type == "aligned":

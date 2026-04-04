@@ -6,15 +6,35 @@ from itertools import combinations
 from typing import Dict, List
 
 from utils.utils import paths
+from utils.data import before_second_underscore
 
 import pdb
 
 
+def get_tree_nymph() -> Tree:
+    tree = Phylo.read(paths["nymph_phylo_tree"], "newick")
+    return tree
+
+def get_tree_lepid() -> Tree:
+    tree = Phylo.read(paths["lepid_phylo_tree"], "newick")
+    # heliconius_cydno/heliconius_cydno_alithea is the only instance where subspecies + corresponding species are both in tree, remove subspecies
+    tree.prune(target="heliconius_cydno_alithea")
+    # convert all subspecies names to species-level names by truncating after the second underscore
+    for tip in tree.get_terminals():
+        if tip.name.count("_") >= 2:
+            tip.name = before_second_underscore(tip.name)
+    return tree
+
 class PhyloVCV:
 
-    def __init__(self):
+    def __init__(self, dataset: str) -> None:
 
-        self.tree: Tree = Phylo.read(paths["nymph_phylo_tree"], "newick")
+        if dataset == "nymph":
+            self.tree: Tree = get_tree_nymph()
+        elif dataset == "lepid":
+            self.tree: Tree = get_tree_lepid()
+        else:
+            raise ValueError(f"Unknown dataset: {dataset}")
 
         root:               Clade              = self.tree.root
         self._depth:        Dict[Clade, float] = {root: 0.0}
@@ -34,10 +54,7 @@ class PhyloVCV:
         self._sid_to_idx: Dict[str, int] = {sid: i for i, sid in enumerate(self._sids)}
 
         vcv = self.build_vcv_matrix()
-        """
-        Aassuming all tips are at the same depth, all elements along the diagonal (variances) are of the same value and 
-        dividing by that value equates to the so called correlation matrix ~ standardizing matrix values to range [0, 1]
-        """
+
         self.corr = vcv / max(np.diag(vcv))
 
     def get_sids(self) -> list[str]:

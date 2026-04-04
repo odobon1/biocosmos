@@ -370,3 +370,9 @@ def gen_text(sid, combo_temp, pos=None, sex=None, common_name=None):
 
 def sid_to_genus(sid: str) -> str:
     return sid.split("_")[0]
+
+def before_second_underscore(s: str) -> str:
+    parts = s.split("_", 2)
+    if len(parts) < 3:
+        return s
+    return parts[0] + "_" + parts[1]

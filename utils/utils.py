@@ -153,14 +153,21 @@ def shuffle_list(input: List[Any], seed: int) -> List[int]:
 class PrintLog:
 
     logging = False
-    log_batch = None
+    log_batch_general = None
+    log_batch_grad_norm = None
+    log_batch_temp_bias = None
     log_epoch = None
     log_init  = None
+    log_text  = None
 
     @staticmethod
     def create_logs(dpath_logs):
         PrintLog.logging = True
-        PrintLog.log_batch = open(dpath_logs / "batch.log", "a", buffering=1)
+        dpath_batch_logs = dpath_logs / "batch"
+        dpath_batch_logs.mkdir(parents=True, exist_ok=True)
+        PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
+        PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
+        PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_init  = open(dpath_logs / "init.log",  "a", buffering=1)
         PrintLog.log_text  = open(dpath_logs / "text.log",  "a", buffering=1)
@@ -180,7 +187,9 @@ class PrintLog:
         )
         print(header_epoch)
         if PrintLog.logging:
-            PrintLog.log_batch.write(header_epoch)
+            PrintLog.log_batch_general.write(header_epoch)
+            PrintLog.log_batch_grad_norm.write(header_epoch)
+            PrintLog.log_batch_temp_bias.write(header_epoch)
             PrintLog.log_epoch.write(header_epoch)
 
     @staticmethod
@@ -243,11 +252,11 @@ class PrintLog:
             logits_line = f"log1={tensor_grad_l2_norm(logits1):.2e}, "
             logits_line += f"log2={tensor_grad_l2_norm(logits2):.2e}, "
 
-        grad_line = (
-            f"gn(img={tensor_grad_l2_norm(embs_img_b):.2e}, "
+        grad_norm_line = (
+            f"img={tensor_grad_l2_norm(embs_img_b):.2e}, "
             f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}, "
             f"{logits_line}"
-            f"model={model_grad_l2_norm(model):.2e}), "
+            f"model={model_grad_l2_norm(model):.2e}"
         )
 
         logits_param_line = ""
@@ -259,14 +268,23 @@ class PrintLog:
             logits_param_line += f"b1={tensor_scalar_item(model.module.logit_bias):.2e}, "
         if hasattr(model.module, "logit_bias2") and model.module.logit_bias2 is not None:
             logits_param_line += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e}, "
+        logits_param_line = logits_param_line.rstrip(", ")
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
-            PrintLog.log_batch.write(
+            PrintLog.log_batch_general.write(
                 f"{batch_str:<10} "
                 f"lr={lr:.2e} "
                 f"loss={loss_batch:.2e} "
-                f"{grad_line}"
+                f"\n"
+            )
+            PrintLog.log_batch_grad_norm.write(
+                f"{batch_str:<10} "
+                f"{grad_norm_line}"
+                f"\n"
+            )
+            PrintLog.log_batch_temp_bias.write(
+                f"{batch_str:<10} "
                 f"{logits_param_line}"
                 f"\n"
             )
@@ -482,6 +500,9 @@ class PrintLog:
 
     @staticmethod
     def close_logs():
-        PrintLog.log_batch.close()
+        PrintLog.log_batch_general.close()
+        PrintLog.log_batch_grad_norm.close()
+        PrintLog.log_batch_temp_bias.close()
         PrintLog.log_epoch.close()
         PrintLog.log_init.close()
+        PrintLog.log_text.close()

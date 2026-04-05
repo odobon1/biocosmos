@@ -105,10 +105,6 @@ def get_text_template(text_template_type):
             "$AAN$ ",  # OpenAI CLIP-style prepending
         ],
         [
-            "",
-            "$SEX$",
-        ],
-        [
             "$SCI$",
             "$TAX$",
             "$COM$",

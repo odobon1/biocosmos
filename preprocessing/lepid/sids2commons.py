@@ -9,6 +9,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm  # type: ignore[import]
+from itertools import chain
 
 from utils.utils import paths, save_pickle
 from preprocessing.lepid.species_ids import get_sids_lepid
@@ -86,6 +87,7 @@ def fetch_one(sid: str) -> tuple[str, str | None]:
 def main() -> None:
 
     sids = get_sids_lepid()
+    sids = list(chain.from_iterable(sids.values()))  # convert dict of lists to flat list
     fpath_sids2commons = paths["preproc"]["lepid"] / "intermediaries/sids2commons.pkl"
 
     sids2commons = {}

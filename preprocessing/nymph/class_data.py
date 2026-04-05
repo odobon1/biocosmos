@@ -7,7 +7,6 @@ metadata/nymph/class_data.pkl
 Structure:
 class_data = {
     sid: {
-        "subfamily": "<subfamily>",
         "genus": "<genus>",
         "common_name": "<common_name>",
         "n_imgs": <number_of_images_in_directory>,
@@ -42,7 +41,6 @@ for sid in tqdm(sids, desc="Generating class data"):
     df_metadata_sid = df_metadata_nymph[df_metadata_nymph["species"] == sid]  # metadata subset on species
 
     class_data[sid] = {
-        "subfamily": df_metadata_sid["subfamily"].iloc[0],
         "genus": df_metadata_sid["species"].iloc[0].split("_")[0],
         "common_name": sids2commons[sid],
         "n_imgs": n_imgs,

@@ -5,32 +5,18 @@ from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
 from itertools import combinations
 from typing import Dict, List
 
-from utils.utils import paths
-from utils.data import before_second_underscore
+from utils.utils import paths, load_pickle
 
 import pdb
 
 
 def get_tree(dataset: str) -> Tree:
     if dataset == "nymph":
-        return get_tree_nymph()
+        tree = load_pickle(paths["metadata"]["nymph"] / "tree.pkl")
     elif dataset == "lepid":
-        return get_tree_lepid()
+        tree = load_pickle(paths["metadata"]["lepid"] / "tree.pkl")
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
-
-def get_tree_nymph() -> Tree:
-    tree = Phylo.read(paths["nymph_phylo_tree"], "newick")
-    return tree
-
-def get_tree_lepid() -> Tree:
-    tree = Phylo.read(paths["lepid_phylo_tree"], "newick")
-    # heliconius_cydno/heliconius_cydno_alithea is the only instance where subspecies + corresponding species are both in tree, remove subspecies
-    tree.prune(target="heliconius_cydno_alithea")
-    # convert all subspecies names to species-level names by truncating after the second underscore
-    for tip in tree.get_terminals():
-        if tip.name.count("_") >= 2:
-            tip.name = before_second_underscore(tip.name)
     return tree
 
 class PhyloVCV:

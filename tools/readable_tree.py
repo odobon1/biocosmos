@@ -32,7 +32,7 @@ def ascii_tree_lines(
     cum_dist: float = 0.0,
 ) -> List[str]:
     """Return list of pretty-printed lines for this clade and its descendants."""
-    tee = "├─ " 
+    tee = "├─ "
     last = "└─ "
     bar = "│  "
     spc = "   "

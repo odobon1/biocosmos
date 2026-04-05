@@ -66,6 +66,19 @@ Note: The first stage of stratification (sparse) is done to ensure a well-distri
 
 Datastructures are created for tracking n-shot subsets of ID splits for monitoring robustness to class imbalance and the assessing the effectiveness of class imbalance methods utilized. Stats regarding the variety (num. species) and volume (num. samples) of n-shot ID eval subsets are produced to get an idea of the statistical significance of the different n-shot subsets (subsets with lower volume are less significant) and are used to adjust the bounds of the n-shot buckets such that they are more statistically significant.
 
+## Generate Phylogenetic Tree
+**preprocessing/nymph/phylo.py**
+
+To execute from root:
+```
+python -m preprocessing.nymph.phylo
+```
+**Requires:**
+- Nymphalidae phylogenetic tree data
+
+**Produces:**
+- `metadata/nymph/tree.pkl`
+
 ## Generate Rank Keys
 **preprocessing/nymph/gen_rank_keys.py**
 

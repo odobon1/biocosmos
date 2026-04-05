@@ -40,15 +40,15 @@ for genus in tqdm(genera, desc="Generating class data"):
         continue
 
     family = df_metadata_sid["family"].iloc[0]
-    subfamily = df_metadata_sid["subfamily"].iloc[0]
-    tribe = df_metadata_sid["tribe"].iloc[0]
+    # subfamily = df_metadata_sid["subfamily"].iloc[0]
+    # tribe = df_metadata_sid["tribe"].iloc[0]
 
     sids_genus = [sid for sid in sids if sid.startswith(genus + "_")]
     for sid in sids_genus:
         class_data[sid] = {
             "family": family,
-            "subfamily": subfamily,
-            "tribe": tribe,
+            # "subfamily": subfamily,  # missing data
+            # "tribe": tribe,  # missing data
             "genus": genus,
             "common_name": sids2commons[sid],
         # "n_imgs": n_imgs,  # needs to be computed after dorsal have been extracted (also need to account for subspecies dirs!)

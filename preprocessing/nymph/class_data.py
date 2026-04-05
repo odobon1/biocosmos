@@ -1,5 +1,5 @@
 """
-python -m preprocessing.nymph.gen_class_data
+python -m preprocessing.nymph.class_data
 
 Creates:
 metadata/nymph/class_data.pkl
@@ -9,12 +9,10 @@ class_data = {
     sid: {
         "subfamily": "<subfamily>",
         "genus": "<genus>",
-        "species": "<species>",  # same as sid
         "common_name": "<common_name>",
         "n_imgs": <number_of_images_in_directory>,
     },
     ...
-}
 }
 """
 
@@ -23,12 +21,12 @@ import pandas as pd  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
 from utils.utils import paths, load_pickle, save_pickle
-from preprocessing.nymph.species_ids import get_sids_known_nymph
+from preprocessing.nymph.species_ids import get_sids_nymph
 
 import pdb
 
 
-sids = get_sids_known_nymph()
+sids = get_sids_nymph()
 df_metadata_nymph = pd.read_csv(paths["nymph_metadata"])
 sids2commons = load_pickle(paths["preproc"]["nymph"] / "intermediaries/sids2commons.pkl")
 
@@ -46,7 +44,6 @@ for sid in tqdm(sids, desc="Generating class data"):
     class_data[sid] = {
         "subfamily": df_metadata_sid["subfamily"].iloc[0],
         "genus": df_metadata_sid["species"].iloc[0].split("_")[0],
-        "species": sid.replace("_", " "),
         "common_name": sids2commons[sid],
         "n_imgs": n_imgs,
     }

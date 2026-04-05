@@ -4,9 +4,8 @@ python -m tools.readable_tree
 
 from typing import List
 import itertools
-from Bio import Phylo  # type: ignore[import]
 
-from utils.utils import paths
+from utils.phylo import get_tree
 
 
 class Namer:
@@ -67,11 +66,11 @@ def ascii_tree_lines(
 
 if __name__ == "__main__":
     
-    # FPATH_TREE = paths["nymph_phylo_tree"]
-    FPATH_TREE = paths["lepid_phylo_tree"]
+    DATASET = "nymph"
+    # DATASET = "lepid"
     FPATH_READABLE_TREE = "tools/readable_tree.txt"
 
-    tree = Phylo.read(FPATH_TREE, "newick")
+    tree = get_tree(DATASET)
     namer = Namer()
     lines = ascii_tree_lines(tree.root, namer)
     with open(FPATH_READABLE_TREE, "w", encoding="utf-8") as f:

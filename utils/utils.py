@@ -40,9 +40,11 @@ elif CLUSTER == "hpg":
         "config": dpath_root / "config",
         "metadata": {
             "nymph": dpath_root / "metadata/nymph",
+            "lepid": dpath_root / "metadata/lepid",
         },
         "preproc": {
             "nymph": dpath_root / "preprocessing/nymph",
+            "lepid": dpath_root / "preprocessing/lepid",
         },
         "artifacts": dpath_root / "artifacts",
         "nymph_imgs": dpath_nymph / "images",

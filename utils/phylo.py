@@ -11,6 +11,14 @@ from utils.data import before_second_underscore
 import pdb
 
 
+def get_tree(dataset: str) -> Tree:
+    if dataset == "nymph":
+        return get_tree_nymph()
+    elif dataset == "lepid":
+        return get_tree_lepid()
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
+
 def get_tree_nymph() -> Tree:
     tree = Phylo.read(paths["nymph_phylo_tree"], "newick")
     return tree
@@ -29,16 +37,10 @@ class PhyloVCV:
 
     def __init__(self, dataset: str) -> None:
 
-        if dataset == "nymph":
-            self.tree: Tree = get_tree_nymph()
-        elif dataset == "lepid":
-            self.tree: Tree = get_tree_lepid()
-        else:
-            raise ValueError(f"Unknown dataset: {dataset}")
-
-        root:               Clade              = self.tree.root
-        self._depth:        Dict[Clade, float] = {root: 0.0}
-        self._sid_to_clade: Dict[str, Clade]   = {}
+        self.tree: Tree = get_tree(dataset)
+        root: Clade = self.tree.root
+        self._depth: Dict[Clade, float] = {root: 0.0}
+        self._sid_to_clade: Dict[str, Clade] = {}
 
         # populate _depth and _sid_to_clade
         stack = [root]

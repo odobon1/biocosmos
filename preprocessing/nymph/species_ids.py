@@ -1,13 +1,13 @@
 import os
 from tqdm import tqdm  # type: ignore[import]
 
-from utils.utils import paths, save_pickle
+from utils.utils import paths
 from utils.phylo import PhyloVCV
 
 import pdb
 
 
-def get_sids_known_nymph():
+def get_sids_nymph():
 
     NON_ALPHA_EXCEPTIONS_NYMPH = ["polygonia_c-aureum", "polygonia_c-album", "nymphalis_l-album"]
 
@@ -32,7 +32,7 @@ def get_sids_known_nymph():
 
 def get_sids_phylo_nymph():
 
-    sids_known = get_sids_known_nymph()
+    sids_known = get_sids_nymph()
 
     pvcv = PhyloVCV(dataset="nymph")
     sids_phylo_tree = pvcv.get_sids()

@@ -3,11 +3,11 @@
 Note: everything described in this file is executed when `./setup.sh` is run from the root as described in the setup procedure.
 
 ## Generate common names
-**preprocessing/nymph/gen_sids2commons.py**
+**preprocessing/nymph/sids2commons.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_sids2commons
+python -m preprocessing.nymph.sids2commons
 ```
 **Requires:**
 - Butterflies data on HiPerGator
@@ -17,11 +17,11 @@ python -m preprocessing.nymph.gen_sids2commons
 
 
 ## Generate class data
-**preprocessing/nymph/gen_class_data.py**
+**preprocessing/nymph/class_data.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_class_data
+python -m preprocessing.nymph.class_data
 ```
 **Requires:**
 - `preprocessing/nymph/intermediaries/sids2commons.pkl`

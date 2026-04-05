@@ -1,5 +1,5 @@
 """
-python -m tools.gen_sids2commons
+python -m preprocessing.lepid.sids2commons
 """
 
 from __future__ import annotations
@@ -11,10 +11,9 @@ from urllib3.util.retry import Retry
 from tqdm import tqdm  # type: ignore[import]
 
 from utils.utils import paths, save_pickle
-from preprocessing.nymph.species_ids import get_sids_known_nymph
+from preprocessing.lepid.species_ids import get_sids_lepid
 
 
-DATASET = "nymph"
 MAX_WORKERS = 16
 
 
@@ -86,9 +85,8 @@ def fetch_one(sid: str) -> tuple[str, str | None]:
 
 def main() -> None:
 
-    if DATASET == "nymph":
-        sids = get_sids_known_nymph()
-        fpath_sids2commons = paths["preproc"]["nymph"] / "intermediaries/sids2commons.pkl"
+    sids = get_sids_lepid()
+    fpath_sids2commons = paths["preproc"]["lepid"] / "intermediaries/sids2commons.pkl"
 
     sids2commons = {}
 

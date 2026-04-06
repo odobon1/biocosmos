@@ -19,7 +19,9 @@ preprocessing/nymph/intermediaries/*
 preprocessing/lepid/intermediaries/*
 !preprocessing/lepid/intermediaries/.gitkeep
 
+.codex
 temp_lr_explorer.ipynb
+temp_phylo.ipynb
 temp_tax_dist.ipynb
 temp.ipynb
 tools/readable_tree.txt

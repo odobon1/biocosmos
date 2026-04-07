@@ -41,32 +41,7 @@ Run setup script (this takes about an hour to run):
 
 # Testing
 
-The repo includes a `pytest` suite under `tests/` for fast unit tests and lightweight integration checks.
-
-Run all tests:
-```
-python -m pytest
-```
-
-Run only unit tests:
-```
-python -m pytest tests/unit
-```
-
-Run only integration tests:
-```
-python -m pytest -m integration
-```
-
-Run all tests in one file:
-```
-python -m pytest tests/unit/test_utils.py
-```
-
-Run one specific test:
-```
-python -m pytest tests/unit/test_utils.py::test_running_mean_tracks_average
-```
+The repo includes a `pytest` suite under `tests/` for fast unit tests and lightweight integration checks. See [tests/README.md](tests/README.md) for common test commands and usage details.
 
 # Train & Eval
 Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train/train.yaml` and the standalone eval config at `config/eval.yaml`. The loader merges `train.yaml` with `lr_sched.yaml` and `loss.yaml` under the hood.

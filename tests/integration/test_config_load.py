@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-import pytest
+import pytest  # type: ignore[import]
 
 from utils.config import get_config_eval, get_config_hardware, get_config_train
 

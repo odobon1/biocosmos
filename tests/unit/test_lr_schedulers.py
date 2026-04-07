@@ -1,11 +1,8 @@
-from __future__ import annotations
-
 import importlib
 import sys
 import types
-
-import pytest
-import torch
+import pytest  # type: ignore[import]
+import torch  # type: ignore[import]
 
 
 def import_train_module():

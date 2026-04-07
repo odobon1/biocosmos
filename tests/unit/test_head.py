@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest  # type: ignore[import]
 import torch  # type: ignore[import]
 

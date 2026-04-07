@@ -201,6 +201,13 @@ class GenSplitConfig:
     nst_names: list
     nst_seps: list
 
+    def __post_init__(self):
+        if len(self.nst_names) != len(self.nst_seps) + 1:
+            raise ValueError(
+                f"len(nst_names) ({len(self.nst_names)}) != "
+                f"len(nst_seps) + 1 ({len(self.nst_seps)})"
+            )
+
 def get_config_gen_split():
     with open(paths["config"] / "gen_split.yaml") as f:
         cfg_dict = yaml.safe_load(f)

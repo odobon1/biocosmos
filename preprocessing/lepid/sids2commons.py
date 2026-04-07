@@ -2,7 +2,6 @@
 python -m preprocessing.lepid.sids2commons
 """
 
-from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import requests
@@ -84,22 +83,22 @@ def fetch_one(sid: str) -> tuple[str, str | None]:
         print(f"[WARN] Failed for {sid}: {e}")
         return sid, None
 
-def main() -> None:
-
+def build_sids2commons() -> None:
     sids = get_sids_lepid()
     sids = list(chain.from_iterable(sids.values()))  # convert dict of lists to flat list
     fpath_sids2commons = paths["preproc"]["lepid"] / "intermediaries/sids2commons.pkl"
-
     sids2commons = {}
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(fetch_one, sid): sid for sid in sids}
-
         for fut in tqdm(as_completed(futures), total=len(futures), desc="Retrieving Common Names"):
             sid, common = fut.result()
             sids2commons[sid] = common
-
     save_pickle(sids2commons, fpath_sids2commons)
+
+def main() -> None:
+    print("Building sids2commons mapping...")
+    build_sids2commons()
+    print("sids2commons mapping complete")
 
 
 if __name__ == "__main__":

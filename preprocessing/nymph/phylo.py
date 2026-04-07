@@ -9,8 +9,10 @@ def build_tree_nymph() -> Tree:
     return tree
 
 def main():
+    print("Building Nymphalidae tree...")
     tree = build_tree_nymph()
     save_pickle(tree, paths["metadata"]["nymph"] / "tree.pkl")
+    print("Nymphalidae tree complete")
 
 
 if __name__ == "__main__":

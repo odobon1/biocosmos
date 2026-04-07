@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from utils.data import assemble_indexes, before_second_underscore, sid_to_genus
 
 

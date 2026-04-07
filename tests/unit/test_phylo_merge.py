@@ -1,8 +1,7 @@
 from itertools import combinations
 import pytest  # type: ignore[import]
 
-from preprocessing.lepid.phylo import build_tree_lepid
-from preprocessing.lepid.phylo_merge import combine_trees_lepid_nymph
+from preprocessing.lepid.phylo import build_tree_lepid, combine_trees_lepid_nymph
 from preprocessing.nymph.phylo import build_tree_nymph
 
 
@@ -66,7 +65,6 @@ def merged_tree_bundle():
     tree_merged = combine_trees_lepid_nymph(tree_lepid, tree_nymph)
     return tree_lepid, tree_nymph, tree_merged
 
-
 def test_merge_preserves_all_terminal_taxa(merged_tree_bundle) -> None:
     tree_lepid, tree_nymph, tree_merged = merged_tree_bundle
 
@@ -86,8 +84,7 @@ def test_merge_preserves_all_terminal_taxa(merged_tree_bundle) -> None:
         f"{sorted(missing_from_merged_vs_nymph)[:10]}"
     )
 
-
-def test_merged_tree_tips_same_distance_from_root(merged_tree_bundle) -> None:
+def test_merge_tips_same_dist_from_root(merged_tree_bundle) -> None:
     _, _, tree_merged = merged_tree_bundle
 
     tips = tree_merged.get_terminals()
@@ -104,8 +101,7 @@ def test_merged_tree_tips_same_distance_from_root(merged_tree_bundle) -> None:
         f"min={min_dist}, max={max_dist}"
     )
 
-
-def test_merge_preserves_tree_depth(merged_tree_bundle) -> None:
+def test_merge_tree_depth(merged_tree_bundle) -> None:
     tree_lepid, _, tree_merged = merged_tree_bundle
 
     lepid_tips = tree_lepid.get_terminals()
@@ -122,10 +118,7 @@ def test_merge_preserves_tree_depth(merged_tree_bundle) -> None:
         f"lepid={depth_lepid}, merged={depth_merged}"
     )
 
-
-def test_merge_preserves_pairwise_distances_lepid(
-    merged_tree_bundle,
-) -> None:
+def test_merge_preserves_dists_lepid(merged_tree_bundle) -> None:
     tree_lepid, _, tree_merged = merged_tree_bundle
 
     sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
@@ -146,10 +139,7 @@ def test_merge_preserves_pairwise_distances_lepid(
             f"lepid={dist_lepid}, merged={dist_merged}"
         )
 
-
-def test_merge_preserves_pairwise_distances_nymph(
-    merged_tree_bundle,
-) -> None:
+def test_merge_preserves_dists_nymph(merged_tree_bundle) -> None:
     _, tree_nymph, tree_merged = merged_tree_bundle
 
     sids_nymph = {tip.name for tip in tree_nymph.get_terminals()}
@@ -170,10 +160,7 @@ def test_merge_preserves_pairwise_distances_nymph(
             f"nymph={dist_nymph}, merged={dist_merged}"
         )
 
-
-def test_merge_preserves_pairwise_distances_cross_family(
-    merged_tree_bundle,
-) -> None:
+def test_merge_preserves_dists_cross_family(merged_tree_bundle) -> None:
     tree_lepid, _, tree_merged = merged_tree_bundle
 
     sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}

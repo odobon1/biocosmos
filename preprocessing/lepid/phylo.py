@@ -14,10 +14,10 @@ def build_tree_lepid() -> Tree:
         if tip.name.count("_") >= 2:
             tip.name = before_second_underscore(tip.name)
 
-    class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
-    for tip in tree.get_terminals():
-        if tip.name not in class_data.keys():
-            tree.prune(target=tip.name)
+    # class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
+    # for tip in tree.get_terminals():
+    #     if tip.name not in class_data.keys():
+    #         tree.prune(target=tip.name)
 
     return tree
 

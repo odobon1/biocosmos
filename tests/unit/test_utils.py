@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from utils.utils import RunningMean, get_text_template, shuffle_list
 
 

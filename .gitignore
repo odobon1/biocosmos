@@ -29,3 +29,6 @@ tools/src.txt
 
 __pycache__/
 preprocessing/nymph/__pycache__/
+tests/__pycache__/
+tests/integration/__pycache__/
+tests/unit/__pycache__/

@@ -13,6 +13,7 @@ dependencies:
   - pandas
   - pillow
   - pygbif
+  - pytest
   - scikit-learn
   - seaborn
   - tensorboard

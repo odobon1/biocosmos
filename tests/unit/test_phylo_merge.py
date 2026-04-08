@@ -3,6 +3,8 @@ import pytest  # type: ignore[import]
 
 from preprocessing.lepid.phylo import build_tree_lepid, combine_trees_lepid_nymph
 from preprocessing.nymph.phylo import build_tree_nymph
+from utils.utils import paths, load_pickle
+from preprocessing.lepid.phylo import augment_class_data
 
 
 # sids that are in Nymph family dir (class_data.pkl) with genera on Lepid tree but not on Nymph tree
@@ -30,7 +32,7 @@ PAIRWISE_DISTANCE_SIDS_LEPID = [
     'miriamica_weiskei',
     'physcaeneura_panda',
     'callarge_sagitta'
- ]
+]
 
 # sids on Nymph tree but not Lepid tree
 PAIRWISE_DISTANCE_SIDS_NYMPH = [
@@ -59,14 +61,18 @@ PAIRWISE_DISTANCE_SIDS_CROSS_FAMILY = [
 ]
 
 @pytest.fixture(scope="module")
-def merged_tree_bundle():
+def tree_bundle():
     tree_lepid = build_tree_lepid()
     tree_nymph = build_tree_nymph()
-    tree_merged = combine_trees_lepid_nymph(tree_lepid, tree_nymph)
+    class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
+    # class data augmented with sids on trees not in class_data but with genera in class_data
+    class_data_aug = augment_class_data(class_data, tree_lepid)
+    class_data_aug = augment_class_data(class_data_aug, tree_nymph)
+    tree_merged = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
     return tree_lepid, tree_nymph, tree_merged
 
-def test_merge_preserves_all_terminal_taxa(merged_tree_bundle) -> None:
-    tree_lepid, tree_nymph, tree_merged = merged_tree_bundle
+def test_merge_preserves_all_terminal_taxa(tree_bundle) -> None:
+    tree_lepid, tree_nymph, tree_merged = tree_bundle
 
     sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
     sids_nymph = {tip.name for tip in tree_nymph.get_terminals()}
@@ -84,8 +90,8 @@ def test_merge_preserves_all_terminal_taxa(merged_tree_bundle) -> None:
         f"{sorted(missing_from_merged_vs_nymph)[:10]}"
     )
 
-def test_merge_tips_same_dist_from_root(merged_tree_bundle) -> None:
-    _, _, tree_merged = merged_tree_bundle
+def test_merge_ultrametric(tree_bundle) -> None:
+    _, _, tree_merged = tree_bundle
 
     tips = tree_merged.get_terminals()
     assert tips, "Merged tree has no terminal taxa."
@@ -101,8 +107,8 @@ def test_merge_tips_same_dist_from_root(merged_tree_bundle) -> None:
         f"min={min_dist}, max={max_dist}"
     )
 
-def test_merge_tree_depth(merged_tree_bundle) -> None:
-    tree_lepid, _, tree_merged = merged_tree_bundle
+def test_merge_tree_depth(tree_bundle) -> None:
+    tree_lepid, _, tree_merged = tree_bundle
 
     lepid_tips = tree_lepid.get_terminals()
     merged_tips = tree_merged.get_terminals()
@@ -118,8 +124,8 @@ def test_merge_tree_depth(merged_tree_bundle) -> None:
         f"lepid={depth_lepid}, merged={depth_merged}"
     )
 
-def test_merge_preserves_dists_lepid(merged_tree_bundle) -> None:
-    tree_lepid, _, tree_merged = merged_tree_bundle
+def test_merge_preserves_dists_lepid(tree_bundle) -> None:
+    tree_lepid, _, tree_merged = tree_bundle
 
     sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
     sids_merged = {tip.name for tip in tree_merged.get_terminals()}
@@ -139,8 +145,8 @@ def test_merge_preserves_dists_lepid(merged_tree_bundle) -> None:
             f"lepid={dist_lepid}, merged={dist_merged}"
         )
 
-def test_merge_preserves_dists_nymph(merged_tree_bundle) -> None:
-    _, tree_nymph, tree_merged = merged_tree_bundle
+def test_merge_preserves_dists_nymph(tree_bundle) -> None:
+    _, tree_nymph, tree_merged = tree_bundle
 
     sids_nymph = {tip.name for tip in tree_nymph.get_terminals()}
     sids_merged = {tip.name for tip in tree_merged.get_terminals()}
@@ -160,8 +166,8 @@ def test_merge_preserves_dists_nymph(merged_tree_bundle) -> None:
             f"nymph={dist_nymph}, merged={dist_merged}"
         )
 
-def test_merge_preserves_dists_cross_family(merged_tree_bundle) -> None:
-    tree_lepid, _, tree_merged = merged_tree_bundle
+def test_merge_preserves_dists_cross_family(tree_bundle) -> None:
+    tree_lepid, _, tree_merged = tree_bundle
 
     sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
     sids_merged = {tip.name for tip in tree_merged.get_terminals()}
@@ -180,3 +186,16 @@ def test_merge_preserves_dists_cross_family(merged_tree_bundle) -> None:
             f"Pairwise distance changed for {sid_a} vs {sid_b}: "
             f"lepid={dist_lepid}, merged={dist_merged}"
         )
+
+# this test ensures for genera with no common subspecies between trees are merged as a polytomy as per nearest divergence heuristic
+def test_merge_polytomy(tree_bundle) -> None:
+    _, _, tree_merged = tree_bundle
+
+    # nearest genus to colias genus is zerene
+    sid_nearest = "zerene_cesonia"
+
+    dist_colias_nearest = tree_merged.distance("colias_palaeno", sid_nearest)
+
+    # colias_palaeno is only on nymph tree, colas_croceus and colias_hyale are only on lepid tree
+    assert abs(tree_merged.distance("colias_palaeno", "colias_croceus") - dist_colias_nearest) <= 1e-4
+    assert abs(tree_merged.distance("colias_palaeno", "colias_hyale") - dist_colias_nearest) <= 1e-4

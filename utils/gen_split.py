@@ -54,7 +54,7 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
     i                = 0
     while True:
         i += 1
-        classes_i = n_insts_2_classes[i]
+        classes_i = list(n_insts_2_classes[i])
         if not classes_i:
             # n_insts_2_classes[i] is empty i.e. no classes at count i
             continue
@@ -81,7 +81,7 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
 
     if n_draws_rem > 0 and n_classes_rem > 0:
         # construct classes_rem & instances_rem (instances_rem structured as tuples with inst_count for sorting, sorting is important for the zipper delegation between val/test)
-        classes_rem      = []
+        classes_rem = []
         insts_counts_rem = []  # List((instance, count))  ~ `count` is the number of instances in the corresponding class
 
         for count in sorted(list(n_insts_2_classes.keys())):
@@ -98,10 +98,10 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
 
         _, insts_counts_strat2 = train_test_split(
             insts_counts_rem,
-            stratify    =classes_rem,
-            test_size   =n_draws_rem,
-            shuffle     =True,
-            random_state=None,
+            stratify=classes_rem,
+            test_size=n_draws_rem,
+            shuffle=True,
+            random_state=seed,
         )
 
         insts_counts_strat2.sort(key=lambda x: (x[1], x[0]))
@@ -191,7 +191,7 @@ def gen_id_partitions(
 ):
 
     sids_id_singles = set() # species id's with 1 sample i.e. singletons
-    for sid in sids_id:
+    for sid in sorted(sids_id):
         if n_samps_dict[sid] == 1:
             sids_id_singles.add(sid)
 
@@ -201,7 +201,7 @@ def gen_id_partitions(
     n_samps_id_eval = n_samps_eval - (n_samps_ood_val + n_samps_ood_test)  # ID partitions: n_draws
 
     n_insts_2_classes_s = defaultdict(list)  # ID partitions: n_insts_2_classes
-    for sid in sids_id_multis:
+    for sid in sorted(sids_id_multis):
         count = n_samps_dict[sid]
         n_insts_2_classes_s[count].append(sid)
 
@@ -211,7 +211,7 @@ def gen_id_partitions(
     sid_2_skeys_id = defaultdict(list)  # used for n-shot tracking
     skeys_id_multis = set()  # ID partitions: insts
 
-    for sid in sids_id:
+    for sid in sorted(sids_id):
         for samp_idx in range(n_samps_dict[sid]):
             skey = (sid, samp_idx)
             sid_2_skeys_id[sid].append(skey)
@@ -290,7 +290,7 @@ def gen_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id):
         }
         n_shot_tracker.append(nst_bucket)
 
-    for sid in sids_id:
+    for sid in sorted(sids_id):
 
         sid_skeys_train = set()
         sid_skeys_val   = set()
@@ -349,12 +349,12 @@ def gen_img_ptrs(sids):
     img_ptrs = {}
 
     # iterate through sids, fetch image filenames, assign to indexes, add to img_ptrs structure
-    for sid in tqdm(sids):
+    for sid in tqdm(sorted(sids)):
         
         img_ptrs[sid] = {}
 
         dpath_imgs_sid = paths["nymph_imgs"] / sid
-        ffpaths_png    = glob.glob(f"{dpath_imgs_sid}/*.png")
+        ffpaths_png    = sorted(glob.glob(f"{dpath_imgs_sid}/*.png"))
         rfpaths_png    = [png_file.split("images/", 1)[1] for png_file in ffpaths_png]  # full filepath --> relative filepath
 
         for i, rfpath in enumerate(rfpaths_png):
@@ -379,7 +379,7 @@ def gen_data_indexes(sids, skeys_partitions):
 
         skeys_partition = skeys_partitions[partition_name]
 
-        for skey in skeys_partition:
+        for skey in sorted(skeys_partition):
             sid = skey[0]
             samp_idx = skey[1]
 

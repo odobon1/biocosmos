@@ -11,8 +11,8 @@ import math
 import pdb
 
 
-# CLUSTER = "pace"
-CLUSTER = "hpg"
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":
@@ -57,17 +57,16 @@ elif CLUSTER == "hpg":
         "vlm4bio": dpath_vlm4bio,
     }
 
-def seed_libs(seed):
+def seed_libs(seed, seed_torch=True):
     random.seed(seed)
     os.putenv("PYTHONHASHSEED", str(seed))
     np.random.seed(seed)
-
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
-    torch.backends.cudnn.benchmark     = False  # (False) trades speed for reproducibility (default is False)
+    if seed_torch:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
+        torch.backends.cudnn.benchmark = False  # (False) trades speed for reproducibility (default is False)
 
 def save_json(data, fpath):
     with open(fpath, "w") as f:

@@ -7,7 +7,7 @@ import os
 import random
 import numpy as np  # type: ignore[import]
 
-from utils.utils import paths, load_pickle
+from utils.utils import paths, load_pickle, seed_libs
 from utils.data import sid_to_genus
 from utils.config import get_config_gen_split
 from preprocessing.nymph.species_ids import get_sids_phylo_nymph
@@ -28,11 +28,8 @@ import pdb
 
 
 def gen_split():
-
     cfg = get_config_gen_split()
-
-    random.seed(cfg.seed)
-    np.random.seed(cfg.seed)
+    seed_libs(cfg.seed, seed_torch=False)
 
     dpath_split = paths["metadata"]["nymph"] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
@@ -46,8 +43,7 @@ def gen_split():
 
     class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
 
-    # SET SIDS
-    sids = set(get_sids_phylo_nymph())  # OOD sets: insts
+    sids = sorted(set(get_sids_phylo_nymph()))  # OOD sets: insts  # OOD sets: insts
 
     n_sids = len(sids)
     n_sids_ood_eval = round(n_sids * pct_ood_eval)
@@ -63,7 +59,7 @@ def gen_split():
 
     genera = []
     genus_2_sids = defaultdict(list)  # OOD sets: class_2_insts
-    for sid in sorted(sids):
+    for sid in sids:
         genus = sid_to_genus(sid)
         genera.append(genus)
         genus_2_sids[genus].append(sid)
@@ -121,7 +117,7 @@ def gen_split():
         pct_ood_eval,
         n_insts_2_classes_g,
         genus_2_sids,
-        sids,
+        set(sids),
         cfg,
         n_samps_dict,
         n_samps_total,

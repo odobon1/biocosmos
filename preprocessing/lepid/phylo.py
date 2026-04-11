@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from utils.utils import paths, load_pickle, save_pickle
 from utils.data import before_second_underscore
 from preprocessing.nymph.phylo import build_tree_nymph
+from preprocessing.common.phylo import augment_tree_with_polytomies, prune_tree, augment_class_data
 
 
 def build_tree_lepid() -> Tree:
@@ -50,6 +51,7 @@ def combine_trees_lepid_nymph(
     nymph_tips = tip_names(nymph.root)
     nymph_genera = {sid.split("_", 1)[0] for sid in nymph_tips}
     shared = lepid_tips & nymph_tips
+    retained_lepid_tips = lepid_tips - shared
 
     if not shared:
         raise ValueError("No shared taxa between Lepid and Nymph trees.")
@@ -65,6 +67,31 @@ def combine_trees_lepid_nymph(
         if str(class_data.get(sid, {}).get("family", "")).lower() == "nymphalidae"
         and sid.split("_", 1)[0] in nymph_genera
     }
+    retained_lepid_genus_to_tips: Dict[str, Set[str]] = {}
+    retained_lepid_genus_to_rank: Dict[str, Dict[str, str]] = {}
+    for sid in retained_lepid_tips:
+        genus = sid.split("_", 1)[0]
+        retained_lepid_genus_to_tips.setdefault(genus, set()).add(sid)
+
+        rank_data = class_data.get(sid, {})
+        retained_lepid_genus_to_rank.setdefault(
+            genus,
+            {
+                "family": str(rank_data.get("family", "")),
+                "subfamily": str(rank_data.get("subfamily", "")),
+                "tribe": str(rank_data.get("tribe", "")),
+            },
+        )
+
+    nymph_non_nymphalidae_genera_to_tips: Dict[str, Set[str]] = {}
+    for sid in nymph_tips:
+        genus = sid.split("_", 1)[0]
+        if genus not in retained_lepid_genus_to_tips:
+            continue
+        if str(class_data.get(sid, {}).get("family", "")).lower() == "nymphalidae":
+            continue
+        nymph_non_nymphalidae_genera_to_tips.setdefault(genus, set()).add(sid)
+
     if not lepid_nymphalidae_tips:
         return out
 
@@ -88,6 +115,15 @@ def combine_trees_lepid_nymph(
         anchor = out.root
 
     attach_subtree_at_anchor(out, anchor, nymph_root, target_height)
+    rehome_nymph_non_nymphalidae_shared_genus_subtrees(
+        tree=out,
+        source_tree=nymph,
+        genus_to_nymph_tips=nymph_non_nymphalidae_genera_to_tips,
+        retained_lepid_tips=retained_lepid_tips,
+        retained_lepid_genus_to_tips=retained_lepid_genus_to_tips,
+        retained_lepid_genus_to_rank=retained_lepid_genus_to_rank,
+        target_height=target_height,
+    )
     rehome_lepid_only_shared_genus_tips(
         tree=out,
         tips_to_rehome=lepid_only_nymph_genera_tips,
@@ -274,6 +310,59 @@ def rehome_lepid_only_shared_genus_tips(
             attach_node.clades.append(Clade(name=sid, branch_length=attach_branch))
 
 # combine_trees_lepid_nymph() helper
+def rehome_nymph_non_nymphalidae_shared_genus_subtrees(
+    tree: Tree,
+    source_tree: Tree,
+    genus_to_nymph_tips: Dict[str, Set[str]],
+    retained_lepid_tips: Set[str],
+    retained_lepid_genus_to_tips: Dict[str, Set[str]],
+    retained_lepid_genus_to_rank: Dict[str, Dict[str, str]],
+    target_height: float,
+) -> None:
+    """
+    Move non-Nymphalidae genera sourced from the Nymph tree back onto the
+    retained Lepid backbone when that genus is already represented there.
+
+    These genera should diverge from their nearest retained Lepid anchor rather
+    than inherit the Nymphalidae merge anchor, which can inflate cross-family
+    distances to an arbitrary near-constant.
+    """
+
+    if not genus_to_nymph_tips:
+        return
+
+    for genus in sorted(genus_to_nymph_tips.keys()):
+        genus_tips = genus_to_nymph_tips[genus]
+        genus_subtree = clone_induced_subtree(source_tree, genus_tips)
+        if genus_subtree is None:
+            continue
+
+        present_tips = sorted(
+            sid for sid in genus_tips if tree.find_any(name=sid) is not None
+        )
+        if not present_tips:
+            continue
+
+        for sid in present_tips:
+            tree.prune(target=sid)
+
+        anchor = closest_genus_divergence_anchor(
+            tree=tree,
+            genus=genus,
+            lepid_tips=retained_lepid_tips,
+            lepid_genus_to_tips=retained_lepid_genus_to_tips,
+            lepid_genus_to_rank=retained_lepid_genus_to_rank,
+        )
+        anchor = lowest_feasible_anchor(
+            tree=tree,
+            target=anchor,
+            required_height=subtree_height(genus_subtree),
+            target_height=target_height,
+        ) or tree.root
+
+        attach_subtree_at_anchor(tree, anchor, genus_subtree, target_height)
+
+# combine_trees_lepid_nymph() helper
 def closest_genus_divergence_anchor(
     tree: Tree,
     genus: str,
@@ -405,44 +494,6 @@ def fill_tip_cache(clade: Clade, cache: Dict[int, Set[str]]) -> Set[str]:
     cache[id(clade)] = names
     return names
 
-def augment_class_data(class_data, tree):
-    class_data = deepcopy(class_data)
-
-    sids_tree = {tip.name for tip in tree.get_terminals()}
-
-    sids_cd = set(class_data.keys())
-    genera_sids_cd = set([sid.split("_")[0] for sid in sids_cd])
-
-    sids_tree_non_cd = sids_tree - sids_cd
-    genera_sids_tree_non_cd = set([sid.split("_")[0] for sid in sids_tree_non_cd])
-
-    genera_in_common = genera_sids_tree_non_cd & genera_sids_cd
-    genera_in_common = genera_in_common - {"emesis"}  # genus "emesis" is in multiple families: {'riodinidae', 'lycaenidae'}
-
-    for genus in genera_in_common:
-        sids_genus = [sid for sid in sids_cd if class_data[sid]["genus"] == genus]
-        family = class_data[sids_genus[0]]["family"]
-        subfamily = class_data[sids_genus[0]]["subfamily"]
-        tribe = class_data[sids_genus[0]]["tribe"]
-        
-        sids_tree_genus = [sid for sid in sids_tree_non_cd if sid.split("_")[0] == genus]
-
-        for sid in sids_tree_genus:
-            class_data[sid] = {
-                "family": family,
-                "subfamily": subfamily,
-                "tribe": tribe,
-                "genus": genus,
-            }
-
-    return class_data
-
-def prune_tree(tree, class_data):
-    for tip in tree.get_terminals():
-        if tip.name not in class_data.keys():
-            tree.prune(target=tip.name)
-    return tree
-
 def main():
     print("Building Lepidoptera tree...")
 
@@ -450,14 +501,17 @@ def main():
     tree_nymph = build_tree_nymph()
 
     class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
-    # class data augmented with sids on trees not in class_data but with genera in class_data
+    # class data augmented with sids on trees not in class_data but with genera in class_data (higher ranks wrt genera are known via class_data)
     class_data_aug = augment_class_data(class_data, tree_lepid)
     class_data_aug = augment_class_data(class_data_aug, tree_nymph)
 
-    tree_lepid = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
-    tree_lepid = prune_tree(tree_lepid, class_data_aug)
+    tree_merge = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
+    tree_merge_pruned = prune_tree(tree_merge, class_data_aug)
 
-    save_pickle(tree_lepid, paths["metadata"]["lepid"] / "tree.pkl")
+    tree_poly = augment_tree_with_polytomies(tree_merge_pruned, class_data_aug)
+    tree_poly_pruned = prune_tree(tree_poly, class_data)
+
+    save_pickle(tree_poly_pruned, paths["metadata"]["lepid"] / "tree.pkl")
     print("Lepidoptera tree complete")
 
 

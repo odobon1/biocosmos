@@ -29,17 +29,3 @@ def get_sids_nymph():
             sids_known.append(sid)
 
     return sids_known
-
-def get_sids_phylo_nymph():
-
-    sids_known = get_sids_nymph()
-
-    pvcv = PhyloVCV(dataset="nymph")
-    sids_phylo_tree = pvcv.get_sids()
-
-    sids_phylo = []  # sids on the phylogenetic tree that are also in the known species list
-    for sid_p in sids_phylo_tree:
-        if sid_p in sids_known:
-            sids_phylo.append(sid_p)
-
-    return sids_phylo

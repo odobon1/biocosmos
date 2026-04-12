@@ -2,116 +2,78 @@
 python -m preprocessing.nymph.gen_split
 """
 
-from collections import Counter, defaultdict
-import os
-import random
-import numpy as np  # type: ignore[import]
-
-from utils.utils import paths, load_pickle, seed_libs
-from utils.data import sid_to_genus
+from utils.utils import paths, seed_libs
 from utils.config import get_config_gen_split
-from preprocessing.nymph.species_ids import get_sids_phylo_nymph
 from utils.gen_split import (
+    gen_genus_2_sids,
+    gen_n_insts_2_classes_g,
     gen_ood_partitions,
     gen_id_partitions,
     gen_id_eval_nshot,
     gen_data_indexes,
     gen_class_counts_train,
+    gen_sid_2_samp_idxs,
     save_split,
     gen_ood_distribution_plots,
     gen_id_distribution_plots,
     gen_split_stats_table,
     gen_n_shot_table,
+    gen_img_ptrs,
 )
+from utils.phylo import PhyloVCV
 
 import pdb
+
+
+DATASET = "nymph"
 
 
 def gen_split():
     cfg = get_config_gen_split()
     seed_libs(cfg.seed, seed_torch=False)
-
-    dpath_split = paths["metadata"]["nymph"] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
-
-    if os.path.isdir(dpath_split) and not cfg.allow_overwrite:
-        error_msg = f"Split '{cfg.split_name}' already exists, choose different split_name!"
-        raise ValueError(error_msg)
     print(f"Generating split: '{cfg.split_name}'")
 
-    pct_ood_eval = pct_id_eval = cfg.pct_eval / 2  # OOD per-set percentage
+    pct_ood_eval = pct_id_eval = cfg.pct_eval
 
-    class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
+    pvcv = PhyloVCV(dataset=DATASET)
+    sids = pvcv.get_sids()  # OOD partitions: insts
 
-    sids = sorted(set(get_sids_phylo_nymph()))  # OOD sets: insts  # OOD sets: insts
+    img_ptrs_all = gen_img_ptrs(sids)
+    sid_2_samp_idxs = gen_sid_2_samp_idxs(sids, pos_filter=cfg.pos_filter, img_ptrs=img_ptrs_all)
 
+    sids_dropped = [sid for sid in sorted(sids) if len(sid_2_samp_idxs[sid]) == 0]
+    if sids_dropped:
+        print(f"Dropping {len(sids_dropped)} species with no samples matching pos_filter={cfg.pos_filter!r}.")
+
+    sids = [sid for sid in sorted(sids) if len(sid_2_samp_idxs[sid]) > 0]
     n_sids = len(sids)
-    n_sids_ood_eval = round(n_sids * pct_ood_eval)
+    if not sids:
+        raise ValueError(f"No samples available after applying pos_filter={cfg.pos_filter!r}.")
 
-    n_samps_dict = {}
-    n_samps_total = 0
-    for sid in sids:
-        n_samps_sid = class_data[sid]["n_imgs"]
-        n_samps_dict[sid] = n_samps_sid
-        n_samps_total += n_samps_sid
+    n_sids_ood_eval = round(n_sids * pct_ood_eval)  # OOD partitions: n_draws
 
-    n_samps_eval = round(n_samps_total * cfg.pct_eval)  # OOD sets: n_draws
+    n_samps_dict = {sid: len(sid_2_samp_idxs[sid]) for sid in sids}
+    n_samps_total = sum(n_samps_dict.values())
 
-    genera = []
-    genus_2_sids = defaultdict(list)  # OOD sets: class_2_insts
-    for sid in sids:
-        genus = sid_to_genus(sid)
-        genera.append(genus)
-        genus_2_sids[genus].append(sid)
+    if cfg.pos_filter is not None:
+        n_samps_total_raw = sum(len(v) for v in img_ptrs_all.values())
+        print(
+            f"Retained {n_sids:,}/{len(pvcv.get_sids()):,} species and {n_samps_total:,}/{n_samps_total_raw:,} samples "
+            f"after pos_filter={cfg.pos_filter!r}."
+        )
 
-    n_genera = len(set(genera))  # OOD sets: n_classes
+    n_samps_id_eval = round(n_samps_total * cfg.pct_eval)  # ID partitions: n_draws
 
-    """
-    `genus_2_sids` & `sid_2_skeys_id_multis` structure (class_2_insts):
-
-    genus_2_sids:
-    {
-        genus0: [sid0, sid1, sid2, ...],
-        genus1: [...],
-        ...
-    }
-
-    sid_2_skeys_id_multis:
-    {
-        sid0: [skey0, skey1, skey2, ...],
-        sid1: [...],
-        ...
-    }
-    """
-
-    count_g = Counter(genera)
-    n_insts_2_classes_g = defaultdict(list)  # n_insts_2_classes OOD sets
-    for genus, count in count_g.items():
-        n_insts_2_classes_g[count].append(genus)
-
-    """
-    `n_insts_2_classes_*` structure:
-
-    n_insts_2_classes_g (OOD):
-    {
-        1: [genus0, genus1, genus2, ...],
-        2: [...],
-        4: [...],
-        ...
-    }
-
-    n_insts_2_classes_s (ID):
-    {
-        1: [sid0, sid1, sid2, ...],
-        2: [...],
-        ...
-    }
-    """
+    genus_2_sids = gen_genus_2_sids(sids)  # OOD partitions: class_2_insts
+    n_genera = len(genus_2_sids)  # OOD partitions: n_classes
+    n_insts_2_classes_g = gen_n_insts_2_classes_g(sids)  # OOD partitions: n_insts_2_classes
 
     # OOD PARTITIONS
 
     print("Constructing OOD partitions...")
-    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test, n_samps_ood_val, n_samps_ood_test = gen_ood_partitions(
+    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = gen_ood_partitions(
         n_genera,
         n_sids_ood_eval,
         pct_ood_eval,
@@ -119,6 +81,7 @@ def gen_split():
         genus_2_sids,
         set(sids),
         cfg,
+        sid_2_samp_idxs,
         n_samps_dict,
         n_samps_total,
     )
@@ -129,10 +92,9 @@ def gen_split():
     print("Constructing ID partitions...")
     skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis = gen_id_partitions(
         sids_id,
+        sid_2_samp_idxs,
         n_samps_dict,
-        n_samps_eval,
-        n_samps_ood_val,
-        n_samps_ood_test,
+        n_samps_id_eval,
         pct_id_eval,
         cfg,
     )
@@ -156,6 +118,13 @@ def gen_split():
 
     print("Generating data indexes...")
     data_indexes = gen_data_indexes(sids, skeys_partitions)
+    if cfg.pos_filter is not None:
+        for partition_name, data_index in data_indexes.items():
+            invalid_pos = sorted({pos for pos in data_index["pos"] if pos != cfg.pos_filter})
+            if invalid_pos:
+                raise ValueError(
+                    f"Partition '{partition_name}' contains positions outside pos_filter={cfg.pos_filter!r}: {invalid_pos}"
+                )
     print("Data indexes complete!")
 
     # CLASS COUNTS (FOR CLASS IMBALANCE)

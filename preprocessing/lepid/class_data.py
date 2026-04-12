@@ -12,7 +12,6 @@ class_data = {
         "tribe": "<tribe>",
         "genus": "<genus>",
         "common_name": "<common_name>",
-        # "n_imgs": <number_of_images_in_directory>,
     },
     ...
 }
@@ -56,7 +55,6 @@ def build_class_data() -> None:
                     "tribe": tribe,
                     "genus": genus,
                     "common_name": sids2commons[sid],
-                    # "n_imgs": n_imgs,  # needs to be computed after ventral images have been removed (also need to account for subspecies dirs!)
                 }
 
     save_pickle(class_data, paths["metadata"]["lepid"] / "class_data.pkl")

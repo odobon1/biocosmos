@@ -1,6 +1,6 @@
 import pytest  # type: ignore[import]
 
-from utils.config import TrainConfig
+from utils.config import GenSplitConfig, TrainConfig
 
 
 def make_train_config(**overrides):
@@ -64,3 +64,30 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert cfg.n_gpus == 1
     assert cfg.rdpath_trial == "artifacts/study/exp/7"
     assert str(cfg.device) == "cuda"
+
+
+def test_gen_split_config_accepts_optional_pos_filter() -> None:
+    cfg = GenSplitConfig(
+        seed=7,
+        split_name="split_a",
+        pct_eval=0.2,
+        pct_ood_tol=0.01,
+        pos_filter="dorsal",
+        nst_names=["1-2", "3+"],
+        nst_seps=[2],
+    )
+
+    assert cfg.pos_filter == "dorsal"
+
+
+def test_gen_split_config_rejects_unknown_pos_filter() -> None:
+    with pytest.raises(ValueError, match="Unknown pos_filter"):
+        GenSplitConfig(
+            seed=7,
+            split_name="split_a",
+            pct_eval=0.2,
+            pct_ood_tol=0.01,
+            pos_filter="sideways",
+            nst_names=["1-2", "3+"],
+            nst_seps=[2],
+        )

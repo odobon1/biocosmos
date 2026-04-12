@@ -8,20 +8,70 @@ import numpy as np  # type: ignore[import]
 import glob
 from tqdm import tqdm  # type: ignore[import]
 import pandas as pd  # type: ignore[import]
-from collections import defaultdict
+from collections import Counter, defaultdict
 
-from utils.data import assemble_indexes, Split
+from utils.data import assemble_indexes, Split, sid_to_genus
 from utils.utils import paths, save_pickle
 
 import pdb
 
 
-def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, insts, seed=None):
+def gen_genus_2_sids(sids):
+    """
+    `genus_2_sids` & `sid_2_skeys_id_multis` structure (class_2_insts):
+
+    genus_2_sids:
+    {
+        genus0: [sid0, sid1, sid2, ...],
+        genus1: [...],
+        ...
+    }
+
+    sid_2_skeys_id_multis:
+    {
+        sid0: [skey0, skey1, skey2, ...],
+        sid1: [...],
+        ...
+    }
+    """
+    genus_2_sids = defaultdict(list)
+    for sid in sids:
+        genus = sid_to_genus(sid)
+        genus_2_sids[genus].append(sid)
+    return genus_2_sids
+
+def gen_n_insts_2_classes_g(sids):
+    """
+    `n_insts_2_classes_*` structure:
+
+    n_insts_2_classes_g (OOD):
+    {
+        1: [genus0, genus1, genus2, ...],
+        2: [...],
+        4: [...],
+        ...
+    }
+
+    n_insts_2_classes_s (ID):
+    {
+        1: [sid0, sid1, sid2, ...],
+        2: [...],
+        ...
+    }
+    """
+    genera = [sid_to_genus(sid) for sid in sids]
+    count_g = Counter(genera)
+    n_insts_2_classes_g = defaultdict(list)
+    for genus, count in count_g.items():
+        n_insts_2_classes_g[count].append(genus)
+    return n_insts_2_classes_g
+
+def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, insts, seed=None):
     """
     Args:
     - n_classes -------------------------------
     - n_draws ---------------------------------
-    - pct_sets -------------------------------- percentage for val/test, evenly distributed between both e.g. 10% yields 5% val, 5% test
+    - pct_eval -------------------------------- percentage for val/test, evenly distributed between both e.g. 10% yields 5% val, 5% test
     - n_insts_2_classes -----------------------
     - class_2_insts --------------------------- dictionary mapping classes [str] to lists of instances [List(str)]
     - insts ----------------------------------- set of instances
@@ -44,14 +94,14 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
 
         return class_hits
 
-    insts_rem  = copy.deepcopy(insts)
+    insts_rem = copy.deepcopy(insts)
     insts_eval = []
 
     n_classes_rem = n_classes
     n_draws_rem   = n_draws
 
-    count_min_strat2 = 1 / pct_sets
-    i                = 0
+    count_min_strat2 = 1 / pct_eval
+    i = 0
     while True:
         i += 1
         classes_i = list(n_insts_2_classes[i])
@@ -59,9 +109,9 @@ def strat_split(n_classes, n_draws, pct_sets, n_insts_2_classes, class_2_insts, 
             # n_insts_2_classes[i] is empty i.e. no classes at count i
             continue
 
-        n_classes_i   = len(classes_i)
+        n_classes_i = len(classes_i)
         n_instances_i = n_classes_i * i
-        n_draws_i     = round(n_instances_i * pct_sets)
+        n_draws_i = round(n_instances_i * pct_eval)
 
         rng.shuffle(classes_i)
         class_hits = compute_class_hits(n_draws_i, n_classes_i)
@@ -131,6 +181,7 @@ def gen_ood_partitions(
     genus_2_sids,
     sids,
     cfg,
+    sid_2_samp_idxs,
     n_samps_dict,
     n_samps_total,
 ):
@@ -142,7 +193,7 @@ def gen_ood_partitions(
         sids_id, sids_ood_val, sids_ood_test = strat_split(
             n_classes=n_genera, 
             n_draws=n_sids_ood_eval, 
-            pct_sets=pct_ood_eval, 
+            pct_eval=pct_ood_eval, 
             n_insts_2_classes=n_insts_2_classes_g, 
             class_2_insts=genus_2_sids, 
             insts=sids,
@@ -168,25 +219,24 @@ def gen_ood_partitions(
 
     skeys_ood_val = set()
     for sid in sids_ood_val:
-        for samp_idx in range(n_samps_dict[sid]):
+        for samp_idx in sid_2_samp_idxs[sid]:
             skey = (sid, samp_idx)
             skeys_ood_val.add(skey)
 
     skeys_ood_test = set()
     for sid in sids_ood_test:
-        for samp_idx in range(n_samps_dict[sid]):
+        for samp_idx in sid_2_samp_idxs[sid]:
             skey = (sid, samp_idx)
             skeys_ood_test.add(skey)
 
-    return sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test, n_samps_ood_val, n_samps_ood_test
+    return sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test
 
 def gen_id_partitions(
-    sids_id, 
-    n_samps_dict, 
-    n_samps_eval, 
-    n_samps_ood_val, 
-    n_samps_ood_test, 
-    pct_id_eval, 
+    sids_id,
+    sid_2_samp_idxs,
+    n_samps_dict,
+    n_samps_id_eval,
+    pct_id_eval,
     cfg,
 ):
 
@@ -198,21 +248,20 @@ def gen_id_partitions(
     sids_id_multis = sids_id - sids_id_singles  # species id's with 2+ samples
 
     n_sids_id_multis = len(sids_id_multis)  # ID partitions: n_classes
-    n_samps_id_eval = n_samps_eval - (n_samps_ood_val + n_samps_ood_test)  # ID partitions: n_draws
 
     n_insts_2_classes_s = defaultdict(list)  # ID partitions: n_insts_2_classes
     for sid in sorted(sids_id_multis):
         count = n_samps_dict[sid]
         n_insts_2_classes_s[count].append(sid)
 
-    pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID partitions: pct_sets (10 / 90)
+    pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID partitions: pct_eval (10 / 90)
 
     sid_2_skeys_id_multis = defaultdict(list)  # ID partitions: class_2_insts
     sid_2_skeys_id = defaultdict(list)  # used for n-shot tracking
     skeys_id_multis = set()  # ID partitions: insts
 
     for sid in sorted(sids_id):
-        for samp_idx in range(n_samps_dict[sid]):
+        for samp_idx in sid_2_samp_idxs[sid]:
             skey = (sid, samp_idx)
             sid_2_skeys_id[sid].append(skey)
             if sid in sids_id_multis:
@@ -222,14 +271,14 @@ def gen_id_partitions(
     skeys_train_multis, skeys_id_val, skeys_id_test = strat_split(
         n_classes=n_sids_id_multis, 
         n_draws=n_samps_id_eval, 
-        pct_sets=pct_rem_id_eval, 
+        pct_eval=pct_rem_id_eval, 
         n_insts_2_classes=n_insts_2_classes_s, 
         class_2_insts=sid_2_skeys_id_multis, 
         insts=skeys_id_multis,
         seed=cfg.seed,
     )
 
-    skeys_id_singles = set((sid, 0) for sid in sids_id_singles)
+    skeys_id_singles = set((sid, sid_2_samp_idxs[sid][0]) for sid in sids_id_singles)
     skeys_train = skeys_train_multis.union(skeys_id_singles)
 
     return skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis
@@ -361,6 +410,39 @@ def gen_img_ptrs(sids):
             img_ptrs[sid][i] = rfpath
 
     return img_ptrs
+
+def gen_sid_2_samp_idxs(
+    sids,
+    pos_filter=None,
+    img_ptrs=None,
+    df_metadata=None,
+):
+
+    if pos_filter is None:
+        if img_ptrs is None:
+            img_ptrs = gen_img_ptrs(sids)
+        return {
+            sid: list(img_ptrs[sid].keys())
+            for sid in sorted(sids)
+        }
+
+    if img_ptrs is None:
+        img_ptrs = gen_img_ptrs(sids)
+    if df_metadata is None:
+        df_metadata = pd.read_csv(paths["nymph_metadata"])
+
+    pos_lookup = df_metadata.set_index("mask_name")["class_dv"]
+
+    sid_2_samp_idxs = {}
+    for sid in sorted(sids):
+        samp_idxs = []
+        for samp_idx, rfpath in sorted(img_ptrs[sid].items()):
+            fname_img = rfpath.split("/")[-1]
+            if pos_lookup.get(fname_img) == pos_filter:
+                samp_idxs.append(samp_idx)
+        sid_2_samp_idxs[sid] = samp_idxs
+
+    return sid_2_samp_idxs
 
 def gen_data_indexes(sids, skeys_partitions):
 

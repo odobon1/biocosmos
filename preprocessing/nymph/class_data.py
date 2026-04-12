@@ -10,13 +10,11 @@ class_data = {
         "subfamily": "<subfamily>",
         "genus": "<genus>",
         "common_name": "<common_name>",
-        "n_imgs": <number_of_images_in_directory>,
     },
     ...
 }
 """
 
-import glob
 import pandas as pd  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
@@ -34,12 +32,6 @@ def build_class_data() -> None:
     class_data = {}
     for sid in tqdm(sids, desc="Generating class data"):
 
-        dpath_sid = paths["nymph_imgs"] / sid
-
-        # get number of images in directory
-        png_files = glob.glob(f"{dpath_sid}/*.png")
-        n_imgs = len(png_files)
-
         df_metadata_sid = df_metadata[df_metadata["species"] == sid]  # metadata subset on species
 
         subfamily = df_metadata_sid["subfamily"].iloc[0]
@@ -50,7 +42,6 @@ def build_class_data() -> None:
             "subfamily": subfamily,
             "genus": sid.split("_")[0],
             "common_name": sids2commons[sid],
-            "n_imgs": n_imgs,
         }
 
     save_pickle(class_data, paths["metadata"]["nymph"] / "class_data.pkl")

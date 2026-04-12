@@ -813,7 +813,7 @@ def augment_class_data(class_data, tree):
         rank_fields = [
             rank
             for rank in class_data[sids_genus[0]].keys()
-            if rank not in {"genus", "n_imgs", "common_name"}
+            if rank not in {"genus", "common_name"}
         ]
         genus_is_ambiguous = False
         for rank in rank_fields:
@@ -830,7 +830,7 @@ def augment_class_data(class_data, tree):
 
         # Extract available ranks from the representative (only non-None values)
         representative = class_data[sids_genus[0]]
-        ranks_to_copy = {rank: representative[rank] for rank in representative if rank != "n_imgs" and rank != "common_name"}
+        ranks_to_copy = {rank: representative[rank] for rank in representative if rank != "common_name"}
         
         # Find tree species of this genus not yet in class_data
         sids_tree_genus = [sid for sid in sids_tree_non_cd if sid.split("_")[0] == genus]

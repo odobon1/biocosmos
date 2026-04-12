@@ -193,15 +193,20 @@ class GenSplitConfig:
     seed: int
     split_name: str
 
-    allow_overwrite: bool
-
     pct_eval: float
     pct_ood_tol: float
 
     nst_names: list
     nst_seps: list
 
+    pos_filter: str | None = None
+
     def __post_init__(self):
+        if self.pos_filter not in (None, "dorsal"):
+            raise ValueError(
+                f"Unknown pos_filter: '{self.pos_filter}', must be one of {{None, dorsal}}"
+            )
+
         if len(self.nst_names) != len(self.nst_seps) + 1:
             raise ValueError(
                 f"len(nst_names) ({len(self.nst_names)}) != "

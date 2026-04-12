@@ -1,7 +1,7 @@
 import torch  # type: ignore[import]
 import torch.nn.functional as F  # type: ignore[import]
 
-from utils.pp import compute_rank_dists
+from utils.rank_encs import compute_rank_dists
 from utils.phylo import PhyloVCV
 
 import pdb

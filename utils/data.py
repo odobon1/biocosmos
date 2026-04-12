@@ -135,7 +135,7 @@ class ImageTextDataset(Dataset):
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
         self.class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
-        self.rank_keys = load_pickle(paths["metadata"]["nymph"] / "rank_keys.pkl")
+        self.rank_encs = load_pickle(paths["metadata"]["nymph"] / "rank_encs.pkl")
 
     def __len__(self):
         return self.n_samples
@@ -157,34 +157,34 @@ class ImageTextDataset(Dataset):
         - [str]
         """
         class_enc = self.index_class_encs[idx]
-        sid       = self.index_sids[idx]
-        pos       = self.index_pos[idx]
-        sex       = self.index_sex[idx]
+        sid = self.index_sids[idx]
+        pos = self.index_pos[idx]
+        sex = self.index_sex[idx]
 
         genus = sid.split("_")[0]
 
-        rank_key_species = self.rank_keys["species"][sid]
-        rank_key_genus   = self.rank_keys["genus"][genus]
-        rank_keys        = [rank_key_genus, rank_key_species]
+        rank_key_species = self.rank_encs["species"][sid]
+        rank_key_genus = self.rank_encs["genus"][genus]
+        rank_encs = [rank_key_genus, rank_key_species]
 
         text = gen_text(sid, self.text_template, pos, sex, common_name=self.class_data[sid]["common_name"])
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
         elif self.cached_imgs == "pl":
-            img   = self.imgs_mem[idx]
+            img = self.imgs_mem[idx]
             img_t = self.img_pp(img)
         else:
             # load + preprocess image
-            img   = Image.open(paths["nymph_imgs"] / self.index_rfpaths[idx]).convert("RGB")
+            img = Image.open(paths["nymph_imgs"] / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
         targ_data = {
             "class_enc": class_enc,
-            "rank_keys": rank_keys,
-            "sid":       sid,
-            "pos":       pos,
-            "sex":       sex,
+            "rank_encs": rank_encs,
+            "sid": sid,
+            "pos": pos,
+            "sex": sex,
         }
 
         return img_t, text, class_enc, targ_data

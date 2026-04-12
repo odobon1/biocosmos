@@ -79,18 +79,18 @@ python -m preprocessing.nymph.phylo
 **Produces:**
 - `metadata/nymph/tree.pkl`
 
-## Generate Rank Keys
-**preprocessing/nymph/gen_rank_keys.py**
+## Generate Rank Encodings
+**preprocessing/nymph/rank_encs.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_rank_keys
+python -m preprocessing.nymph.rank_encs
 ```
 **Requires:**
 - `metadata/nymph/class_data.pkl`
 
 **Produces:**
-- `metadata/nymph/rank_keys.pkl`
+- `metadata/nymph/rank_encs.pkl`
 
 Rank keys are used for generating intermediate targets for use with hierarchical loss. Future work involves experimentation with phylogenetic distance metrics to provide a higher fidelity learning signal.
 

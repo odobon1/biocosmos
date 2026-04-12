@@ -48,9 +48,9 @@ def test_compute_targs_multipos_marks_matching_classes() -> None:
 def test_compute_targs_tax_uses_rank_distances() -> None:
     loss_mod = import_loss_module()
     targ_data = [
-        {"rank_keys": [10, 100]},
-        {"rank_keys": [10, 200]},
-        {"rank_keys": [20, 300]},
+        {"rank_encs": [10, 100]},
+        {"rank_encs": [10, 200]},
+        {"rank_encs": [20, 300]},
     ]
 
     targs = loss_mod.compute_targs_tax(targ_data)

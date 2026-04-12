@@ -12,7 +12,7 @@ def compute_rank_dists(targ_data_b: List[List]):
     Returns:
     - [Tensor(B, B)] --- Tensor where entry (i, j) represents the rank at which vectors i and j differ
     """
-    tax_vecs_b = torch.tensor([td["rank_keys"] for td in targ_data_b])
+    tax_vecs_b = torch.tensor([td["rank_encs"] for td in targ_data_b])
 
     R = tax_vecs_b.size(1)  # number of ranks
     
@@ -47,7 +47,7 @@ def compute_rank_dists_chunked(targ_data_b, chunk_size=1024):
     This can easily be adapted for parallelization across multiple workers or devices
     Maybe could modify such that computations aren't all duplicated i.e. only need to compute the upper or lower triangle bc rank_dists matrix is symmetric
     """
-    tax_vecs_b = torch.tensor([td["rank_keys"] for td in targ_data_b])
+    tax_vecs_b = torch.tensor([td["rank_encs"] for td in targ_data_b])
 
     B, R = tax_vecs_b.shape
     rank_dists = torch.empty((B, B), dtype=torch.int16, device=tax_vecs_b.device)

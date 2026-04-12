@@ -24,17 +24,21 @@ from preprocessing.nymph.species_ids import get_sids_nymph
 import pdb
 
 
-def build_class_data() -> None:
+def generate_class_data() -> None:
     sids = get_sids_nymph()
     df_metadata = pd.read_csv(paths["nymph_metadata"])
+    species_2_subfamily = (
+        df_metadata
+        .drop_duplicates(subset=["species"])
+        .set_index("species")["subfamily"]
+        .to_dict()
+    )
     sids2commons = load_pickle(paths["preproc"]["nymph"] / "intermediaries/sids2commons.pkl")
 
     class_data = {}
-    for sid in tqdm(sids, desc="Generating class data"):
+    for sid in tqdm(sorted(sids), desc="Generating class data"):
 
-        df_metadata_sid = df_metadata[df_metadata["species"] == sid]  # metadata subset on species
-
-        subfamily = df_metadata_sid["subfamily"].iloc[0]
+        subfamily = species_2_subfamily[sid]
         if subfamily == "moth":
             subfamily = None
 
@@ -48,7 +52,7 @@ def build_class_data() -> None:
 
 def main() -> None:
     print("Building class data...")
-    build_class_data()
+    generate_class_data()
     print("Class data complete")
 
 

@@ -26,29 +26,38 @@ from preprocessing.lepid.species_ids import get_sids_lepid
 import pdb
 
 
-def build_class_data() -> None:
+def generate_class_data() -> None:
     sids = get_sids_lepid()
     df_metadata_tax = pd.read_csv(paths["lepid_metadata_tax"])
+    genus_2_tax = (
+        df_metadata_tax
+        .drop_duplicates(subset=["genus"])
+        .set_index("genus")[["subfamily", "tribe"]]
+        .to_dict(orient="index")
+    )
     sids2commons = load_pickle(paths["preproc"]["lepid"] / "intermediaries/sids2commons.pkl")
 
     class_data = {}
     for family in tqdm(sids.keys(), desc="Generating class data"):
-        genera_family = sorted(set([sid.split("_")[0] for sid in sids[family]]))
-        for genus in genera_family:
-            df_metadata_genus = df_metadata_tax[df_metadata_tax["genus"] == genus]
-            if df_metadata_genus.empty:
+        genus_2_sids = {}
+        for sid in sids[family]:
+            genus = sid.split("_")[0]
+            genus_2_sids.setdefault(genus, []).append(sid)
+
+        for genus in sorted(genus_2_sids.keys()):
+            tax_genus = genus_2_tax.get(genus)
+            if tax_genus is None:
                 subfamily = None
                 tribe = None
             else:
-                subfamily = df_metadata_genus["subfamily"].iloc[0]
+                subfamily = tax_genus["subfamily"]
                 if subfamily == "x":
                     subfamily = None
-                tribe = df_metadata_genus["tribe"].iloc[0]
+                tribe = tax_genus["tribe"]
                 if tribe == "x":
                     tribe = None
 
-            sids_genus = sorted(set([sid for sid in sids[family] if sid.split("_")[0] == genus]))
-            for sid in sids_genus:
+            for sid in sorted(genus_2_sids[genus]):
                 class_data[sid] = {
                     "family": family,
                     "subfamily": subfamily,
@@ -61,7 +70,7 @@ def build_class_data() -> None:
 
 def main() -> None:
     print("Building class data...")
-    build_class_data()
+    generate_class_data()
     print("Class data complete")
 
 

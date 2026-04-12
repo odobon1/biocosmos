@@ -449,6 +449,8 @@ def gen_data_indexes(sids, skeys_partitions):
     img_ptrs = gen_img_ptrs(sids)
 
     df_metadata = pd.read_csv(paths["nymph_metadata"])
+    ordered_series_pos = df_metadata.set_index("mask_name")["class_dv"]
+    ordered_series_sex = df_metadata.set_index("mask_name")["sex"]
 
     data_indexes = {}
 
@@ -471,8 +473,6 @@ def gen_data_indexes(sids, skeys_partitions):
             data_index["rfpaths"].append(rfpath)
 
         fname_imgs = [rfpath.split("/")[1] for rfpath in data_index["rfpaths"]]
-        ordered_series_pos = df_metadata.set_index("mask_name")["class_dv"]
-        ordered_series_sex = df_metadata.set_index("mask_name")["sex"]
         data_index["pos"] = ordered_series_pos.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None).tolist()
         data_index["sex"] = ordered_series_sex.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None).tolist()
 

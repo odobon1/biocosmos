@@ -1,8 +1,6 @@
 import os
-from tqdm import tqdm  # type: ignore[import]
 
 from utils.utils import paths
-from utils.phylo import PhyloVCV
 
 import pdb
 
@@ -20,7 +18,7 @@ def get_sids_nymph():
                 return True
         return False
 
-    sids = [sid for sid in os.listdir(paths["nymph_imgs"])]
+    sids = sorted(os.listdir(paths["nymph_imgs"]))
 
     sids_known = []
 
@@ -28,4 +26,4 @@ def get_sids_nymph():
         if not is_odd(sid) or sid in NON_ALPHA_EXCEPTIONS_NYMPH:
             sids_known.append(sid)
 
-    return sids_known
+    return sorted(sids_known)

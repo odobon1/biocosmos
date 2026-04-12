@@ -38,7 +38,7 @@ To execute from root:
 python -m preprocessing.nymph.gen_split
 ```
 **Requires:**
-- `preprocessing/nymph/intermediaries/class_data.pkl`
+- `metadata/nymph/class_data.pkl`
 
 **Produces:**
 - `metadata/nymph/splits/<split_name>/split.pkl`

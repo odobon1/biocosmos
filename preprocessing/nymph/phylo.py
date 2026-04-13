@@ -1,3 +1,7 @@
+"""
+python -m preprocessing.nymph.phylo
+"""
+
 from Bio import Phylo  # type: ignore[import]
 from Bio.Phylo.BaseTree import Tree  # type: ignore[import]
 
@@ -7,6 +11,9 @@ from utils.utils import paths, load_pickle, save_pickle
 
 def build_tree_nymph() -> Tree:
     tree = Phylo.read(paths["nymph_phylo_tree"], "newick")
+    for tip in tree.get_terminals():
+        if tip.name in ("sp_1", "genus2_annette", "genus2_andromica"):
+            tree.prune(target=tip.name)
     return tree
 
 def main():

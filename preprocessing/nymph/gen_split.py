@@ -5,20 +5,20 @@ python -m preprocessing.nymph.gen_split
 from utils.utils import paths, seed_libs
 from utils.config import get_config_gen_split
 from utils.gen_split import (
-    gen_genus_2_sids,
-    gen_n_insts_2_classes_g,
-    gen_ood_partitions,
-    gen_id_partitions,
-    gen_id_eval_nshot,
-    gen_data_indexes,
-    gen_class_counts_train,
-    gen_sid_2_samp_idxs,
+    build_genus_2_sids,
+    build_n_insts_2_classes_g,
+    build_ood_partitions,
+    build_id_partitions,
+    build_id_eval_nshot,
+    build_data_indexes,
+    build_class_counts_train,
+    build_sid_2_samp_idxs,
     save_split,
-    gen_ood_distribution_plots,
-    gen_id_distribution_plots,
-    gen_split_stats_table,
-    gen_n_shot_table,
-    gen_img_ptrs,
+    generate_ood_distribution_plots,
+    generate_id_distribution_plots,
+    generate_split_stats_table,
+    generate_n_shot_table,
+    build_img_ptrs,
 )
 from utils.phylo import PhyloVCV
 
@@ -35,13 +35,11 @@ def gen_split():
     dpath_figs = dpath_split / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
-    pct_ood_eval = pct_id_eval = cfg.pct_eval
-
     pvcv = PhyloVCV(dataset=DATASET)
     sids = pvcv.get_sids()  # OOD partitions: insts
 
-    img_ptrs_all = gen_img_ptrs(sids)
-    sid_2_samp_idxs = gen_sid_2_samp_idxs(sids, pos_filter=cfg.pos_filter, img_ptrs=img_ptrs_all)
+    img_ptrs_all = build_img_ptrs(sids)
+    sid_2_samp_idxs = build_sid_2_samp_idxs(sids, pos_filter=cfg.pos_filter, img_ptrs=img_ptrs_all)
 
     sids_dropped = [sid for sid in sorted(sids) if len(sid_2_samp_idxs[sid]) == 0]
     if sids_dropped:
@@ -51,8 +49,6 @@ def gen_split():
     n_sids = len(sids)
     if not sids:
         raise ValueError(f"No samples available after applying pos_filter={cfg.pos_filter!r}.")
-
-    n_sids_ood_eval = round(n_sids * pct_ood_eval)  # OOD partitions: n_draws
 
     n_samps_dict = {sid: len(sid_2_samp_idxs[sid]) for sid in sids}
     n_samps_total = sum(n_samps_dict.values())
@@ -64,41 +60,34 @@ def gen_split():
             f"after pos_filter={cfg.pos_filter!r}."
         )
 
-    n_samps_id_eval = round(n_samps_total * cfg.pct_eval)  # ID partitions: n_draws
-
-    genus_2_sids = gen_genus_2_sids(sids)  # OOD partitions: class_2_insts
-    n_genera = len(genus_2_sids)  # OOD partitions: n_classes
-    n_insts_2_classes_g = gen_n_insts_2_classes_g(sids)  # OOD partitions: n_insts_2_classes
+    genus_2_sids = build_genus_2_sids(sids)  # OOD partitions: class_2_insts
+    n_insts_2_classes_g = build_n_insts_2_classes_g(sids)  # OOD partitions: n_insts_2_classes
 
     # OOD PARTITIONS
 
     print("Constructing OOD partitions...")
-    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = gen_ood_partitions(
-        n_genera,
-        n_sids_ood_eval,
-        pct_ood_eval,
+    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = build_ood_partitions(
         n_insts_2_classes_g,
         genus_2_sids,
         set(sids),
-        cfg,
         sid_2_samp_idxs,
         n_samps_dict,
-        n_samps_total,
+        cfg,
     )
     print("OOD partitions complete!")
 
     # ID PARTITIONS
 
     print("Constructing ID partitions...")
-    skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis = gen_id_partitions(
+    skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis = build_id_partitions(
         sids_id,
         sid_2_samp_idxs,
         n_samps_dict,
-        n_samps_id_eval,
-        pct_id_eval,
         cfg,
     )
     print("ID partitions complete!")
+
+    # PARTITION SKEYS (SAMPLE-KEYS)
 
     skeys_partitions = {
         "train": skeys_train,
@@ -111,15 +100,22 @@ def gen_split():
     # N-SHOT TRACKING
 
     print("Constructing n-shot tracking structures...")
-    id_eval_nshot = gen_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id)
+    id_eval_nshot = build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id)
     print("n-shot tracking complete!")
 
     # GENERATE DATA INDEXES
 
     print("Generating data indexes...")
-    data_indexes = gen_data_indexes(sids, skeys_partitions)
+    data_indexes = build_data_indexes(sids, skeys_partitions)
     if cfg.pos_filter is not None:
-        for partition_name, data_index in data_indexes.items():
+        partition_indexes = {
+            "train": data_indexes["train"],
+            "validation/id": data_indexes["validation"]["id"],
+            "validation/ood": data_indexes["validation"]["ood"],
+            "test/id": data_indexes["test"]["id"],
+            "test/ood": data_indexes["test"]["ood"],
+        }
+        for partition_name, data_index in partition_indexes.items():
             invalid_pos = sorted({pos for pos in data_index["pos"] if pos != cfg.pos_filter})
             if invalid_pos:
                 raise ValueError(
@@ -131,7 +127,7 @@ def gen_split():
 
     print("Generating class counts for train partition...")
     # class_counts_train = Counter(data_indexes["train"]["sids"])
-    class_counts_train = gen_class_counts_train(data_indexes)
+    class_counts_train = build_class_counts_train(data_indexes)
     print("Class counts complete!")
 
     # SAVE SPLIT
@@ -149,7 +145,7 @@ def gen_split():
     # OOD DISTRIBUTION PLOTTING
 
     print("Generating OOD distribution plots...")
-    gen_ood_distribution_plots(
+    generate_ood_distribution_plots(
         genus_2_sids, 
         sids_id, 
         sids_ood_val, 
@@ -161,7 +157,7 @@ def gen_split():
     # ID DISTRIBUTION PLOTTING (singletons omitted)
 
     print("Generating ID distribution plots...")
-    gen_id_distribution_plots(
+    generate_id_distribution_plots(
         sids_id_multis, 
         sid_2_skeys_id_multis, 
         n_samps_dict, 
@@ -173,7 +169,7 @@ def gen_split():
     # SPLIT STATS TABLE
 
     print("Generating split stats table...")
-    gen_split_stats_table(
+    generate_split_stats_table(
         sids_id,
         sids_ood_val,
         sids_ood_test,
@@ -186,7 +182,7 @@ def gen_split():
     # N-SHOT TRACKING STATS TABLE
 
     print("Generating n-shot tracking stats table...")
-    gen_n_shot_table(id_eval_nshot, dpath_figs)
+    generate_n_shot_table(id_eval_nshot, dpath_figs)
     print("n-shot tracking table complete!")
 
 def main():

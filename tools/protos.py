@@ -22,13 +22,13 @@ import pdb
 
 split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
 
-partition = ["id"] * len(split_p.data_indexes["id_val"]["sids"])
-sids = split_p.data_indexes["id_val"]["sids"]
-rfpaths = split_p.data_indexes["id_val"]["rfpaths"]
+partition = ["id"] * len(split_p.data_indexes["validation"]["id"]["sids"])
+sids = split_p.data_indexes["validation"]["id"]["sids"]
+rfpaths = split_p.data_indexes["validation"]["id"]["rfpaths"]
 
-partition += ["ood"] * len(split_p.data_indexes["ood_val"]["sids"])
-sids += split_p.data_indexes["ood_val"]["sids"]
-rfpaths += split_p.data_indexes["ood_val"]["rfpaths"]
+partition += ["ood"] * len(split_p.data_indexes["validation"]["ood"]["sids"])
+sids += split_p.data_indexes["validation"]["ood"]["sids"]
+rfpaths += split_p.data_indexes["validation"]["ood"]["rfpaths"]
 
 gpu_rank, _, _, device = setup_ddp()
 config_eval = get_config_eval(verbose=(gpu_rank==0))

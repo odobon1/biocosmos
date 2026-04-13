@@ -1,4 +1,4 @@
-from utils.data import assemble_indexes, before_second_underscore, sid_to_genus
+from utils.data import assemble_indexes, truncate_subspecies, sid_to_genus
 
 
 def test_assemble_indexes_assigns_consistent_class_encodings() -> None:
@@ -27,5 +27,5 @@ def test_assemble_indexes_assigns_consistent_class_encodings() -> None:
 
 def test_sid_helpers_extract_expected_parts() -> None:
     assert sid_to_genus("Danaus_plexippus") == "Danaus"
-    assert before_second_underscore("Danaus_plexippus_formA") == "Danaus_plexippus"
-    assert before_second_underscore("Danaus_plexippus") == "Danaus_plexippus"
+    assert truncate_subspecies("Danaus_plexippus_formA") == "Danaus_plexippus"
+    assert truncate_subspecies("Danaus_plexippus") == "Danaus_plexippus"

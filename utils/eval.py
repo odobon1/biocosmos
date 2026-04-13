@@ -7,7 +7,7 @@ from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 from collections import defaultdict
 import math
 
-from utils.data import spawn_dataloader, spawn_indexes, spawn_indexes_txts
+from utils.data import spawn_dataloader, spawn_partition_indexes, spawn_partition_indexes_txts
 from utils.head import compute_sim
 from utils.utils import load_split
 
@@ -27,15 +27,15 @@ class SplitPartitionEvalPipeline:
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
                "text_template: each inner list must contain exactly one element for eval"
 
-        index_data, sid_2_class_enc = spawn_indexes(
-            split_name=config.split_name,
+        index_data, sid_2_class_enc = spawn_partition_indexes(
+            config=config,
             partition_name=partition_name,
         )
 
         self.index_data = index_data
         self.sid_2_class_enc = sid_2_class_enc
 
-        self.index_text, self.index_text_class_encs = spawn_indexes_txts(
+        self.index_text, self.index_text_class_encs = spawn_partition_indexes_txts(
             sid_2_class_enc=sid_2_class_enc,
             text_template=text_template,
         )
@@ -55,7 +55,7 @@ class SplitPartitionEvalPipeline:
         self.batch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
 
-        if self.partition_name == "id_val":
+        if self.partition_name == "id":
             split = load_split(config.split_name)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
@@ -168,7 +168,7 @@ class SplitPartitionEvalPipeline:
             "t2i_map":   scores_t2i["map"],
         }
 
-        if self.partition_name == "id_val":
+        if self.partition_name == "id":
             bucket_i2t_prec1 = reduce_bucketed_query_metric_by_class_enc(
                 class_encs_q=class_encs_img_all.cpu(),
                 values=scores_i2t["prec1"],
@@ -381,14 +381,14 @@ class ValidationPipeline:
         self.best_i2i_map = None
 
         self.val_pipe_id = SplitPartitionEvalPipeline(
-            partition_name="id_val",
+            partition_name="id",
             config=config,
             text_template=text_template,
             img_pp=img_pp,
         )
 
         self.val_pipe_ood = SplitPartitionEvalPipeline(
-            partition_name="ood_val",
+            partition_name="ood",
             config=config,
             text_template=text_template,
             img_pp=img_pp,

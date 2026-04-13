@@ -16,7 +16,7 @@ from utils.utils import paths, save_pickle
 import pdb
 
 
-def gen_genus_2_sids(sids):
+def build_genus_2_sids(sids):
     """
     `genus_2_sids` & `sid_2_skeys_id_multis` structure (class_2_insts):
 
@@ -40,7 +40,7 @@ def gen_genus_2_sids(sids):
         genus_2_sids[genus].append(sid)
     return genus_2_sids
 
-def gen_n_insts_2_classes_g(sids):
+def build_n_insts_2_classes_g(sids):
     """
     `n_insts_2_classes_*` structure:
 
@@ -173,18 +173,18 @@ def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, 
 
     return insts_rem, insts_val, insts_test
 
-def gen_ood_partitions(
-    n_genera,
-    n_sids_ood_eval,
-    pct_ood_eval,
+def build_ood_partitions(
     n_insts_2_classes_g,
     genus_2_sids,
     sids,
-    cfg,
     sid_2_samp_idxs,
     n_samps_dict,
-    n_samps_total,
+    cfg,
 ):
+    n_sids = len(sids)
+    n_sids_ood_eval = round(n_sids * cfg.pct_eval)  # OOD partitions: n_draws
+    n_genera = len(genus_2_sids)  # OOD partitions: n_classes
+    n_samps_total = sum(n_samps_dict.values())
 
     close_enough = False
     i = 0
@@ -193,7 +193,7 @@ def gen_ood_partitions(
         sids_id, sids_ood_val, sids_ood_test = strat_split(
             n_classes=n_genera, 
             n_draws=n_sids_ood_eval, 
-            pct_eval=pct_ood_eval, 
+            pct_eval=cfg.pct_eval, 
             n_insts_2_classes=n_insts_2_classes_g, 
             class_2_insts=genus_2_sids, 
             insts=sids,
@@ -214,7 +214,7 @@ def gen_ood_partitions(
             n_samps_ood_test += n_samps_sid
         pct_samps_ood_test = n_samps_ood_test / n_samps_total
 
-        if abs((pct_ood_eval / 2) - pct_samps_ood_val) < cfg.pct_ood_tol and abs((pct_ood_eval / 2) - pct_samps_ood_test) < cfg.pct_ood_tol:
+        if abs((cfg.pct_eval / 2) - pct_samps_ood_val) < cfg.pct_ood_tol and abs((cfg.pct_eval / 2) - pct_samps_ood_test) < cfg.pct_ood_tol:
             close_enough = True
 
     skeys_ood_val = set()
@@ -231,14 +231,14 @@ def gen_ood_partitions(
 
     return sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test
 
-def gen_id_partitions(
+def build_id_partitions(
     sids_id,
     sid_2_samp_idxs,
     n_samps_dict,
-    n_samps_id_eval,
-    pct_id_eval,
     cfg,
 ):
+    n_samps_total = sum(n_samps_dict.values())
+    n_samps_id_eval = round(n_samps_total * cfg.pct_eval)  # ID partitions: n_draws
 
     sids_id_singles = set() # species id's with 1 sample i.e. singletons
     for sid in sorted(sids_id):
@@ -254,7 +254,7 @@ def gen_id_partitions(
         count = n_samps_dict[sid]
         n_insts_2_classes_s[count].append(sid)
 
-    pct_rem_id_eval = pct_id_eval / (1 - pct_id_eval)  # ID partitions: pct_eval (10 / 90)
+    pct_rem_id_eval = cfg.pct_eval / (1 - cfg.pct_eval)  # ID partitions: pct_eval (10 / 90)
 
     sid_2_skeys_id_multis = defaultdict(list)  # ID partitions: class_2_insts
     sid_2_skeys_id = defaultdict(list)  # used for n-shot tracking
@@ -283,7 +283,7 @@ def gen_id_partitions(
 
     return skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis
 
-def gen_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id):
+def build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id):
 
     def find_range_index(nst_seps, n):
         assert isinstance(n, int), f"n must be an int, got {type(n).__name__}"
@@ -377,7 +377,7 @@ def gen_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id):
 
     return id_eval_nshot
 
-def gen_img_ptrs(sids):
+def build_img_ptrs(sids):
 
     """
     `img_ptrs` structure:
@@ -411,7 +411,7 @@ def gen_img_ptrs(sids):
 
     return img_ptrs
 
-def gen_sid_2_samp_idxs(
+def build_sid_2_samp_idxs(
     sids,
     pos_filter=None,
     img_ptrs=None,
@@ -420,14 +420,14 @@ def gen_sid_2_samp_idxs(
 
     if pos_filter is None:
         if img_ptrs is None:
-            img_ptrs = gen_img_ptrs(sids)
+            img_ptrs = build_img_ptrs(sids)
         return {
             sid: list(img_ptrs[sid].keys())
             for sid in sorted(sids)
         }
 
     if img_ptrs is None:
-        img_ptrs = gen_img_ptrs(sids)
+        img_ptrs = build_img_ptrs(sids)
     if df_metadata is None:
         df_metadata = pd.read_csv(paths["nymph_metadata"])
 
@@ -444,43 +444,42 @@ def gen_sid_2_samp_idxs(
 
     return sid_2_samp_idxs
 
-def gen_data_indexes(sids, skeys_partitions):
+def build_data_indexes(sids, skeys_partitions):
 
-    img_ptrs = gen_img_ptrs(sids)
+    img_ptrs = build_img_ptrs(sids)
 
     df_metadata = pd.read_csv(paths["nymph_metadata"])
-    ordered_series_pos = df_metadata.set_index("mask_name")["class_dv"]
-    ordered_series_sex = df_metadata.set_index("mask_name")["sex"]
+    metadata_lookup = df_metadata.set_index("mask_name")[["class_dv", "sex"]]
 
-    data_indexes = {}
-
-    for partition_name in ["train", "id_val", "id_test", "ood_val", "ood_test"]:
-
+    def build_partition_index(partition_name):
         data_index = {
-            "sids":    [],
+            "sids": [],
             "rfpaths": [],
         }
 
-        skeys_partition = skeys_partitions[partition_name]
-
-        for skey in sorted(skeys_partition):
-            sid = skey[0]
-            samp_idx = skey[1]
-
+        for sid, samp_idx in sorted(skeys_partitions[partition_name]):
             data_index["sids"].append(sid)
-
-            rfpath = img_ptrs[sid][samp_idx]
-            data_index["rfpaths"].append(rfpath)
+            data_index["rfpaths"].append(img_ptrs[sid][samp_idx])
 
         fname_imgs = [rfpath.split("/")[1] for rfpath in data_index["rfpaths"]]
-        data_index["pos"] = ordered_series_pos.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None).tolist()
-        data_index["sex"] = ordered_series_sex.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None).tolist()
+        metadata_rows = metadata_lookup.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None)
+        data_index["pos"] = metadata_rows["class_dv"].tolist()
+        data_index["sex"] = metadata_rows["sex"].tolist()
+        return data_index
 
-        data_indexes[partition_name] = data_index
+    return {
+        "train": build_partition_index("train"),
+        "validation": {
+            "id": build_partition_index("id_val"),
+            "ood": build_partition_index("ood_val"),
+        },
+        "test": {
+            "id": build_partition_index("id_test"),
+            "ood": build_partition_index("ood_test"),
+        },
+    }
 
-    return data_indexes
-
-def gen_class_counts_train(data_indexes):
+def build_class_counts_train(data_indexes):
 
     # note: this all needs to get untangled....
     data_index, _    = assemble_indexes(data_indexes["train"])
@@ -503,7 +502,6 @@ def save_split(
         id_eval_nshot,
         class_counts_train,
     )
-    # create dirs (after split has been generated so that dirs aren't created if the run is terminated early)
     os.makedirs(dpath_split, exist_ok=True)
     os.makedirs(dpath_figs, exist_ok=True)
     save_pickle(split, dpath_split / "split.pkl")
@@ -577,7 +575,7 @@ def plot_split_distribution(
     plt.tight_layout()
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
 
-def gen_ood_distribution_plots(
+def generate_ood_distribution_plots(
     genus_2_sids, 
     sids_id, 
     sids_ood_val, 
@@ -645,7 +643,7 @@ def gen_ood_distribution_plots(
         ema=True, scale="log",
     )
 
-def gen_id_distribution_plots(
+def generate_id_distribution_plots(
     sids_id_multis, 
     sid_2_skeys_id_multis, 
     n_samps_dict, 
@@ -714,7 +712,7 @@ def gen_id_distribution_plots(
         ema=True, scale="log",
     )
 
-def gen_split_stats_table(
+def generate_split_stats_table(
     sids_id,
     sids_ood_val,
     sids_ood_test,
@@ -767,7 +765,7 @@ def gen_split_stats_table(
     plt.title("Split Stats", fontweight="bold", pad=-5)
     plt.savefig(str(dpath_figs / "stats_splits.png"), dpi=150, bbox_inches="tight")
 
-def gen_n_shot_table(
+def generate_n_shot_table(
     id_eval_nshot, 
     dpath_figs, 
     col_width=0.20, 

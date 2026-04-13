@@ -112,10 +112,10 @@ def get_text_template(text_template_type):
             "",
             " butterfly",
         ],
-        [
-            "",
-            "$POS$",
-        ],
+        # [
+        #     "",
+        #     "$POS$",
+        # ],
     ]
 
     if text_template_type == "train":

@@ -6,17 +6,17 @@ from types import SimpleNamespace
 import pandas as pd  # type: ignore[import]
 import pytest  # type: ignore[import]
 
-from utils.gen_split import gen_id_partitions, gen_sid_2_samp_idxs
+from utils.gen_split import build_id_partitions, build_sid_2_samp_idxs
 
 
-def test_gen_sid_2_samp_idxs_defaults_to_all_samples() -> None:
+def test_build_sid_2_samp_idxs_defaults_to_all_samples() -> None:
     sids = ["sid_a", "sid_b"]
     img_ptrs = {
         "sid_a": {0: "sid_a/img0.png", 1: "sid_a/img1.png"},
         "sid_b": {0: "sid_b/img0.png"},
     }
 
-    sid_2_samp_idxs = gen_sid_2_samp_idxs(sids, img_ptrs=img_ptrs)
+    sid_2_samp_idxs = build_sid_2_samp_idxs(sids, img_ptrs=img_ptrs)
 
     assert sid_2_samp_idxs == {
         "sid_a": [0, 1],
@@ -24,7 +24,7 @@ def test_gen_sid_2_samp_idxs_defaults_to_all_samples() -> None:
     }
 
 
-def test_gen_sid_2_samp_idxs_filters_to_requested_position() -> None:
+def test_build_sid_2_samp_idxs_filters_to_requested_position() -> None:
     sids = ["sid_a", "sid_b"]
     img_ptrs = {
         "sid_a": {
@@ -44,7 +44,7 @@ def test_gen_sid_2_samp_idxs_filters_to_requested_position() -> None:
         }
     )
 
-    sid_2_samp_idxs = gen_sid_2_samp_idxs(
+    sid_2_samp_idxs = build_sid_2_samp_idxs(
         sids,
         pos_filter="dorsal",
         img_ptrs=img_ptrs,
@@ -57,7 +57,7 @@ def test_gen_sid_2_samp_idxs_filters_to_requested_position() -> None:
     }
 
 
-def test_gen_sid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() -> None:
+def test_build_sid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() -> None:
     sids = ["sid_a"]
     img_ptrs = {
         "sid_a": {
@@ -72,7 +72,7 @@ def test_gen_sid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() ->
         }
     )
 
-    sid_2_samp_idxs = gen_sid_2_samp_idxs(
+    sid_2_samp_idxs = build_sid_2_samp_idxs(
         sids,
         pos_filter="dorsal",
         img_ptrs=img_ptrs,
@@ -83,7 +83,7 @@ def test_gen_sid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() ->
 
 
 def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = SimpleNamespace(seed=7)
+    cfg = SimpleNamespace(seed=7, pct_eval=0.1)
     sids_id = {"sid_single", "sid_multi"}
     sid_2_samp_idxs = {
         "sid_single": [4],
@@ -97,12 +97,10 @@ def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatc
     # This test targets singleton index retention only; keep strat_split out of scope.
     monkeypatch.setattr("utils.gen_split.strat_split", lambda **kwargs: (set(), set(), set()))
 
-    skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, _, _ = gen_id_partitions(
+    skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, _, _ = build_id_partitions(
         sids_id=sids_id,
         sid_2_samp_idxs=sid_2_samp_idxs,
         n_samps_dict=n_samps_dict,
-        n_samps_id_eval=1,
-        pct_id_eval=0.2,
         cfg=cfg,
     )
 

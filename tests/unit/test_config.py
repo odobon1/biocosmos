@@ -72,12 +72,14 @@ def test_gen_split_config_accepts_optional_pos_filter() -> None:
         split_name="split_a",
         pct_eval=0.2,
         pct_ood_tol=0.01,
+        size_dev=128,
         pos_filter="dorsal",
         nst_names=["1-2", "3+"],
         nst_seps=[2],
     )
 
     assert cfg.pos_filter == "dorsal"
+    assert cfg.size_dev == 128
 
 
 def test_gen_split_config_rejects_unknown_pos_filter() -> None:
@@ -87,6 +89,7 @@ def test_gen_split_config_rejects_unknown_pos_filter() -> None:
             split_name="split_a",
             pct_eval=0.2,
             pct_ood_tol=0.01,
+            size_dev=128,
             pos_filter="sideways",
             nst_names=["1-2", "3+"],
             nst_seps=[2],

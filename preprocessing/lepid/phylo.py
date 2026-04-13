@@ -8,7 +8,7 @@ from copy import deepcopy
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils.utils import paths, load_pickle, save_pickle
-from utils.data import before_second_underscore
+from utils.data import truncate_subspecies
 from preprocessing.nymph.phylo import build_tree_nymph
 from preprocessing.common.phylo import augment_tree_with_polytomies, prune_tree, augment_class_data
 
@@ -20,7 +20,7 @@ def build_tree_lepid() -> Tree:
     # convert all subspecies names to species-level names by truncating after the second underscore
     for tip in tree.get_terminals():
         if tip.name.count("_") >= 2:
-            tip.name = before_second_underscore(tip.name)
+            tip.name = truncate_subspecies(tip.name)
 
     return tree
 

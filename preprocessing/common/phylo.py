@@ -738,14 +738,7 @@ def augment_tree_with_polytomies(
         initializer=_worker_init,
         initargs=(tree, taxonomy, rep_by_rank_taxon, taxa_by_parent, parent_map, rank_order),
     ) as executor:
-        for sp, graft_path in tqdm(
-            executor.map(
-                _find_graft_node_path_for_species_worker,
-                missing_species,
-                chunksize=chunksize,
-            ),
-            total=len(missing_species),
-        ):
+        for sp, graft_path in executor.map(_find_graft_node_path_for_species_worker, missing_species, chunksize=chunksize):
             add_child_as_polytomy(
                 node=_get_clade_by_path(tree, graft_path),
                 species_name=sp,

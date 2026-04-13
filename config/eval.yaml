@@ -1,26 +1,26 @@
 # *** split_name, model_type, loss_type, non_causal are overridden if rdpath_trial is specified ***
 rdpath_trial: null  # which trial to load from (set null for original model)
 # rdpath_trial: artifacts/phylo_nvidia/mix0-6_cos/42
-save_crit:    comp  # options: comp / img2img; model save criterion (only applicable if rdpath_trial != null)
-
+save_crit: comp  # {comp, img2img}; model save criterion (only applicable if rdpath_trial != null)
 # split_name: S29-42
 split_name: P38-42
+eval_type: validation  # {validation, test}
 
-batch_size:  4096  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size: 4096  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 
 arch:
-  model_type: siglip_vitb16  # common options: {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false
 
 loss:
-  type:  bce  # options: {infonce1, infonce2, bce}
-  sim:   cos  # options: {cos, geo1, geo2}
-  targ:  multipos  # options: {aligned, multipos, tax, phylo}
+  type: bce  # {infonce1, infonce2, bce}
+  sim: cos  # {cos, geo1, geo2}
+  targ: multipos  # {aligned, multipos, tax, phylo}
 
 loss2:  # secondary loss
-  mix:  0.1  # set to 0.0 to disable computation
-  type: bce  # commonly used: {infonce1, infonce2, bce}
-  sim:  geo1
+  mix: 0.1  # set to 0.0 to disable computation
+  type: bce  # {infonce1, infonce2, bce}
+  sim: geo1
   targ: phylo
   wting: true
   focal: true

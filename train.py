@@ -23,7 +23,7 @@ from utils.utils import (
     PrintLog,
 )
 from models import VLMWrapper
-from utils.data import spawn_dataloader, spawn_indexes
+from utils.data import spawn_dataloader, spawn_partition_indexes
 from utils.eval import ValidationPipeline
 from utils.config import get_config_train
 from utils.train import ArtifactManager, plot_metrics
@@ -188,20 +188,20 @@ class TrainPipeline:
         self, 
         modelw, 
         config,
-        gpu_rank:       int = 0,
+        gpu_rank: int = 0,
         gpu_world_size: int = 1,
     ):
 
         self.modelw = modelw
-        self.cfg    = config
+        self.cfg = config
 
-        self.gpu_rank       = gpu_rank
+        self.gpu_rank = gpu_rank
         self.gpu_world_size = gpu_world_size
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
-        index_data, _ = spawn_indexes(
-            split_name   =self.cfg.split_name,
+        index_data, _ = spawn_partition_indexes(
+            config=self.cfg,
             partition_name="train",
         )
 

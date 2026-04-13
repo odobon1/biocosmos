@@ -134,10 +134,11 @@ def get_config_hardware():
 
 @dataclass
 class EvalConfig:
-    rdpath_trial: str | None
-    save_crit: str  # model save criterion (only applicable if DPATH_TRIAL != None)
 
+    rdpath_trial: str | None
+    save_crit: str  # model save criterion (only applicable if rdpath_trial != None)
     split_name: str  # overridden if rdpath_trial is specified
+    eval_type: str  # validation or test
 
     batch_size: int
 
@@ -195,6 +196,7 @@ class GenSplitConfig:
 
     pct_eval: float
     pct_ood_tol: float
+    size_dev: int
 
     nst_names: list
     nst_seps: list

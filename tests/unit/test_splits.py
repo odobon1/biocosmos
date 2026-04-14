@@ -1,12 +1,13 @@
 """
-python -m pytest tests/unit/test_gen_split.py
+python -m pytest tests/unit/test_splits.py
 """
 
 from types import SimpleNamespace
 import pandas as pd  # type: ignore[import]
 import pytest  # type: ignore[import]
 
-from utils.gen_split import build_id_partitions, build_sid_2_samp_idxs
+from preprocessing.common.splits import build_id_partitions
+from preprocessing.nymph.splits_utils import build_sid_2_samp_idxs
 
 
 def test_build_sid_2_samp_idxs_defaults_to_all_samples() -> None:
@@ -95,7 +96,7 @@ def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatc
     }
 
     # This test targets singleton index retention only; keep strat_split out of scope.
-    monkeypatch.setattr("utils.gen_split.strat_split", lambda **kwargs: (set(), set(), set()))
+    monkeypatch.setattr("preprocessing.common.splits.strat_split", lambda **kwargs: (set(), set(), set()))
 
     skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, _, _ = build_id_partitions(
         sids_id=sids_id,

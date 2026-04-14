@@ -66,7 +66,7 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert str(cfg.device) == "cuda"
 
 
-def test_gen_split_config_accepts_optional_pos_filter() -> None:
+def test_splits_config_accepts_optional_pos_filter() -> None:
     cfg = GenSplitConfig(
         seed=7,
         split_name="split_a",
@@ -82,7 +82,23 @@ def test_gen_split_config_accepts_optional_pos_filter() -> None:
     assert cfg.size_dev == 128
 
 
-def test_gen_split_config_rejects_unknown_pos_filter() -> None:
+def test_splits_config_accepts_optional_ood_family_name() -> None:
+    cfg = GenSplitConfig(
+        seed=7,
+        split_name="split_a",
+        pct_eval=0.2,
+        pct_ood_tol=0.01,
+        size_dev=128,
+        pos_filter=None,
+        ood_family_name="nymphalidae",
+        nst_names=["1-2", "3+"],
+        nst_seps=[2],
+    )
+
+    assert cfg.ood_family_name == "nymphalidae"
+
+
+def test_splits_config_rejects_unknown_pos_filter() -> None:
     with pytest.raises(ValueError, match="Unknown pos_filter"):
         GenSplitConfig(
             seed=7,

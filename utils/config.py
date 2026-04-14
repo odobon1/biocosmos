@@ -202,6 +202,7 @@ class GenSplitConfig:
     nst_seps: list
 
     pos_filter: str | None = None
+    ood_family_name: str | None = None
 
     def __post_init__(self):
         if self.pos_filter not in (None, "dorsal"):
@@ -215,8 +216,8 @@ class GenSplitConfig:
                 f"len(nst_seps) + 1 ({len(self.nst_seps)})"
             )
 
-def get_config_gen_split():
-    with open(paths["config"] / "gen_split.yaml") as f:
+def get_config_splits():
+    with open(paths["config"] / "splits.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = GenSplitConfig(**cfg_dict)
     return cfg

@@ -31,11 +31,11 @@ python -m preprocessing.nymph.class_data
 
 
 ## Generate Data Split
-**preprocessing/nymph/gen_split.py**
+**preprocessing/nymph/splits.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.gen_split
+python -m preprocessing.nymph.splits
 ```
 **Requires:**
 - `metadata/nymph/class_data.pkl`
@@ -44,7 +44,7 @@ python -m preprocessing.nymph.gen_split
 - `metadata/nymph/splits/<split_name>/split.pkl`
 - `metadata/nymph/splits/<split_name>/figures/*`
 
-This is configured to generate split S29-42 by default, but can be adjusted in `config/gen_split.yaml`.
+This is configured to generate split S29-42 by default, but can be adjusted in `config/splits.yaml`.
 
 Conventions used for split naming, using S29-42 as an example:
 * **29** refers to 29% of the data being split out (equally distributed between ID/OOD eval/test)

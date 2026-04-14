@@ -1,24 +1,26 @@
 """
-python -m preprocessing.nymph.gen_split
+python -m preprocessing.nymph.splits
 """
 
 from utils.utils import paths, seed_libs
-from utils.config import get_config_gen_split
-from utils.gen_split import (
+from utils.config import get_config_splits
+from preprocessing.common.splits import (
     build_genus_2_sids,
     build_n_insts_2_classes_g,
     build_ood_partitions,
     build_id_partitions,
     build_id_eval_nshot,
-    build_data_indexes,
     build_class_counts_train,
-    build_sid_2_samp_idxs,
     save_split,
     generate_ood_distribution_plots,
     generate_id_distribution_plots,
-    generate_split_stats_table,
     generate_n_shot_table,
+)
+from preprocessing.nymph.splits_utils import (
+    build_data_indexes,
     build_img_ptrs,
+    build_sid_2_samp_idxs,
+    generate_split_stats_table,
 )
 from utils.phylo import PhyloVCV
 
@@ -28,8 +30,8 @@ import pdb
 DATASET = "nymph"
 
 
-def gen_split():
-    cfg = get_config_gen_split()
+def build_splits():
+    cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
     dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
@@ -187,7 +189,7 @@ def gen_split():
 
 def main():
     print("Generating split...")
-    gen_split()
+    build_splits()
     print("Split complete!")
 
 

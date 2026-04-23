@@ -114,21 +114,6 @@ def sci2tax(
 
     tax = {}
 
-    tax["phylum"] = data.get("phylum")
-    if tax["phylum"] is not None:
-        tax["phylum"] = tax["phylum"].lower()
-    else:
-        return None
-    tax["class"] = data.get("class")
-    if tax["class"] is not None:
-        tax["class"] = tax["class"].lower()
-    else:
-        return None
-    tax["order"] = data.get("order")
-    if tax["order"] is not None:
-        tax["order"] = tax["order"].lower()
-    else:
-        return None
     # only genus that was missing family in GBIF
     if sci_name.startswith("klugeflustra"):
         tax["family"] = "flustridae"
@@ -158,7 +143,7 @@ def prune_tree(tree, class_data):
     return tree
 
 def main():
-    print("Building Bryozoa class data and tree...")
+    print("Building class data and tree...")
 
     tree = build_tree_bryo()
     sids_tree = [tip.name for tip in tree.get_terminals()]
@@ -172,7 +157,7 @@ def main():
     save_pickle(class_data, paths["metadata"]["bryo"] / "class_data.pkl")
     save_pickle(tree, paths["metadata"]["bryo"] / "tree.pkl")
 
-    print("Bryozoa class data and tree complete")
+    print("Class data and tree complete")
 
 
 if __name__ == "__main__":

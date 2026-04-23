@@ -4,21 +4,23 @@ This element of the BioCosmos project focuses on developing fine-tuning methods 
 
 # Setup
 
-### System Requirements & Assumptions
+## System Requirements & Assumptions
 
 Hardware: This setup is optimized for NVIDIA B200 GPUs on HiPerGator.
 Runtime: CUDA is mandatory; CPU-only execution is not supported.
 Distributed Training: The codebase assumes Distributed Data Parallel (DDP) execution via `torchrun`. Non-distributed runs are not supported, although the DDP code still supports single-GPU runs.
 
-### Installation
-
 Setup is intended for use with B200s on HiPerGator.
+
+## Codebase
 
 Pull repo and navigate:
 ```
 git clone https://github.com/odobon1/biocosmos.git
 cd biocosmos
 ```
+
+## Environment
 
 Place environment_b200.yaml in your home directory `/home/<user>`.
 Navigate to home directory and create env:
@@ -32,7 +34,15 @@ Navigate back to repo directory and activate env:
 conda activate biocosmos_b200
 ```
 
-Run setup script (this takes about an hour to run):
+## Data
+
+### Bryozoa
+
+Download `SI_Fig1(BIG).newick` from `https://datadryad.org/dataset/doi:10.5061/dryad.2v6wwpzp9` and place in `metadata/bryo/`.
+
+## Preprocessing
+
+Run setup script:
 ```
 ./setup.sh
 ```

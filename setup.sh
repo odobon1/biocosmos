@@ -1,5 +1,8 @@
 #!/bin/bash
 
+echo "======================= Bryozoa metadata generation ======================="
+python -m preprocessing.bryo.class_data_phylo
+
 echo "===================== Nymphalidae metadata generation ====================="
 python -m preprocessing.nymph.sids2commons
 python -m preprocessing.nymph.class_data

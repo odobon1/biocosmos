@@ -1,0 +1,20 @@
+COMMON_NAME_CORRECTIONS = {
+    "Chuck will Widow": "Chuck-will's-widow",
+    "Heermann Gull": "Heermann's Gull",
+    "Anna Hummingbird": "Anna's Hummingbird",
+    "Clark Nutcracker": "Clark's Nutcracker",
+    "Geococcyx": "Greater Roadrunner",
+    "Baird Sparrow": "Baird's Sparrow",
+    "Brewer Sparrow": "Brewer's Sparrow",
+    "Henslow Sparrow": "Henslow's Sparrow",
+    "Le Conte Sparrow": "Le Conte's Sparrow",
+    "Nelson Sharp tailed Sparrow": "Nelson's Sparrow",
+    "Barn Swallow": "Barn Swallow",
+    "Swainson Warbler": "Swainson's Warbler",
+    "Bewick Wren": "Bewick's Wren",
+    "Brewer Blackbird": "Brewer's Blackbird",
+    "Brandt Cormorant": "Brandt's Cormorant",
+    "Scott Oriole": "Scott's Oriole",
+    "Sayornis": "Eastern phoebe", # --> issue child
+    "Wilson Warbler": "Wilson's Warbler",
+}

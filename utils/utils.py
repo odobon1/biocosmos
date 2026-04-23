@@ -31,6 +31,7 @@ elif CLUSTER == "hpg":
     dpath_nymph   = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
     dpath_lepid   = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
     dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
+    dpath_cub     = dpath_data / "datasets/CUB_200_2011"
 
     paths = {
         "data": dpath_data,
@@ -41,10 +42,12 @@ elif CLUSTER == "hpg":
         "metadata": {
             "nymph": dpath_root / "metadata/nymph",
             "lepid": dpath_root / "metadata/lepid",
+            "cub"  : dpath_root / "metadata/cub",
         },
         "preproc": {
             "nymph": dpath_root / "preprocessing/nymph",
             "lepid": dpath_root / "preprocessing/lepid",
+            "cub"  : dpath_root / "preprocessing/cub",
         },
         "artifacts": dpath_root / "artifacts",
         "nymph_imgs": dpath_nymph / "images",
@@ -55,6 +58,7 @@ elif CLUSTER == "hpg":
         "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
         "lepid_phylo_tree": dpath_lepid / "metadata/tree_renamed_full.tre",
         "vlm4bio": dpath_vlm4bio,
+        "cub_metadata_gen": dpath_root / "metadata/cub/gen_metadata.csv", # we can discuss where its generated, but for now here
     }
 
 def seed_libs(seed, seed_torch=True):

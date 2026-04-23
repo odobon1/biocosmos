@@ -9,7 +9,7 @@ from tqdm import tqdm  # type: ignore[import]
 from pathlib import Path
 import requests  # type: ignore[import]
 
-from utils.utils import paths, save_pickle
+from utils.utils import paths, save_pickle, get_subdirectory_names
 
 
 def build_tree_bryo() -> Tree:
@@ -58,9 +58,6 @@ def group_by_genus(species_names):
         grouped[genus].append(name)
 
     return grouped
-
-def get_subdirectory_names(dir_path):
-    return [p.name for p in Path(dir_path).iterdir() if p.is_dir()]
 
 def build_class_data(genera_imgs, g2s):
     class_data = {}

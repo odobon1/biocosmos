@@ -95,6 +95,146 @@ python -m preprocessing.nymph.rank_encs
 Rank keys are used for generating intermediate targets for use with hierarchical loss. Future work involves experimentation with phylogenetic distance metrics to provide a higher fidelity learning signal.
 
 
+# Lepidoptera Metadata Generation
+
+## Generate common names
+**preprocessing/lepid/sids2commons.py**
+
+To execute from root:
+```
+python -m preprocessing.lepid.sids2commons
+```
+**Requires:**
+- Lepidoptera image data on HiPerGator
+
+**Produces:**
+- `preprocessing/lepid/intermediaries/sids2commons.pkl`
+
+
+## Generate class data
+**preprocessing/lepid/class_data.py**
+
+To execute from root:
+```
+python -m preprocessing.lepid.class_data
+```
+**Requires:**
+- `preprocessing/lepid/intermediaries/sids2commons.pkl`
+- `paths["lepid_metadata_tax"]` CSV (taxonomic metadata)
+
+**Produces:**
+- `metadata/lepid/class_data.pkl`
+
+
+## Generate Phylogenetic Tree
+**preprocessing/lepid/phylo.py**
+
+To execute from root:
+```
+python -m preprocessing.lepid.phylo
+```
+**Requires:**
+- Lepidoptera phylogenetic tree data (`paths["lepid_phylo_tree"]`)
+- `metadata/nymph/tree.pkl` (Nymphalidae tree, for merging)
+- `metadata/lepid/class_data.pkl`
+
+**Produces:**
+- `metadata/lepid/tree.pkl`
+
+The Lepid tree is used as the global backbone. The Nymphalidae subtree is merged into it, preserving the full Nymph tree exactly without branch-length scaling, then attaching it at the appropriate anchor point on the Lepid Nymphalidae path.
+
+
+## Generate Data Split
+**preprocessing/lepid/splits.py**
+
+To execute from root:
+```
+python -m preprocessing.lepid.splits
+```
+**Requires:**
+- `metadata/lepid/class_data.pkl`
+- `metadata/lepid/tree.pkl`
+
+**Produces:**
+- `metadata/lepid/splits/<split_name>/split.pkl`
+- `metadata/lepid/splits/<split_name>/figures/*`
+
+This is configured via `config/splits.yaml`. The `ood_family_name` must be set to designate a held-out family for OOD evaluation. The split process is otherwise analogous to the Nymphalidae split (sparse + standard stratified splitting).
+
+
+## Generate Rank Encodings
+**preprocessing/lepid/rank_encs.py**
+
+To execute from root:
+```
+python -m preprocessing.lepid.rank_encs
+```
+**Requires:**
+- `metadata/lepid/class_data.pkl`
+
+**Produces:**
+- `metadata/lepid/rank_encs.pkl`
+
+Encodes ranks: `family`, `genus`, `species`.
+
+
+# Bryozoa Metadata Generation
+
+## Generate class data and phylogenetic tree
+**preprocessing/bryo/class_data_phylo.py**
+
+Note: Class data and phylo tree generation are inherently coupled for this one. Scientific names are needed to grab taxonomic info from GBIF used to construct class data. Image directories do not provide scientific names, only genus names. Using genus names of image directories, scientific names are harvested from phylo tree and used to query GBIF for taxonomic info. Tree tip names are then converted from sci-name to genus and all other species in that genus pruned.
+
+To execute from root:
+```
+python -m preprocessing.bryo.class_data_phylo
+```
+**Requires:**
+- Bryozoa image data on HiPerGator (genus-level subdirectories)
+- `metadata/bryo/SI_Fig1(BIG).newick` (Bryozoa phylogenetic tree)
+- Internet access (GBIF API used to resolve taxonomic info per genus)
+
+**Produces:**
+- `metadata/bryo/class_data.pkl`
+- `metadata/bryo/tree.pkl`
+
+Class data and the phylogenetic tree are generated together because the tree is used to identify which genera have resolvable taxonomy. The newick tree is pruned to one tip per genus (removing duplicates, unknowns, and taxonomically conflicted entries), genus names are normalized to lowercase, and GBIF is queried to resolve family-level taxonomy. The tree is then further pruned to retain only genera present in both the image data and the resolved class data.
+
+
+## Generate Data Split
+**preprocessing/bryo/splits.py**
+
+To execute from root:
+```
+python -m preprocessing.bryo.splits
+```
+**Requires:**
+- `metadata/bryo/class_data.pkl`
+- Bryozoa image data on HiPerGator
+
+**Produces:**
+- `metadata/bryo/splits/<split_name>/split.pkl`
+- `metadata/bryo/splits/<split_name>/figures/*`
+
+OOD genera are defined as genera present in the image data but absent from `class_data` (i.e. genera without resolved taxonomy). ID/OOD splits are otherwise generated using the same sparse + standard stratified splitting approach as the other datasets.
+
+
+## Generate Rank Encodings
+**preprocessing/bryo/rank_encs.py**
+
+To execute from root:
+```
+python -m preprocessing.bryo.rank_encs
+```
+**Requires:**
+- `metadata/bryo/class_data.pkl`
+
+**Produces:**
+- `metadata/bryo/rank_encs.pkl`
+
+Encodes ranks: `family`, `genus`.
+
+
 # Lepidoptera CSV's
 
 The CSV file at `paths["lepid_metadata_imgs"]` is formatted as follows:

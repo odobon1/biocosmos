@@ -1,7 +1,16 @@
+"""
+python -m preprocessing.cub.metadata
+"""
+
+
 import requests
+import os
 import pandas as pd
 from scipy.io import loadmat
 from mapping import COMMON_NAME_CORRECTIONS
+
+from utils.utils import paths
+from preprocessing.cub.split_utils import download_splits, extract_splits, SPLITS_URL
 
 GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
 
@@ -74,8 +83,15 @@ def report_failures(failed: list[str]) -> None:
 
 
 def main():
-    mat_path = "att_splits.mat"
-    output_path = "taxonomy.csv"
+    # TODO: need to test the full download + generation of class_data
+    print("[INFO] Downloading Attribute Splits...")
+    download_splits(SPLITS_URL, paths['dpath_cub'])
+
+    print("[INFO] Extracting Attribute Splits...")
+    extract_splits(paths['dpath_cub'], paths['dpath_cub'])
+
+    mat_path = os.path.join(paths['dpath_cub'], "xlsa17", "data", "CUB", "att_splits.mat")
+    output_path = paths["cub_metadata_gen"]
 
     print("[INFO] Loading class names...")
     common_names = load_common_names(mat_path)

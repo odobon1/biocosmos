@@ -1,5 +1,8 @@
 """
 python -m preprocessing.cub.class_data
+# NOTE: must generate metatadata via preprocessing.cub.metadata before running class_data 
+
+# TODO: skip the metadata, generate directly
 
 Creates:
 metadata/cub/class_data.pkl

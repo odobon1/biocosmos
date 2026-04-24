@@ -10,16 +10,15 @@ from scipy.io import loadmat
 import numpy as np
  
 # ── Config ────────────────────────────────────────────────────────────────────
-URL        = "http://datasets.d2.mpi-inf.mpg.de/xian/xlsa17.zip"
-DEST_DIR   = os.path.dirname(os.path.abspath(__file__))   # same dir as this script
-ZIP_PATH   = os.path.join(DEST_DIR, "xlsa17.zip")
+SPLITS_URL        = "http://datasets.d2.mpi-inf.mpg.de/xian/xlsa17.zip"
  
 # Known location of the split/mapping mat file inside the archive
-# (xlsa17/data/<DATASET>/att_splits.mat  – AWA2 used as example)
+# (xlsa17/data/CUB/att_splits.mat  – CUB used as example)
+# datasets other than CUB not necessary
 DATASETS   = ["AWA1", "AWA2", "CUB", "SUN", "APY"]
  
 # ── Download ──────────────────────────────────────────────────────────────────
-def download(url: str, dest: str) -> None:
+def download_splits(url: str, dest: str) -> None:
     if os.path.exists(dest):
         print(f"[skip] {dest} already exists – skipping download.")
         return
@@ -39,7 +38,7 @@ def download(url: str, dest: str) -> None:
  
  
 # ── Extract ───────────────────────────────────────────────────────────────────
-def extract(zip_path: str, dest_dir: str) -> None:
+def extract_splits(zip_path: str, dest_dir: str) -> None:
     marker = os.path.join(dest_dir, "xlsa17")
     if os.path.isdir(marker):
         print(f"[skip] {marker} already exists – skipping extraction.")
@@ -47,6 +46,8 @@ def extract(zip_path: str, dest_dir: str) -> None:
     print(f"[extract] {zip_path} → {dest_dir}")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(dest_dir)
+
+    os.remove(zip_path)
     print("[extract] done.")
  
  
@@ -59,21 +60,4 @@ def read_mat(mat_path: str) -> dict:
         print("Failed to open .mat file")
     # Remove MATLAB meta-keys
     return {k: v for k, v in mat.items() if not k.startswith("__")}
-  
- 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main():
-    # example use case
-    download(URL, ZIP_PATH)
-    extract(ZIP_PATH, DEST_DIR)
- 
-    mat_path = os.path.join(DEST_DIR, "xlsa17", "data", "CUB", "att_splits.mat")
-    if not os.path.isfile(mat_path):
-        print(f"[warn] {mat_path} not found.")
-        return
-    data = read_mat(mat_path)
- 
- 
-if __name__ == "__main__":
-    main()
- 
+    

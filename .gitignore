@@ -3,6 +3,9 @@ artifacts/*
 !artifacts/clip_o1/
 !artifacts/clip_o1/**
 
+data/cub/*
+!data/cub/.gitkeep
+
 metadata/bryo/*
 !metadata/bryo/splits/
 metadata/bryo/splits/*

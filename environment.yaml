@@ -11,6 +11,7 @@ dependencies:
   - biopython
   - ipykernel
   - numpy
+  - openpyxl
   - pandas
   - pillow
   - pygbif

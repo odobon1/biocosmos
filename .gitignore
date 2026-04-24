@@ -8,6 +8,11 @@ metadata/bryo/*
 metadata/bryo/splits/*
 !metadata/bryo/splits/.gitkeep
 
+metadata/cub/*
+!metadata/cub/splits/
+metadata/cub/splits/*
+!metadata/cub/splits/.gitkeep
+
 metadata/lepid/*
 !metadata/lepid/splits/
 metadata/lepid/splits/*

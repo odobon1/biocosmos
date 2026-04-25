@@ -47,18 +47,6 @@ class TrialDataTracker:
         self.fpath_data = dpath_trial / "data_trial.pkl"
 
         self.data = {
-            "id_i2t_prec1": [],
-            "id_i2t_map": [],
-            "id_i2i_map": [],
-            "id_t2i_map": [],
-            "id_map": [],
-            "id_loss": [],
-            "ood_i2t_prec1": [],
-            "ood_i2t_map": [],
-            "ood_i2i_map": [],
-            "ood_t2i_map": [],
-            "ood_map": [],
-            "ood_loss": [],
             "comp_map": [],
             "i2i_map": [],
             "comp_loss": [],
@@ -214,6 +202,7 @@ class TrainPipeline:
             drop_last=True,
             img_pp=self.modelw.img_pp_train,
             use_dv_sampler=self.cfg.dv_batching,
+            persistent_workers=self.cfg.hw.persistent_workers_train,
         )
 
         text_template_val = get_text_template(self.cfg.text_template["valid"])
@@ -286,7 +275,7 @@ class TrainPipeline:
             if self.gpu_rank == 0:
                 data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
                 data_tracker.update(scores_val)
-                PrintLog.eval(scores_val, header="Base", nshot_bucket_names=self.val_pipe.val_pipe_id.nshot_bucket_names)
+                PrintLog.eval(scores_val, self.val_pipe, header="Base")
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()
@@ -433,15 +422,8 @@ class TrainPipeline:
                         time_val_mean.value(), 
                         loss_train_avg,
                         loss_raw_mean.value(),
-                        scores_val,
-                        loss_val_best,
                     )
-                    PrintLog.eval(
-                        scores_val, 
-                        self.val_pipe.best_comp_map, 
-                        self.val_pipe.best_i2i_map,
-                        nshot_bucket_names=self.val_pipe.val_pipe_id.nshot_bucket_names,
-                    )
+                    PrintLog.eval(scores_val, self.val_pipe)
 
         finally:
             if self.gpu_rank == 0:

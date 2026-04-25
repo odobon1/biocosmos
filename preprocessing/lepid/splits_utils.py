@@ -269,14 +269,12 @@ def build_data_indexes_lepid(
         "train": build_partition_index("train"),
         "validation": {
             "id": build_partition_index("id_val"),
-            "ood": validation_ood_species,
             "ood_species": validation_ood_species,
             "ood_genus": build_partition_index("ood_genus_val"),
             "ood_family": build_partition_index("ood_family_val"),
         },
         "test": {
             "id": build_partition_index("id_test"),
-            "ood": test_ood_species,
             "ood_species": test_ood_species,
             "ood_genus": build_partition_index("ood_genus_test"),
             "ood_family": build_partition_index("ood_family_test"),

@@ -113,6 +113,7 @@ class ImageTextDataset(Dataset):
         self.text_template = text_template
         self.img_pp = img_pp
         self.cached_imgs = config.hw.cached_imgs
+        self.dataset = config.dataset
 
         self.n_samples = len(self.index_class_encs)
 
@@ -121,7 +122,7 @@ class ImageTextDataset(Dataset):
             time_start = time.time()
 
             def load_pp_img(rfpath):
-                img   = Image.open(paths["nymph_imgs"] / rfpath).convert("RGB")
+                img = Image.open(paths[f"{self.dataset}_imgs"] / rfpath).convert("RGB")
                 return img if self.cached_imgs == "pl" else img_pp(img)
 
             # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
@@ -134,8 +135,8 @@ class ImageTextDataset(Dataset):
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
 
-        self.class_data = load_pickle(paths["metadata"]["nymph"] / "class_data.pkl")
-        self.rank_encs = load_pickle(paths["metadata"]["nymph"] / "rank_encs.pkl")
+        self.class_data = load_pickle(paths["metadata"][self.dataset] / "class_data.pkl")
+        self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
 
     def __len__(self):
         return self.n_samples
@@ -161,13 +162,16 @@ class ImageTextDataset(Dataset):
         pos = self.index_pos[idx]
         sex = self.index_sex[idx]
 
-        genus = sid.split("_")[0]
+        rank_encs = []
+        class_data_sid = self.class_data[sid]
+        for rank_name, rank_map in self.rank_encs.items():
+            if rank_name == "species":
+                rank_value = sid
+            else:
+                rank_value = class_data_sid[rank_name]
+            rank_encs.append(rank_map[rank_value])
 
-        rank_key_species = self.rank_encs["species"][sid]
-        rank_key_genus = self.rank_encs["genus"][genus]
-        rank_encs = [rank_key_genus, rank_key_species]
-
-        text = gen_text(sid, self.text_template, pos, sex, common_name=self.class_data[sid]["common_name"])
+        text = gen_text(sid, self.text_template, pos, sex, common_name=class_data_sid["common_name"])
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
@@ -176,7 +180,7 @@ class ImageTextDataset(Dataset):
             img_t = self.img_pp(img)
         else:
             # load + preprocess image
-            img = Image.open(paths["nymph_imgs"] / self.index_rfpaths[idx]).convert("RGB")
+            img = Image.open(paths[f"{self.dataset}_imgs"] / self.index_rfpaths[idx]).convert("RGB")
             img_t = self.img_pp(img)
 
         targ_data = {
@@ -185,6 +189,7 @@ class ImageTextDataset(Dataset):
             "sid": sid,
             "pos": pos,
             "sex": sex,
+            "dataset": self.dataset,
         }
 
         return img_t, text, class_enc, targ_data
@@ -236,7 +241,7 @@ def spawn_partition_indexes(config: EvalConfig, partition_name: str):
     - split_type --- [str] --- "train" / "id" / "ood"
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
-    split = load_split(config.split_name)
+    split = load_split(config.split_name, dataset=config.dataset)
 
     if partition_name == "train":
         data_index = split.data_indexes["train"]
@@ -267,6 +272,7 @@ def spawn_dataloader(
     drop_last: bool,
     img_pp: Callable,
     use_dv_sampler: bool,
+    persistent_workers: bool = True,
 ) -> Tuple[DataLoader, float | None]:
     """
 
@@ -302,7 +308,7 @@ def spawn_dataloader(
             pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
             prefetch_factor   =config.prefetch_factor,
             collate_fn        =collate_fn,
-            persistent_workers=True,
+            persistent_workers=persistent_workers,
         )
     else:
         sampler = DistributedSampler(
@@ -319,7 +325,7 @@ def spawn_dataloader(
             prefetch_factor   =config.prefetch_factor,
             collate_fn        =collate_fn,
             drop_last         =drop_last,
-            persistent_workers=True,
+            persistent_workers=persistent_workers,
             sampler           =sampler,
         )
 

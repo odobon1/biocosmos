@@ -14,6 +14,25 @@ from utils.utils import load_split
 import pdb
 
 
+RETRIEVAL_MODALITIES = ("i2t_map", "i2i_map", "t2i_map")
+
+
+def compute_partition_map(scores_partition: Dict[str, float]) -> float:
+    return sum(scores_partition[metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+
+def list_eval_partition_names(split: Any, eval_type: str) -> List[str]:
+    partition_names = []
+    seen_partition_ids = set()
+
+    for partition_name, data_index in split.data_indexes[eval_type].items():
+        data_index_id = id(data_index)
+        if data_index_id in seen_partition_ids:
+            continue
+        seen_partition_ids.add(data_index_id)
+        partition_names.append(partition_name)
+
+    return partition_names
+
 class SplitPartitionEvalPipeline:
 
     def __init__(
@@ -48,6 +67,7 @@ class SplitPartitionEvalPipeline:
             drop_last=False,
             img_pp=img_pp,
             use_dv_sampler=False,
+            persistent_workers=config.hw.persistent_workers_eval,
         )
 
         self.cfg = config
@@ -56,10 +76,11 @@ class SplitPartitionEvalPipeline:
         self.mixed_prec = config.hw.mixed_prec
 
         if self.partition_name == "id":
-            split = load_split(config.split_name)
+            split = load_split(config.split_name, dataset=config.dataset)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 split_name=config.split_name,
+                dataset=config.dataset,
                 sid_2_class_enc=self.sid_2_class_enc,
             )
         else:
@@ -380,68 +401,69 @@ class ValidationPipeline:
         self.best_comp_map = None
         self.best_i2i_map = None
 
-        self.val_pipe_id = SplitPartitionEvalPipeline(
-            partition_name="id",
-            config=config,
-            text_template=text_template,
-            img_pp=img_pp,
+        self.split = load_split(config.split_name, dataset=config.dataset)
+        self.partition_names = list_eval_partition_names(self.split, config.eval_type)
+        self.partition_pipes = {
+            partition_name: SplitPartitionEvalPipeline(
+                partition_name=partition_name,
+                config=config,
+                text_template=text_template,
+                img_pp=img_pp,
+            )
+            for partition_name in self.partition_names
+        }
+        self.bucket_partition_name = next(
+            (
+                partition_name
+                for partition_name, pipe in self.partition_pipes.items()
+                if pipe.nshot_bucket_names
+            ),
+            None,
         )
-
-        self.val_pipe_ood = SplitPartitionEvalPipeline(
-            partition_name="ood",
-            config=config,
-            text_template=text_template,
-            img_pp=img_pp,
+        self.nshot_bucket_names = [] if self.bucket_partition_name is None else list(
+            self.partition_pipes[self.bucket_partition_name].nshot_bucket_names
         )
 
         self.set_time_cache()
 
     def set_time_cache(self) -> None:
-        if self.val_pipe_id.time_cache is not None:
-            self.time_cache = self.val_pipe_id.time_cache + self.val_pipe_ood.time_cache
-        else:
-            self.time_cache = None
+        time_caches = [pipe.time_cache for pipe in self.partition_pipes.values() if pipe.time_cache is not None]
+        self.time_cache = None if not time_caches else sum(time_caches)
 
     def run_validation(
         self, 
         modelw: Any, 
     ) -> Tuple[Dict[str, float], bool, bool, float]:
 
-        scores_id, loss_avg_id, time_elapsed_id    = self.val_pipe_id.evaluate_split(modelw)
-        scores_ood, loss_avg_ood, time_elapsed_ood = self.val_pipe_ood.evaluate_split(modelw)
+        scores_val: Dict[str, float] = {}
+        partition_maps = []
+        partition_i2i_maps = []
+        partition_losses = []
+        time_elapsed_val = 0.0
 
-        id_map = (scores_id["i2t_map"] + scores_id["i2i_map"] + scores_id["t2i_map"]) / 3
-        ood_map = (scores_ood["i2t_map"] + scores_ood["i2i_map"] + scores_ood["t2i_map"]) / 3
+        for partition_name in self.partition_names:
+            scores_partition, loss_avg_partition, time_elapsed_partition = self.partition_pipes[partition_name].evaluate_split(modelw)
 
-        comp_map = (id_map + ood_map) / 2
-        i2i_map = (scores_id["i2i_map"] + scores_ood["i2i_map"]) / 2
+            partition_map = compute_partition_map(scores_partition)
+            partition_maps.append(partition_map)
+            partition_i2i_maps.append(scores_partition["i2i_map"])
+            partition_losses.append(loss_avg_partition)
+            time_elapsed_val += time_elapsed_partition
 
-        scores_val = {
-            "id_i2t_prec1": scores_id["i2t_prec1"],
-            "id_i2t_map": scores_id["i2t_map"],
-            "id_i2i_map": scores_id["i2i_map"],
-            "id_t2i_map": scores_id["t2i_map"],
-            "id_map": id_map,
-            "id_loss": loss_avg_id,
-            "ood_i2t_prec1": scores_ood["i2t_prec1"],
-            "ood_i2t_map": scores_ood["i2t_map"],
-            "ood_i2i_map": scores_ood["i2i_map"],
-            "ood_t2i_map": scores_ood["t2i_map"],
-            "ood_map": ood_map,
-            "ood_loss": loss_avg_ood,
-            "comp_map": comp_map,
-            "i2i_map": i2i_map,
-            "comp_loss": (loss_avg_id + loss_avg_ood) / 2
-        }
+            scores_val[f"{partition_name}_map"] = partition_map
+            scores_val[f"{partition_name}_loss"] = loss_avg_partition
+            for key, val in scores_partition.items():
+                scores_val[f"{partition_name}_{key}"] = val
 
-        for key, val in scores_id.items():
-            if key in {"i2t_prec1", "i2t_map", "i2i_map", "t2i_map"}:
-                continue
-            scores_val[f"id_{key}"] = val
+        comp_map = sum(partition_maps) / len(partition_maps)
+        i2i_map = sum(partition_i2i_maps) / len(partition_i2i_maps)
+        comp_loss = sum(partition_losses) / len(partition_losses)
+
+        scores_val["comp_map"] = comp_map
+        scores_val["i2i_map"] = i2i_map
+        scores_val["comp_loss"] = comp_loss
 
         is_best_comp, is_best_i2i = self.check_bests(comp_map, i2i_map)
-
-        time_elapsed_val = time_elapsed_id + time_elapsed_ood
 
         return scores_val, is_best_comp, is_best_i2i, time_elapsed_val
 
@@ -461,13 +483,14 @@ class ValidationPipeline:
 
 def build_class_enc_to_train_nshot_bucket(
     split_name: str,
+    dataset: str,
     sid_2_class_enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
     Build class_enc -> bucket_name using ID-val bucket memberships.
     """
 
-    split = load_split(split_name)
+    split = load_split(split_name, dataset=dataset)
     class_enc_to_bucket = {}
 
     for bucket_name in split.id_eval_nshot["names"]:

@@ -1,18 +1,19 @@
-study_name:      dev
+# study_name: lr
+study_name: dev
+# experiment_name: init2e-5_g-993
 experiment_name: dev
-seed:            42
-# split_name:      S29-42
-split_name:      P37-42
-# split_name:      dev
+seed: 42
+dataset: lepid  # {nymph, lepid}
+split_name: D14  # {D14, dev}
 
-n_epochs:    100
+n_epochs: 1000
 chkpt_every: 1
-batch_size:  1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size: 1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 dv_batching: true  # (true) dorsal/ventral-homogeneous batching
 
 dev:
   allow_overwrite_trial: true
-  allow_diff_study:      true
+  allow_diff_study: true
   allow_diff_experiment: true
 
 arch:  # architecture
@@ -22,24 +23,24 @@ arch:  # architecture
 loss:
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: tax  # {aligned, multipos, tax, phylo}
+  targ: multipos  # {aligned, multipos, tax, phylo}
   wting: true
   focal: true
   dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 # same settings should be equivalent
 loss2:  # secondary loss
-  mix: 0.0  # set to 0.0 to disable computation
+  mix: 0.3  # set to 0.0 to disable computation
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo
-  wting: false
-  focal: false
-  dyn_smr: false  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
+  wting: true
+  focal: true
+  dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
 opt:  # optimization
   lr:  # learning rate
-    init: 1.0e-5
+    init: 2.0e-5
     # init: 9.8e-9
     # init: 5.0e-7
     sched: exp

@@ -1,9 +1,8 @@
 seed: 42
-# split_name: F40
-split_name: D40
+split_name: D14
 # split_name: dev
 
-pct_eval: 0.10
+pct_eval: 0.14
 pct_ood_tol: 0.001  # tolerance for how close OOD sample volume must be to target percentage; careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low and setup will run till the end of time (0.0001 is good)
 
 size_dev: 4096  # partition size of dev split

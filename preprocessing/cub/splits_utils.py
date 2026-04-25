@@ -53,7 +53,7 @@ def extract_splits(zip_path: str, dest_dir: str) -> None:
  
 # ── Read .mat ─────────────────────────────────────────────────────────────────
 def read_mat(mat_path: str) -> dict:
-    """Load a MATLAB v5/v7.3 .mat file and return a clean dict."""
+    """Load a MATLAB .mat file and return a clean dict."""
     try:
         mat = loadmat(mat_path)
     except NotImplementedError:

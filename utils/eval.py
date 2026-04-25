@@ -497,6 +497,11 @@ def build_class_enc_to_train_nshot_bucket(
         skeys_id_val = split.id_eval_nshot["buckets"][bucket_name]["id_val"]
 
         for sid, _ in skeys_id_val:
+            # Some split variants (e.g., dev subsets) intentionally omit many classes
+            # from train; skip n-shot entries that are absent in current class encoding map.
+            if sid not in sid_2_class_enc:
+                continue
+
             class_enc = sid_2_class_enc[sid]
 
             if class_enc in class_enc_to_bucket and class_enc_to_bucket[class_enc] != bucket_name:
@@ -557,7 +562,11 @@ def reduce_bucketed_query_metric_by_class_enc(
             if isinstance(val, float) and math.isnan(val):
                 continue
 
-            bucket_name = class_enc_to_bucket[int(class_enc)]
+            class_enc_i = int(class_enc)
+            if class_enc_i not in class_enc_to_bucket:
+                continue
+
+            bucket_name = class_enc_to_bucket[class_enc_i]
             bucket_idx = bucket_to_idx[bucket_name]
 
             sums[bucket_idx] += float(val)
@@ -585,7 +594,11 @@ def reduce_bucketed_query_metric_by_class_enc(
         if isinstance(val, float) and math.isnan(val):
             continue
 
-        bucket_name = class_enc_to_bucket[int(class_enc)]
+        class_enc_i = int(class_enc)
+        if class_enc_i not in class_enc_to_bucket:
+            continue
+
+        bucket_name = class_enc_to_bucket[class_enc_i]
         sums[bucket_name] += float(val)
         counts[bucket_name] += 1
 

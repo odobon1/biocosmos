@@ -234,6 +234,9 @@ class GenSplitConfig:
                 f"Unknown pos_filter: '{self.pos_filter}', must be one of {{None, dorsal}}"
             )
 
+        if self.size_dev <= 0:
+            raise ValueError(f"size_dev must be greater than 0, got {self.size_dev}")
+
         if len(self.nst_names) != len(self.nst_seps) + 1:
             raise ValueError(
                 f"len(nst_names) ({len(self.nst_names)}) != "

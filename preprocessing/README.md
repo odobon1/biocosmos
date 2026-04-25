@@ -43,6 +43,8 @@ python -m preprocessing.nymph.splits
 **Produces:**
 - `metadata/nymph/splits/<split_name>/split.pkl`
 - `metadata/nymph/splits/<split_name>/figures/*`
+- `metadata/nymph/splits/dev/split.pkl`
+- `metadata/nymph/splits/dev/figures/*`
 
 This is configured to generate split S29-42 by default, but can be adjusted in `config/splits.yaml`.
 
@@ -51,6 +53,7 @@ Conventions used for split naming, using S29-42 as an example:
 * **42** refers to the seed used for split generation
 
 This script generates in-distribution (ID) and out-of-distribution (OOD) stratified splits for train/validation/test.
+In addition to the primary split, it also generates a default `dev` split where every partition mirrors the primary partition keys and contains the first `size_dev` samples from the primary train partition.
 
 First, entire species are split out for OOD zero-shot evaluation. Selection is stratified by genus and tuned to hit a target OOD proportion by number of species and total samples within a specified tolerance. Next, ID eval splits are sampled from the remaining pool. Singleton classes are temporarily excluded so they don't leak pseudo-OOD examples into ID eval (selection of such samples for ID eval would effectively render them OOD). Samples corresponding to non-singleton species are split into ID val/test sets, stratified by species. The remainder of the samples are joined with the singletons to produce the train set.
 
@@ -158,6 +161,8 @@ python -m preprocessing.lepid.splits
 **Produces:**
 - `metadata/lepid/splits/<split_name>/split.pkl`
 - `metadata/lepid/splits/<split_name>/figures/*`
+- `metadata/lepid/splits/dev/split.pkl`
+- `metadata/lepid/splits/dev/figures/*`
 
 This is configured via `config/splits.yaml`. The `ood_family_name` must be set to designate a held-out family for OOD evaluation. The split process is otherwise analogous to the Nymphalidae split (sparse + standard stratified splitting).
 
@@ -215,6 +220,8 @@ python -m preprocessing.bryo.splits
 **Produces:**
 - `metadata/bryo/splits/<split_name>/split.pkl`
 - `metadata/bryo/splits/<split_name>/figures/*`
+- `metadata/bryo/splits/dev/split.pkl`
+- `metadata/bryo/splits/dev/figures/*`
 
 OOD genera are defined as genera present in the image data but absent from `class_data` (i.e. genera without resolved taxonomy). ID/OOD splits are otherwise generated using the same sparse + standard stratified splitting approach as the other datasets.
 

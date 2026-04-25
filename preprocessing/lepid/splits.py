@@ -11,6 +11,7 @@ from preprocessing.common.splits import (
     build_id_partitions,
     build_id_eval_nshot,
     build_class_counts_train,
+    build_dev_skeys_partitions,
     save_split,
     generate_id_distribution_plots,
     generate_n_shot_table,
@@ -35,6 +36,8 @@ def build_splits():
     seed_libs(cfg.seed, seed_torch=False)
     dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
+    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
     if cfg.ood_family_name is None:
@@ -139,6 +142,7 @@ def build_splits():
         "ood_family_val": skeys_ood_family_val,
         "ood_family_test": skeys_ood_family_test,
     }
+    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
     print("Constructing n-shot tracking structures...")
     id_eval_nshot = build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id)
@@ -151,10 +155,17 @@ def build_splits():
         sid_2_family,
         img_ptrs=img_ptrs_all,
     )
+    data_indexes_dev = build_data_indexes_lepid(
+        sids,
+        skeys_partitions_dev,
+        sid_2_family,
+        img_ptrs=img_ptrs_all,
+    )
     print("Data indexes complete!")
 
     print("Generating class counts for train partition...")
     class_counts_train = build_class_counts_train(data_indexes)
+    class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
     print("Saving split...")
@@ -165,7 +176,14 @@ def build_splits():
         dpath_split,
         dpath_figs,
     )
-    print("Split saved!")
+    save_split(
+        data_indexes_dev,
+        id_eval_nshot,
+        class_counts_train_dev,
+        dpath_split_dev,
+        dpath_figs_dev,
+    )
+    print("Primary and dev splits saved!")
 
     print("Generating OOD distribution plots...")
     generate_ood_distribution_plots_lepid(

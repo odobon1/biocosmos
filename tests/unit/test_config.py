@@ -8,6 +8,7 @@ def make_train_config(**overrides):
         "study_name": "study",
         "experiment_name": "exp",
         "seed": 7,
+        "dataset": "nymph",
         "split_name": "split_a",
         "n_epochs": 3,
         "chkpt_every": 1,
@@ -29,7 +30,7 @@ def make_train_config(**overrides):
 def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.compute_dataloader_workers_prefetch",
-        lambda: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
+        lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
 
 
@@ -107,6 +108,20 @@ def test_splits_config_rejects_unknown_pos_filter() -> None:
             pct_ood_tol=0.01,
             size_dev=128,
             pos_filter="sideways",
+            nst_names=["1-2", "3+"],
+            nst_seps=[2],
+        )
+
+
+def test_splits_config_rejects_non_positive_size_dev() -> None:
+    with pytest.raises(ValueError, match="size_dev must be greater than 0"):
+        GenSplitConfig(
+            seed=7,
+            split_name="split_a",
+            pct_eval=0.2,
+            pct_ood_tol=0.01,
+            size_dev=0,
+            pos_filter=None,
             nst_names=["1-2", "3+"],
             nst_seps=[2],
         )

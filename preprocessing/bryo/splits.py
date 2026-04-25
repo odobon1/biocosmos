@@ -8,6 +8,7 @@ from preprocessing.common.splits import (
     build_class_counts_train,
     build_id_eval_nshot,
     build_id_partitions,
+    build_dev_skeys_partitions,
     generate_id_distribution_plots,
     generate_n_shot_table,
     save_split,
@@ -31,6 +32,8 @@ def build_splits() -> None:
     seed_libs(cfg.seed, seed_torch=False)
     dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
+    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
     class_data = load_pickle(paths["metadata"][DATASET] / "class_data.pkl")
@@ -99,6 +102,7 @@ def build_splits() -> None:
         "ood_val": skeys_ood_val,
         "ood_test": skeys_ood_test,
     }
+    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
     print("Constructing n-shot tracking structures...")
     id_eval_nshot = build_id_eval_nshot(cfg, set(genera_id), skeys_partitions, sid_2_skeys_id)
@@ -106,10 +110,12 @@ def build_splits() -> None:
 
     print("Generating data indexes...")
     data_indexes = build_data_indexes_bryo(sorted(genera_available), skeys_partitions, img_ptrs=img_ptrs_all)
+    data_indexes_dev = build_data_indexes_bryo(sorted(genera_available), skeys_partitions_dev, img_ptrs=img_ptrs_all)
     print("Data indexes complete!")
 
     print("Generating class counts for train partition...")
     class_counts_train = build_class_counts_train(data_indexes)
+    class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
     print("Saving split...")
@@ -120,7 +126,14 @@ def build_splits() -> None:
         dpath_split,
         dpath_figs,
     )
-    print("Split saved!")
+    save_split(
+        data_indexes_dev,
+        id_eval_nshot,
+        class_counts_train_dev,
+        dpath_split_dev,
+        dpath_figs_dev,
+    )
+    print("Primary and dev splits saved!")
 
     print("Generating ID distribution plots...")
     generate_id_distribution_plots(

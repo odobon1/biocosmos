@@ -12,7 +12,8 @@ class_data = {
         "genus": "<genus>",
         "species": "<species>",
         "common_name": "<common_name>",
-        "image_path" : "<image_path>",
+        "rdpath_imgs" : "<image_path>",
+        "split": "<test, train, or val>",
     },
     ...
 }

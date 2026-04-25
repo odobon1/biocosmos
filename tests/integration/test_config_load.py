@@ -16,7 +16,7 @@ def test_get_config_hardware_loads_yaml() -> None:
 def test_get_config_train_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.compute_dataloader_workers_prefetch",
-        lambda: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
+        lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
 
     cfg = get_config_train()
@@ -30,7 +30,7 @@ def test_get_config_train_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) ->
 def test_get_config_eval_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.compute_dataloader_workers_prefetch",
-        lambda: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
+        lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
 
     cfg = get_config_eval(verbose=False)

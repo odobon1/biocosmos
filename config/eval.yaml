@@ -2,8 +2,8 @@
 rdpath_trial: null  # which trial to load from (set null for original model)
 # rdpath_trial: artifacts/phylo_nvidia/mix0-6_cos/42
 save_crit: comp  # {comp, img2img}; model save criterion (only applicable if rdpath_trial != null)
-# split_name: S29-42
-split_name: P38-42
+dataset: lepid  # {nymph, lepid}
+split_name: D14
 eval_type: validation  # {validation, test}
 
 batch_size: 4096  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768

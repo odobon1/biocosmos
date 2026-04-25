@@ -1,3 +1,10 @@
 cached_imgs: null  # commonly used: {null, pl, pp}
+
 mixed_prec:  true  # mixed precision for training and validation
 act_chkpt:   false  # activation checkpointing
+
+prefetch_factor: 1  # dataloader prefetch factor
+max_n_workers_gpu: null  # max dataloader workers per GPU (null for no cap)
+
+persistent_workers_train: true  # keep train dataloader workers alive across train epochs
+persistent_workers_eval:  true  # keep eval dataloader workers alive across validation epochs

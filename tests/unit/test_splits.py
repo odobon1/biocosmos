@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pandas as pd  # type: ignore[import]
 import pytest  # type: ignore[import]
 
-from preprocessing.common.splits import build_id_partitions
+from preprocessing.common.splits import build_dev_skeys_partitions, build_id_partitions
 from preprocessing.nymph.splits_utils import build_sid_2_samp_idxs
 
 
@@ -109,3 +109,44 @@ def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatc
     assert ("sid_single", 0) not in skeys_train
     assert sid_2_skeys_id["sid_single"] == [("sid_single", 4)]
     assert all(skey[0] != "sid_single" for skey in skeys_id_val.union(skeys_id_test))
+
+
+def test_build_dev_skeys_partitions_mirrors_keys_with_first_train_samples() -> None:
+    skeys_partitions = {
+        "train": {
+            ("sid_b", 2),
+            ("sid_a", 0),
+            ("sid_c", 1),
+            ("sid_b", 1),
+        },
+        "id_val": {("sid_x", 1)},
+        "id_test": {("sid_y", 2)},
+        "ood_val": {("sid_z", 3)},
+    }
+
+    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=2)
+
+    expected = {("sid_a", 0), ("sid_b", 1)}
+    assert set(skeys_partitions_dev.keys()) == set(skeys_partitions.keys())
+    for key in skeys_partitions_dev:
+        assert skeys_partitions_dev[key] == expected
+
+
+def test_build_dev_skeys_partitions_caps_to_train_size() -> None:
+    skeys_partitions = {
+        "train": {("sid_a", 0), ("sid_b", 1)},
+        "id_val": set(),
+    }
+
+    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=10)
+
+    expected = {("sid_a", 0), ("sid_b", 1)}
+    assert skeys_partitions_dev["train"] == expected
+    assert skeys_partitions_dev["id_val"] == expected
+
+
+def test_build_dev_skeys_partitions_rejects_invalid_size() -> None:
+    skeys_partitions = {"train": {("sid_a", 0)}}
+
+    with pytest.raises(ValueError, match="size_dev must be greater than 0"):
+        build_dev_skeys_partitions(skeys_partitions, size_dev=0)

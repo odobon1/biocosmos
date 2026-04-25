@@ -52,6 +52,7 @@ class ArtifactManager:
     def save_metadata_study(cfg_train):
         fpath_meta = ArtifactManager.dpath_study / "metadata_study.json"
         metadata   = {
+            "dataset":         cfg_train.dataset,
             "split_name":      cfg_train.split_name,
             "n_gpus":          cfg_train.n_gpus,
             "n_cpus":          cfg_train.n_cpus,
@@ -138,133 +139,201 @@ def plot_metrics(
         fontsize_ticks      =8, 
         fontsize_legend     =8,
         subplot_border_width=1,
-        figsize             =(10, 14),
-        height_ratios       =[2, 2, 2, 2, 2, 1],
+        figsize             =(10, 12),
+        height_ratios       =[2, 2, 2, 2, 1],
     ):
     data = data_tracker.data
 
-    x_len = len(data["id_i2t_prec1"])
-    x     = list(range(0, x_len))
+    partition_names = [
+        key.removesuffix("_i2t_map")
+        for key in data.keys()
+        if key.endswith("_i2t_map")
+    ]
+    if not partition_names or "comp_map" not in data:
+        return
 
+    x_len = len(data["comp_map"])
+    x = list(range(0, x_len))
+
+    bucket_partition_name = next(
+        (
+            partition_name
+            for partition_name in partition_names
+            if any(
+                key.startswith(f"{partition_name}_") and key.endswith("_comp")
+                for key in data.keys()
+            )
+        ),
+        None,
+    )
+    bucket_comp_keys = []
+    if bucket_partition_name is not None:
+        bucket_comp_keys = [
+            key for key in data.keys()
+            if key.startswith(f"{bucket_partition_name}_") and key.endswith("_comp")
+        ]
+
+    plot_partition_metrics(
+        data,
+        x,
+        dpath_trial,
+        partition_names,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+    )
+    plot_composite_metrics(
+        data,
+        x,
+        dpath_trial,
+        partition_names,
+        bucket_partition_name,
+        bucket_comp_keys,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        figsize,
+        height_ratios,
+    )
+
+
+def plot_partition_metrics(
+    data,
+    x,
+    dpath_trial,
+    partition_names,
+    fontsize_axes,
+    fontsize_ticks,
+    fontsize_legend,
+    subplot_border_width,
+):
+    retrieval_specs = [
+        ("i2t_map", "I2T", "blue"),
+        ("i2i_map", "I2I", "red"),
+        ("t2i_map", "T2I", "green"),
+    ]
+
+    for partition_name in partition_names:
+        fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+
+        for metric_name, label, color in retrieval_specs:
+            axes[0].plot(x, data[f"{partition_name}_{metric_name}"], label=label, color=color)
+        axes[0].plot(x, data[f"{partition_name}_map"], label="Composite", color="black")
+        axes[0].set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
+        axes[0].set_ylim(0, 1)
+        axes[0].legend(loc="lower right", fontsize=fontsize_legend)
+        axes[0].grid(True)
+
+        axes[1].plot(x, data[f"{partition_name}_i2t_prec1"], label="I2T Prec@1", color="blue")
+        axes[1].set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
+        axes[1].set_ylim(0, 1)
+        axes[1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+        axes[1].xaxis.set_major_locator(MaxNLocator(integer=True))
+        axes[1].xaxis.set_minor_locator(NullLocator())
+        axes[1].legend(loc="lower right", fontsize=fontsize_legend)
+        axes[1].grid(True)
+
+        for ax in axes:
+            ax.tick_params(labelsize=fontsize_ticks)
+            for spine in ax.spines.values():
+                spine.set_linewidth(subplot_border_width)
+                spine.set_edgecolor("black")
+
+        fig.suptitle(
+            f"Train Metrics: {'-'.join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split('_'))])}",
+            fontweight="bold",
+            y=0.98,
+            fontsize=18,
+        )
+        plt.tight_layout()
+        fig.savefig(dpath_trial / "plots" / f"train_metrics_partition_{partition_name}.png")
+        plt.close(fig)
+
+
+def plot_composite_metrics(
+    data,
+    x,
+    dpath_trial,
+    partition_names,
+    bucket_partition_name,
+    bucket_comp_keys,
+    fontsize_axes,
+    fontsize_ticks,
+    fontsize_legend,
+    subplot_border_width,
+    figsize,
+    height_ratios,
+):
     fig = plt.figure(figsize=figsize)
-    gs  = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
+    gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
 
-    ##########################################################################################################
-    ##########################################################################################################
-    # Plot 1: mAP Scores
     ax0 = fig.add_subplot(gs[0, 0])
-
-    ax0.plot(x, data["id_i2t_map"],  label="ID I2T",  color="blue")
-    ax0.plot(x, data["id_i2i_map"],  label="ID I2I",  color="red")
-    ax0.plot(x, data["id_t2i_map"],  label="ID T2I",  color="green")
-    ax0.plot(x, data["ood_i2t_map"], label="OOD I2T", color="blue",  linestyle="--")
-    ax0.plot(x, data["ood_i2i_map"], label="OOD I2I", color="red",   linestyle="--")
-    ax0.plot(x, data["ood_t2i_map"], label="OOD T2I", color="green", linestyle="--")
-
-    ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
+    for partition_name in partition_names:
+        ax0.plot(x, data[f"{partition_name}_map"], label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))]))
+    ax0.plot(x, data["i2i_map"], label="I2I", color="#B22222")
+    ax0.plot(x, data["comp_map"], label="All", color="black", linewidth=2)
+    ax0.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
-
     ax0.legend(loc="lower right", fontsize=fontsize_legend)
     ax0.grid(True)
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-    ##########################################################################################################
-    # Plot 2: mAP Composites
+
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    
-    ax1.plot(x, data["id_map"], label="ID", color="teal")
-    ax1.plot(x, data["ood_map"], label="OOD", color="teal", linestyle="--")
-    ax1.plot(x, data["i2i_map"], label="I2I", color="#B22222")
-    ax1.plot(x, data["comp_map"], label="All", color="black")
-
-    ax1.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
+    if bucket_comp_keys:
+        for key in bucket_comp_keys:
+            label = key.removeprefix(f"{bucket_partition_name}_").removesuffix("_comp").upper()
+            maybe_plot(ax1, x, data, key, f"({label})-shot", linestyle=":")
+        ax1.legend(loc="lower right", fontsize=fontsize_legend)
+    ax1.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
-
-    ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-    ##########################################################################################################
-    # Plot 3: N-Shot mAP Composites
+
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
-
-    bucket_comp_keys = sorted(
-        k for k in data.keys()
-        if k.startswith("id_") and k.endswith("_comp") and k != "id_comp"
-    )
-    labels = [f"({k.removeprefix('id_').removesuffix('_comp').upper()})-shot" for k in bucket_comp_keys]
-
-    for key, label in zip(bucket_comp_keys, labels):
-        maybe_plot(
-            ax2,
+    for partition_name in partition_names:
+        ax2.plot(
             x,
-            data,
-            key,
-            label,
-            linestyle=":"
+            data[f"{partition_name}_i2t_prec1"],
+            label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} I2T Prec@1',
         )
-
-    ax2.set_ylabel("N-Shot mAP Composites", fontsize=fontsize_axes, fontweight="bold")
+    ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
-
     ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-    ##########################################################################################################
-    # Plot 4: Precision@1
+
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
-
-    ax3.plot(x, data["id_i2t_prec1"], label="ID I2T Prec@1", color="blue")
-    ax3.plot(x, data["ood_i2t_prec1"], label="OOD I2T Prec@1", color="blue", linestyle="--")
-
-    ax3.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
-    ax3.set_ylim(0, 1)
-
-    ax3.legend(loc="lower right", fontsize=fontsize_legend)
+    ax3.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
+    ax3.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
+    for partition_name in partition_names:
+        ax3.plot(x, data[f"{partition_name}_loss"], label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss')
+    ax3.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
+    ax3.set_yscale("log")
+    ax3.minorticks_on()
+    ax3.grid(which="minor", axis="y")
+    ax3.legend(loc="upper right", fontsize=fontsize_legend)
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-    ##########################################################################################################
-    # Plot 5: Loss
+
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-
-    ax4.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
-    ax4.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
-    ax4.plot(x, data["id_loss"], label="ID Val Loss")
-    ax4.plot(x, data["ood_loss"], label="OOD Val Loss")
-    ax4.plot(x, data["comp_loss"], label="Comp Val Loss")
-
-    ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
-    ax4.set_yscale("log")
-    # for plotting minor gridlines on the y axis
-    ax4.minorticks_on()
-    ax4.grid(which="minor", axis="y")
-
-    ax4.legend(loc="upper right", fontsize=fontsize_legend)
+    ax4.plot(x, [np.nan] + data["lr"])
+    ax4.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax4.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax4.yaxis.set_offset_position("right")
+    ax4.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax4.yaxis.get_offset_text().set_visible(False)
+    ax4.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    ax4.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax4.xaxis.set_minor_locator(NullLocator())
     ax4.grid(True)
-    ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-    ##########################################################################################################
-    # Plot 6: Learning Rate
-    ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
+    ax4.tick_params(labelsize=fontsize_ticks)
 
-    ax5.plot(x, [np.nan] + data["lr"])
-
-    ax5.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax5.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax5.yaxis.set_offset_position("right")
-    ax5.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax5.yaxis.get_offset_text().set_visible(False)
-
-    ax5.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")  # last subgraph gets the x label
-    ax5.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax5.xaxis.set_minor_locator(NullLocator())
-
-    ax5.grid(True)
-    ax5.tick_params(labelsize=fontsize_ticks)
-    ##########################################################################################################
-
-    for ax in (ax0, ax1, ax2, ax3, ax4, ax5):
+    for ax in (ax0, ax1, ax2, ax3, ax4):
         ax.label_outer()
 
-    # thick black borders on all subplots
-    for idx_ax, ax in enumerate([ax0, ax1, ax2, ax3, ax4, ax5]):
+    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4)):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")
@@ -272,13 +341,10 @@ def plot_metrics(
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
 
-    fig.suptitle("Train Metrics", fontweight="bold", y=0.98, fontsize=20)
-
-    plt.subplots_adjust(hspace=0)  # remove extra whitespace to ensure plots are vertically flush
+    fig.suptitle("Train Metrics: Composite", fontweight="bold", y=0.98, fontsize=20)
+    plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-
-    savepath = dpath_trial / "plots" / f"train_metrics.png"
-    fig.savefig(savepath)
+    fig.savefig(dpath_trial / "plots" / "train_metrics_composite.png")
     plt.close(fig)
 
 def maybe_plot(ax, x, data, key, label, **kwargs):

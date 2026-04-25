@@ -4,15 +4,15 @@ import numpy as np  # type: ignore[import]
 from utils.utils import load_split
 
 
-def compute_class_wts(split_name, cfg_loss):
+def compute_class_wts(split_name, cfg_loss, dataset):
 
     # note: needs to be untangled....
-    split       = load_split(split_name)
+    split       = load_split(split_name, dataset=dataset)
     counts      = split.class_counts_train
     pair_counts = np.outer(counts, counts)
     n_classes   = len(counts)
 
-    if not cfg_loss['wting']:
+    if not cfg_loss.get('wting', False):
         class_wts      = np.ones_like(counts)
         class_pair_wts = np.ones_like(pair_counts)
     else:
@@ -37,7 +37,7 @@ def compute_class_wts(split_name, cfg_loss):
     # class_wts /= class_wts.mean()
     class_wts = class_wts / class_wts.mean()
 
-    if cfg_loss['wting']:
+    if cfg_loss.get('wting', False):
         if cfg_cw["cp_type"] == 1:
             class_pair_wts = class_pair_wts / class_pair_wts.mean()
         elif cfg_cw["cp_type"] == 2:

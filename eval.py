@@ -26,7 +26,7 @@ def main():
     scores_val, _, _, _ = val_pipe.run_validation(modelw)
 
     if gpu_rank == 0:
-        PrintLog.eval(scores_val)
+        PrintLog.eval(scores_val, val_pipe)
 
     cleanup_ddp()
 

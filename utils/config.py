@@ -14,6 +14,7 @@ class TrainConfig:
     study_name: str
     experiment_name: str
     seed: int | None
+    dataset: str
     split_name: str
 
     n_epochs: int
@@ -30,10 +31,14 @@ class TrainConfig:
     text_template: dict
 
     logging: bool
+    eval_type: str = "validation"
 
     hw: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self):
+
+        if self.dataset not in ("nymph", "lepid"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{nymph, lepid}}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
@@ -55,11 +60,18 @@ class TrainConfig:
         
         if self.opt['lr']['sched'] not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
             raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
-        
+
+        if self.eval_type not in ("validation", "test"):
+            raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")
+
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
 
-        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
+        cfg_hw = get_config_hardware()
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
+            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
+            prefetch_factor=cfg_hw.prefetch_factor,
+        )
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram    = slurm_alloc["ram"]
@@ -125,6 +137,10 @@ class HardwareConfig:
     cached_imgs: str | None
     mixed_prec: bool
     act_chkpt: bool
+    prefetch_factor: int
+    max_n_workers_gpu: int | None
+    persistent_workers_train: bool
+    persistent_workers_eval: bool
 
 def get_config_hardware():
     with open(paths["config"] / "hardware.yaml") as f:
@@ -137,6 +153,7 @@ class EvalConfig:
 
     rdpath_trial: str | None
     save_crit: str  # model save criterion (only applicable if rdpath_trial != None)
+    dataset: str
     split_name: str  # overridden if rdpath_trial is specified
     eval_type: str  # validation or test
 
@@ -151,7 +168,14 @@ class EvalConfig:
     hw: dict = field(init=False, default_factory=dict)
     
     def __post_init__(self):
-        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch()
+        if self.dataset not in ("nymph", "lepid"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{nymph, lepid}}")
+
+        cfg_hw = get_config_hardware()
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
+            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
+            prefetch_factor=cfg_hw.prefetch_factor,
+        )
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram    = slurm_alloc["ram"]
@@ -209,6 +233,9 @@ class GenSplitConfig:
             raise ValueError(
                 f"Unknown pos_filter: '{self.pos_filter}', must be one of {{None, dorsal}}"
             )
+
+        if self.size_dev <= 0:
+            raise ValueError(f"size_dev must be greater than 0, got {self.size_dev}")
 
         if len(self.nst_names) != len(self.nst_seps) + 1:
             raise ValueError(

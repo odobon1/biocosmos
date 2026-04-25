@@ -235,7 +235,7 @@ class VLMWrapper(abc.ABC):
 
     def set_class_wts(self, config: Any, secondary: bool = False) -> None:
         cfg_loss = config.loss if not secondary else config.loss2
-        cw, cpw  = compute_class_wts(config.split_name, cfg_loss)
+        cw, cpw  = compute_class_wts(config.split_name, cfg_loss, config.dataset)
         if not secondary:
             self.class_wts      = cw.to(self.device)
             self.class_pair_wts = cpw.to(self.device)

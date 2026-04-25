@@ -2,6 +2,7 @@
 
 echo "======================= Bryozoa metadata generation ======================="
 python -m preprocessing.bryo.class_data_phylo
+python -m preprocessing.bryo.rank_encs
 
 echo "===================== Nymphalidae metadata generation ====================="
 python -m preprocessing.nymph.sids2commons

@@ -11,6 +11,7 @@ from preprocessing.common.splits import (
     build_id_partitions,
     build_id_eval_nshot,
     build_class_counts_train,
+    build_dev_skeys_partitions,
     save_split,
     generate_ood_distribution_plots,
     generate_id_distribution_plots,
@@ -35,6 +36,8 @@ def build_splits():
     seed_libs(cfg.seed, seed_torch=False)
     dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
+    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
     pvcv = PhyloVCV(dataset=DATASET)
@@ -98,6 +101,7 @@ def build_splits():
         "ood_val": skeys_ood_val,
         "ood_test": skeys_ood_test,
     }
+    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
     # N-SHOT TRACKING
 
@@ -109,6 +113,7 @@ def build_splits():
 
     print("Generating data indexes...")
     data_indexes = build_data_indexes(sids, skeys_partitions)
+    data_indexes_dev = build_data_indexes(sids, skeys_partitions_dev)
     if cfg.pos_filter is not None:
         partition_indexes = {
             "train": data_indexes["train"],
@@ -130,19 +135,27 @@ def build_splits():
     print("Generating class counts for train partition...")
     # class_counts_train = Counter(data_indexes["train"]["sids"])
     class_counts_train = build_class_counts_train(data_indexes)
+    class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
     # SAVE SPLIT
 
     print("Saving Split...")
     save_split(
-        data_indexes, 
-        id_eval_nshot, 
-        class_counts_train, 
-        dpath_split, 
+        data_indexes,
+        id_eval_nshot,
+        class_counts_train,
+        dpath_split,
         dpath_figs,
     )
-    print("Split saved!")
+    save_split(
+        data_indexes_dev,
+        id_eval_nshot,
+        class_counts_train_dev,
+        dpath_split_dev,
+        dpath_figs_dev,
+    )
+    print("Primary and dev splits saved!")
 
     # OOD DISTRIBUTION PLOTTING
 

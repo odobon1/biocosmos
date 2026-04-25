@@ -42,14 +42,17 @@ elif CLUSTER == "hpg":
         "metadata": {
             "nymph": dpath_root / "metadata/nymph",
             "lepid": dpath_root / "metadata/lepid",
-            "cub"  : dpath_root / "metadata/cub",
+            "bryo": dpath_root / "metadata/bryo",
+            "cub": dpath_root / "metadata/cub",
         },
         "preproc": {
             "nymph": dpath_root / "preprocessing/nymph",
             "lepid": dpath_root / "preprocessing/lepid",
-            "cub"  : dpath_root / "preprocessing/cub",
+            "bryo": dpath_root / "preprocessing/bryo",
+            "cub": dpath_root / "preprocessing/cub",
         },
         "artifacts": dpath_root / "artifacts",
+        "bryo_imgs": dpath_group / "odobon3.gatech/bryo",
         "nymph_imgs": dpath_nymph / "images",
         "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
         "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
@@ -90,8 +93,8 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
-def load_split(split_name):
-    split = load_pickle(paths["metadata"]["nymph"] / f"splits/{split_name}/split.pkl")
+def load_split(split_name, dataset="nymph"):
+    split = load_pickle(paths["metadata"][dataset] / f"splits/{split_name}/split.pkl")
     return split
 
 def get_text_template(text_template_type):
@@ -203,12 +206,11 @@ class PrintLog:
             PrintLog.log_epoch.write(header_train)
 
     @staticmethod
-    def epoch(time_train, time_train_avg, time_val, time_val_avg, loss_train_avg, loss_train_raw_avg, scores_val, loss_val_best):
+    def epoch(time_train, time_train_avg, time_val, time_val_avg, loss_train_avg, loss_train_raw_avg):
 
         epoch_info = (
             f"Train Loss --------- {loss_train_avg:.3e}\n"
             f"Train Loss (raw) --- {loss_train_raw_avg:.3e}\n"
-            f"Val Loss ----------- {scores_val['comp_loss']:.3e} (Best: {loss_val_best:.3e})\n"
             f"\n"
             f"{' Elapsed Time ':=^{75}}\n"
             f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)\n"
@@ -291,12 +293,14 @@ class PrintLog:
     @staticmethod
     def eval(
         scores_eval: Dict[str, float],
-        best_comp_map: float = None,
-        best_i2i_map: float = None,
+        eval_pipe,
         header: Optional[str] = None,
-        nshot_bucket_names: Optional[List[str]] = None,
     ) -> None:
         
+        partition_names = eval_pipe.partition_names
+        nshot_bucket_names = eval_pipe.nshot_bucket_names
+        bucket_partition_name = eval_pipe.bucket_partition_name
+
         if header is not None:
             header = f" {header} "
             header = (
@@ -307,49 +311,75 @@ class PrintLog:
             if PrintLog.logging:
                 PrintLog.log_epoch.write(header)
 
-        if best_comp_map is not None:
-            best_comp_map_str = f" (best: {best_comp_map:.4f})"
-            best_i2i_map_str = f" (best: {best_i2i_map:.4f})"
+        if eval_pipe.best_comp_map is not None:
+            best_comp_map_str = f" (best: {eval_pipe.best_comp_map:.4f})"
+            best_i2i_map_str = f" (best: {eval_pipe.best_i2i_map:.4f})"
         else:
             best_comp_map_str = ""
             best_i2i_map_str = ""
 
         bucket_comp_keys = []
         nshot_comp_lines = ""
-        if nshot_bucket_names is not None:
-            bucket_comp_keys = [
-                f"id_{bucket_name}_comp"
-                for bucket_name in nshot_bucket_names
-                if f"id_{bucket_name}_comp" in scores_eval
-            ]
+
+        bucket_comp_keys = [
+            f"{bucket_partition_name}_{bucket_name}_comp"
+            for bucket_name in nshot_bucket_names
+            if f"{bucket_partition_name}_{bucket_name}_comp" in scores_eval
+        ]
+        if bucket_comp_keys:
             nshot_comp_lines = f"{' N-Shot Composite mAP ':-^{75}}\n"
-            labels = [f"({k.removeprefix('id_').removesuffix('_comp').upper()})-shot" for k in bucket_comp_keys]
-            len_max = max([len(label) for label in labels])
+            labels = [
+                f"({k.removeprefix(bucket_partition_name + '_').removesuffix('_comp').upper()})-shot"
+                for k in bucket_comp_keys
+            ]
+            len_max = max(len(label) for label in labels)
             for k, label in zip(bucket_comp_keys, labels):
                 n_dashes = len_max - len(label) + 3
                 nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval[k]:.4f}\n"
 
+        partition_label_map = {
+            "ood_species": "OOD-Species",
+            "ood_genus": "OOD-Genus",
+            "ood_family": "OOD-Family",
+        }
+
+        def _partition_label(partition_name: str) -> str:
+            return partition_label_map.get(partition_name, partition_name.replace("_", " ").upper())
+
+        partition_lines = ""
+        for partition_name in partition_names:
+            partition_label = _partition_label(partition_name)
+            partition_lines += (
+                f"{f' {partition_label} mAP ':-^{75}}\n"
+                f"I2T --- {scores_eval[f'{partition_name}_i2t_map']:.4f}\n"
+                f"I2I --- {scores_eval[f'{partition_name}_i2i_map']:.4f}\n"
+                f"T2I --- {scores_eval[f'{partition_name}_t2i_map']:.4f}\n"
+            )
+
+        def _metric_line(label: str, value_str: str) -> str:
+            # Keep a minimum of 3 dashes while aligning labels to a fixed width.
+            n_dashes = max(3, 14 - len(label))
+            return f"{label} {'-' * n_dashes} {value_str}\n"
+
+        composite_lines = f"{' Composite mAP ':-^{75}}\n"
+        composite_lines += _metric_line("All", f"{scores_eval['comp_map']:.4f}{best_comp_map_str}")
+        composite_lines += _metric_line("I2I", f"{scores_eval['i2i_map']:.4f}{best_i2i_map_str}")
+        for partition_name in partition_names:
+            partition_label = _partition_label(partition_name)
+            composite_lines += _metric_line(partition_label, f"{scores_eval[f'{partition_name}_map']:.4f}")
+
+        loss_lines = f"{' Loss ':-^{75}}\n"
+        for partition_name in partition_names:
+            partition_label = _partition_label(partition_name)
+            loss_lines += _metric_line(partition_label, f"{scores_eval[f'{partition_name}_loss']:.3e}")
+
         header = " Eval "
         eval_printout = (
             f"{header:=^{75}}\n"
-            f"{' ID mAP ':-^{75}}\n"
-            f"I2T --- {scores_eval['id_i2t_map']:.4f}\n"
-            f"I2I --- {scores_eval['id_i2i_map']:.4f}\n"
-            f"T2I --- {scores_eval['id_t2i_map']:.4f}\n"
+            f"{partition_lines}"
             f"{nshot_comp_lines}"
-            f"{' OOD mAP ':-^{75}}\n"
-            f"I2T --- {scores_eval['ood_i2t_map']:.4f}\n"
-            f"I2I --- {scores_eval['ood_i2i_map']:.4f}\n"
-            f"T2I --- {scores_eval['ood_t2i_map']:.4f}\n"
-            f"{' Composite mAP ':-^{75}}\n"
-            f"All --- {scores_eval['comp_map']:.4f}{best_comp_map_str}\n"
-            f"I2I --- {scores_eval['i2i_map']:.4f}{best_i2i_map_str}\n"
-            f"ID ---- {scores_eval['id_map']:.4f}\n"
-            f"OOD --- {scores_eval['ood_map']:.4f}\n"
-            f"{' Loss ':-^{75}}\n"
-            f"ID ----- {scores_eval['id_loss']:.3e}\n"
-            f"OOD ---- {scores_eval['ood_loss']:.3e}\n"
-            f"Comp --- {scores_eval['comp_loss']:.3e}\n"
+            f"{composite_lines}"
+            f"{loss_lines}"
             f"\n"
         )
         print(eval_printout)
@@ -365,6 +395,7 @@ class PrintLog:
             f"Experiment -------- {cfg_train.experiment_name}",
             f"Seed -------------- {cfg_train.seed}",
             f"Trial File Path --- {cfg_train.rdpath_trial}",
+            f"Dataset ----------- {cfg_train.dataset}",
             f"Split ------------- {cfg_train.split_name}",
             "",
             f"Batch Size ---- {cfg_train.batch_size}",
@@ -410,6 +441,7 @@ class PrintLog:
             "",
             f"Model Type ------- {cfg_eval.arch['model_type']}",
             f"Loss Type -------- {cfg_eval.loss['type']}",
+            f"Dataset ---------- {cfg_eval.dataset}",
             f"Split ------------ {cfg_eval.split_name}",
             "",
             f"Batch Size ------- {cfg_eval.batch_size}",
@@ -457,7 +489,7 @@ class PrintLog:
         lines.append(f"Similarity Type --- {loss['sim']}")
         lines.append(f"Target Type ------- {loss['targ']}")
 
-        wting = loss["wting"]
+        wting = loss.get("wting", False)
         if wting and "class_weighting" in loss['cfg']:
             cw = loss["cfg"]["class_weighting"]
             lines.append(f"Class Weighting --- {cw['type']}")
@@ -470,7 +502,7 @@ class PrintLog:
         else:
             lines.append("Class Weighting ---- disabled")
 
-        focal = loss["focal"]
+        focal = loss.get("focal", False)
         if focal and "focal" in loss['cfg']:
             cfg_focal = loss['cfg']["focal"]
             lines.append("Focal ------------- enabled")
@@ -505,3 +537,6 @@ class PrintLog:
         PrintLog.log_epoch.close()
         PrintLog.log_init.close()
         PrintLog.log_text.close()
+
+def get_subdirectory_names(dir_path):
+    return [p.name for p in Path(dir_path).iterdir() if p.is_dir()]

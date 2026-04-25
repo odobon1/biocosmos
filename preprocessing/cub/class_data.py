@@ -1,8 +1,5 @@
 """
 python -m preprocessing.cub.class_data
-# NOTE: must generate metatadata via preprocessing.cub.metadata before running class_data 
-
-# TODO: skip the metadata, generate directly
 
 Creates:
 metadata/cub/class_data.pkl
@@ -15,18 +12,22 @@ class_data = {
         "genus": "<genus>",
         "species": "<species>",
         "common_name": "<common_name>",
-        "image_path" : "<image_path>",
+        "rdpath_imgs" : "<image_path>",
+        "split": "<test, train, or val>",
     },
     ...
 }
 """
 import pandas as pd  # type: ignore[import]
+import os
 
 from utils.utils import paths, save_pickle
+from preprocessing.cub.splits_utils import download_splits, extract_splits, SPLITS_URL
+from preprocessing.cub.metadata import build_taxonomy_df, load_common_names, assign_split
+from preprocessing.cub.mapping import SPLITS_FILES
 
-def generate_class_data() -> None:
+def generate_class_data(df_metadata: pd.DataFrame) -> None:
 
-    df_metadata = pd.read_csv(paths["cub_metadata_gen"])
     class_data = {}
 
     for index, row in df_metadata.iterrows():
@@ -38,9 +39,8 @@ def generate_class_data() -> None:
             sid_data['genus'] = row['genus']
             sid_data['species'] = row['species']
             
-            image_path = f"images/{row['image_path'].split('/')[0]}"
-            sid_data['common_name'] = row['commonName']
-            sid_data['rdpath_imgs'] = image_path
+            sid_data['common_name'] = row['common_name']
+            sid_data['rdpath_imgs'] = f"images/{row['class_name']}"
             
             sid_data['split'] = row['split']
             class_data[sid] = sid_data
@@ -48,8 +48,29 @@ def generate_class_data() -> None:
     save_pickle(class_data, paths["metadata"]["cub"] / "class_data.pkl")
 
 def main() -> None:
+    print("Downloading Attribute Splits...")
+    download_splits(SPLITS_URL, paths['dpath_cub'] / "xlsa17.zip")
+
+    print("Extracting Attribute Splits...")
+    extract_splits(paths['dpath_cub'], paths['dpath_cub'])
+
+    mat_path = os.path.join(paths['dpath_cub'], "xlsa17", "data", "CUB", "att_splits.mat")
+
+    print("Loading class names...")
+    common_names = load_common_names(mat_path)
+
+    print(f"Querying GBIF for {len(common_names)} species...")
+    taxa_df, failed = build_taxonomy_df(common_names)
+
+    if len(failed): 
+        print("There are some failed datasets")    
+
+    for split in ['train', 'val', 'test']:
+        assign_split(taxa_df, os.path.join('cub_test', "xlsa17", "data", "CUB", SPLITS_FILES[split]), split)
+
     print("Building class data...")
-    generate_class_data()
+
+    generate_class_data(taxa_df)
     print("Class data complete")
 
 

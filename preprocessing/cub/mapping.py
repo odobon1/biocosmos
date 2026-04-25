@@ -18,3 +18,14 @@ COMMON_NAME_CORRECTIONS = {
     "Sayornis": "Eastern phoebe", # --> issue child
     "Wilson Warbler": "Wilson's Warbler",
 }
+
+SKIP_NAMES = {
+    "Sayornis",
+    "Geococcyx" # we can decide this
+}
+
+SPLITS_FILES = {
+    "test": "testclasses.txt",
+    "train": "trainclasses1.txt",
+    "val": "valclasses1.txt"
+}

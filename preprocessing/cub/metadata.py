@@ -60,8 +60,8 @@ def build_taxonomy_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
     for i in range(len(common_names)):
         cname, clname = common_names[i], class_names[i]
-        if cname in SKIP_NAMES: # skipping names which point to genus-level (i.e. have multiple species)
-            continue
+        # if cname in SKIP_NAMES: # skipping names which point to genus-level (i.e. have multiple species)
+        #     continue
         queried_name = COMMON_NAME_CORRECTIONS.get(cname, cname)
         result = query_gbif(queried_name)
         rows.append({"common_name": cname, 'class_name': clname, **result})

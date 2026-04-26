@@ -2,7 +2,7 @@ import requests
 import os
 import pandas as pd
 from scipy.io import loadmat
-from mapping import COMMON_NAME_CORRECTIONS, SKIP_NAMES
+from mapping import COMMON_NAME_CORRECTIONS, INAT_GBIF_BACKBONE
 
 from utils.utils import paths
 
@@ -22,7 +22,7 @@ def load_common_names(mat_path: str) -> list[str]:
             "common_name": [parse_class_name(r) for r in raw_names],
         })
 
-def query_gbif(common_name: str) -> dict:
+def query_gbif(common_name: str,  dataset_key: str|None = None) -> dict:
     """Query GBIF for taxonomy of a single bird common name."""
     url = "https://api.gbif.org/v1/species/search"
     params = {
@@ -30,6 +30,7 @@ def query_gbif(common_name: str) -> dict:
         "qField": "VERNACULAR",
         "rank": "SPECIES",
         "status": "ACCEPTED",
+        "datasetKey": dataset_key,
         "limit": 5,
     }
     r = requests.get(url, params=params)
@@ -63,7 +64,10 @@ def build_taxonomy_df(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         # if cname in SKIP_NAMES: # skipping names which point to genus-level (i.e. have multiple species)
         #     continue
         queried_name = COMMON_NAME_CORRECTIONS.get(cname, cname)
-        result = query_gbif(queried_name)
+        result = query_gbif(queried_name, INAT_GBIF_BACKBONE)
+        # if any of the results are None, query general GBIF API
+        if any(v is None for v in result.values()):
+            result = query_gbif(queried_name)
         rows.append({"common_name": cname, 'class_name': clname, **result})
 
         if result["species"] is None:

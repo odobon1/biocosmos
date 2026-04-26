@@ -52,7 +52,7 @@ def main() -> None:
     download_splits(SPLITS_URL, paths['dpath_cub'] / "xlsa17.zip")
 
     print("Extracting Attribute Splits...")
-    extract_splits(paths['dpath_cub'], paths['dpath_cub'])
+    extract_splits(paths['dpath_cub'] / "xlsa17.zip", paths['dpath_cub'])
 
     mat_path = os.path.join(paths['dpath_cub'], "xlsa17", "data", "CUB", "att_splits.mat")
 

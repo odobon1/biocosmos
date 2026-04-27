@@ -4,7 +4,7 @@ artifacts/*
 !artifacts/clip_o1/**
 
 data/cub/*
-!data/cub/.gitkeep
+!data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy
 
 metadata/bryo/*
 !metadata/bryo/splits/

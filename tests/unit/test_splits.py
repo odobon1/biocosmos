@@ -84,7 +84,7 @@ def test_build_sid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() 
 
 
 def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = SimpleNamespace(seed=7, pct_eval=0.1)
+    cfg = SimpleNamespace(seed=7, pct_eval=0.1, pct_partition=0.05)
     sids_id = {"sid_single", "sid_multi"}
     sid_2_samp_idxs = {
         "sid_single": [4],

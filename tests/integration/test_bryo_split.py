@@ -41,7 +41,7 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     n_samps_dict = {sid: len(idxs) for sid, idxs in sid_2_samp_idxs.items()}
     n_samps_dict_id = {sid: n_samps_dict[sid] for sid in genera_id}
 
-    cfg = SimpleNamespace(seed=42, pct_eval=0.2, nst_names=["1-4", "5+"], nst_seps=[4])
+    cfg = SimpleNamespace(seed=42, pct_partition=0.1, pct_eval=0.2, nst_names=["1-4", "5+"], nst_seps=[4])
 
     genera_ood_val, genera_ood_test = split_ood_genera_val_test(genera_ood, n_samps_dict, cfg.seed)
     skeys_ood_val = build_ood_skeys(genera_ood_val, sid_2_samp_idxs)

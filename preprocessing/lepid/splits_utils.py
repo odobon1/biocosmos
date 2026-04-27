@@ -206,8 +206,8 @@ def build_ood_genus_partitions(
         pct_samps_ood_genus_test = n_samps_ood_genus_test / n_samps_target
 
         close_enough = (
-            abs((cfg.pct_eval / 2) - pct_samps_ood_genus_val) < cfg.pct_ood_tol
-            and abs((cfg.pct_eval / 2) - pct_samps_ood_genus_test) < cfg.pct_ood_tol
+            abs((cfg.pct_partition) - pct_samps_ood_genus_val) < cfg.pct_ood_tol
+            and abs((cfg.pct_partition) - pct_samps_ood_genus_test) < cfg.pct_ood_tol
         )
 
     genera_id = set(families_id)

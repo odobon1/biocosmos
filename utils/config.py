@@ -218,7 +218,8 @@ class GenSplitConfig:
     seed: int
     split_name: str
 
-    pct_eval: float
+    pct_partition: float
+    pct_eval: float = field(init=False)
     pct_ood_tol: float
     size_dev: int
 
@@ -229,6 +230,9 @@ class GenSplitConfig:
     ood_family_name: str | None = None
 
     def __post_init__(self):
+
+        self.pct_eval = 2 * self.pct_partition
+
         if self.pos_filter not in (None, "dorsal"):
             raise ValueError(
                 f"Unknown pos_filter: '{self.pos_filter}', must be one of {{None, dorsal}}"

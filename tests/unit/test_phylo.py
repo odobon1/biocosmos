@@ -3,7 +3,7 @@ python -m pytest tests/unit/test_phylo.py
 
 Tests for the phylo preprocessing pipeline: tree merge and taxonomic polytomy
 fill.  Integration tests use real trees via the shared tree_bundle fixture;
-unit tests for rehome_missing_species_in_represented_genera operate on small
+unit tests for rehome_missing_classes_in_represented_higher_rank operate on small
 synthetic trees.
 """
 
@@ -19,7 +19,7 @@ from preprocessing.nymph.phylo import build_tree_nymph
 from utils.utils import paths, load_pickle
 from preprocessing.common.phylo import (
     augment_tree_with_polytomies,
-    rehome_missing_species_in_represented_genera,
+    rehome_missing_classes_in_represented_higher_rank,
     prune_tree,
     augment_class_data,
 )
@@ -117,7 +117,7 @@ def tree_bundle():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def pyrisitia_tree():
+def tree_pyrisitia():
     """
     Tiny ultrametric tree mimicking the Pyrisitia / Leucidia situation.
 
@@ -144,7 +144,7 @@ def pyrisitia_tree():
 
 
 @pytest.fixture()
-def pyrisitia_taxonomy():
+def class_data_pyrisitia():
     return {
         "pyrisitia_lisa": {
             "family": "Pieridae",
@@ -395,13 +395,13 @@ def test_poly_tree_depth(tree_bundle) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Unit tests: rehome_missing_species_in_represented_genera
+# Unit tests: rehome_missing_classes_in_represented_higher_rank
 # ---------------------------------------------------------------------------
 
 class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
 
     def test_poly_missing_pyrisitia_get_correct_distances(
-        self, pyrisitia_tree, pyrisitia_taxonomy
+        self, tree_pyrisitia, class_data_pyrisitia
     ):
         """
         Missing Pyrisitia species should be rehomed to the Pyrisitia/Leucidia
@@ -412,15 +412,15 @@ class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
         assigned 0-length branches to the root, resulting in wrong distances
         (~19.95 instead of ~29.38).
         """
-        represented_original = {"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"}
-        missing_species = {"pyrisitia_chamberlaini", "pyrisitia_venusta"}
+        cids_cd_on_tree = {"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"}
+        cids_missing = {"pyrisitia_chamberlaini", "pyrisitia_venusta"}
         expected = 29.38
 
-        rehome_missing_species_in_represented_genera(
-            tree=pyrisitia_tree,
-            missing_species=missing_species,
-            represented_original=represented_original,
-            taxonomy=pyrisitia_taxonomy,
+        rehome_missing_classes_in_represented_higher_rank(
+            tree=tree_pyrisitia,
+            cids_missing=cids_missing,
+            cids_cd_on_tree=cids_cd_on_tree,
+            class_data=class_data_pyrisitia,
         )
 
         pairs = [
@@ -430,30 +430,30 @@ class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
             ("pyrisitia_lisa", "leucidia_elvina"),
         ]
         for a, b in pairs:
-            d = pyrisitia_tree.distance(a, b)
+            d = tree_pyrisitia.distance(a, b)
             assert abs(d - expected) < 0.01, (
                 f"{a} <-> {b}: got {d:.4f}, expected ~{expected}"
             )
 
-    def test_poly_noop_when_no_missing_species(self, pyrisitia_tree, pyrisitia_taxonomy):
+    def test_poly_noop_when_no_missing_species(self, tree_pyrisitia, class_data_pyrisitia):
         """
         When missing_species is empty the tree should be unchanged.
         """
         leaves_before = sorted(
-            l.name for l in pyrisitia_tree.get_terminals() if l.name
+            l.name for l in tree_pyrisitia.get_terminals() if l.name
         )
-        rehome_missing_species_in_represented_genera(
-            tree=pyrisitia_tree,
-            missing_species=set(),
-            represented_original={"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"},
-            taxonomy=pyrisitia_taxonomy,
+        rehome_missing_classes_in_represented_higher_rank(
+            tree=tree_pyrisitia,
+            cids_missing=set(),
+            cids_cd_on_tree={"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"},
+            class_data=class_data_pyrisitia,
         )
         leaves_after = sorted(
-            l.name for l in pyrisitia_tree.get_terminals() if l.name
+            l.name for l in tree_pyrisitia.get_terminals() if l.name
         )
         assert leaves_before == leaves_after
 
-    def test_poly_rehomes_genus_with_single_missing_species(self, pyrisitia_taxonomy):
+    def test_poly_rehomes_genus_with_single_missing_species(self, class_data_pyrisitia):
         """
         A genus with a single missing species should still be rehomed to the
         nearest inter-genus divergence anchor.
@@ -465,11 +465,11 @@ class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
         )
         tree = _build_tree(newick)
 
-        rehome_missing_species_in_represented_genera(
+        rehome_missing_classes_in_represented_higher_rank(
             tree=tree,
-            missing_species={"pyrisitia_chamberlaini"},
-            represented_original={"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"},
-            taxonomy=pyrisitia_taxonomy,
+            cids_missing={"pyrisitia_chamberlaini"},
+            cids_cd_on_tree={"pyrisitia_lisa", "leucidia_elvina", "colias_palaeno"},
+            class_data=class_data_pyrisitia,
         )
 
         d_after = tree.distance("pyrisitia_chamberlaini", "pyrisitia_lisa")
@@ -487,7 +487,7 @@ class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
             "genus1_c:0,genus2_e:0,genus2_f:0,genus3_g:0,genus3_h:0);"
         )
         tree = _build_tree(newick)
-        taxonomy = {
+        class_data = {
             "genus1_a": {"family": "family1", "subfamily": None, "tribe": None, "genus": "genus1"},
             "genus1_b": {"family": "family1", "subfamily": None, "tribe": None, "genus": "genus1"},
             "genus1_c": {"family": "family1", "subfamily": None, "tribe": None, "genus": "genus1"},
@@ -499,11 +499,11 @@ class TestPolytomyRehomeMissingSpeciesInRepresentedGenera:
             "genus4_i": {"family": "family2", "subfamily": None, "tribe": None, "genus": "genus4"},
         }
 
-        rehome_missing_species_in_represented_genera(
+        rehome_missing_classes_in_represented_higher_rank(
             tree=tree,
-            missing_species={"genus1_c", "genus2_e", "genus2_f", "genus3_g", "genus3_h"},
-            represented_original={"genus1_a", "genus1_b", "genus2_d", "genus4_i"},
-            taxonomy=taxonomy,
+            cids_missing={"genus1_c", "genus2_e", "genus2_f", "genus3_g", "genus3_h"},
+            cids_cd_on_tree={"genus1_a", "genus1_b", "genus2_d", "genus4_i"},
+            class_data=class_data,
         )
 
         # Genus1 and genus2 rehome to their inter-genus divergence anchor.

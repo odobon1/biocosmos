@@ -153,8 +153,8 @@ def build_ood_partitions(
         pct_samps_ood_test = n_samps_ood_test / n_samps_target
 
         close_enough = (
-            abs((cfg.pct_eval / 2) - pct_samps_ood_val) < cfg.pct_ood_tol
-            and abs((cfg.pct_eval / 2) - pct_samps_ood_test) < cfg.pct_ood_tol
+            abs((cfg.pct_partition) - pct_samps_ood_val) < cfg.pct_ood_tol
+            and abs((cfg.pct_partition) - pct_samps_ood_test) < cfg.pct_ood_tol
         )
 
     skeys_ood_val = set()

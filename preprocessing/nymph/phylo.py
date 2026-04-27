@@ -29,7 +29,7 @@ def main():
     tree_poly = augment_tree_with_polytomies(tree_pruned, class_data_aug)
     tree_poly_pruned = prune_tree(tree_poly, class_data)
 
-    save_pickle(tree_poly_pruned, paths["metadata"]["nymph"] / "tree_poly.pkl")
+    save_pickle(tree_poly_pruned, paths["metadata"]["nymph"] / "tree.pkl")
     print("Nymphalidae tree complete")
 
 

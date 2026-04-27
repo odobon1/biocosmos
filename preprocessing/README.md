@@ -77,7 +77,8 @@ To execute from root:
 python -m preprocessing.nymph.phylo
 ```
 **Requires:**
-- Nymphalidae phylogenetic tree data
+- Nymphalidae phylogenetic tree data (`paths["nymph_tree_raw"]`)
+- `metadata/nymph/class_data.pkl`
 
 **Produces:**
 - `metadata/nymph/tree.pkl`
@@ -137,7 +138,7 @@ To execute from root:
 python -m preprocessing.lepid.phylo
 ```
 **Requires:**
-- Lepidoptera phylogenetic tree data (`paths["lepid_phylo_tree"]`)
+- Lepidoptera phylogenetic tree data (`paths["lepid_tree_raw"]`)
 - `metadata/nymph/tree.pkl` (Nymphalidae tree, for merging)
 - `metadata/lepid/class_data.pkl`
 

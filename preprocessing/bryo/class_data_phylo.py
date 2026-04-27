@@ -13,7 +13,7 @@ from utils.utils import paths, save_pickle, get_subdirectory_names
 
 
 def build_tree_bryo() -> Tree:
-    tree = Phylo.read(paths["root"] / "metadata/bryo/SI_Fig1(BIG).newick", "newick")
+    tree = Phylo.read(paths["bryo_tree_raw"], "newick")
     tip_names_trunc = set()
     for tip in tree.get_terminals():
         tip_name_trunc = trim_after_all_caps_underscore(tip.name).lower()

@@ -6,9 +6,11 @@ from typing import Dict, List, Optional, Tuple, Set
 from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
+import pdb
+
 
 # Default rank order from broad -> specific (excluding species)
-RANK_ORDER = ["family", "subfamily", "tribe", "genus"]
+RANK_ORDER = ["order", "family", "subfamily", "tribe", "genus"]
 
 
 def get_leaf_names(tree: Tree) -> List[str]:
@@ -17,17 +19,17 @@ def get_leaf_names(tree: Tree) -> List[str]:
 
 # augment_tree_with_polytomies() helper
 def get_available_ranks(
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+    class_data: Dict[str, Dict[str, Optional[str]]],
     candidate_ranks: Optional[List[str]] = None,
 ) -> List[str]:
     """
-    Detect which taxonomic ranks are actually available (non-None) in the taxonomy.
+    Detect which taxonomic ranks are actually available (non-None) in class_data.
     Returns ranks in order from broadest to most specific.
 
     Parameters
     ----------
-    taxonomy
-        Dict of species -> {rank: value, ...}
+    class_data
+        Dict of class-id -> {rank: value, ...}
     candidate_ranks
         Optional list of ranks to check. If None, uses RANK_ORDER.
         Should be ordered from broad to specific.
@@ -35,7 +37,7 @@ def get_available_ranks(
     Returns
     -------
     available_ranks
-        Subset of candidate_ranks that have at least one non-None value in taxonomy.
+        Subset of candidate_ranks that have at least one non-None value in class_data.
         Ordered from broad to specific (genus last).
     """
     if candidate_ranks is None:
@@ -43,9 +45,9 @@ def get_available_ranks(
 
     available = []
     for rank in candidate_ranks:
-        # Check if this rank has any non-None values in the taxonomy
-        for species_data in taxonomy.values():
-            if species_data.get(rank) is not None:
+        # Check if this rank has any non-None values in the class_data
+        for cid_data in class_data.values():
+            if cid_data.get(rank) is not None:
                 available.append(rank)
                 break
 
@@ -53,17 +55,17 @@ def get_available_ranks(
 
 # augment_tree_with_polytomies() helper
 def compress_lineage(
-    tax_row: Dict[str, Optional[str]],
+    cid_data: Dict[str, Optional[str]],
     rank_order: Optional[List[str]] = None,
 ) -> List[Tuple[str, str]]:
     """
-    Returns the species' available lineage as a list of (rank, taxon),
+    Returns the class's available lineage as a list of (rank, taxon),
     skipping missing ranks (None).
 
     Parameters
     ----------
-    tax_row
-        Single species' taxonomy dict like {"family": "fam1", "subfamily": "sub1", ...}
+    cid_data
+        Single class's class_data dict like {"family": "fam1", "subfamily": "sub1", ...}
     rank_order
         Order to process ranks. If None, uses RANK_ORDER. Should go from broad to specific.
 
@@ -83,24 +85,24 @@ def compress_lineage(
 
     lineage = []
     for rank in rank_order:
-        val = tax_row.get(rank)
+        val = cid_data.get(rank)
         if val is not None:
             lineage.append((rank, val))
     return lineage
 
 # augment_tree_with_polytomies() helper
-def get_parent_map_for_species(
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+def get_parent_map_for_classes(
+    class_data: Dict[str, Dict[str, Optional[str]]],
     rank_order: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, Optional[Tuple[str, str]]]]:
     """
-    For each species, returns a mapping:
-        rank -> parent(rank, taxon) within that species' compressed lineage
+    For each class, returns a mapping:
+        rank -> parent(rank, taxon) within that class's compressed lineage
 
     Parameters
     ----------
-    taxonomy
-        Dict of species -> {rank: value, ...}
+    class_data
+        Dict of class-id -> {rank: value, ...}
     rank_order
         Order to process ranks. If None, uses RANK_ORDER.
 
@@ -117,7 +119,7 @@ def get_parent_map_for_species(
 
     out: Dict[str, Dict[str, Optional[Tuple[str, str]]]] = {}
 
-    for sp, row in taxonomy.items():
+    for cid, row in class_data.items():
         lineage = compress_lineage(row, rank_order)
         parent_info: Dict[str, Optional[Tuple[str, str]]] = {}
         for i, (rank, taxon) in enumerate(lineage):
@@ -125,76 +127,28 @@ def get_parent_map_for_species(
                 parent_info[rank] = None
             else:
                 parent_info[rank] = lineage[i - 1]
-        out[sp] = parent_info
+        out[cid] = parent_info
 
     return out
 
 # augment_tree_with_polytomies() helper
-def species_by_taxon(
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
-    rank: str,
-) -> Dict[str, Set[str]]:
-    out: Dict[str, Set[str]] = defaultdict(set)
-    for sp, row in taxonomy.items():
-        taxon = row.get(rank)
-        if taxon is not None:
-            out[taxon].add(sp)
-    return out
-
-# augment_tree_with_polytomies() helper
-def represented_species_by_taxon(
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+def represented_classes_by_rank_value(
+    class_data: Dict[str, Dict[str, Optional[str]]],
     represented: Set[str],
     rank: str,
 ) -> Dict[str, Set[str]]:
     out: Dict[str, Set[str]] = defaultdict(set)
-    for sp in represented:
-        taxon = taxonomy[sp].get(rank)
-        if taxon is not None:
-            out[taxon].add(sp)
+    for cid in represented:
+        rank_value = class_data[cid].get(rank)
+        if rank_value is not None:
+            out[rank_value].add(cid)
     return out
-
-# augment_tree_with_polytomies() helper
-def get_sibling_taxa_for_species_rank(
-    species: str,
-    rank: str,
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
-    parent_map: Dict[str, Dict[str, Optional[Tuple[str, str]]]],
-) -> Set[str]:
-    """
-    Returns taxa at the same rank as `species`'s taxon that share the same parent
-    in the compressed lineage logic.
-
-    Example:
-        if species has family=f1, subfamily=s1, tribe=None, genus=g1
-        then genus's parent is subfamily=s1
-        siblings are all other genera whose compressed lineage also places them under s1
-    """
-    target_taxon = taxonomy[species].get(rank)
-    if target_taxon is None:
-        return set()
-
-    parent = parent_map[species].get(rank)
-    if parent is None:
-        return set()  # no parent => no siblings at this level
-
-    sibs = set()
-    for other_sp, other_row in taxonomy.items():
-        other_taxon = other_row.get(rank)
-        if other_taxon is None or other_taxon == target_taxon:
-            continue
-
-        other_parent = parent_map[other_sp].get(rank)
-        if other_parent == parent:
-            sibs.add(other_taxon)
-
-    return sibs
 
 # augment_tree_with_polytomies() helper
 def deepest_mrca_between_groups(
     tree: Tree,
-    group1_species: Set[str],
-    group2_species: Set[str],
+    group1_classes: Set[str],
+    group2_classes: Set[str],
     depth_map: Dict,
 ) -> Optional[Clade]:
     """
@@ -203,7 +157,7 @@ def deepest_mrca_between_groups(
     This runs in O(number_of_nodes) by propagating group-membership flags upward,
     avoiding pairwise MRCA calls.
     """
-    if not group1_species or not group2_species:
+    if not group1_classes or not group2_classes:
         return None
 
     best_node: Optional[Clade] = None
@@ -214,7 +168,7 @@ def deepest_mrca_between_groups(
 
         if not node.clades:
             name = node.name
-            return name in group1_species, name in group2_species
+            return name in group1_classes, name in group2_classes
 
         child_flags: List[Tuple[bool, bool]] = [walk(child) for child in node.clades]
 
@@ -242,10 +196,10 @@ def deepest_mrca_between_groups(
     return best_node
 
 # augment_tree_with_polytomies() helper
-def find_graft_node_for_species(
+def find_graft_node_for_class(
     tree: Tree,
-    species: str,
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+    cid: str,
+    class_data: Dict[str, Dict[str, Optional[str]]],
     rep_by_rank_taxon: Dict[str, Dict[str, Set[str]]],
     taxa_by_parent: Dict[str, Dict[Optional[Tuple[str, str]], Set[str]]],
     parent_map: Dict[str, Dict[str, Optional[Tuple[str, str]]]],
@@ -254,7 +208,7 @@ def find_graft_node_for_species(
     rank_order: Optional[List[str]] = None,
 ) -> Clade:
     """
-    Find the graft node for one missing species using the most specific valid rank.
+    Find the graft node for one missing class using the most specific valid rank.
 
     Parameters
     ----------
@@ -264,7 +218,7 @@ def find_graft_node_for_species(
     if rank_order is None:
         rank_order = RANK_ORDER
 
-    lineage = compress_lineage(taxonomy[species], rank_order)
+    lineage = compress_lineage(class_data[cid], rank_order)
 
     # Search from most specific available rank upward: genus, tribe, subfamily, family
     for rank, taxon in reversed(lineage):
@@ -272,7 +226,7 @@ def find_graft_node_for_species(
         if not reps_in_taxon:
             continue
 
-        parent = parent_map[species].get(rank)
+        parent = parent_map[cid].get(rank)
         if parent is None:
             sibling_taxa = set(rep_by_rank_taxon.get(rank, {})) - {taxon}
         else:
@@ -282,19 +236,19 @@ def find_graft_node_for_species(
         if cache_key in graft_cache:
             graft_node = graft_cache[cache_key]
         else:
-            represented_sibling_species: Set[str] = set()
+            represented_sibling_classes: Set[str] = set()
             for sib_taxon in sibling_taxa:
-                represented_sibling_species.update(rep_by_rank_taxon.get(rank, {}).get(sib_taxon, set()))
+                represented_sibling_classes.update(rep_by_rank_taxon.get(rank, {}).get(sib_taxon, set()))
 
-            if not represented_sibling_species:
+            if not represented_sibling_classes:
                 # No siblings at this rank - skip and try higher rank
                 graft_cache[cache_key] = None
                 continue
 
             graft_node = deepest_mrca_between_groups(
                 tree=tree,
-                group1_species=reps_in_taxon,
-                group2_species=represented_sibling_species,
+                group1_classes=reps_in_taxon,
+                group2_classes=represented_sibling_classes,
                 depth_map=depth_map,
             )
             graft_cache[cache_key] = graft_node
@@ -310,29 +264,29 @@ def find_graft_node_for_species(
 # augment_tree_with_polytomies() helper
 def add_child_as_polytomy(
     node: Clade,
-    species_name: str,
+    cid: str,
     branch_length: Optional[float] = 0.0,
 ) -> None:
-    node.clades.append(Clade(name=species_name, branch_length=branch_length))
+    node.clades.append(Clade(name=cid, branch_length=branch_length))
 
 # augment_tree_with_polytomies() helper
-def rehome_missing_species_in_represented_genera(
+def rehome_missing_classes_in_represented_higher_rank(
     tree: Tree,
-    missing_species: Set[str],
-    represented_original: Set[str],
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+    cids_missing: Set[str],
+    cids_cd_on_tree: Set[str],
+    class_data: Dict[str, Dict[str, Optional[str]]],
     rank_order: Optional[List[str]] = None,
 ) -> None:
     """
-    Rehome newly inserted missing species so each genus is attached at an
+    Rehome newly inserted missing classes so each higher-rank class is attached at an
     interpretable divergence anchor.
 
-    Case A (genus represented in original tree):
-        anchor at the most recent inter-genus divergence available for that genus.
+    Case A (higher-rank class represented in original tree):
+        anchor at the most recent inter-class divergence available for that class.
 
-    Case B (genus not represented in original tree):
-        fallback to the most recent inter-family (or next higher rank) divergence
-        available for the genus' family.
+    Case B (higher-rank class not represented in original tree):
+        fallback to the most recent inter-family (or next higher-rank class) divergence
+        available for the class' family.
 
     Parameters
     ----------
@@ -342,7 +296,7 @@ def rehome_missing_species_in_represented_genera(
     if rank_order is None:
         rank_order = RANK_ORDER
 
-    if not missing_species:
+    if not cids_missing:
         return
 
     def _build_adj_map(tree_obj: Tree) -> Dict[Clade, List[Tuple[Clade, float]]]:
@@ -407,26 +361,23 @@ def rehome_missing_species_in_represented_genera(
     }
     adj_map = _build_adj_map(tree)
 
-    # Filter represented_original to only species actually on this tree
+    # Filter represented_original to only classes actually on this tree
     represented_original_present = {
-        sid for sid in represented_original if sid in tip_clade_by_name
+        cid for cid in cids_cd_on_tree if cid in tip_clade_by_name
     }
 
     missing_by_genus: Dict[str, Set[str]] = defaultdict(set)
-    for sid in missing_species:
-        missing_by_genus[sid.split("_", 1)[0]].add(sid)
+    for cid in cids_missing:
+        missing_by_genus[cid.split("_", 1)[0]].add(cid)
 
     represented_by_genus: Dict[str, Set[str]] = defaultdict(set)
-    for sid in represented_original_present:
-        represented_by_genus[sid.split("_", 1)[0]].add(sid)
+    for cid in represented_original_present:
+        represented_by_genus[cid.split("_", 1)[0]].add(cid)
 
-    present_tips = sorted(
-        tip.name for tip in tree.get_terminals() if tip.name is not None and tip.name in taxonomy
-    )
     represented_tips_present = {
-        sid
-        for sid in represented_original_present
-        if sid in tip_clade_by_name and sid in taxonomy
+        cid
+        for cid in represented_original_present
+        if cid in tip_clade_by_name and cid in class_data
     }
     represented_tips = sorted(represented_tips_present)
 
@@ -436,25 +387,25 @@ def rehome_missing_species_in_represented_genera(
     represented_by_rank_value: Dict[str, Dict[str, List[str]]] = {
         rank: defaultdict(list) for rank in higher_ranks
     }
-    for sid in represented_tips:
-        row = taxonomy.get(sid, {})
+    for cid in represented_tips:
+        row = class_data.get(cid, {})
         for rank in higher_ranks:
             rank_val = row.get(rank)
             if rank_val:
-                represented_by_rank_value[rank][rank_val].append(sid)
+                represented_by_rank_value[rank][rank_val].append(cid)
 
     planned_rehomes: List[Tuple[List[str], Clade, float]] = []
 
     for genus in sorted(missing_by_genus.keys()):
         # Case A: genus already represented in original tree.
         ref_candidates_repr = sorted(
-            sid
-            for sid in represented_by_genus.get(genus, set())
-            if tree.find_any(name=sid) is not None
+            cid
+            for cid in represented_by_genus.get(genus, set())
+            if tree.find_any(name=cid) is not None
         )
         if ref_candidates_repr:
             ref_tip = ref_candidates_repr[0]
-            sample_tax = taxonomy.get(ref_tip, {})
+            sample_tax = class_data.get(ref_tip, {})
             candidate_tips: List[str] = []
             # Search from most specific higher rank upward to find closest sibling taxon
             for rank in higher_ranks:
@@ -462,9 +413,9 @@ def rehome_missing_species_in_represented_genera(
                 if not rank_value:
                     continue
                 rank_candidates = [
-                    sid
-                    for sid in represented_by_rank_value[rank].get(rank_value, [])
-                    if sid.split("_", 1)[0] != genus
+                    cid
+                    for cid in represented_by_rank_value[rank].get(rank_value, [])
+                    if cid.split("_", 1)[0] != genus
                 ]
                 if rank_candidates:
                     candidate_tips = rank_candidates
@@ -472,13 +423,13 @@ def rehome_missing_species_in_represented_genera(
 
             if not candidate_tips:
                 candidate_tips = [
-                    sid for sid in represented_tips if sid.split("_", 1)[0] != genus
+                    cid for cid in represented_tips if cid.split("_", 1)[0] != genus
                 ]
 
             if not candidate_tips:
                 continue
 
-            # Species-level nearest-neighbor selection (not genus representative).
+            # class-level nearest-neighbor selection
             closest_tip = _nearest_eligible_tip_from_ref(
                 ref_name=ref_tip,
                 tip_clade_by_name=tip_clade_by_name,
@@ -495,8 +446,8 @@ def rehome_missing_species_in_represented_genera(
 
         # Case B: genus absent in original tree.
         genus_species_any = next(iter(missing_by_genus[genus]))
-        genus_tax = taxonomy.get(genus_species_any, {})
-        # Find the first available (non-None) rank value at the family/subfamily/tribe level
+        genus_tax = class_data.get(genus_species_any, {})
+        # Find the first available (non-None) rank value at higher rank level
         top_rank = None
         top_rank_value = None
         for rank in higher_ranks:
@@ -509,19 +460,19 @@ def rehome_missing_species_in_represented_genera(
             continue
 
         ref_candidates_family = sorted(
-            sid
-            for sid in represented_tips_present
-            if taxonomy.get(sid, {}).get(top_rank) == top_rank_value
-            and sid.split("_", 1)[0] != genus
+            cid
+            for cid in represented_tips_present
+            if class_data.get(cid, {}).get(top_rank) == top_rank_value
+            and cid.split("_", 1)[0] != genus
         )
         if not ref_candidates_family:
             continue
 
         ref_tip = ref_candidates_family[0]
         candidate_tips = [
-            sid
-            for sid in represented_tips
-            if taxonomy.get(sid, {}).get(top_rank) not in (None, top_rank_value)
+            cid
+            for cid in represented_tips
+            if class_data.get(cid, {}).get(top_rank) not in (None, top_rank_value)
         ]
         if not candidate_tips:
             continue
@@ -544,9 +495,9 @@ def rehome_missing_species_in_represented_genera(
 
     # Detach all targets first in one pass; this is much faster than repeated prune().
     parent_by_clade = _build_parent_map(tree)
-    target_sids = {sid for sids, _, _ in planned_rehomes for sid in sids}
-    for sid in target_sids:
-        clade = tip_clade_by_name.get(sid)
+    target_cids = {cid for cids, _, _ in planned_rehomes for cid in cids}
+    for cid in target_cids:
+        clade = tip_clade_by_name.get(cid)
         if clade is None:
             continue
         parent = parent_by_clade.get(clade)
@@ -555,11 +506,11 @@ def rehome_missing_species_in_represented_genera(
         parent.clades = [child for child in parent.clades if child is not clade]
 
     # Reattach grouped by genus-specific anchor and branch length.
-    for sids, anchor, attach_length in planned_rehomes:
-        for sid in sids:
+    for cids, anchor, attach_length in planned_rehomes:
+        for cid in cids:
             add_child_as_polytomy(
                 node=anchor,
-                species_name=sid,
+                cid=cid,
                 branch_length=attach_length,
             )
 
@@ -582,9 +533,8 @@ def _get_clade_by_path(tree: Tree, path: Tuple[int, ...]) -> Clade:
         node = node.clades[idx]
     return node
 
-
 _WORKER_TREE: Optional[Tree] = None
-_WORKER_TAXONOMY: Optional[Dict[str, Dict[str, Optional[str]]]] = None
+_WORKER_CLASS_DATA: Optional[Dict[str, Dict[str, Optional[str]]]] = None
 _WORKER_REP_BY_RANK_TAXON: Optional[Dict[str, Dict[str, Set[str]]]] = None
 _WORKER_TAXA_BY_PARENT: Optional[Dict[str, Dict[Optional[Tuple[str, str]], Set[str]]]] = None
 _WORKER_PARENT_MAP: Optional[Dict[str, Dict[str, Optional[Tuple[str, str]]]]] = None
@@ -594,18 +544,17 @@ _WORKER_GRAFT_CACHE: Optional[Dict[Tuple[str, str, Optional[Tuple[str, str]]], O
 
 _WORKER_RANK_ORDER: Optional[List[str]] = None
 
-
 # augment_tree_with_polytomies() helper
 def _worker_init(
     tree: Tree,
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+    class_data: Dict[str, Dict[str, Optional[str]]],
     rep_by_rank_taxon: Dict[str, Dict[str, Set[str]]],
     taxa_by_parent: Dict[str, Dict[Optional[Tuple[str, str]], Set[str]]],
     parent_map: Dict[str, Dict[str, Optional[Tuple[str, str]]]],
     rank_order: Optional[List[str]] = None,
 ) -> None:
     global _WORKER_TREE
-    global _WORKER_TAXONOMY
+    global _WORKER_CLASS_DATA
     global _WORKER_REP_BY_RANK_TAXON
     global _WORKER_TAXA_BY_PARENT
     global _WORKER_PARENT_MAP
@@ -615,7 +564,7 @@ def _worker_init(
     global _WORKER_RANK_ORDER
 
     _WORKER_TREE = tree
-    _WORKER_TAXONOMY = taxonomy
+    _WORKER_CLASS_DATA = class_data
     _WORKER_REP_BY_RANK_TAXON = rep_by_rank_taxon
     _WORKER_TAXA_BY_PARENT = taxa_by_parent
     _WORKER_PARENT_MAP = parent_map
@@ -625,12 +574,12 @@ def _worker_init(
     _WORKER_GRAFT_CACHE = {}
 
 # augment_tree_with_polytomies() helper
-def _find_graft_node_path_for_species_worker(
-    species: str,
+def _find_graft_node_path_for_class_worker(
+    cid: str,
 ) -> Tuple[str, Tuple[int, ...]]:
     if (
         _WORKER_TREE is None
-        or _WORKER_TAXONOMY is None
+        or _WORKER_CLASS_DATA is None
         or _WORKER_REP_BY_RANK_TAXON is None
         or _WORKER_TAXA_BY_PARENT is None
         or _WORKER_PARENT_MAP is None
@@ -641,10 +590,10 @@ def _find_graft_node_path_for_species_worker(
     ):
         raise RuntimeError("Worker context not initialized")
 
-    graft_node = find_graft_node_for_species(
+    graft_node = find_graft_node_for_class(
         tree=_WORKER_TREE,
-        species=species,
-        taxonomy=_WORKER_TAXONOMY,
+        cid=cid,
+        class_data=_WORKER_CLASS_DATA,
         rep_by_rank_taxon=_WORKER_REP_BY_RANK_TAXON,
         taxa_by_parent=_WORKER_TAXA_BY_PARENT,
         parent_map=_WORKER_PARENT_MAP,
@@ -652,21 +601,21 @@ def _find_graft_node_path_for_species_worker(
         graft_cache=_WORKER_GRAFT_CACHE,
         rank_order=_WORKER_RANK_ORDER,
     )
-    return species, _WORKER_PATH_BY_CLADE[graft_node]
+    return cid, _WORKER_PATH_BY_CLADE[graft_node]
 
 def augment_tree_with_polytomies(
     tree: Tree,
-    taxonomy: Dict[str, Dict[str, Optional[str]]],
+    class_data: Dict[str, Dict[str, Optional[str]]],
     branch_length: Optional[float] = 0.0,
     n_workers: int = 4,
 ) -> Tree:
     """
-    Add missing species to a phylogenetic tree using taxonomy-guided polytomy insertion.
+    Add missing classes to a phylogenetic tree using class_data-guided polytomy insertion.
 
     Rules:
-    - Search upward through each species' compressed lineage (skip None ranks).
+    - Search upward through each class' compressed lineage (skip None ranks).
     - Use the most specific rank where:
-        * the species' taxon has at least one original-tree representative
+        * the class' taxon has at least one original-tree representative
         * at least one sibling taxon at that rank also has an original-tree representative
     - Graft at the deepest MRCA between represented members of the target taxon
       and represented members of represented sibling taxa.
@@ -674,8 +623,8 @@ def augment_tree_with_polytomies(
     Parameters
     ----------
     tree
-        Bio.Phylo tree with some subset of species already present as leaves.
-    taxonomy
+        Bio.Phylo tree with some subset of classes already present as leaves.
+    class_data
         Mapping like:
             {
                 "A": {
@@ -686,7 +635,7 @@ def augment_tree_with_polytomies(
                 },
                 ...
             }
-        Available ranks are auto-detected from this taxonomy.
+        Available ranks are auto-detected from this class_data.
     branch_length
         Branch length to assign to newly grafted leaves.
     n_workers
@@ -696,29 +645,26 @@ def augment_tree_with_polytomies(
     Returns
     -------
     augmented_tree
-        Augmented tree with missing species added as polytomies.
+        Augmented tree with missing classes added as polytomies.
     """
     tree = deepcopy(tree)
 
-    # Detect available ranks in this taxonomy
-    rank_order = get_available_ranks(taxonomy)
+    rank_order = get_available_ranks(class_data)
 
-    parent_map = get_parent_map_for_species(taxonomy, rank_order)
+    parent_map = get_parent_map_for_classes(class_data, rank_order)
 
-    all_species = set(taxonomy.keys())
-    represented_original = set(get_leaf_names(tree)) & all_species
-    missing_species = sorted(all_species - represented_original)
-    if not missing_species:
+    cids_cd = set(class_data.keys())
+    cids_cd_on_tree = set(get_leaf_names(tree)) & cids_cd
+    cids_missing = sorted(cids_cd - cids_cd_on_tree)
+
+    if not cids_missing:
         return tree
     if n_workers < 1:
         raise ValueError("n_workers must be at least 1")
 
-    # Precompute once: node depths for MRCA scoring (new leaves don't alter original depths)
-    depth_map = tree.depths()
-
-    # Precompute once: for each (rank, taxon) -> set of represented species
+    # Precompute once: for each (rank, taxon) -> set of represented classes
     rep_by_rank_taxon: Dict[str, Dict[str, Set[str]]] = {
-        rank: represented_species_by_taxon(taxonomy, represented_original, rank)
+        rank: represented_classes_by_rank_value(class_data, cids_cd_on_tree, rank)
         for rank in rank_order
     }
 
@@ -726,36 +672,37 @@ def augment_tree_with_polytomies(
     taxa_by_parent: Dict[str, Dict[Optional[Tuple[str, str]], Set[str]]] = {
         rank: defaultdict(set) for rank in rank_order
     }
-    for sp, row in taxonomy.items():
-        lineage = compress_lineage(row, rank_order)
+    for _, cid_data in class_data.items():
+        lineage = compress_lineage(cid_data, rank_order)
         for i, (rank, taxon) in enumerate(lineage):
             parent: Optional[Tuple[str, str]] = lineage[i - 1] if i > 0 else None
             taxa_by_parent[rank][parent].add(taxon)
 
-    chunksize = max(1, len(missing_species) // max(1, n_workers * 8))
+    chunksize = max(1, len(cids_missing) // max(1, n_workers * 8))
     with ProcessPoolExecutor(
         max_workers=n_workers,
         initializer=_worker_init,
-        initargs=(tree, taxonomy, rep_by_rank_taxon, taxa_by_parent, parent_map, rank_order),
+        initargs=(tree, class_data, rep_by_rank_taxon, taxa_by_parent, parent_map, rank_order),
     ) as executor:
-        for sp, graft_path in executor.map(_find_graft_node_path_for_species_worker, missing_species, chunksize=chunksize):
+        for cid, graft_path in executor.map(_find_graft_node_path_for_class_worker, cids_missing, chunksize=chunksize):
             add_child_as_polytomy(
                 node=_get_clade_by_path(tree, graft_path),
-                species_name=sp,
+                cid=cid,
                 branch_length=branch_length,
             )
 
-    rehome_missing_species_in_represented_genera(
+    rehome_missing_classes_in_represented_higher_rank(
         tree=tree,
-        missing_species=set(missing_species),
-        represented_original=represented_original,
-        taxonomy=taxonomy,
+        cids_missing=set(cids_missing),
+        cids_cd_on_tree=cids_cd_on_tree,
+        class_data=class_data,
         rank_order=rank_order,
     )
 
     return tree
 
 def prune_tree(tree, class_data):
+    tree = deepcopy(tree)
     for tip in tree.get_terminals():
         if tip.name not in class_data.keys():
             tree.prune(target=tip.name)
@@ -763,8 +710,8 @@ def prune_tree(tree, class_data):
 
 def augment_class_data(class_data, tree):
     """
-    Infer taxonomy for species on the tree that are not in class_data,
-    using existing species from the same genus.
+    Infer taxonomy for classes on the tree that are not in class_data,
+    using existing classes from the same genus.
 
     This function works with any set of taxonomic ranks present in class_data
     (e.g., family+subfamily+tribe+genus for Lepid, or just subfamily+genus for Nymph).
@@ -772,48 +719,48 @@ def augment_class_data(class_data, tree):
     Parameters
     ----------
     class_data
-        Dict mapping species ID -> {rank: value, ...}
+        Dict mapping class ID -> {rank: value, ...}
     tree
-        Bio.Phylo tree with terminal nodes named by species ID
+        Bio.Phylo tree with terminal nodes named by class ID
 
     Returns
     -------
     augmented_class_data
-        class_data extended with entries for tree species not originally in it.
+        class_data extended with entries for tree classes not originally in it.
         Each new entry copies all ranks from a representative of the same genus.
     """
     class_data = deepcopy(class_data)
 
-    sids_tree = {tip.name for tip in tree.get_terminals()}
+    cids_tree = {tip.name for tip in tree.get_terminals()}
 
-    sids_cd = set(class_data.keys())
-    genera_sids_cd = set([sid.split("_")[0] for sid in sids_cd])
+    cids_cd = set(class_data.keys())
+    genera_cids_cd = set([cid.split("_")[0] for cid in cids_cd])
 
-    sids_tree_non_cd = sids_tree - sids_cd
-    genera_sids_tree_non_cd = set([sid.split("_")[0] for sid in sids_tree_non_cd])
+    cids_tree_non_cd = cids_tree - cids_cd
+    genera_cids_tree_non_cd = set([cid.split("_")[0] for cid in cids_tree_non_cd])
 
-    genera_in_common = genera_sids_tree_non_cd & genera_sids_cd
+    genera_in_common = genera_cids_tree_non_cd & genera_cids_cd
 
     for genus in genera_in_common:
-        # Get an representative species from this genus that's already in class_data
-        sids_genus = [sid for sid in sids_cd if class_data[sid]["genus"] == genus]
-        if not sids_genus:
+        # Get a representative class from this genus that's already in class_data
+        cids_genus = [cid for cid in cids_cd if class_data[cid]["genus"] == genus]
+        if not cids_genus:
             continue
 
         # Skip ambiguous genera where any non-genus taxonomy rank has
-        # conflicting non-None values across species already in class_data.
+        # conflicting non-None values across classes already in class_data.
         # This keeps us from inferring incorrect ranks for missing tree tips.
         rank_fields = [
             rank
-            for rank in class_data[sids_genus[0]].keys()
+            for rank in class_data[cids_genus[0]].keys()
             if rank not in {"genus", "common_name"}
         ]
         genus_is_ambiguous = False
         for rank in rank_fields:
             values = {
-                class_data[sid].get(rank)
-                for sid in sids_genus
-                if class_data[sid].get(rank) is not None
+                class_data[cid].get(rank)
+                for cid in cids_genus
+                if class_data[cid].get(rank) is not None
             }
             if len(values) > 1:
                 genus_is_ambiguous = True
@@ -822,14 +769,14 @@ def augment_class_data(class_data, tree):
             continue
 
         # Extract available ranks from the representative (only non-None values)
-        representative = class_data[sids_genus[0]]
+        representative = class_data[cids_genus[0]]
         ranks_to_copy = {rank: representative[rank] for rank in representative if rank != "common_name"}
         
-        # Find tree species of this genus not yet in class_data
-        sids_tree_genus = [sid for sid in sids_tree_non_cd if sid.split("_")[0] == genus]
+        # Find tree classes of higher-rank class not yet in class_data
+        cids_tree_genus = [cid for cid in cids_tree_non_cd if cid.split("_")[0] == genus]
 
         # Add each one to class_data with the inferred ranks
-        for sid in sids_tree_genus:
-            class_data[sid] = ranks_to_copy.copy()
+        for cid in cids_tree_genus:
+            class_data[cid] = ranks_to_copy.copy()
 
     return class_data

@@ -14,7 +14,7 @@ from preprocessing.common.phylo import augment_tree_with_polytomies, prune_tree,
 
 
 def build_tree_lepid() -> Tree:
-    tree = Phylo.read(paths["lepid_phylo_tree"], "newick")
+    tree = Phylo.read(paths["lepid_tree_raw"], "newick")
     # heliconius_cydno/heliconius_cydno_alithea is the only instance where subspecies + corresponding species are both in tree, remove subspecies
     tree.prune(target="heliconius_cydno_alithea")
     # convert all subspecies names to species-level names by truncating after the second underscore
@@ -501,13 +501,13 @@ def main():
     tree_nymph = build_tree_nymph()
 
     class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
+
     # class data augmented with sids on trees not in class_data but with genera in class_data (higher ranks wrt genera are known via class_data)
     class_data_aug = augment_class_data(class_data, tree_lepid)
     class_data_aug = augment_class_data(class_data_aug, tree_nymph)
-
     tree_merge = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
-    tree_merge_pruned = prune_tree(tree_merge, class_data_aug)
 
+    tree_merge_pruned = prune_tree(tree_merge, class_data_aug)
     tree_poly = augment_tree_with_polytomies(tree_merge_pruned, class_data_aug)
     tree_poly_pruned = prune_tree(tree_poly, class_data)
 

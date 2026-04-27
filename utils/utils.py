@@ -25,25 +25,19 @@ if CLUSTER == "pace":
     }
 elif CLUSTER == "hpg":
 
-    dpath_group   = Path("/lustre/blue2/arthur.porto-biocosmos")
-    dpath_root    = Path(os.getcwd())
-    dpath_data    = dpath_group / "data"
-    dpath_nymph   = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    dpath_lepid   = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
-    dpath_vlm4bio = dpath_data / "datasets/VLM4Bio"
-    dpath_cub     = dpath_data / "datasets/CUB_200_2011"
+    dpath_group = Path("/lustre/blue2/arthur.porto-biocosmos")
+    dpath_root = Path(os.getcwd())
+    dpath_data = dpath_group / "data"
+    dpath_nymph = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
+    dpath_lepid = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
 
     paths = {
-        "data": dpath_data,
-        "hf_cache": dpath_data / "cache/huggingface/hub",
-        "group": dpath_group,
         "root": dpath_root,
+        "hf_cache": dpath_data / "cache/huggingface/hub",
         "config": dpath_root / "config",
-        "metadata": {
-            "nymph": dpath_root / "metadata/nymph",
-            "lepid": dpath_root / "metadata/lepid",
-            "bryo": dpath_root / "metadata/bryo",
-            "cub": dpath_root / "metadata/cub",
+        "artifacts": dpath_root / "artifacts",
+        "data": {
+            "cub": dpath_root / "data/cub",
         },
         "preproc": {
             "nymph": dpath_root / "preprocessing/nymph",
@@ -51,17 +45,22 @@ elif CLUSTER == "hpg":
             "bryo": dpath_root / "preprocessing/bryo",
             "cub": dpath_root / "preprocessing/cub",
         },
-        "artifacts": dpath_root / "artifacts",
+        "metadata": {
+            "nymph": dpath_root / "metadata/nymph",
+            "lepid": dpath_root / "metadata/lepid",
+            "bryo": dpath_root / "metadata/bryo",
+            "cub": dpath_root / "metadata/cub",
+        },
         "bryo_imgs": dpath_group / "odobon3.gatech/bryo",
-        "nymph_imgs": dpath_nymph / "images",
-        "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
-        "nymph_phylo_tree": dpath_nymph / "metadata/tree_nymphalidae_chazot2021_all.tree",
+        "bryo_tree_raw": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
+        "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
         "lepid_imgs": dpath_lepid / "images",
         "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
         "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
-        "lepid_phylo_tree": dpath_lepid / "metadata/tree_renamed_full.tre",
-        "vlm4bio": dpath_vlm4bio,
-        "cub_metadata_gen": dpath_root / "metadata/cub/gen_metadata.csv", # we can discuss where its generated, but for now here
+        "lepid_tree_raw": dpath_root / "data/lepid/tree_renamed_full.tre",
+        "nymph_imgs": dpath_nymph / "images",
+        "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
+        "nymph_tree_raw": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
     }
 
 def seed_libs(seed, seed_torch=True):

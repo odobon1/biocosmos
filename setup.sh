@@ -13,6 +13,7 @@ echo "========================= CUB metadata generation ========================
 python -m preprocessing.cub.class_data
 python -m preprocessing.cub.phylo
 python -m preprocessing.cub.rank_encs
+python -m preprocessing.cub.splits
 
 echo "===================== Nymphalidae metadata generation ====================="
 python -m preprocessing.nymph.sids2commons

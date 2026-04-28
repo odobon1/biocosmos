@@ -71,7 +71,7 @@ def test_splits_config_accepts_optional_pos_filter() -> None:
     cfg = GenSplitConfig(
         seed=7,
         split_name="split_a",
-        pct_eval=0.2,
+        pct_partition=0.1,
         pct_ood_tol=0.01,
         size_dev=128,
         pos_filter="dorsal",
@@ -87,7 +87,7 @@ def test_splits_config_accepts_optional_ood_family_name() -> None:
     cfg = GenSplitConfig(
         seed=7,
         split_name="split_a",
-        pct_eval=0.2,
+        pct_partition=0.1,
         pct_ood_tol=0.01,
         size_dev=128,
         pos_filter=None,
@@ -104,7 +104,7 @@ def test_splits_config_rejects_unknown_pos_filter() -> None:
         GenSplitConfig(
             seed=7,
             split_name="split_a",
-            pct_eval=0.2,
+            pct_partition=0.1,
             pct_ood_tol=0.01,
             size_dev=128,
             pos_filter="sideways",
@@ -118,7 +118,7 @@ def test_splits_config_rejects_non_positive_size_dev() -> None:
         GenSplitConfig(
             seed=7,
             split_name="split_a",
-            pct_eval=0.2,
+            pct_partition=0.1,
             pct_ood_tol=0.01,
             size_dev=0,
             pos_filter=None,

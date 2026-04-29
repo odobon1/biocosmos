@@ -7,9 +7,8 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 import numpy as np  # type: ignore[import]
 from sklearn.model_selection import train_test_split  # type: ignore[import]
 
+from utils.data import species_to_genus
 
-def sid_to_genus(sid: str) -> str:
-    return sid.split("_")[0]
 
 def truncate_subspecies(s: str) -> str:
     parts = s.split("_", 2)
@@ -20,12 +19,12 @@ def truncate_subspecies(s: str) -> str:
 def build_genus_2_sids(sids):
     genus_2_sids = defaultdict(list)
     for sid in sids:
-        genus = sid_to_genus(sid)
+        genus = species_to_genus(sid)
         genus_2_sids[genus].append(sid)
     return genus_2_sids
 
 def build_n_insts_2_classes_g(sids):
-    genera = [sid_to_genus(sid) for sid in sids]
+    genera = [species_to_genus(sid) for sid in sids]
     count_g = Counter(genera)
     n_insts_2_classes_g = defaultdict(list)
     for genus, count in count_g.items():
@@ -34,6 +33,11 @@ def build_n_insts_2_classes_g(sids):
 
 def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, insts, seed=None):
     rng = random.Random(seed)
+
+    if pct_eval <= 0:
+        raise ValueError(f"pct_eval must be > 0, got {pct_eval}")
+    if n_classes <= 0:
+        raise ValueError(f"n_classes must be > 0, got {n_classes}")
 
     def compute_class_hits(n_draws, n_classes):
         class_hits = [n_draws // n_classes] * n_classes
@@ -49,29 +53,32 @@ def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, 
     n_draws_rem = n_draws
 
     count_min_strat2 = 1 / pct_eval
+    max_count_bucket = max(n_insts_2_classes.keys()) if len(n_insts_2_classes) > 0 else 0
     i = 0
     while True:
         i += 1
         classes_i = list(n_insts_2_classes[i])
-        if not classes_i:
-            continue
+        if classes_i:
+            n_classes_i = len(classes_i)
+            n_instances_i = n_classes_i * i
+            n_draws_i = round(n_instances_i * pct_eval)
 
-        n_classes_i = len(classes_i)
-        n_instances_i = n_classes_i * i
-        n_draws_i = round(n_instances_i * pct_eval)
+            rng.shuffle(classes_i)
+            class_hits = compute_class_hits(n_draws_i, n_classes_i)
 
-        rng.shuffle(classes_i)
-        class_hits = compute_class_hits(n_draws_i, n_classes_i)
+            for idx, k in enumerate(class_hits):
+                c = classes_i[idx]
+                inst_hits = rng.sample(class_2_insts[c], k)
+                insts_eval += inst_hits
 
-        for idx, k in enumerate(class_hits):
-            c = classes_i[idx]
-            inst_hits = rng.sample(class_2_insts[c], k)
-            insts_eval += inst_hits
-
-        n_classes_rem -= n_classes_i
-        n_draws_rem -= n_draws_i
+            n_classes_rem -= n_classes_i
+            n_draws_rem -= n_draws_i
 
         if i >= count_min_strat2 - 1 and (n_draws_rem >= n_classes_rem or n_classes_rem == 0):
+            break
+
+        # Guard against sparse/missing count buckets causing an unbounded loop.
+        if i >= max_count_bucket:
             break
 
     if n_draws_rem > 0 and n_classes_rem > 0:
@@ -132,11 +139,20 @@ def build_ood_partitions(
     n_sids_ood_eval = round(n_sids * pct_eval_eff)
     n_genera = len(genus_2_sids)
 
+    max_tries = getattr(cfg, "ood_max_tries", 10_000)
+    if max_tries <= 0:
+        raise ValueError(f"ood_max_tries must be > 0, got {max_tries}")
+
+    best_split = None
+    best_error_score = (float("inf"), float("inf"))
+    best_abs_error_val = None
+    best_abs_error_test = None
+
     close_enough = False
     i = 0
-    while not close_enough:
+    while not close_enough and i < max_tries:
         i += 1
-        sids_id, sids_ood_val, sids_ood_test = strat_split(
+        sids_id_i, sids_ood_val_i, sids_ood_test_i = strat_split(
             n_classes=n_genera,
             n_draws=n_sids_ood_eval,
             pct_eval=pct_eval_eff,
@@ -146,16 +162,40 @@ def build_ood_partitions(
             seed=cfg.seed + i,
         )
 
-        n_samps_ood_val = sum(n_samps_dict[sid] for sid in sids_ood_val)
-        n_samps_ood_test = sum(n_samps_dict[sid] for sid in sids_ood_test)
+        n_samps_ood_val = sum(n_samps_dict[sid] for sid in sids_ood_val_i)
+        n_samps_ood_test = sum(n_samps_dict[sid] for sid in sids_ood_test_i)
 
         pct_samps_ood_val = n_samps_ood_val / n_samps_target
         pct_samps_ood_test = n_samps_ood_test / n_samps_target
+
+        abs_error_val = abs((cfg.pct_partition) - pct_samps_ood_val)
+        abs_error_test = abs((cfg.pct_partition) - pct_samps_ood_test)
+
+        # Minimize the worst partition error first, then sum as tie-breaker.
+        error_score = (max(abs_error_val, abs_error_test), abs_error_val + abs_error_test)
+        if error_score < best_error_score:
+            best_error_score = error_score
+            best_split = (sids_id_i, sids_ood_val_i, sids_ood_test_i)
+            best_abs_error_val = abs_error_val
+            best_abs_error_test = abs_error_test
 
         close_enough = (
             abs((cfg.pct_partition) - pct_samps_ood_val) < cfg.pct_ood_tol
             and abs((cfg.pct_partition) - pct_samps_ood_test) < cfg.pct_ood_tol
         )
+
+    if best_split is None:
+        raise RuntimeError("Failed to construct any OOD split candidate.")
+
+    if not close_enough:
+        print(
+            "Warning: OOD split tolerance was not met after "
+            f"{max_tries} attempts. Using best candidate with "
+            f"abs_error_val={best_abs_error_val:.6f}, abs_error_test={best_abs_error_test:.6f}, "
+            f"target={cfg.pct_partition:.6f}, tol={cfg.pct_ood_tol:.6f}."
+        )
+
+    sids_id, sids_ood_val, sids_ood_test = best_split
 
     skeys_ood_val = set()
     for sid in sids_ood_val:
@@ -307,15 +347,14 @@ def build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id):
     return id_eval_nshot
 
 def build_class_counts_train(data_indexes):
-    sid_2_class_enc = {}
-    index_class_encs = []
-    for sid in data_indexes["train"]["sids"]:
-        if sid not in sid_2_class_enc:
-            sid_2_class_enc[sid] = len(sid_2_class_enc)
-        index_class_encs.append(sid_2_class_enc[sid])
-
-    n_classes = len(sid_2_class_enc)
-    class_counts_train = np.bincount(index_class_encs, minlength=n_classes)
+    cid2enc = {}
+    index_encs = []
+    for cid in [datum["cid"] for datum in data_indexes["train"]]:
+        if cid not in cid2enc:
+            cid2enc[cid] = len(cid2enc)
+        index_encs.append(cid2enc[cid])
+    n_classes = len(cid2enc)
+    class_counts_train = np.bincount(index_encs, minlength=n_classes)
     return class_counts_train
 
 def build_dev_skeys_partitions(skeys_partitions, size_dev):

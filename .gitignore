@@ -32,7 +32,6 @@ preprocessing/nymph/intermediaries/*
 preprocessing/lepid/intermediaries/*
 !preprocessing/lepid/intermediaries/.gitkeep
 
-temp/
 .codex
 temp_lr_explorer.ipynb
 temp_phylo.ipynb

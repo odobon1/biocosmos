@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Tuple, Set
 from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
+from utils.data import species_to_genus
+
 import pdb
 
 
@@ -734,10 +736,10 @@ def augment_class_data(class_data, tree):
     cids_tree = {tip.name for tip in tree.get_terminals()}
 
     cids_cd = set(class_data.keys())
-    genera_cids_cd = set([cid.split("_")[0] for cid in cids_cd])
+    genera_cids_cd = set([species_to_genus(cid) for cid in cids_cd])
 
     cids_tree_non_cd = cids_tree - cids_cd
-    genera_cids_tree_non_cd = set([cid.split("_")[0] for cid in cids_tree_non_cd])
+    genera_cids_tree_non_cd = set([species_to_genus(cid) for cid in cids_tree_non_cd])
 
     genera_in_common = genera_cids_tree_non_cd & genera_cids_cd
 

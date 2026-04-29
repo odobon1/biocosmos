@@ -98,7 +98,7 @@ class ArtifactManager:
         # save full text combo-templates themselves and not just the names
         text_template_full = {}
         for split_name, text_template in metadata["text_template"].items():
-            text_template_full[split_name] = get_text_template(text_template)
+            text_template_full[split_name] = get_text_template(text_template, dataset=metadata["dataset"])
         metadata["text_template"] = text_template_full
 
         clean_metadata(metadata)
@@ -173,16 +173,6 @@ def plot_metrics(
             if key.startswith(f"{bucket_partition_name}_") and key.endswith("_comp")
         ]
 
-    plot_partition_metrics(
-        data,
-        x,
-        dpath_trial,
-        partition_names,
-        fontsize_axes,
-        fontsize_ticks,
-        fontsize_legend,
-        subplot_border_width,
-    )
     plot_composite_metrics(
         data,
         x,
@@ -270,11 +260,27 @@ def plot_composite_metrics(
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
 
     ax0 = fig.add_subplot(gs[0, 0])
-    for partition_name in partition_names:
-        ax0.plot(x, data[f"{partition_name}_map"], label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))]))
-    ax0.plot(x, data["i2i_map"], label="I2I", color="#B22222")
-    ax0.plot(x, data["comp_map"], label="All", color="black", linewidth=2)
-    ax0.set_ylabel("mAP Composites", fontsize=fontsize_axes, fontweight="bold")
+
+    id_partition_name = next((name for name in partition_names if name.startswith("id")), None)
+    ood_partition_name = next((name for name in partition_names if name.startswith("ood")), None)
+    retrieval_specs = (
+        ("i2t_map", "I2T", "blue"),
+        ("i2i_map", "I2I", "red"),
+        ("t2i_map", "T2I", "green"),
+    )
+    style_specs = (
+        (id_partition_name, "ID", "-"),
+        (ood_partition_name, "OOD", "--"),
+    )
+    for partition_name, partition_label, linestyle in style_specs:
+        if partition_name is None:
+            continue
+        for metric_name, metric_label, color in retrieval_specs:
+            key = f"{partition_name}_{metric_name}"
+            if key in data:
+                ax0.plot(x, data[key], label=f"{partition_label} {metric_label}", color=color, linestyle=linestyle)
+
+    ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
     ax0.legend(loc="lower right", fontsize=fontsize_legend)
     ax0.grid(True)
@@ -283,8 +289,8 @@ def plot_composite_metrics(
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
     if bucket_comp_keys:
         for key in bucket_comp_keys:
-            label = key.removeprefix(f"{bucket_partition_name}_").removesuffix("_comp").upper()
-            maybe_plot(ax1, x, data, key, f"({label})-shot", linestyle=":")
+            label = key.removeprefix(f"{bucket_partition_name}_").removesuffix("_comp")
+            maybe_plot(ax1, x, data, key, label, linestyle=":")
         ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
@@ -344,7 +350,7 @@ def plot_composite_metrics(
     fig.suptitle("Train Metrics: Composite", fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    fig.savefig(dpath_trial / "plots" / "train_metrics_composite.png")
+    fig.savefig(dpath_trial / "plots/train_metrics.png")
     plt.close(fig)
 
 def maybe_plot(ax, x, data, key, label, **kwargs):

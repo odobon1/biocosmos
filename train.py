@@ -23,7 +23,7 @@ from utils.utils import (
     PrintLog,
 )
 from models import VLMWrapper
-from utils.data import spawn_dataloader, spawn_partition_indexes
+from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import ValidationPipeline
 from utils.config import get_config_train
 from utils.train import ArtifactManager, plot_metrics
@@ -188,12 +188,8 @@ class TrainPipeline:
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
-        index_data, _ = spawn_partition_indexes(
-            config=self.cfg,
-            partition_name="train",
-        )
-
-        text_template_train = get_text_template(self.cfg.text_template["train"])
+        index_data, _ = spawn_partition_data(config=self.cfg, partition_name="train")
+        text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
         self.dataloader, _ = spawn_dataloader(
             index_data=index_data,
             text_template=text_template_train,
@@ -205,7 +201,7 @@ class TrainPipeline:
             persistent_workers=self.cfg.hw.persistent_workers_train,
         )
 
-        text_template_val = get_text_template(self.cfg.text_template["valid"])
+        text_template_val = get_text_template(self.cfg.text_template["valid"], dataset=self.cfg.dataset)
         self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val)
 
         if self.gpu_rank == 0:
@@ -215,6 +211,7 @@ class TrainPipeline:
         self.lr_warmup   = self.cfg.opt["lr"]["warmup"]
         self.samps_seen  = 0
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
+        self.logged_train_text = False
 
     def init_opt_and_lr_sched(self):
 
@@ -276,6 +273,7 @@ class TrainPipeline:
                 data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
                 data_tracker.update(scores_val)
                 PrintLog.eval(scores_val, self.val_pipe, header="Base")
+                PrintLog.texts_eval(self.val_pipe.get_eval_texts())
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()
@@ -310,8 +308,9 @@ class TrainPipeline:
                 for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
 
-                    if self.gpu_rank == 0 and idx_batch == 0:
+                    if self.gpu_rank == 0 and idx_epoch == 1 and idx_batch == 0 and not self.logged_train_text:
                         PrintLog.texts(texts_sb)
+                        self.logged_train_text = True
 
                     imgs_sb = imgs_sb.to(self.cfg.device, non_blocking=True)
                     class_encs_sb = class_encs_sb.to(self.cfg.device)

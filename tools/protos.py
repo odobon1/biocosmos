@@ -36,7 +36,7 @@ config_eval = get_config_eval(verbose=(gpu_rank==0))
 modelw = VLMWrapper.build(config_eval, verbose=(gpu_rank==0))
 modelw.model = modelw.model.to(device).eval()
 
-fpath_imgs = paths["nymph_imgs"]
+fpath_imgs = paths["imgs"]["nymph"]
 
 protos = {"id": {}, "ood": {}}
 

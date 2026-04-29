@@ -18,7 +18,7 @@ def get_sids_nymph():
                 return True
         return False
 
-    sids = sorted(os.listdir(paths["nymph_imgs"]))
+    sids = sorted(os.listdir(paths["imgs"]["nymph"]))
 
     sids_known = []
 

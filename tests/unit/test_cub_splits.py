@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from preprocessing.cub.splits import (
-    _build_classdir_to_sid,
+    _build_classdir_to_cid,
     _build_img_ptrs,
     _build_skeys_from_rfpaths,
     _choose_ood_val_sids,
@@ -27,7 +27,7 @@ def _make_class_data(*entries):
 
 
 def _rfpaths_for(class_dir, n):
-    return [f"images/{class_dir}/img_{i:04d}.jpg" for i in range(n)]
+    return [f"{class_dir}/img_{i:04d}.jpg" for i in range(n)]
 
 
 def _make_class_data_and_rfpaths(entries):
@@ -58,14 +58,14 @@ def _cfg(pct_partition=0.1, pct_ood_tol=0.005, seed=42):
 
 # ─── _normalize_cub_rfpath ───────────────────────────────────────────────────
 
-def test_normalize_cub_rfpath_already_clean():
-    rfpath = "images/001.Black_footed_Albatross/img_001.jpg"
-    assert _normalize_cub_rfpath(rfpath) == rfpath
+def test_normalize_cub_rfpath_raises_on_already_clean_path_without_images_prefix():
+    with pytest.raises(ValueError, match="Could not parse CUB rfpath"):
+        _normalize_cub_rfpath("001.Black_footed_Albatross/img_001.jpg")
 
 
 def test_normalize_cub_rfpath_strips_leading_prefix():
     raw = "/some/long/prefix/images/001.Black_footed_Albatross/img_001.jpg"
-    assert _normalize_cub_rfpath(raw) == "images/001.Black_footed_Albatross/img_001.jpg"
+    assert _normalize_cub_rfpath(raw) == "001.Black_footed_Albatross/img_001.jpg"
 
 
 def test_normalize_cub_rfpath_raises_when_images_segment_is_absent():
@@ -73,26 +73,26 @@ def test_normalize_cub_rfpath_raises_when_images_segment_is_absent():
         _normalize_cub_rfpath("/no/IMGS/prefix/here.jpg")
 
 
-# ─── _build_classdir_to_sid ──────────────────────────────────────────────────
+# ─── _build_classdir_to_cid ──────────────────────────────────────────────────
 
-def test_build_classdir_to_sid_maps_each_class_dir_to_its_species():
+def test_build_classdir_to_cid_maps_each_class_dir_to_its_cid():
     class_data = _make_class_data(
         ("albatross", "001.Black_footed_Albatross", "diomedea_nigripes"),
         ("laysan", "002.Laysan_Albatross", "phoebastria_immutabilis"),
     )
-    result = _build_classdir_to_sid(class_data)
+    result = _build_classdir_to_cid(class_data)
 
-    assert result["001.Black_footed_Albatross"] == "diomedea_nigripes"
-    assert result["002.Laysan_Albatross"] == "phoebastria_immutabilis"
+    assert result["001.Black_footed_Albatross"] == "albatross"
+    assert result["002.Laysan_Albatross"] == "laysan"
     assert len(result) == 2
 
 
-def test_build_classdir_to_sid_raises_on_rdpath_without_images_prefix():
+def test_build_classdir_to_cid_raises_on_rdpath_without_images_prefix():
     class_data = {
         "bad_cid": {"rdpath_imgs": "no_images_prefix/class_dir", "species": "some_sp"}
     }
     with pytest.raises(ValueError, match="Invalid rdpath_imgs"):
-        _build_classdir_to_sid(class_data)
+        _build_classdir_to_cid(class_data)
 
 
 # ─── _build_img_ptrs ─────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ def test_build_img_ptrs_skey_values_are_unique():
 
 def test_build_img_ptrs_raises_on_bad_rfpath_format():
     class_data = _make_class_data(("cid", "001.Albatross", "some_species"))
-    bad_rfpaths = ["images/only_two_parts.jpg"]  # only 2 path segments → ValueError
+    bad_rfpaths = ["only_one_part.jpg"]  # only 1 path segment → ValueError
 
     with pytest.raises(ValueError, match="Unexpected CUB rfpath format"):
         _build_img_ptrs(bad_rfpaths, class_data)
@@ -141,7 +141,7 @@ def test_build_img_ptrs_raises_on_bad_rfpath_format():
 
 def test_build_img_ptrs_raises_on_unknown_class_dir():
     class_data = _make_class_data(("cid", "001.Albatross", "some_species"))
-    rfpaths = ["images/999.UnknownClass/img_0001.jpg"]
+    rfpaths = ["999.UnknownClass/img_0001.jpg"]
 
     with pytest.raises(KeyError, match="missing from class_data mapping"):
         _build_img_ptrs(rfpaths, class_data)
@@ -151,8 +151,8 @@ def test_build_img_ptrs_raises_on_unknown_class_dir():
 
 def test_build_skeys_from_rfpaths_returns_correct_skeys():
     rfpath_2_skey = {
-        "images/001.Cls/img_0.jpg": ("sid_a", 0),
-        "images/001.Cls/img_1.jpg": ("sid_a", 1),
+        "001.Cls/img_0.jpg": ("sid_a", 0),
+        "001.Cls/img_1.jpg": ("sid_a", 1),
     }
     result = _build_skeys_from_rfpaths(list(rfpath_2_skey.keys()), rfpath_2_skey, "test")
 
@@ -160,18 +160,18 @@ def test_build_skeys_from_rfpaths_returns_correct_skeys():
 
 
 def test_build_skeys_from_rfpaths_raises_on_unknown_rfpath():
-    rfpath_2_skey = {"images/001.Cls/img_0.jpg": ("sid_a", 0)}
+    rfpath_2_skey = {"001.Cls/img_0.jpg": ("sid_a", 0)}
 
     with pytest.raises(KeyError, match="not found in global lookup"):
-        _build_skeys_from_rfpaths(["images/MISSING/img.jpg"], rfpath_2_skey, "test")
+        _build_skeys_from_rfpaths(["MISSING/img.jpg"], rfpath_2_skey, "test")
 
 
 def test_build_skeys_from_rfpaths_raises_on_duplicate_rfpaths():
-    rfpath_2_skey = {"images/001.Cls/img_0.jpg": ("sid_a", 0)}
+    rfpath_2_skey = {"001.Cls/img_0.jpg": ("sid_a", 0)}
 
     with pytest.raises(ValueError, match="Duplicate rfpaths detected"):
         _build_skeys_from_rfpaths(
-            ["images/001.Cls/img_0.jpg", "images/001.Cls/img_0.jpg"],
+            ["001.Cls/img_0.jpg", "001.Cls/img_0.jpg"],
             rfpath_2_skey,
             "test",
         )

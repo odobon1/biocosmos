@@ -20,7 +20,7 @@ def get_sids_lepid():
     }
     
     for family in sids.keys():
-        for sid in os.listdir(paths["lepid_imgs"] / family):
+        for sid in os.listdir(paths["imgs"]["lepid"] / family):
             sid = truncate_subspecies(sid)
             sids[family].add(sid)
 

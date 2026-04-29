@@ -8,6 +8,8 @@ import json
 from typing import List, Any, Dict, Optional
 import math
 
+from utils.text import get_text_template as get_dataset_text_template
+
 import pdb
 
 
@@ -39,26 +41,29 @@ elif CLUSTER == "hpg":
         "data": {
             "cub": dpath_root / "data/cub",
         },
+        "imgs":{
+            "bryo": dpath_group / "odobon3.gatech/bryo",
+            "cub": dpath_root / "data/cub/CUB_200_2011/images",
+            "lepid": dpath_lepid / "images",
+            "nymph": dpath_nymph / "images",
+        },
         "preproc": {
-            "nymph": dpath_root / "preprocessing/nymph",
-            "lepid": dpath_root / "preprocessing/lepid",
             "bryo": dpath_root / "preprocessing/bryo",
             "cub": dpath_root / "preprocessing/cub",
+            "lepid": dpath_root / "preprocessing/lepid",
+            "nymph": dpath_root / "preprocessing/nymph",
         },
         "metadata": {
-            "nymph": dpath_root / "metadata/nymph",
-            "lepid": dpath_root / "metadata/lepid",
             "bryo": dpath_root / "metadata/bryo",
             "cub": dpath_root / "metadata/cub",
+            "lepid": dpath_root / "metadata/lepid",
+            "nymph": dpath_root / "metadata/nymph",
         },
-        "bryo_imgs": dpath_group / "odobon3.gatech/bryo",
         "bryo_tree_raw": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
         "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
-        "lepid_imgs": dpath_lepid / "images",
         "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
         "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
         "lepid_tree_raw": dpath_root / "data/lepid/tree_renamed_full.tre",
-        "nymph_imgs": dpath_nymph / "images",
         "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
         "nymph_tree_raw": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
     }
@@ -96,38 +101,8 @@ def load_split(split_name, dataset="nymph"):
     split = load_pickle(paths["metadata"][dataset] / f"splits/{split_name}/split.pkl")
     return split
 
-def get_text_template(text_template_type):
-
-    TEXT_TEMPLATE_BIOCLIP_SCI = [["a photo of $SCI$"]]  # scientific name, BioCLIP-style prepending
-
-    COMBO_TEMPS_TRAIN = [
-        [
-            "",
-            "a photo of ",
-        ],
-        [
-            "",
-            "$AAN$ ",  # OpenAI CLIP-style prepending
-        ],
-        [
-            "$SCI$",
-            "$TAX$",
-            "$COM$",
-        ],
-        [
-            "",
-            " butterfly",
-        ],
-        # [
-        #     "",
-        #     "$POS$",
-        # ],
-    ]
-
-    if text_template_type == "train":
-        return COMBO_TEMPS_TRAIN
-    elif text_template_type == "bioclip_sci":
-        return TEXT_TEMPLATE_BIOCLIP_SCI
+def get_text_template(text_template_type, dataset=None):
+    return get_dataset_text_template(text_template_type, dataset=dataset)
     
 class RunningMean:
     """
@@ -160,10 +135,13 @@ class PrintLog:
     log_epoch = None
     log_init  = None
     log_text  = None
+    log_text_eval = None
+    wrote_text_eval = False
 
     @staticmethod
     def create_logs(dpath_logs):
         PrintLog.logging = True
+        PrintLog.wrote_text_eval = False
         dpath_batch_logs = dpath_logs / "batch"
         dpath_batch_logs.mkdir(parents=True, exist_ok=True)
         PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
@@ -172,12 +150,27 @@ class PrintLog:
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_init  = open(dpath_logs / "init.log",  "a", buffering=1)
         PrintLog.log_text  = open(dpath_logs / "text.log",  "a", buffering=1)
+        PrintLog.log_text_eval = open(dpath_logs / "text_eval.log",  "a", buffering=1)
 
     @staticmethod
     def texts(texts_sb):
         text_printout = "\n".join(texts_sb)
         if PrintLog.logging:
             PrintLog.log_text.write(text_printout)
+
+    @staticmethod
+    def texts_eval(texts_by_partition):
+        if not PrintLog.logging or PrintLog.wrote_text_eval:
+            return
+
+        lines = []
+        for partition_name, texts in texts_by_partition.items():
+            lines.append(f"[{partition_name}]")
+            lines.extend(texts)
+            lines.append("")
+
+        PrintLog.log_text_eval.write("\n".join(lines))
+        PrintLog.wrote_text_eval = True
 
     @staticmethod
     def epoch_header(idx_epoch):
@@ -536,6 +529,7 @@ class PrintLog:
         PrintLog.log_epoch.close()
         PrintLog.log_init.close()
         PrintLog.log_text.close()
+        PrintLog.log_text_eval.close()
 
 def get_subdirectory_names(dir_path):
     return [p.name for p in Path(dir_path).iterdir() if p.is_dir()]

@@ -5,12 +5,12 @@ import torch.distributed as dist  # type: ignore[import]
 from PIL import Image  # type: ignore[import]
 import tqdm  # type: ignore[import]
 import numpy as np  # type: ignore[import]
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Dict, List, Callable, Union, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Tuple, Union
 
+from utils.text import get_text_generator
 from utils.utils import paths, load_pickle, load_split, shuffle_list
 from utils.config import EvalConfig
 
@@ -19,7 +19,7 @@ import pdb
 
 @dataclass
 class Split:
-    data_indexes: dict
+    data_indexes: list
     id_eval_nshot: dict
     class_counts_train: np.ndarray
 
@@ -104,31 +104,31 @@ class ImageTextDataset(Dataset):
         img_pp, 
         config,
     ):
-        
-        self.index_class_encs = index_data["class_encs"]
-        self.index_rfpaths = index_data["rfpaths"]
-        self.index_sids = index_data["sids"]
-        self.index_pos = index_data["pos"]
-        self.index_sex = index_data["sex"]
+        self.index_data = index_data
         self.text_template = text_template
         self.img_pp = img_pp
         self.cached_imgs = config.hw.cached_imgs
         self.dataset = config.dataset
+        self.text_generator = get_text_generator(self.dataset)
 
-        self.n_samples = len(self.index_class_encs)
+        self.n_samples = len(self.index_data)
 
         self.time_cache = None  # need to pass this var to metadata save
         if self.cached_imgs in ("pl", "pp"):
             time_start = time.time()
 
             def load_pp_img(rfpath):
-                img = Image.open(paths[f"{self.dataset}_imgs"] / rfpath).convert("RGB")
+                img = Image.open(paths["imgs"][self.dataset] / rfpath).convert("RGB")
                 return img if self.cached_imgs == "pl" else img_pp(img)
 
             # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
             self.imgs_mem = []
             with ThreadPoolExecutor(max_workers=config.n_workers) as exe:
-                for img in tqdm.tqdm(exe.map(load_pp_img, self.index_rfpaths), total=len(self.index_rfpaths), desc="Caching Images"):
+                for img in tqdm.tqdm(
+                    exe.map(load_pp_img, [datum["rfpath"] for datum in self.index_data]), 
+                    total=self.n_samples, 
+                    desc="Caching Images"
+                ):
                     self.imgs_mem.append(img)
 
             time_end        = time.time()
@@ -137,6 +137,16 @@ class ImageTextDataset(Dataset):
 
         self.class_data = load_pickle(paths["metadata"][self.dataset] / "class_data.pkl")
         self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
+
+        self.missing_class_data_cids = {
+            datum["cid"] for datum in self.index_data if datum["cid"] not in self.class_data
+        }
+        if self.missing_class_data_cids:
+            print(
+                "WARNING: Missing class_data for "
+                f"{len(self.missing_class_data_cids)} class ids in dataset rows; "
+                "using cid-based fallback metadata."
+            )
 
     def __len__(self):
         return self.n_samples
@@ -157,21 +167,24 @@ class ImageTextDataset(Dataset):
         - [int]
         - [str]
         """
-        class_enc = self.index_class_encs[idx]
-        sid = self.index_sids[idx]
-        pos = self.index_pos[idx]
-        sex = self.index_sex[idx]
+        class_enc = self.index_data[idx]["class_enc"]
+        cid = self.index_data[idx]["cid"]
+        meta = self.index_data[idx]["meta"]
 
         rank_encs = []
-        class_data_sid = self.class_data[sid]
-        for rank_name, rank_map in self.rank_encs.items():
-            if rank_name == "species":
-                rank_value = sid
-            else:
-                rank_value = class_data_sid[rank_name]
-            rank_encs.append(rank_map[rank_value])
+        class_data_cid = self.class_data.get(cid)
+        if class_data_cid is None:
+            class_data_cid = {
+                "species": cid,
+                "genus": cid,
+                "common_name": None,
+            }
 
-        text = gen_text(sid, self.text_template, pos, sex, common_name=class_data_sid["common_name"])
+        for rank_name, rank_map in self.rank_encs.items():
+            rank_value = class_data_cid.get(rank_name)
+            rank_encs.append(rank_map.get(rank_value, -1))
+
+        text = self.text_generator.generate(class_data_cid, self.text_template, meta)
 
         if self.cached_imgs == "pp":
             img_t = self.imgs_mem[idx]
@@ -180,15 +193,14 @@ class ImageTextDataset(Dataset):
             img_t = self.img_pp(img)
         else:
             # load + preprocess image
-            img = Image.open(paths[f"{self.dataset}_imgs"] / self.index_rfpaths[idx]).convert("RGB")
+            img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
             img_t = self.img_pp(img)
 
         targ_data = {
             "class_enc": class_enc,
             "rank_encs": rank_encs,
-            "sid": sid,
-            "pos": pos,
-            "sex": sex,
+            "cid": cid,
+            "meta": meta,
             "dataset": self.dataset,
         }
 
@@ -206,35 +218,17 @@ def collate_fn(subbatch):
 
     return imgs_sb, texts_sb, class_encs_sb, targ_data_sb
 
-def assemble_indexes(data_index):
-    """
-    overall, this functionality needs to be moved to split gen
-    """
-    index_rfpaths = data_index["rfpaths"]
-    index_sids    = data_index["sids"]
-    index_pos     = data_index["pos"]
-    index_sex     = data_index["sex"]
+def build_cid2enc(index_data):
+    cid2enc = {}
+    for datum in index_data:
+        cid = datum["cid"]
+        class_enc = datum["class_enc"]
+        if cid in cid2enc and cid2enc[cid] != class_enc:
+            raise ValueError(f"Inconsistent class_enc for cid '{cid}' in partition rows")
+        cid2enc[cid] = class_enc
+    return cid2enc
 
-    sid_2_class_enc  = {}
-    class_enc_new    = 0
-    index_class_encs = []
-    for sid in index_sids:
-        if sid not in sid_2_class_enc.keys():
-            sid_2_class_enc[sid] = class_enc_new
-            class_enc_new += 1
-        index_class_encs.append(sid_2_class_enc[sid])
-
-    index_data = {
-        "class_encs": index_class_encs,
-        "rfpaths":    index_rfpaths,
-        "sids":       index_sids,
-        "pos":        index_pos,
-        "sex":        index_sex,
-    }
-
-    return index_data, sid_2_class_enc
-
-def spawn_partition_indexes(config: EvalConfig, partition_name: str):
+def spawn_partition_data(config: EvalConfig, partition_name: str):
     """
 
     Args:
@@ -242,30 +236,49 @@ def spawn_partition_indexes(config: EvalConfig, partition_name: str):
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
     split = load_split(config.split_name, dataset=config.dataset)
-
     if partition_name == "train":
-        data_index = split.data_indexes["train"]
+        index_data = split.data_indexes["train"]
     else:
-        data_index = split.data_indexes[config.eval_type][partition_name]
+        index_data = split.data_indexes[config.eval_type][partition_name]
+    cid2enc = build_cid2enc(index_data)
+    return index_data, cid2enc
 
-    return assemble_indexes(data_index)
-
-def spawn_partition_indexes_txts(sid_2_class_enc, text_template):
+def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
     """
     
     Args:
-    - sid_2_class_enc --- [dict(sid --> class enc)] --- generated by spawn_partition_indexes()
+    - cid2enc --- [dict(cid --> class enc)] --- generated by spawn_partition_data()
     """
 
-    index_text_sids       = list(sid_2_class_enc.keys())
-    index_text_class_encs = list(sid_2_class_enc.values())
+    index_text_cids = list(cid2enc.keys())
+    index_text_class_encs = list(cid2enc.values())
+    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
+    text_generator = get_text_generator(dataset)
 
-    index_text = [gen_text(sid, text_template) for sid in index_text_sids]
+    index_text = []
+    missing_cids = []
+    for cid in index_text_cids:
+        class_data_cid = class_data.get(cid)
+        if class_data_cid is None:
+            missing_cids.append(cid)
+            class_data_cid = {
+                "species": cid,
+                "genus": cid,
+                "common_name": None,
+            }
+        index_text.append(text_generator.generate(class_data_cid, text_template))
+
+    if missing_cids:
+        print(
+            "WARNING: Missing class_data for "
+            f"{len(missing_cids)}/{len(index_text_cids)} class ids while generating text indexes; "
+            "using cid fallback text for missing entries."
+        )
 
     return index_text, torch.tensor(index_text_class_encs)
 
 def spawn_dataloader(
-    index_data: Dict[str, List[Union[int, str]]],
+    index_data: List[Dict[str, Union[int, str]]],
     text_template: List[List[str]],
     config,
     shuffle: bool,
@@ -277,9 +290,7 @@ def spawn_dataloader(
     """
 
     Args:
-    - index_data ------ Data indexes: Class encodings, relative filepaths to images, species ID's, position data, sex
-                        data (note: cleanup on aisle 5 needed with the assembly of class_encs at runtime, should be 
-                        in split gen)
+    - index_data ------ Data indexes: Class encodings, relative filepaths to images, species ID's, position, sex
     - text_template --- List of text prepending selections that are randomly picked from to assemble train texts
     - config ---------- contains 1. batch_size (int), 2. cached_imgs (bool) ~ whether to cache images in memory, 
                         3. n_workers (int) ~ Parallelism, 4. prefetch_factor (int) ~ How many batches each worker 
@@ -296,18 +307,38 @@ def spawn_dataloader(
 
     # conditionally use D/V sampling only when a config flag is set (so eval still uses the normal behaviour)
     if use_dv_sampler:
+        index_pos = []
+        n_invalid_pos = 0
+        for datum in dataset.index_data:
+            meta = datum.get("meta")
+            pos = meta.get("pos") if isinstance(meta, Mapping) else None
+            index_pos.append(pos)
+            if pos not in ("dorsal", "ventral"):
+                n_invalid_pos += 1
+
+        # D/V batching requires every sample to carry a valid "dorsal"/"ventral" tag.
+        # If unavailable (e.g., bryo/cub), fallback to the standard distributed sampler.
+        use_dv_sampler = n_invalid_pos == 0
+        if not use_dv_sampler:
+            print(
+                "WARNING: dv_batching=True but "
+                f"{n_invalid_pos}/{len(index_pos)} samples have missing/invalid meta.pos; "
+                "falling back to standard distributed sampling."
+            )
+
+    if use_dv_sampler:
         batch_sampler = DorsalVentralBatchSampler(
-            index_pos =dataset.index_pos,
+            index_pos=index_pos,
             batch_size=config.batch_size,
-            seed      =config.seed,
+            seed=config.seed,
         )
         dataloader = DataLoader(
             dataset,
-            batch_sampler     =batch_sampler,
-            num_workers       =config.n_workers,
-            pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
-            prefetch_factor   =config.prefetch_factor,
-            collate_fn        =collate_fn,
+            batch_sampler=batch_sampler,
+            num_workers=config.n_workers,
+            pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
+            prefetch_factor=config.prefetch_factor,
+            collate_fn=collate_fn,
             persistent_workers=persistent_workers,
         )
     else:
@@ -331,51 +362,16 @@ def spawn_dataloader(
 
     return dataloader, dataset.time_cache
 
-def gen_text(sid, combo_temp, pos=None, sex=None, common_name=None):
+def gen_text(
+    class_data_cid: Mapping[str, Any],
+    combo_temp,
+    dataset: str,
+    meta: Mapping[str, Any] | None = None,
+):
+    return get_text_generator(dataset).generate(class_data_cid, combo_temp, meta)
 
-    text_sci = sid.replace("_", " ")
-    text_tax = "animalia arthropoda insecta lepidoptera nymphalidae " + text_sci
-
-    prompt = ""
-
-    for combo_seg in reversed(combo_temp):  # iterate through combo segments in reversed order
-
-        seg = random.choice(combo_seg)
-
-        if "$COM$" in seg:
-            if common_name is not None:
-                seg = seg.replace("$COM$", common_name)
-            else:
-                if random.choice((True, False)):
-                    seg = seg.replace("$COM$", "$SCI$")
-                else:
-                    seg = seg.replace("$COM$", "$TAX$")
-        if "$SCI$" in seg:
-            seg = seg.replace("$SCI$", text_sci)
-        if "$TAX$" in seg:
-            seg = seg.replace("$TAX$", text_tax)
-
-        if "$SEX$" in seg:
-            if sex is None:
-                seg = seg.replace("$SEX$", "")
-            else:
-                seg = seg.replace("$SEX$", f"{sex} ")
-
-        if "$POS$" in seg:
-            seg = seg.replace("$POS$", f", {pos} view")
-
-        if "$AAN$" in seg:
-            if prompt[0] in ["a", "e", "i", "o", "u"]:
-                seg = seg.replace("$AAN$", "an")
-            else:
-                seg = seg.replace("$AAN$", "a")
-
-        prompt = seg + prompt  # select random prepending from prepending-category, prepend to text
-
-    return prompt
-
-def sid_to_genus(sid: str) -> str:
-    return sid.split("_")[0]
+def species_to_genus(species: str) -> str:
+    return species.split("_")[0]
 
 def truncate_subspecies(s: str) -> str:
     parts = s.split("_", 2)

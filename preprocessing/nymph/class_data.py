@@ -9,6 +9,7 @@ class_data = {
     sid: {
         "subfamily": "<subfamily>",
         "genus": "<genus>",
+        "species": "<species>",
         "common_name": "<common_name>",
     },
     ...
@@ -45,6 +46,7 @@ def generate_class_data() -> None:
         class_data[sid] = {
             "subfamily": subfamily,
             "genus": sid.split("_")[0],
+            "species": sid,
             "common_name": sids2commons[sid],
         }
 

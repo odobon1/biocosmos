@@ -11,10 +11,8 @@ import pdb
 
 
 def get_tree(dataset: str) -> Tree:
-    if dataset == "nymph":
-        tree = load_pickle(paths["metadata"]["nymph"] / "tree.pkl")
-    elif dataset == "lepid":
-        tree = load_pickle(paths["metadata"]["lepid"] / "tree.pkl")
+    if dataset in ("bryo", "cub", "lepid", "nymph"):
+        tree = load_pickle(paths["metadata"][dataset] / "tree.pkl")
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
     return tree
@@ -40,6 +38,7 @@ class PhyloVCV:
 
         self._sids:       List[str]      = sorted(list(self._sid_to_clade.keys()))
         self._sid_to_idx: Dict[str, int] = {sid: i for i, sid in enumerate(self._sids)}
+        self._warned_missing_sids: set[str] = set()
 
         vcv = self.build_vcv_matrix()
 
@@ -90,7 +89,31 @@ class PhyloVCV:
         return float(np.clip(self.corr[i, j], 0.0, 1.0))
 
     def get_targs_batch(self, targ_data_b) -> torch.Tensor:
-        sids_b = [td["sid"] for td in targ_data_b]
-        idxs_b = [self._sid_to_idx[s] for s in sids_b]
-        targs  = self.corr[np.ix_(idxs_b, idxs_b)]
+        sids_b = [td["cid"] for td in targ_data_b]
+        B = len(sids_b)
+
+        known_pos = [i for i, sid in enumerate(sids_b) if sid in self._sid_to_idx]
+        missing_sids = {sid for sid in sids_b if sid not in self._sid_to_idx}
+
+        missing_new = sorted(missing_sids - self._warned_missing_sids)
+        if missing_new:
+            self._warned_missing_sids.update(missing_new)
+            print(
+                "WARNING: "
+                f"{len(missing_new)} class ids in batch missing from phylo tree; "
+                "using fallback phylo targets for missing ids."
+            )
+
+        targs = np.zeros((B, B), dtype=np.float64)
+
+        if known_pos:
+            known_idxs = [self._sid_to_idx[sids_b[i]] for i in known_pos]
+            targs_known = self.corr[np.ix_(known_idxs, known_idxs)]
+            targs[np.ix_(known_pos, known_pos)] = targs_known
+
+        # Fallback: samples with the same cid should remain fully positive.
+        sids_arr = np.asarray(sids_b, dtype=object)
+        same_sid_mask = sids_arr[:, None] == sids_arr[None, :]
+        targs[same_sid_mask] = 1.0
+
         return torch.from_numpy(targs).float()

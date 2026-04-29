@@ -7,12 +7,13 @@ from types import SimpleNamespace
 
 import pytest  # type: ignore[import]
 
-from preprocessing.bryo.splits_utils import (
-    build_data_indexes_bryo,
-    build_ood_skeys,
-    split_ood_genera_val_test,
+from preprocessing.bryo.splits_utils import build_data_indexes_bryo
+from preprocessing.common.splits import (
+    build_genus_2_sids,
+    build_id_partitions,
+    build_n_insts_2_classes_g,
+    build_ood_partitions,
 )
-from preprocessing.common.splits import build_id_partitions
 
 
 def _make_img_ptrs(genera_n_samps: dict[str, int]) -> dict:
@@ -24,33 +25,41 @@ def _make_img_ptrs(genera_n_samps: dict[str, int]) -> dict:
 
 @pytest.mark.integration
 def test_bryo_split_partitions_do_not_overlap() -> None:
-    # 6 ID genera (varying sample counts) + 4 OOD genera
     genera_n_samps = {
         "genA": 20, "genB": 15, "genC": 10, "genD": 8, "genE": 5, "genF": 3,
-        "oodX": 12, "oodY": 9, "oodZ": 7, "oodW": 4,
+        "genX": 12, "genY": 9, "genZ": 7, "genW": 4,
     }
-    genera_ood = {"oodX", "oodY", "oodZ", "oodW"}
-    genera_id = set(genera_n_samps) - genera_ood
 
     img_ptrs_all = _make_img_ptrs(genera_n_samps)
 
+    sids = sorted(genera_n_samps)
     sid_2_samp_idxs = {
         sid: list(sorted(img_ptrs_all[sid].keys()))
-        for sid in sorted(genera_n_samps)
+        for sid in sids
     }
     n_samps_dict = {sid: len(idxs) for sid, idxs in sid_2_samp_idxs.items()}
-    n_samps_dict_id = {sid: n_samps_dict[sid] for sid in genera_id}
 
-    cfg = SimpleNamespace(seed=42, pct_partition=0.1, pct_eval=0.2, nst_names=["1-4", "5+"], nst_seps=[4])
+    cfg = SimpleNamespace(
+        seed=42, pct_partition=0.1, pct_eval=0.2, pct_ood_tol=0.15,
+        nst_names=["1-4", "5+"], nst_seps=[4], size_dev=5,
+    )
 
-    genera_ood_val, genera_ood_test = split_ood_genera_val_test(genera_ood, n_samps_dict, cfg.seed)
-    skeys_ood_val = build_ood_skeys(genera_ood_val, sid_2_samp_idxs)
-    skeys_ood_test = build_ood_skeys(genera_ood_test, sid_2_samp_idxs)
+    genus_2_sids = build_genus_2_sids(sids)
+    n_insts_2_classes_g = build_n_insts_2_classes_g(sids)
+
+    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = build_ood_partitions(
+        n_insts_2_classes_g,
+        genus_2_sids,
+        set(sids),
+        sid_2_samp_idxs,
+        n_samps_dict,
+        cfg,
+    )
 
     skeys_train, skeys_id_val, skeys_id_test, _, _, _ = build_id_partitions(
-        genera_id,
+        sids_id,
         sid_2_samp_idxs,
-        n_samps_dict_id,
+        n_samps_dict,
         cfg,
     )
 
@@ -77,7 +86,7 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     }
 
     skeys_by_partition = {
-        name: set(zip(part["sids"], part["rfpaths"]))
+        name: {(datum["cid"], datum["rfpath"]) for datum in part}
         for name, part in partitions.items()
     }
 
@@ -85,5 +94,16 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
         overlap = skeys_by_partition[name_a] & skeys_by_partition[name_b]
         assert not overlap, (
             f"Overlap found between '{name_a}' and '{name_b}': "
-            f"{len(overlap)} shared (sid, rfpath) pairs."
+            f"{len(overlap)} shared (cid, rfpath) pairs."
         )
+
+    n_total = sum(len(v) for v in skeys_partitions.values())
+    pct_id_val = len(skeys_partitions["id_val"]) / n_total
+    pct_id_test = len(skeys_partitions["id_test"]) / n_total
+    pct_ood_val = len(skeys_partitions["ood_val"]) / n_total
+    pct_ood_test = len(skeys_partitions["ood_test"]) / n_total
+
+    assert abs(pct_id_val - cfg.pct_partition) < cfg.pct_ood_tol
+    assert abs(pct_id_test - cfg.pct_partition) < cfg.pct_ood_tol
+    assert abs(pct_ood_val - cfg.pct_partition) < cfg.pct_ood_tol
+    assert abs(pct_ood_test - cfg.pct_partition) < cfg.pct_ood_tol

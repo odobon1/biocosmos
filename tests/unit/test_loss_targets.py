@@ -68,6 +68,6 @@ def test_compute_targs_tax_uses_rank_distances() -> None:
 def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     loss_mod = import_loss_module()
 
-    targs = loss_mod.compute_targs_phylo([{"sid": "a"}, {"sid": "b"}])
+    targs = loss_mod.compute_targs_phylo([{"cid": "a"}, {"cid": "b"}])
 
     assert torch.equal(targs, torch.full((2, 2), 0.25))

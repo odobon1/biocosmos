@@ -7,7 +7,7 @@ from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 from collections import defaultdict
 import math
 
-from utils.data import spawn_dataloader, spawn_partition_indexes, spawn_partition_indexes_txts
+from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
 from utils.utils import load_split
 
@@ -46,17 +46,18 @@ class SplitPartitionEvalPipeline:
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
                "text_template: each inner list must contain exactly one element for eval"
 
-        index_data, sid_2_class_enc = spawn_partition_indexes(
+        index_data, cid2enc = spawn_partition_data(
             config=config,
             partition_name=partition_name,
         )
 
         self.index_data = index_data
-        self.sid_2_class_enc = sid_2_class_enc
+        self.cid2enc = cid2enc
 
         self.index_text, self.index_text_class_encs = spawn_partition_indexes_txts(
-            sid_2_class_enc=sid_2_class_enc,
+            cid2enc=cid2enc,
             text_template=text_template,
+            dataset=config.dataset,
         )
 
         self.dataloader, self.time_cache = spawn_dataloader(
@@ -81,7 +82,7 @@ class SplitPartitionEvalPipeline:
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 split_name=config.split_name,
                 dataset=config.dataset,
-                sid_2_class_enc=self.sid_2_class_enc,
+                cid2enc=self.cid2enc,
             )
         else:
             self.nshot_bucket_names = []
@@ -222,11 +223,19 @@ class SplitPartitionEvalPipeline:
             )
 
             for bucket_name in self.nshot_bucket_names:
-                bucket_comp = (
-                    bucket_i2t_map[bucket_name]
-                    + bucket_i2i_map[bucket_name]
-                    + bucket_t2i_map[bucket_name]
-                ) / 3.0
+                bucket_vals = []
+                for bucket_scores in (bucket_i2t_map, bucket_i2i_map, bucket_t2i_map):
+                    val = bucket_scores.get(bucket_name)
+                    if val is None or (isinstance(val, float) and math.isnan(val)):
+                        continue
+                    bucket_vals.append(val)
+
+                # Some splits may not contain classes for every n-shot bucket.
+                # Skip empty buckets instead of raising due to missing keys.
+                if not bucket_vals:
+                    continue
+
+                bucket_comp = sum(bucket_vals) / len(bucket_vals)
                 eval_scores[f"{bucket_name}_comp"] = bucket_comp
 
         return eval_scores
@@ -430,6 +439,12 @@ class ValidationPipeline:
         time_caches = [pipe.time_cache for pipe in self.partition_pipes.values() if pipe.time_cache is not None]
         self.time_cache = None if not time_caches else sum(time_caches)
 
+    def get_eval_texts(self) -> Dict[str, List[str]]:
+        return {
+            partition_name: list(self.partition_pipes[partition_name].index_text)
+            for partition_name in self.partition_names
+        }
+
     def run_validation(
         self, 
         modelw: Any, 
@@ -484,7 +499,7 @@ class ValidationPipeline:
 def build_class_enc_to_train_nshot_bucket(
     split_name: str,
     dataset: str,
-    sid_2_class_enc: Dict[str, int],
+    cid2enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
     Build class_enc -> bucket_name using ID-val bucket memberships.
@@ -496,13 +511,13 @@ def build_class_enc_to_train_nshot_bucket(
     for bucket_name in split.id_eval_nshot["names"]:
         skeys_id_val = split.id_eval_nshot["buckets"][bucket_name]["id_val"]
 
-        for sid, _ in skeys_id_val:
+        for cid, _ in skeys_id_val:
             # Some split variants (e.g., dev subsets) intentionally omit many classes
             # from train; skip n-shot entries that are absent in current class encoding map.
-            if sid not in sid_2_class_enc:
+            if cid not in cid2enc:
                 continue
 
-            class_enc = sid_2_class_enc[sid]
+            class_enc = cid2enc[cid]
 
             if class_enc in class_enc_to_bucket and class_enc_to_bucket[class_enc] != bucket_name:
                 raise ValueError(

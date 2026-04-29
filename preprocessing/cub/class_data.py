@@ -13,7 +13,6 @@ class_data = {
         "species": "<species>",
         "common_name": "<common_name>",
         "rdpath_imgs" : "<image_path>",
-        "split": "<test, train, or val>",
     },
     ...
 }
@@ -49,17 +48,6 @@ COMMON_NAME_CORRECTIONS = {
     "Wilson Warbler": "Wilson's Warbler",
 }
 
-SKIP_NAMES = {
-    "Sayornis",
-    "Geococcyx" # we can decide this
-}
-
-SPLITS_FILES = {
-    "test": "testclasses.txt",
-    "train": "trainclasses1.txt",
-    "val": "valclasses1.txt"
-}
-
 INAT_GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
 
 
@@ -87,8 +75,6 @@ def build_df_class_data(df_common_names: pd.DataFrame) -> tuple[pd.DataFrame, li
 
     for i in tqdm(range(len(common_names)), desc="Querying GBIF"):
         cname, clname = common_names[i], class_names[i]
-        # if cname in SKIP_NAMES: # skipping names which point to genus-level (i.e. have multiple species)
-        #     continue
         queried_name = COMMON_NAME_CORRECTIONS.get(cname, cname)
         result = query_gbif(queried_name, INAT_GBIF_BACKBONE)
         # if any of the results are None, query general GBIF API
@@ -132,26 +118,15 @@ def query_gbif(common_name: str,  dataset_key: str|None = None) -> dict:
         }
     return {"order": None, "family": None, "genus": None, "species": None}
 
-def assign_split(df_class_data: pd.DataFrame, txt_path: str, split: str) -> pd.DataFrame:
-    """Assign a split label to rows in df whose class_name appears in the txt file."""
-    with open(txt_path, 'r') as f:
-        classes = [line.strip() for line in f.readlines()]
-    
-    mask = df_class_data['class_name'].isin(classes)
-    df_class_data.loc[mask, 'split'] = split
-    
-    return df_class_data
-
 def generate_class_data(df_class_data: pd.DataFrame) -> None:
     class_data = {}
     for _, row in df_class_data.iterrows():
-        order = row['order'].lower()
-        family = row['family'].lower()
-        genus = row['genus'].lower()
+        order = row["order"].lower()
+        family = row["family"].lower()
+        genus = row["genus"].lower()
         species = f"{genus}_{row['species'].lower()}"
-        common_name = row['common_name'].lower().replace(" ", "_")
+        common_name = row["common_name"].lower().replace(" ", "_")
         rdpath_imgs = f"images/{row['class_name']}"
-        split = row['split']
 
         cid = common_name
 
@@ -162,7 +137,6 @@ def generate_class_data(df_class_data: pd.DataFrame) -> None:
             "species": species,
             "common_name": common_name,
             "rdpath_imgs": rdpath_imgs,
-            "split": split,
         }
     save_pickle(class_data, paths["metadata"]["cub"] / "class_data.pkl")
 
@@ -175,13 +149,8 @@ def main() -> None:
     if len(failed): 
         print("There are some failed datasets")    
 
-    for split in ['train', 'val', 'test']:
-        txt_path = paths["data"]["cub"] / "xlsa17/data/CUB" / SPLITS_FILES[split]
-        assign_split(df_class_data, txt_path, split)
-
     generate_class_data(df_class_data)
-
-    print("Class data complete")
+    print("Class data complete!")
 
 
 if __name__ == "__main__":

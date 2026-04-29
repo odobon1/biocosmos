@@ -20,7 +20,7 @@ def main():
     if config_eval.loss2["mix"] != 0.0:
         modelw.set_class_wts(config_eval, secondary=True)
 
-    text_template = get_text_template(config_eval.text_template)
+    text_template = get_text_template(config_eval.text_template, dataset=config_eval.dataset)
     val_pipe = ValidationPipeline(config_eval, text_template, modelw.img_pp_val)
 
     scores_val, _, _, _ = val_pipe.run_validation(modelw)

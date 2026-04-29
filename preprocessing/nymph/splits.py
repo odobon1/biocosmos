@@ -114,26 +114,12 @@ def build_splits():
     print("Generating data indexes...")
     data_indexes = build_data_indexes(sids, skeys_partitions)
     data_indexes_dev = build_data_indexes(sids, skeys_partitions_dev)
-    if cfg.pos_filter is not None:
-        partition_indexes = {
-            "train": data_indexes["train"],
-            "validation/id": data_indexes["validation"]["id"],
-            "validation/ood": data_indexes["validation"]["ood"],
-            "test/id": data_indexes["test"]["id"],
-            "test/ood": data_indexes["test"]["ood"],
-        }
-        for partition_name, data_index in partition_indexes.items():
-            invalid_pos = sorted({pos for pos in data_index["pos"] if pos != cfg.pos_filter})
-            if invalid_pos:
-                raise ValueError(
-                    f"Partition '{partition_name}' contains positions outside pos_filter={cfg.pos_filter!r}: {invalid_pos}"
-                )
     print("Data indexes complete!")
 
     # CLASS COUNTS (FOR CLASS IMBALANCE)
 
     print("Generating class counts for train partition...")
-    # class_counts_train = Counter(data_indexes["train"]["sids"])
+    # class_counts_train = Counter([datum["cid"] for datum in data_indexes["train"]])
     class_counts_train = build_class_counts_train(data_indexes)
     class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")

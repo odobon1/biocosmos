@@ -1,27 +1,28 @@
-
-
 """
 python -m preprocessing.bryo.splits
 """
 
+from utils.utils import paths, seed_libs
+from utils.config import get_config_splits
 from preprocessing.common.splits import (
-    build_class_counts_train,
-    build_id_eval_nshot,
+    build_genus_2_sids,
+    build_n_insts_2_classes_g,
+    build_ood_partitions,
     build_id_partitions,
+    build_id_eval_nshot,
+    build_class_counts_train,
     build_dev_skeys_partitions,
+    save_split,
+    generate_ood_distribution_plots,
     generate_id_distribution_plots,
     generate_n_shot_table,
-    save_split,
 )
 from preprocessing.bryo.splits_utils import (
     build_data_indexes_bryo,
     build_img_ptrs_bryo,
-    build_ood_skeys,
     generate_split_stats_table_bryo,
-    split_ood_genera_val_test,
 )
-from utils.config import get_config_splits
-from utils.utils import get_subdirectory_names, load_pickle, paths, seed_libs
+from utils.phylo import PhyloVCV
 
 
 DATASET = "bryo"
@@ -36,64 +37,53 @@ def build_splits() -> None:
     dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
-    class_data = load_pickle(paths["metadata"][DATASET] / "class_data.pkl")
+    pvcv = PhyloVCV(dataset=DATASET)
+    sids = pvcv.get_sids()  # genera for bryo
 
-    genera_imgs = set(get_subdirectory_names(paths["bryo_imgs"]))
-    genera_cd = set(class_data.keys())
-    genera_ood = genera_imgs - genera_cd
-    if not genera_ood:
-        raise ValueError("genera_ood is empty from genera_imgs - genera_cd; cannot build OOD split.")
+    img_ptrs_all = build_img_ptrs_bryo(sids)
 
-    img_ptrs_all = build_img_ptrs_bryo(sorted(genera_imgs))
+    sids_dropped = [sid for sid in sorted(sids) if sid not in img_ptrs_all or len(img_ptrs_all[sid]) == 0]
+    if sids_dropped:
+        print(f"Dropping {len(sids_dropped)} genera with no images: {sids_dropped}")
 
-    genera_available = {
-        genus
-        for genus, ptrs in img_ptrs_all.items()
-        if len(ptrs) > 0
-    }
-    if not genera_available:
-        raise ValueError("No Bryo .jpg images were found for any configured genus.")
+    sids = [sid for sid in sorted(sids) if sid in img_ptrs_all and len(img_ptrs_all[sid]) > 0]
+    n_sids = len(sids)
+    if not sids:
+        raise ValueError("No genera with images found.")
 
-    genera_ood = genera_ood.intersection(genera_available)
-    if not genera_ood:
-        raise ValueError("OOD genus pool is empty after filtering to genera with .jpg images.")
+    sid_2_samp_idxs = {sid: list(sorted(img_ptrs_all[sid].keys())) for sid in sids}
+    n_samps_dict = {sid: len(sid_2_samp_idxs[sid]) for sid in sids}
 
-    genera_id = genera_available - genera_ood
-    if not genera_id:
-        raise ValueError("No ID genera remain after assigning OOD genera.")
+    genus_2_sids = build_genus_2_sids(sids)
+    n_insts_2_classes_g = build_n_insts_2_classes_g(sids)
 
-    sid_2_samp_idxs = {
-        sid: list(sorted(img_ptrs_all[sid].keys()))
-        for sid in sorted(genera_available)
-    }
-    n_samps_dict = {
-        sid: len(sid_2_samp_idxs[sid])
-        for sid in sorted(genera_available)
-    }
-    n_samps_dict_id = {
-        sid: n_samps_dict[sid]
-        for sid in sorted(genera_id)
-    }
+    # OOD PARTITIONS
 
-    print("Constructing fixed OOD partitions from configured genera...")
-    genera_ood_val, genera_ood_test = split_ood_genera_val_test(genera_ood, n_samps_dict, cfg.seed)
-    skeys_ood_val = build_ood_skeys(genera_ood_val, sid_2_samp_idxs)
-    skeys_ood_test = build_ood_skeys(genera_ood_test, sid_2_samp_idxs)
-    if len(skeys_ood_val) == 0 or len(skeys_ood_test) == 0:
-        raise ValueError(
-            "OOD split generation produced an empty partition. "
-            "Check configured OOD genera and available .jpg files."
-        )
+    print("Constructing OOD partitions...")
+    sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = build_ood_partitions(
+        n_insts_2_classes_g,
+        genus_2_sids,
+        set(sids),
+        sid_2_samp_idxs,
+        n_samps_dict,
+        cfg,
+    )
     print("OOD partitions complete!")
+
+    # ID PARTITIONS
+
+    n_samps_dict_id = {sid: n_samps_dict[sid] for sid in sorted(sids_id)}
 
     print("Constructing ID partitions...")
     skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis = build_id_partitions(
-        set(genera_id),
+        sids_id,
         sid_2_samp_idxs,
-        n_samps_dict_id,
+        n_samps_dict,
         cfg,
     )
     print("ID partitions complete!")
+
+    # PARTITION SKEYS (SAMPLE-KEYS)
 
     skeys_partitions = {
         "train": skeys_train,
@@ -104,19 +94,27 @@ def build_splits() -> None:
     }
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
+    # N-SHOT TRACKING
+
     print("Constructing n-shot tracking structures...")
-    id_eval_nshot = build_id_eval_nshot(cfg, set(genera_id), skeys_partitions, sid_2_skeys_id)
+    id_eval_nshot = build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id)
     print("n-shot tracking complete!")
 
+    # GENERATE DATA INDEXES
+
     print("Generating data indexes...")
-    data_indexes = build_data_indexes_bryo(sorted(genera_available), skeys_partitions, img_ptrs=img_ptrs_all)
-    data_indexes_dev = build_data_indexes_bryo(sorted(genera_available), skeys_partitions_dev, img_ptrs=img_ptrs_all)
+    data_indexes = build_data_indexes_bryo(sids, skeys_partitions, img_ptrs=img_ptrs_all)
+    data_indexes_dev = build_data_indexes_bryo(sids, skeys_partitions_dev, img_ptrs=img_ptrs_all)
     print("Data indexes complete!")
+
+    # CLASS COUNTS (FOR CLASS IMBALANCE)
 
     print("Generating class counts for train partition...")
     class_counts_train = build_class_counts_train(data_indexes)
     class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
+
+    # SAVE SPLIT
 
     print("Saving split...")
     save_split(
@@ -135,6 +133,20 @@ def build_splits() -> None:
     )
     print("Primary and dev splits saved!")
 
+    # OOD DISTRIBUTION PLOTTING
+
+    print("Generating OOD distribution plots...")
+    generate_ood_distribution_plots(
+        genus_2_sids,
+        sids_id,
+        sids_ood_val,
+        sids_ood_test,
+        dpath_figs,
+    )
+    print("OOD distribution plots complete!")
+
+    # ID DISTRIBUTION PLOTTING (singletons omitted)
+
     print("Generating ID distribution plots...")
     generate_id_distribution_plots(
         sids_id_multis,
@@ -145,21 +157,24 @@ def build_splits() -> None:
     )
     print("ID distribution plots complete!")
 
+    # SPLIT STATS TABLE
+
     print("Generating split stats table...")
     generate_split_stats_table_bryo(
-        set(genera_id),
-        genera_ood_val,
-        genera_ood_test,
+        sids_id,
+        sids_ood_val,
+        sids_ood_test,
         skeys_partitions,
         dpath_figs,
-        len(genera_available),
+        n_sids,
     )
     print("Split stats table complete!")
+
+    # N-SHOT TRACKING STATS TABLE
 
     print("Generating n-shot tracking stats table...")
     generate_n_shot_table(id_eval_nshot, dpath_figs)
     print("n-shot tracking table complete!")
-
 
 def main() -> None:
     print("Generating split...")

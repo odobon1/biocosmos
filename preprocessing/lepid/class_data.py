@@ -11,6 +11,7 @@ class_data = {
         "subfamily": "<subfamily>",
         "tribe": "<tribe>",
         "genus": "<genus>",
+        "species": "<species>",
         "common_name": "<common_name>",
     },
     ...
@@ -63,6 +64,7 @@ def generate_class_data() -> None:
                     "subfamily": subfamily,
                     "tribe": tribe,
                     "genus": genus,
+                    "species": sid,
                     "common_name": sids2commons[sid],
                 }
 

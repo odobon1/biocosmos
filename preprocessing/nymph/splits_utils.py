@@ -12,7 +12,7 @@ def build_img_ptrs(sids):
     for sid in tqdm(sorted(sids)):
         img_ptrs[sid] = {}
 
-        dpath_imgs_sid = paths["nymph_imgs"] / sid
+        dpath_imgs_sid = paths["imgs"]["nymph"] / sid
         ffpaths_png = sorted(glob.glob(f"{dpath_imgs_sid}/*.png"))
         rfpaths_png = [png_file.split("images/", 1)[1] for png_file in ffpaths_png]
 
@@ -64,19 +64,27 @@ def build_data_indexes(sids, skeys_partitions):
     metadata_lookup = df_metadata.set_index("mask_name")[["class_dv", "sex"]]
 
     def build_partition_index(partition_name):
-        data_index = {
-            "sids": [],
-            "rfpaths": [],
-        }
+        data_index = []
+        cid2enc = {}
+        for cid, samp_idx in sorted(skeys_partitions[partition_name]):
+            if cid not in cid2enc:
+                cid2enc[cid] = len(cid2enc)
 
-        for sid, samp_idx in sorted(skeys_partitions[partition_name]):
-            data_index["sids"].append(sid)
-            data_index["rfpaths"].append(img_ptrs[sid][samp_idx])
-
-        fname_imgs = [rfpath.split("/")[1] for rfpath in data_index["rfpaths"]]
-        metadata_rows = metadata_lookup.reindex(fname_imgs).astype(object).where(lambda x: x.notna(), None)
-        data_index["pos"] = metadata_rows["class_dv"].tolist()
-        data_index["sex"] = metadata_rows["sex"].tolist()
+            rfpath = img_ptrs[cid][samp_idx]
+            fname = rfpath.split("/")[-1]
+            pos = metadata_lookup["class_dv"].get(fname)
+            sex = metadata_lookup["sex"].get(fname)
+            data_index.append(
+                {
+                    "cid": cid,
+                    "class_enc": cid2enc[cid],
+                    "rfpath": rfpath,
+                    "meta": {
+                        "pos": None if pd.isna(pos) else pos,
+                        "sex": None if pd.isna(sex) else sex,
+                    },
+                }
+            )
         return data_index
 
     return {
@@ -117,7 +125,7 @@ def generate_split_stats_table(
     n_skeys_id_val = len(skeys_partitions["id_val"])
     n_skeys_id_test = len(skeys_partitions["id_test"])
 
-    labels_cols = ["Set", "Num. Species", "Num. Samples"]
+    labels_cols = ["Set", "Num. Classes", "Num. Samples"]
     data = [
         ["Train", f"{n_sids_id:,} ({n_sids_id / n_sids:.2%})", f"{n_skeys_train:,} ({n_skeys_train / n_samps_total:.2%})"],
         ["ID Val", f"{n_sids_id_val:,} ({n_sids_id_val / n_sids:.2%})", f"{n_skeys_id_val:,} ({n_skeys_id_val / n_samps_total:.2%})"],

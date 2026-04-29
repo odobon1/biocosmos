@@ -165,7 +165,7 @@ python -m preprocessing.lepid.splits
 - `metadata/lepid/splits/dev/split.pkl`
 - `metadata/lepid/splits/dev/figures/*`
 
-This is configured via `config/splits.yaml`. The `ood_family_name` must be set to designate a held-out family for OOD evaluation. The split process is otherwise analogous to the Nymphalidae split (sparse + standard stratified splitting).
+This is configured via `config/splits.yaml`. Lepid now follows the same standard split setup as Nymph: ID plus OOD-species partitions for validation/test (no separate OOD-family or OOD-genus partitions).
 
 
 ## Generate Rank Encodings

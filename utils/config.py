@@ -37,8 +37,8 @@ class TrainConfig:
 
     def __post_init__(self):
 
-        if self.dataset not in ("nymph", "lepid"):
-            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{nymph, lepid}}")
+        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
@@ -168,8 +168,8 @@ class EvalConfig:
     hw: dict = field(init=False, default_factory=dict)
     
     def __post_init__(self):
-        if self.dataset not in ("nymph", "lepid"):
-            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{nymph, lepid}}")
+        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(

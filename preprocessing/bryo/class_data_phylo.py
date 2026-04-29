@@ -10,6 +10,29 @@ from pathlib import Path
 import requests  # type: ignore[import]
 
 from utils.utils import paths, save_pickle, get_subdirectory_names
+from preprocessing.common.phylo import augment_class_data, prune_tree, augment_tree_with_polytomies
+
+import pdb
+
+
+MISSING_GENUS_2_FAMILY = {
+    "aetea": "aeteidae",
+    "bracebridgia": "adeonidae",
+    "cellepora": "celleporidae",
+    "chaperia": "chaperiidae",
+    "conescharellina": "conescharellinidae",
+    "dibunostoma": "thalamoporellidae",
+    "gemellipora": "pasytheidae",
+    "hincksina": "flustridae",
+    "hippoporina": "bitectiporidae",
+    "malakosaria": "calwelliidae",
+    "micropora": "microporidae",
+    "monoporella": "monoporellidae",
+    "schizoretepora": "phidoloporidae",
+    "terminocella": "catenicellidae",
+    "tetraplaria": "tetraplariidae",
+    "tubiporella": "didymosellidae",
+}
 
 
 def build_tree_bryo() -> Tree:
@@ -62,7 +85,13 @@ def group_by_genus(species_names):
 def build_class_data(genera_imgs, g2s):
     class_data = {}
     for g in tqdm(genera_imgs):
-        if g in g2s.keys():
+        if g in MISSING_GENUS_2_FAMILY.keys():
+            class_data[g] = {
+                "family": MISSING_GENUS_2_FAMILY[g],
+                "genus": g,
+                "common_name": None,
+            }
+        elif g in g2s.keys():
             for s in g2s[g]:
                 tax = sci2tax(s)
                 if tax is not None:
@@ -128,7 +157,7 @@ def sci2tax(
 
     return tax
 
-def prune_tree(tree, class_data):
+def prune_rename_tree(tree, class_data):
     genera_seen = set()
     for tip in tree.get_terminals():
         genus = tip.name.split("_", 1)[0]
@@ -143,18 +172,19 @@ def main():
     print("Building class data and tree...")
 
     tree = build_tree_bryo()
-    sids_tree = [tip.name for tip in tree.get_terminals()]
-    g2s = group_by_genus(sids_tree)  # genus --> [sids] mapping (species names used to grab tax info from GBIF)
+    cids_tree = [tip.name for tip in tree.get_terminals()]
+    g2s = group_by_genus(cids_tree)  # genus --> [species] mapping (species names used to grab tax info from GBIF)
 
-    genera_imgs = get_subdirectory_names(paths["bryo_imgs"])
+    genera_imgs = get_subdirectory_names(paths["imgs"]["bryo"])
     class_data = build_class_data(genera_imgs, g2s)
 
-    tree = prune_tree(tree, class_data)
+    tree = prune_rename_tree(tree, class_data)
+    tree = augment_tree_with_polytomies(tree, class_data)
 
     save_pickle(class_data, paths["metadata"]["bryo"] / "class_data.pkl")
     save_pickle(tree, paths["metadata"]["bryo"] / "tree.pkl")
 
-    print("Class data and tree complete")
+    print("Class data and tree complete!")
 
 
 if __name__ == "__main__":

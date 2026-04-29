@@ -14,7 +14,7 @@ import random
 
 from models import VLMWrapper
 from utils.config import get_config_eval
-from utils.data import spawn_dataloader, spawn_partition_indexes, sid_to_genus
+from utils.data import spawn_dataloader, spawn_partition_data, species_to_genus
 from utils.utils import paths, get_text_template
 
 def get_embs_and_labels(modelw, dataloader, device, mixed_prec):
@@ -41,9 +41,9 @@ def get_embs_and_labels(modelw, dataloader, device, mixed_prec):
             
             embs_all.append(embs_img_b.cpu().numpy())
             for item in targ_data_b:
-                sid = item['sid']
+                sid = item["cid"]
                 sids_all.append(sid)
-                genera_all.append(sid_to_genus(sid))
+                genera_all.append(species_to_genus(sid))
 
     embs_all = np.concatenate(embs_all, axis=0)
 
@@ -110,8 +110,8 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.close()
 
 def get_dataloader(cfg, partition_name, modelw):
-    text_template = get_text_template(cfg.text_template)
-    index_data, _ = spawn_partition_indexes(config=cfg, partition_name=partition_name)
+    text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
+    index_data, _ = spawn_partition_data(config=cfg, partition_name=partition_name)
     dataloader, _ = spawn_dataloader(
         index_data=index_data,
         text_template=text_template,

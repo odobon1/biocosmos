@@ -19,8 +19,6 @@ from preprocessing.common.splits import (
 from preprocessing.lepid.splits_utils import (
     build_data_indexes_lepid,
     build_img_ptrs_lepid,
-    build_ood_family_partitions,
-    build_ood_genus_partitions,
     build_sid_2_samp_idxs_lepid,
     generate_ood_distribution_plots_lepid,
     generate_split_stats_table_lepid,
@@ -39,9 +37,6 @@ def build_splits():
     dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
-
-    if cfg.ood_family_name is None:
-        raise ValueError("config.splits.ood_family_name must be set for Lepid split generation")
 
     print("Loading phylogenetic covariance structure...")
     pvcv = PhyloVCV(dataset=DATASET)
@@ -82,42 +77,17 @@ def build_splits():
         for sid in sids
     }
     n_samps_dict = {sid: len(sid_2_samp_idxs[sid]) for sid in sids}
-    n_samps_total_all = sum(n_samps_dict.values())
-
-    print("Constructing OOD family partitions...")
-    sids_after_family, _, _, skeys_ood_family_val, skeys_ood_family_test = build_ood_family_partitions(
-        sids,
-        sid_2_family,
-        sid_2_samp_idxs,
-        cfg,
-    )
-    print("OOD family partitions complete!")
-
-    print("Constructing OOD genus partitions...")
-    n_samps_dict_after_family = {sid: n_samps_dict[sid] for sid in sids_after_family}
-    sids_after_genus, sids_ood_genus_val, sids_ood_genus_test, skeys_ood_genus_val, skeys_ood_genus_test = build_ood_genus_partitions(
-        sids_after_family,
-        sid_2_family,
-        sid_2_samp_idxs,
-        n_samps_dict_after_family,
-        cfg,
-        n_samps_total_target=n_samps_total_all,
-    )
-    print("OOD genus partitions complete!")
-
-    genus_2_sids = build_genus_2_sids(sids_after_genus)
-    n_insts_2_classes_g = build_n_insts_2_classes_g(sids_after_genus)
+    genus_2_sids = build_genus_2_sids(sids)
+    n_insts_2_classes_g = build_n_insts_2_classes_g(sids)
 
     print("Constructing OOD species partitions...")
-    n_samps_dict_after_genus = {sid: n_samps_dict[sid] for sid in sids_after_genus}
     sids_id, sids_ood_val, sids_ood_test, skeys_ood_val, skeys_ood_test = build_ood_partitions(
         n_insts_2_classes_g,
         genus_2_sids,
-        set(sids_after_genus),
+        set(sids),
         sid_2_samp_idxs,
-        n_samps_dict_after_genus,
+        n_samps_dict,
         cfg,
-        n_samps_total_target=n_samps_total_all,
     )
     print("OOD species partitions complete!")
 
@@ -125,9 +95,8 @@ def build_splits():
     skeys_train, skeys_id_val, skeys_id_test, sid_2_skeys_id, sid_2_skeys_id_multis, sids_id_multis = build_id_partitions(
         sids_id,
         sid_2_samp_idxs,
-        n_samps_dict_after_genus,
+        n_samps_dict,
         cfg,
-        n_samps_total_target=n_samps_total_all,
     )
     print("ID partitions complete!")
 
@@ -137,10 +106,6 @@ def build_splits():
         "id_test": skeys_id_test,
         "ood_val": skeys_ood_val,
         "ood_test": skeys_ood_test,
-        "ood_genus_val": skeys_ood_genus_val,
-        "ood_genus_test": skeys_ood_genus_test,
-        "ood_family_val": skeys_ood_family_val,
-        "ood_family_test": skeys_ood_family_test,
     }
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
@@ -187,15 +152,10 @@ def build_splits():
 
     print("Generating OOD distribution plots...")
     generate_ood_distribution_plots_lepid(
-        sid_2_family,
-        sids_after_family,
-        sids_after_genus,
         genus_2_sids,
         sids_id,
         sids_ood_val,
         sids_ood_test,
-        sids_ood_genus_val,
-        sids_ood_genus_test,
         dpath_figs,
     )
     print("OOD distribution plots complete!")
@@ -204,7 +164,7 @@ def build_splits():
     generate_id_distribution_plots(
         sids_id_multis,
         sid_2_skeys_id_multis,
-        n_samps_dict_after_genus,
+        n_samps_dict,
         skeys_partitions,
         dpath_figs,
     )

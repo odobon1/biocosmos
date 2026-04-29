@@ -3,8 +3,8 @@ study_name: dev
 # experiment_name: init2e-5_g-993
 experiment_name: dev
 seed: 42
-dataset: lepid  # {nymph, lepid}
-split_name: D14  # {D14, dev}
+dataset: nymph  # {bryo, cub, lepid, nymph}
+split_name: D10  # {D10, dev}
 
 n_epochs: 1000
 chkpt_every: 1

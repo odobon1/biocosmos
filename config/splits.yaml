@@ -1,15 +1,16 @@
 seed: 42
-split_name: D14
+split_name: D10
 
-pct_partition: 0.07
+pct_partition: 0.1
 pct_ood_tol: 0.001  # tolerance for how close OOD sample volume must be to target percentage; careful, this parameter dictates required accuracy as the stopping criterion for a random search, too low and setup will run till the end of time (0.0001 is good)
 
 size_dev: 4096  # partition size of dev split
 
-nst_names: ["1-19", "20-99", "100-499", "500+"]
-nst_seps: [19, 99, 499]  # divides n-shot space into len(nst_seps)+1 buckets, last bucket is if n is greater than the last separation
-# nst_names: ["1", "2", "3", "4", "5", "6-10", "11-20", "21-50", "51-100", "101+"]
+# nst_names: ["(1-19)-shot", "(20-99)-shot", "(100-499)-shot", "(500+)-shot"]
+# nst_seps: [19, 99, 499]  # divides n-shot space into len(nst_seps)+1 buckets, last bucket is if n is greater than the last separation
+# nst_names: ["1-shot", "2-shot", "3-shot", "4-shot", "5-shot", "(6-10)-shot", "(11-20)-shot", "(21-50)-shot", "(51-100)-shot", "(101+)-shot"]
 # nst_seps: [1, 2, 3, 4, 5, 10, 20, 50, 100]
+nst_names: ["few-shot", "med-shot", "many-shot"]
+nst_seps: [20, 100]
 
 pos_filter: dorsal  # {null, dorsal} ~ only applies to nymph and lepid datasets
-ood_family_name: hesperiidae  # {hedylidae, hesperiidae, lycaenidae, nymphalidae, papilionidae, pieridae, riodinidae} ~ only applies to lepid dataset

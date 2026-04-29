@@ -27,21 +27,20 @@ def _normalize_cub_rfpath(raw_path: str) -> str:
     idx_images = raw_path.find("images/")
     if idx_images == -1:
         raise ValueError(f"Could not parse CUB rfpath from raw image path: {raw_path}")
-    return raw_path[idx_images:]
+    return raw_path[idx_images + len("images/"):]
 
-def _build_classdir_to_sid(class_data):
-    classdir_to_sid = {}
-    for cid, info in class_data.items():
-        rdpath_imgs = info["rdpath_imgs"]
+def _build_classdir_to_cid(class_data):
+    classdir_to_cid = {}
+    for cid, cid_data in class_data.items():
+        rdpath_imgs = cid_data["rdpath_imgs"]
         if not isinstance(rdpath_imgs, str) or not rdpath_imgs.startswith("images/"):
             raise ValueError(f"Invalid rdpath_imgs for cid='{cid}': {rdpath_imgs}")
         class_dir = rdpath_imgs.split("/", 1)[1]
-        sid = info["species"]
-        classdir_to_sid[class_dir] = sid
-    return classdir_to_sid
+        classdir_to_cid[class_dir] = cid
+    return classdir_to_cid
 
 def _build_img_ptrs(index_rfpaths_all, class_data):
-    classdir_to_sid = _build_classdir_to_sid(class_data)
+    classdir_to_cid = _build_classdir_to_cid(class_data)
 
     img_ptrs = defaultdict(dict)
     sid_2_samp_idxs = defaultdict(list)
@@ -50,14 +49,13 @@ def _build_img_ptrs(index_rfpaths_all, class_data):
 
     for rfpath in index_rfpaths_all:
         parts = rfpath.split("/")
-        if len(parts) < 3:
+        if len(parts) < 2:
             raise ValueError(f"Unexpected CUB rfpath format: {rfpath}")
-
-        class_dir = parts[1]
-        if class_dir not in classdir_to_sid:
+        class_dir = parts[0]
+        if class_dir not in classdir_to_cid:
             raise KeyError(f"CUB class directory '{class_dir}' missing from class_data mapping")
 
-        sid = classdir_to_sid[class_dir]
+        sid = classdir_to_cid[class_dir]
         samp_idx = sid_offsets[sid]
         sid_offsets[sid] += 1
 

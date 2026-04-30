@@ -13,29 +13,55 @@ from utils.text import get_text_template as get_dataset_text_template
 import pdb
 
 
-# CLUSTER = "pace"  # PACE
-CLUSTER = "hpg"  # HiPerGator
+CLUSTER = "pace"  # PACE
+# CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":
 
     dpath_root = Path(os.getcwd())
-
-    paths = {
-        "root":    dpath_root,
-        "vlm4bio": dpath_root / "VLM4Bio/datasets"
-    }
-elif CLUSTER == "hpg":
-
-    dpath_group = Path("/lustre/blue2/arthur.porto-biocosmos")
-    dpath_root = Path(os.getcwd())
-    dpath_data = dpath_group / "data"
-    dpath_nymph = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
-    dpath_lepid = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
+    dpath_haag = Path("/storage/ice-shared/cs8903onl")
+    dpath_lepid = dpath_haag / "butterflies"
+    dpath_hf_cache = dpath_haag / "huggingface_cache"
 
     paths = {
         "root": dpath_root,
-        "hf_cache": dpath_data / "cache/huggingface/hub",
+        "hf_cache": dpath_hf_cache,
+        "config": dpath_root / "config",
+        "artifacts": dpath_root / "artifacts",
+        "data": {
+            "cub": dpath_root / "data/cub",
+        },
+        "imgs":{
+            "cub": dpath_root / "data/cub/CUB_200_2011/images",
+            "lepid": dpath_lepid / "images",
+        },
+        "preproc": {
+            "cub": dpath_root / "preprocessing/cub",
+            "lepid": dpath_root / "preprocessing/lepid",
+        },
+        "metadata": {
+            "cub": dpath_root / "metadata/cub",
+            "lepid": dpath_root / "metadata/lepid",
+        },
+        "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
+        "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+        "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
+        "lepid_tree_raw": dpath_root / "data/lepid/tree_renamed_full.tre",
+        "nymph_tree_raw": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
+    }
+elif CLUSTER == "hpg":
+
+    dpath_root = Path(os.getcwd())
+    dpath_group = Path("/lustre/blue2/arthur.porto-biocosmos")
+    dpath_data = dpath_group / "data"
+    dpath_nymph = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
+    dpath_lepid = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"
+    dpath_hf_cache = dpath_data / "cache/huggingface/hub"
+
+    paths = {
+        "root": dpath_root,
+        "hf_cache": dpath_hf_cache,
         "config": dpath_root / "config",
         "artifacts": dpath_root / "artifacts",
         "data": {
@@ -329,20 +355,10 @@ class PrintLog:
                 n_dashes = len_max - len(label) + 3
                 nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval[k]:.4f}\n"
 
-        partition_label_map = {
-            "ood_species": "OOD-Species",
-            "ood_genus": "OOD-Genus",
-            "ood_family": "OOD-Family",
-        }
-
-        def _partition_label(partition_name: str) -> str:
-            return partition_label_map.get(partition_name, partition_name.replace("_", " ").upper())
-
         partition_lines = ""
         for partition_name in partition_names:
-            partition_label = _partition_label(partition_name)
             partition_lines += (
-                f"{f' {partition_label} mAP ':-^{75}}\n"
+                f"{f' {partition_name} mAP ':-^{75}}\n"
                 f"I2T --- {scores_eval[f'{partition_name}_i2t_map']:.4f}\n"
                 f"I2I --- {scores_eval[f'{partition_name}_i2i_map']:.4f}\n"
                 f"T2I --- {scores_eval[f'{partition_name}_t2i_map']:.4f}\n"
@@ -357,13 +373,11 @@ class PrintLog:
         composite_lines += _metric_line("All", f"{scores_eval['comp_map']:.4f}{best_comp_map_str}")
         composite_lines += _metric_line("I2I", f"{scores_eval['i2i_map']:.4f}{best_i2i_map_str}")
         for partition_name in partition_names:
-            partition_label = _partition_label(partition_name)
-            composite_lines += _metric_line(partition_label, f"{scores_eval[f'{partition_name}_map']:.4f}")
+            composite_lines += _metric_line(partition_name, f"{scores_eval[f'{partition_name}_map']:.4f}")
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         for partition_name in partition_names:
-            partition_label = _partition_label(partition_name)
-            loss_lines += _metric_line(partition_label, f"{scores_eval[f'{partition_name}_loss']:.3e}")
+            loss_lines += _metric_line(partition_name, f"{scores_eval[f'{partition_name}_loss']:.3e}")
 
         header = " Eval "
         eval_printout = (

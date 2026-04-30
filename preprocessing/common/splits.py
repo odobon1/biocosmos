@@ -567,7 +567,7 @@ def generate_id_distribution_plots(sids_id_multis, sid_2_skeys_id_multis, n_samp
     )
 
 def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_title=8, fontsize=5) -> None:
-    n_shot_col_names = [f"({name})-shot" for name in id_eval_nshot["names"]]
+    n_shot_col_names = [name for name in id_eval_nshot["names"]]
 
     row_values_id_val = ["ID Val"]
     row_values_id_test = ["ID Test"]

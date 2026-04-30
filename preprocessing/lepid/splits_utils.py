@@ -119,18 +119,18 @@ def build_data_indexes_lepid(
             )
         return data_index
 
-    validation_ood_species = build_partition_index("ood_val")
-    test_ood_species = build_partition_index("ood_test")
+    validation_ood = build_partition_index("ood_val")
+    test_ood = build_partition_index("ood_test")
 
     return {
         "train": build_partition_index("train"),
         "validation": {
             "id": build_partition_index("id_val"),
-            "ood_species": validation_ood_species,
+            "ood": validation_ood,
         },
         "test": {
             "id": build_partition_index("id_test"),
-            "ood_species": test_ood_species,
+            "ood": test_ood,
         },
     }
 

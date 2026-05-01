@@ -115,6 +115,14 @@ def combine_trees_lepid_nymph(
         anchor = out.root
 
     attach_subtree_at_anchor(out, anchor, nymph_root, target_height)
+    
+    # Defensive check: before rehoming, verify retained Lepid tips are still in tree
+    merged_before_rehome = tip_names(out.root)
+    missing_before_rehome = retained_lepid_tips - merged_before_rehome
+    if missing_before_rehome:
+        import sys
+        print(f"WARNING: Retained Lepid tips missing after Nymph attachment: {missing_before_rehome}", file=sys.stderr)
+    
     rehome_nymph_non_nymphalidae_shared_genus_subtrees(
         tree=out,
         source_tree=nymph,

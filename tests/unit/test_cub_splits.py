@@ -7,10 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from preprocessing.cub.splits import (
-    _build_classdir_to_cid,
+    _build_classdir_to_sid,
     _build_img_ptrs,
     _build_skeys_from_rfpaths,
     _choose_ood_val_sids,
+    _class_dir_to_common_name,
     _normalize_cub_rfpath,
     _split_train_into_train_idval_oodval,
 )
@@ -21,7 +22,7 @@ from preprocessing.cub.splits import (
 def _make_class_data(*entries):
     """Each entry: (cid, class_dir_name, species_sid)."""
     return {
-        cid: {"rdpath_imgs": f"images/{class_dir}", "species": sid}
+        cid: {"species": sid, "common_name": _class_dir_to_common_name(class_dir)}
         for cid, class_dir, sid in entries
     }
 
@@ -38,7 +39,7 @@ def _make_class_data_and_rfpaths(entries):
     class_data = {}
     rfpaths = []
     for idx, (class_dir, sid, n) in enumerate(entries):
-        class_data[f"cid_{idx}"] = {"rdpath_imgs": f"images/{class_dir}", "species": sid}
+        class_data[f"cid_{idx}"] = {"species": sid, "common_name": _class_dir_to_common_name(class_dir)}
         rfpaths += _rfpaths_for(class_dir, n)
     return class_data, rfpaths
 
@@ -73,26 +74,26 @@ def test_normalize_cub_rfpath_raises_when_images_segment_is_absent():
         _normalize_cub_rfpath("/no/IMGS/prefix/here.jpg")
 
 
-# ─── _build_classdir_to_cid ──────────────────────────────────────────────────
+# ─── _build_classdir_to_sid ──────────────────────────────────────────────────
 
-def test_build_classdir_to_cid_maps_each_class_dir_to_its_cid():
+def test_build_classdir_to_sid_maps_each_class_dir_to_its_species_sid():
     class_data = _make_class_data(
         ("albatross", "001.Black_footed_Albatross", "diomedea_nigripes"),
         ("laysan", "002.Laysan_Albatross", "phoebastria_immutabilis"),
     )
-    result = _build_classdir_to_cid(class_data)
+    result = _build_classdir_to_sid(class_data)
 
-    assert result["001.Black_footed_Albatross"] == "albatross"
-    assert result["002.Laysan_Albatross"] == "laysan"
+    assert result["black_footed_albatross"] == "diomedea_nigripes"
+    assert result["laysan_albatross"] == "phoebastria_immutabilis"
     assert len(result) == 2
 
 
-def test_build_classdir_to_cid_raises_on_rdpath_without_images_prefix():
+def test_build_classdir_to_sid_raises_on_missing_species():
     class_data = {
-        "bad_cid": {"rdpath_imgs": "no_images_prefix/class_dir", "species": "some_sp"}
+        "bad_cid": {"species": None, "common_name": "class_dir"}
     }
-    with pytest.raises(ValueError, match="Invalid rdpath_imgs"):
-        _build_classdir_to_cid(class_data)
+    with pytest.raises(ValueError, match="Invalid species"):
+        _build_classdir_to_sid(class_data)
 
 
 # ─── _build_img_ptrs ─────────────────────────────────────────────────────────

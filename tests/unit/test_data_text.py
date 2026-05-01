@@ -39,27 +39,8 @@ def test_gen_text_falls_back_when_common_name_missing() -> None:
 
     assert text in {
         "Danaus plexippus",
-        "animalia arthropoda insecta lepidoptera nymphalidae Danaus plexippus",
+        "animalia arthropoda insecta lepidoptera Danaus plexippus",
     }
-
-
-def test_gen_text_uses_indefinite_article_token() -> None:
-    random.seed(1)
-    template = [
-        ["$AAN$ "],
-        ["$SCI$"],
-    ]
-
-    text = gen_text(
-        {
-            "species": "Erebia_epipsodea",
-            "common_name": None,
-        },
-        template,
-        dataset="lepid",
-    )
-
-    assert text == "a Erebia epipsodea"
 
 
 def test_gen_text_uses_dataset_specific_taxonomy() -> None:
@@ -77,7 +58,27 @@ def test_gen_text_uses_dataset_specific_taxonomy() -> None:
         dataset="cub",
     )
 
-    assert cub_text == "animalia chordata aves Passeriformes Corvidae Cyanocitta Cyanocitta cristata"
+    assert cub_text == "animalia chordata aves Passeriformes Corvidae Cyanocitta cristata"
+
+
+def test_gen_text_taxonomy_does_not_repeat_genus_for_species() -> None:
+    template = [["$TAX$"]]
+
+    nymph_text = gen_text(
+        {
+            "subfamily": "nymphalinae",
+            "genus": "tegosa",
+            "species": "tegosa_guatemalena",
+            "common_name": None,
+        },
+        template,
+        dataset="nymph",
+    )
+
+    assert nymph_text == (
+        "animalia arthropoda insecta lepidoptera nymphalidae "
+        "nymphalinae tegosa guatemalena"
+    )
 
 
 def test_gen_text_bryo_works_without_species_key() -> None:

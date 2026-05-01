@@ -29,18 +29,26 @@ def _normalize_cub_rfpath(raw_path: str) -> str:
         raise ValueError(f"Could not parse CUB rfpath from raw image path: {raw_path}")
     return raw_path[idx_images + len("images/"):]
 
-def _build_classdir_to_cid(class_data):
-    classdir_to_cid = {}
+def _class_dir_to_common_name(class_dir: str) -> str:
+    if not isinstance(class_dir, str) or "." not in class_dir:
+        raise ValueError(f"Invalid CUB class directory: {class_dir}")
+    _, raw_name = class_dir.split(".", 1)
+    return raw_name.lower()
+
+def _build_classdir_to_sid(class_data):
+    classdir_to_sid = {}
     for cid, cid_data in class_data.items():
-        rdpath_imgs = cid_data["rdpath_imgs"]
-        if not isinstance(rdpath_imgs, str) or not rdpath_imgs.startswith("images/"):
-            raise ValueError(f"Invalid rdpath_imgs for cid='{cid}': {rdpath_imgs}")
-        class_dir = rdpath_imgs.split("/", 1)[1]
-        classdir_to_cid[class_dir] = cid
-    return classdir_to_cid
+        species = cid_data.get("species")
+        if not isinstance(species, str) or not species:
+            raise ValueError(f"Invalid species for cid='{cid}': {species}")
+        common_name = cid_data.get("common_name", cid)
+        if not isinstance(common_name, str) or not common_name:
+            raise ValueError(f"Invalid common_name for cid='{cid}': {common_name}")
+        classdir_to_sid[common_name] = species
+    return classdir_to_sid
 
 def _build_img_ptrs(index_rfpaths_all, class_data):
-    classdir_to_cid = _build_classdir_to_cid(class_data)
+    classdir_to_sid = _build_classdir_to_sid(class_data)
 
     img_ptrs = defaultdict(dict)
     sid_2_samp_idxs = defaultdict(list)
@@ -52,10 +60,11 @@ def _build_img_ptrs(index_rfpaths_all, class_data):
         if len(parts) < 2:
             raise ValueError(f"Unexpected CUB rfpath format: {rfpath}")
         class_dir = parts[0]
-        if class_dir not in classdir_to_cid:
+        class_name = _class_dir_to_common_name(class_dir)
+        if class_name not in classdir_to_sid:
             raise KeyError(f"CUB class directory '{class_dir}' missing from class_data mapping")
 
-        sid = classdir_to_cid[class_dir]
+        sid = classdir_to_sid[class_name]
         samp_idx = sid_offsets[sid]
         sid_offsets[sid] += 1
 

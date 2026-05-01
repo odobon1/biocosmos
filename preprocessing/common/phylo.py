@@ -752,10 +752,12 @@ def augment_class_data(class_data, tree):
         # Skip ambiguous genera where any non-genus taxonomy rank has
         # conflicting non-None values across classes already in class_data.
         # This keeps us from inferring incorrect ranks for missing tree tips.
+        # Note: exclude "species" from ambiguity check since different species
+        # in the same genus will have different species values by definition.
         rank_fields = [
             rank
             for rank in class_data[cids_genus[0]].keys()
-            if rank not in {"genus", "common_name"}
+            if rank not in {"genus", "common_name", "species"}
         ]
         genus_is_ambiguous = False
         for rank in rank_fields:

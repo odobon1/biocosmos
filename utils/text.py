@@ -184,15 +184,29 @@ class DatasetTextGenerator:
 
     def _build_taxonomy_text(self, class_data_cid: Mapping[str, Any]) -> str:
         parts = [self._taxonomy_prefix_text] if self._taxonomy_prefix_text else []
+        genus_value: str | None = None
         for field_name in self.spec.taxonomy_fields:
             value = class_data_cid.get(field_name)
             if isinstance(value, str) and value:
+                if field_name == "genus":
+                    genus_value = value
+
+                if field_name == "species":
+                    parts.append(self._format_species_for_taxonomy(value, genus_value))
+                    continue
+
                 parts.append(self._format_value(value))
         return " ".join(parts)
 
     @staticmethod
     def _format_value(value: str) -> str:
         return value.replace("_", " ")
+
+    @staticmethod
+    def _format_species_for_taxonomy(species: str, genus_value: str | None) -> str:
+        if genus_value and species.startswith(f"{genus_value}_"):
+            return species[len(genus_value) + 1 :].replace("_", " ")
+        return species.replace("_", " ")
 
     @staticmethod
     def _get_indefinite_article(prompt: str) -> str:

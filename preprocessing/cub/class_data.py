@@ -12,7 +12,6 @@ class_data = {
         "genus": "<genus>",
         "species": "<species>",
         "common_name": "<common_name>",
-        "rdpath_imgs" : "<image_path>",
     },
     ...
 }
@@ -126,7 +125,6 @@ def generate_class_data(df_class_data: pd.DataFrame) -> None:
         genus = row["genus"].lower()
         species = f"{genus}_{row['species'].lower()}"
         common_name = row["common_name"].lower().replace(" ", "_")
-        rdpath_imgs = f"images/{row['class_name']}"
 
         cid = common_name
 
@@ -136,7 +134,6 @@ def generate_class_data(df_class_data: pd.DataFrame) -> None:
             "genus": genus,
             "species": species,
             "common_name": common_name,
-            "rdpath_imgs": rdpath_imgs,
         }
     save_pickle(class_data, paths["metadata"]["cub"] / "class_data.pkl")
 

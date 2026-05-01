@@ -6,7 +6,7 @@ metadata/nymph/class_data.pkl
 
 Structure:
 class_data = {
-    sid: {
+    cid: {
         "subfamily": "<subfamily>",
         "genus": "<genus>",
         "species": "<species>",
@@ -20,13 +20,13 @@ import pandas as pd  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 
 from utils.utils import paths, load_pickle, save_pickle
-from preprocessing.nymph.species_ids import get_sids_nymph
+from preprocessing.nymph.species_ids import get_cids_nymph
 
 import pdb
 
 
 def generate_class_data() -> None:
-    sids = get_sids_nymph()
+    cids = get_cids_nymph()
     df_metadata = pd.read_csv(paths["nymph_metadata"])
     species_2_subfamily = (
         df_metadata
@@ -34,20 +34,20 @@ def generate_class_data() -> None:
         .set_index("species")["subfamily"]
         .to_dict()
     )
-    sids2commons = load_pickle(paths["preproc"]["nymph"] / "intermediaries/sids2commons.pkl")
+    cids2commons = load_pickle(paths["preproc"]["nymph"] / "intermediaries/cids2commons.pkl")
 
     class_data = {}
-    for sid in tqdm(sorted(sids), desc="Generating class data"):
+    for cid in tqdm(sorted(cids), desc="Generating class data"):
 
-        subfamily = species_2_subfamily[sid]
+        subfamily = species_2_subfamily[cid]
         if subfamily == "moth":
             subfamily = None
 
-        class_data[sid] = {
+        class_data[cid] = {
             "subfamily": subfamily,
-            "genus": sid.split("_")[0],
-            "species": sid,
-            "common_name": sids2commons[sid],
+            "genus": cid.split("_")[0],
+            "species": cid,
+            "common_name": cids2commons[cid],
         }
 
     save_pickle(class_data, paths["metadata"]["nymph"] / "class_data.pkl")

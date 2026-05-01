@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from preprocessing.cub.splits import (
-    _build_classdir_to_sid,
+    _build_classdir_to_cid,
     _build_img_ptrs,
     _build_skeys_from_rfpaths,
-    _choose_ood_val_sids,
+    _choose_ood_val_cids,
     _class_dir_to_common_name,
     _normalize_cub_rfpath,
     _split_train_into_train_idval_oodval,
@@ -20,10 +20,10 @@ from preprocessing.cub.splits import (
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _make_class_data(*entries):
-    """Each entry: (cid, class_dir_name, species_sid)."""
+    """Each entry: (cid, class_dir_name, species_cid)."""
     return {
-        cid: {"species": sid, "common_name": _class_dir_to_common_name(class_dir)}
-        for cid, class_dir, sid in entries
+        cid: {"species": cid, "common_name": _class_dir_to_common_name(class_dir)}
+        for cid, class_dir, cid in entries
     }
 
 
@@ -33,23 +33,23 @@ def _rfpaths_for(class_dir, n):
 
 def _make_class_data_and_rfpaths(entries):
     """
-    entries: list of (class_dir, species_sid, n_imgs)
+    entries: list of (class_dir, species_cid, n_imgs)
     Returns (class_data, flat rfpaths list).
     """
     class_data = {}
     rfpaths = []
-    for idx, (class_dir, sid, n) in enumerate(entries):
-        class_data[f"cid_{idx}"] = {"species": sid, "common_name": _class_dir_to_common_name(class_dir)}
+    for idx, (class_dir, cid, n) in enumerate(entries):
+        class_data[f"cid_{idx}"] = {"species": cid, "common_name": _class_dir_to_common_name(class_dir)}
         rfpaths += _rfpaths_for(class_dir, n)
     return class_data, rfpaths
 
 
-def _uniform_pool(n_sids, samps_per_sid):
-    """Uniform train pool: n_sids species × samps_per_sid samples each."""
+def _uniform_pool(n_cids, samps_per_cid):
+    """Uniform train pool: n_cids species × samps_per_cid samples each."""
     return {
-        (f"sid_{i:03d}", j)
-        for i in range(n_sids)
-        for j in range(samps_per_sid)
+        (f"cid_{i:03d}", j)
+        for i in range(n_cids)
+        for j in range(samps_per_cid)
     }
 
 
@@ -74,26 +74,26 @@ def test_normalize_cub_rfpath_raises_when_images_segment_is_absent():
         _normalize_cub_rfpath("/no/IMGS/prefix/here.jpg")
 
 
-# ─── _build_classdir_to_sid ──────────────────────────────────────────────────
+# ─── _build_classdir_to_cid ──────────────────────────────────────────────────
 
-def test_build_classdir_to_sid_maps_each_class_dir_to_its_species_sid():
+def test_build_classdir_to_cid_maps_each_class_dir_to_its_species_cid():
     class_data = _make_class_data(
         ("albatross", "001.Black_footed_Albatross", "diomedea_nigripes"),
         ("laysan", "002.Laysan_Albatross", "phoebastria_immutabilis"),
     )
-    result = _build_classdir_to_sid(class_data)
+    result = _build_classdir_to_cid(class_data)
 
     assert result["black_footed_albatross"] == "diomedea_nigripes"
     assert result["laysan_albatross"] == "phoebastria_immutabilis"
     assert len(result) == 2
 
 
-def test_build_classdir_to_sid_raises_on_missing_species():
+def test_build_classdir_to_cid_raises_on_missing_species():
     class_data = {
         "bad_cid": {"species": None, "common_name": "class_dir"}
     }
     with pytest.raises(ValueError, match="Invalid species"):
-        _build_classdir_to_sid(class_data)
+        _build_classdir_to_cid(class_data)
 
 
 # ─── _build_img_ptrs ─────────────────────────────────────────────────────────
@@ -103,10 +103,10 @@ def test_build_img_ptrs_assigns_sequential_samp_idxs_per_species():
         ("001.Albatross", "diomedea_nigripes", 3),
         ("002.Laysan", "phoebastria_immutabilis", 2),
     ])
-    _, sid_2_samp_idxs, _, _, n_samps_dict = _build_img_ptrs(rfpaths, class_data)
+    _, cid_2_samp_idxs, _, _, n_samps_dict = _build_img_ptrs(rfpaths, class_data)
 
-    assert sid_2_samp_idxs["diomedea_nigripes"] == [0, 1, 2]
-    assert sid_2_samp_idxs["phoebastria_immutabilis"] == [0, 1]
+    assert cid_2_samp_idxs["diomedea_nigripes"] == [0, 1, 2]
+    assert cid_2_samp_idxs["phoebastria_immutabilis"] == [0, 1]
     assert n_samps_dict == {"diomedea_nigripes": 3, "phoebastria_immutabilis": 2}
 
 
@@ -115,10 +115,10 @@ def test_build_img_ptrs_rfpath_2_skey_covers_all_rfpaths():
         ("001.Albatross", "diomedea_nigripes", 2),
         ("002.Laysan", "phoebastria_immutabilis", 3),
     ])
-    _, _, rfpath_2_skey, sids, _ = _build_img_ptrs(rfpaths, class_data)
+    _, _, rfpath_2_skey, cids, _ = _build_img_ptrs(rfpaths, class_data)
 
     assert set(rfpath_2_skey.keys()) == set(rfpaths)
-    assert set(sids) == {"diomedea_nigripes", "phoebastria_immutabilis"}
+    assert set(cids) == {"diomedea_nigripes", "phoebastria_immutabilis"}
 
 
 def test_build_img_ptrs_skey_values_are_unique():
@@ -152,23 +152,23 @@ def test_build_img_ptrs_raises_on_unknown_class_dir():
 
 def test_build_skeys_from_rfpaths_returns_correct_skeys():
     rfpath_2_skey = {
-        "001.Cls/img_0.jpg": ("sid_a", 0),
-        "001.Cls/img_1.jpg": ("sid_a", 1),
+        "001.Cls/img_0.jpg": ("cid_a", 0),
+        "001.Cls/img_1.jpg": ("cid_a", 1),
     }
     result = _build_skeys_from_rfpaths(list(rfpath_2_skey.keys()), rfpath_2_skey, "test")
 
-    assert result == {("sid_a", 0), ("sid_a", 1)}
+    assert result == {("cid_a", 0), ("cid_a", 1)}
 
 
 def test_build_skeys_from_rfpaths_raises_on_unknown_rfpath():
-    rfpath_2_skey = {"001.Cls/img_0.jpg": ("sid_a", 0)}
+    rfpath_2_skey = {"001.Cls/img_0.jpg": ("cid_a", 0)}
 
     with pytest.raises(KeyError, match="not found in global lookup"):
         _build_skeys_from_rfpaths(["MISSING/img.jpg"], rfpath_2_skey, "test")
 
 
 def test_build_skeys_from_rfpaths_raises_on_duplicate_rfpaths():
-    rfpath_2_skey = {"001.Cls/img_0.jpg": ("sid_a", 0)}
+    rfpath_2_skey = {"001.Cls/img_0.jpg": ("cid_a", 0)}
 
     with pytest.raises(ValueError, match="Duplicate rfpaths detected"):
         _build_skeys_from_rfpaths(
@@ -178,60 +178,60 @@ def test_build_skeys_from_rfpaths_raises_on_duplicate_rfpaths():
         )
 
 
-# ─── _choose_ood_val_sids ────────────────────────────────────────────────────
+# ─── _choose_ood_val_cids ────────────────────────────────────────────────────
 
-def _uniform_sids_and_skeys(n_sids, samps_per_sid):
-    sids = [f"sid_{i:03d}" for i in range(n_sids)]
-    sid_2_skeys = {sid: [(sid, j) for j in range(samps_per_sid)] for sid in sids}
-    return sids, sid_2_skeys
+def _uniform_cids_and_skeys(n_cids, samps_per_cid):
+    cids = [f"cid_{i:03d}" for i in range(n_cids)]
+    cid_2_skeys = {cid: [(cid, j) for j in range(samps_per_cid)] for cid in cids}
+    return cids, cid_2_skeys
 
 
-def test_choose_ood_val_sids_returns_empty_when_pct_partition_is_zero():
-    sids, _ = _uniform_sids_and_skeys(10, 5)
-    result = _choose_ood_val_sids(
-        sids_train=set(sids),
-        n_sids_total_target=10,
+def test_choose_ood_val_cids_returns_empty_when_pct_partition_is_zero():
+    cids, _ = _uniform_cids_and_skeys(10, 5)
+    result = _choose_ood_val_cids(
+        cids_train=set(cids),
+        n_cids_total_target=10,
         cfg=_cfg(pct_partition=0.0),
     )
     assert result == set()
 
 
-def test_choose_ood_val_sids_returns_exact_class_count():
-    n_sids = 20
-    sids, _ = _uniform_sids_and_skeys(n_sids, 10)
+def test_choose_ood_val_cids_returns_exact_class_count():
+    n_cids = 20
+    cids, _ = _uniform_cids_and_skeys(n_cids, 10)
     cfg = _cfg(pct_partition=0.1)
 
-    result = _choose_ood_val_sids(
-        sids_train=set(sids),
-        n_sids_total_target=n_sids,
+    result = _choose_ood_val_cids(
+        cids_train=set(cids),
+        n_cids_total_target=n_cids,
         cfg=cfg,
     )
 
-    assert len(result) == round(n_sids * cfg.pct_partition)
+    assert len(result) == round(n_cids * cfg.pct_partition)
 
 
-def test_choose_ood_val_sids_result_is_subset_of_train():
-    n_sids = 20
-    sids, _ = _uniform_sids_and_skeys(n_sids, 5)
+def test_choose_ood_val_cids_result_is_subset_of_train():
+    n_cids = 20
+    cids, _ = _uniform_cids_and_skeys(n_cids, 5)
     cfg = _cfg(pct_partition=0.15)
 
-    result = _choose_ood_val_sids(
-        sids_train=set(sids),
-        n_sids_total_target=n_sids,
+    result = _choose_ood_val_cids(
+        cids_train=set(cids),
+        n_cids_total_target=n_cids,
         cfg=cfg,
     )
 
-    assert result.issubset(set(sids))
+    assert result.issubset(set(cids))
 
 
-def test_choose_ood_val_sids_raises_when_target_sid_count_exceeds_available():
-    sids, _ = _uniform_sids_and_skeys(5, 3)
+def test_choose_ood_val_cids_raises_when_target_cid_count_exceeds_available():
+    cids, _ = _uniform_cids_and_skeys(5, 3)
 
-    # n_sids_total_target=100 → target = round(100*0.5) = 50 species >> 5 available
-    with pytest.raises(ValueError, match="Target OOD-val sid count.*exceeds available"):
-        _choose_ood_val_sids(
-            sids_train=set(sids),
-            n_sids_total_target=100,
+    # n_cids_total_target=100 → target = round(100*0.5) = 50 species >> 5 available
+    with pytest.raises(ValueError, match="Target OOD-val cid count.*exceeds available"):
+        _choose_ood_val_cids(
+            cids_train=set(cids),
+            n_cids_total_target=100,
             cfg=_cfg(pct_partition=0.5),
         )
 
@@ -242,7 +242,7 @@ def test_split_train_partitions_cover_pool_completely():
     pool = _uniform_pool(20, 10)
     train, id_val, ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=200,
         cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
     )
@@ -253,7 +253,7 @@ def test_split_train_partitions_are_mutually_disjoint():
     pool = _uniform_pool(20, 10)
     train, id_val, ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=200,
         cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
     )
@@ -268,7 +268,7 @@ def test_split_train_id_val_hits_exact_sample_count():
     pool = _uniform_pool(20, 10)
     _, id_val, _ = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=n_samps_total,
         cfg=_cfg(pct_partition=pct, pct_ood_tol=0.005),
     )
@@ -282,7 +282,7 @@ def test_split_train_ood_val_sample_proportion_within_tolerance():
     pool = _uniform_pool(20, 10)
     _, _, ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=n_samps_total,
         cfg=_cfg(pct_partition=pct, pct_ood_tol=tol),
     )
@@ -294,26 +294,26 @@ def test_split_train_every_id_species_has_at_least_one_train_sample():
     pool = _uniform_pool(20, 10)
     train, id_val, ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=200,
         cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
     )
-    ood_sids = {sid for sid, _ in ood_val}
-    id_sids = {sid for sid, _ in (train | id_val)} - ood_sids
-    train_sids = {sid for sid, _ in train}
+    ood_cids = {cid for cid, _ in ood_val}
+    id_cids = {cid for cid, _ in (train | id_val)} - ood_cids
+    train_cids = {cid for cid, _ in train}
 
-    for sid in id_sids:
-        assert sid in train_sids, f"Species '{sid}' has no samples in train partition"
+    for cid in id_cids:
+        assert cid in train_cids, f"Species '{cid}' has no samples in train partition"
 
 
-def test_split_train_ood_val_sids_may_coincide_with_id_test_class_universe():
+def test_split_train_ood_val_cids_may_coincide_with_id_test_class_universe():
     # The function must not exclude OOD-val choices based on what's in fixed test partitions.
     # Simply verify: the function succeeds and produces non-empty OOD-val without knowledge
     # of any test partitions — overlap is allowed by design.
     pool = _uniform_pool(20, 10)
     _, _, ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=pool,
-        n_sids_total_target=20,
+        n_cids_total_target=20,
         n_samps_total_target=200,
         cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
     )
@@ -325,11 +325,11 @@ def test_split_train_raises_when_id_val_target_exceeds_multis_pool():
     # (1 sample each). n_samps_total_target=200 → id_val target = round(200*0.1)=20,
     # but only 18 multi-eligible samples exist (all singletons → 0 multis actually),
     # so the check fires.
-    pool = {(f"sid_{i:03d}", 0) for i in range(20)}  # 20 singletons, 1 sample each
+    pool = {(f"cid_{i:03d}", 0) for i in range(20)}  # 20 singletons, 1 sample each
     with pytest.raises(ValueError, match="Target ID-val sample count.*exceeds available"):
         _split_train_into_train_idval_oodval(
             skeys_train_pool=pool,
-            n_sids_total_target=20,
+            n_cids_total_target=20,
             n_samps_total_target=200,  # large target → id_val needs 20 multis, none exist
             cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
         )

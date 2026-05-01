@@ -7,9 +7,9 @@ from utils.data import truncate_subspecies
 import pdb
 
 
-def get_sids_lepid():
+def get_cids_lepid():
 
-    sids = {
+    cids = {
         "hedylidae": set(),
         "hesperiidae": set(),
         "lycaenidae": set(),
@@ -19,11 +19,11 @@ def get_sids_lepid():
         "riodinidae": set(),
     }
     
-    for family in sids.keys():
-        for sid in os.listdir(paths["imgs"]["lepid"] / family):
-            sid = truncate_subspecies(sid)
-            sids[family].add(sid)
+    for family in cids.keys():
+        for cid in os.listdir(paths["imgs"]["lepid"] / family):
+            cid = truncate_subspecies(cid)
+            cids[family].add(cid)
 
-        sids[family] = sorted(sids[family])
+        cids[family] = sorted(cids[family])
     
-    return sids
+    return cids

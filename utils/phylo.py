@@ -24,9 +24,9 @@ class PhyloVCV:
         self.tree: Tree = get_tree(dataset)
         root: Clade = self.tree.root
         self._depth: Dict[Clade, float] = {root: 0.0}
-        self._sid_to_clade: Dict[str, Clade] = {}
+        self._cid_to_clade: Dict[str, Clade] = {}
 
-        # populate _depth and _sid_to_clade
+        # populate _depth and _cid_to_clade
         stack = [root]
         while stack:
             node = stack.pop()
@@ -34,23 +34,23 @@ class PhyloVCV:
                 self._depth[child] = self._depth[node] + child.branch_length
                 stack.append(child)
             if node.is_terminal():
-                self._sid_to_clade[node.name] = node
+                self._cid_to_clade[node.name] = node
 
-        self._sids:       List[str]      = sorted(list(self._sid_to_clade.keys()))
-        self._sid_to_idx: Dict[str, int] = {sid: i for i, sid in enumerate(self._sids)}
-        self._warned_missing_sids: set[str] = set()
+        self._cids:       List[str]      = sorted(list(self._cid_to_clade.keys()))
+        self._cid_to_idx: Dict[str, int] = {cid: i for i, cid in enumerate(self._cids)}
+        self._warned_missing_cids: set[str] = set()
 
         vcv = self.build_vcv_matrix()
 
         self.corr = vcv / max(np.diag(vcv))
 
-    def get_sids(self) -> list[str]:
-        return self._sids
+    def get_cids(self) -> list[str]:
+        return self._cids
 
     def build_vcv_matrix(self) -> np.ndarray:
 
-        n_sids = len(self._sids)
-        vcv    = np.zeros((n_sids, n_sids), dtype=np.float64)
+        n_cids = len(self._cids)
+        vcv    = np.zeros((n_cids, n_cids), dtype=np.float64)
 
         clade_to_tip_idxs: Dict[Clade, np.ndarray] = {}
         stack = [(self.tree.root, False)]
@@ -63,7 +63,7 @@ class PhyloVCV:
                 continue
 
             if node.is_terminal():
-                idx = self._sid_to_idx[node.name]
+                idx = self._cid_to_idx[node.name]
                 vcv[idx, idx] = self._depth[node]  # variance along diagonal
                 clade_to_tip_idxs[node] = np.array([idx], dtype=np.intp)
                 continue
@@ -79,25 +79,25 @@ class PhyloVCV:
 
         return vcv
     
-    def get_targ(self, sid_a: str, sid_b: str) -> float:
+    def get_targ(self, cid_a: str, cid_b: str) -> float:
         """
         Returns the phylogenetic correlation between two samples.
         Currently only used for verification purposes.
         """
-        i = self._sid_to_idx[sid_a]
-        j = self._sid_to_idx[sid_b]
+        i = self._cid_to_idx[cid_a]
+        j = self._cid_to_idx[cid_b]
         return float(np.clip(self.corr[i, j], 0.0, 1.0))
 
     def get_targs_batch(self, targ_data_b) -> torch.Tensor:
-        sids_b = [td["cid"] for td in targ_data_b]
-        B = len(sids_b)
+        cids_b = [td["cid"] for td in targ_data_b]
+        B = len(cids_b)
 
-        known_pos = [i for i, sid in enumerate(sids_b) if sid in self._sid_to_idx]
-        missing_sids = {sid for sid in sids_b if sid not in self._sid_to_idx}
+        known_pos = [i for i, cid in enumerate(cids_b) if cid in self._cid_to_idx]
+        missing_cids = {cid for cid in cids_b if cid not in self._cid_to_idx}
 
-        missing_new = sorted(missing_sids - self._warned_missing_sids)
+        missing_new = sorted(missing_cids - self._warned_missing_cids)
         if missing_new:
-            self._warned_missing_sids.update(missing_new)
+            self._warned_missing_cids.update(missing_new)
             print(
                 "WARNING: "
                 f"{len(missing_new)} class ids in batch missing from phylo tree; "
@@ -107,13 +107,13 @@ class PhyloVCV:
         targs = np.zeros((B, B), dtype=np.float64)
 
         if known_pos:
-            known_idxs = [self._sid_to_idx[sids_b[i]] for i in known_pos]
+            known_idxs = [self._cid_to_idx[cids_b[i]] for i in known_pos]
             targs_known = self.corr[np.ix_(known_idxs, known_idxs)]
             targs[np.ix_(known_pos, known_pos)] = targs_known
 
         # Fallback: samples with the same cid should remain fully positive.
-        sids_arr = np.asarray(sids_b, dtype=object)
-        same_sid_mask = sids_arr[:, None] == sids_arr[None, :]
-        targs[same_sid_mask] = 1.0
+        cids_arr = np.asarray(cids_b, dtype=object)
+        same_cid_mask = cids_arr[:, None] == cids_arr[None, :]
+        targs[same_cid_mask] = 1.0
 
         return torch.from_numpy(targs).float()

@@ -3,17 +3,17 @@
 Note: everything described in this file is executed when `./setup.sh` is run from the root as described in the setup procedure.
 
 ## Generate common names
-**preprocessing/nymph/sids2commons.py**
+**preprocessing/nymph/cids2commons.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.sids2commons
+python -m preprocessing.nymph.cids2commons
 ```
 **Requires:**
 - Butterflies data on HiPerGator
 
 **Produces:**
-- `preprocessing/nymph/intermediaries/sids2commons.pkl`
+- `preprocessing/nymph/intermediaries/cids2commons.pkl`
 
 
 ## Generate class data
@@ -24,7 +24,7 @@ To execute from root:
 python -m preprocessing.nymph.class_data
 ```
 **Requires:**
-- `preprocessing/nymph/intermediaries/sids2commons.pkl`
+- `preprocessing/nymph/intermediaries/cids2commons.pkl`
 
 **Produces:**
 - `metadata/nymph/class_data.pkl`
@@ -102,17 +102,17 @@ Rank keys are used for generating intermediate targets for use with hierarchical
 # Lepidoptera Metadata Generation
 
 ## Generate common names
-**preprocessing/lepid/sids2commons.py**
+**preprocessing/lepid/cids2commons.py**
 
 To execute from root:
 ```
-python -m preprocessing.lepid.sids2commons
+python -m preprocessing.lepid.cids2commons
 ```
 **Requires:**
 - Lepidoptera image data on HiPerGator
 
 **Produces:**
-- `preprocessing/lepid/intermediaries/sids2commons.pkl`
+- `preprocessing/lepid/intermediaries/cids2commons.pkl`
 
 
 ## Generate class data
@@ -123,7 +123,7 @@ To execute from root:
 python -m preprocessing.lepid.class_data
 ```
 **Requires:**
-- `preprocessing/lepid/intermediaries/sids2commons.pkl`
+- `preprocessing/lepid/intermediaries/cids2commons.pkl`
 - `paths["lepid_metadata_tax"]` CSV (taxonomic metadata)
 
 **Produces:**

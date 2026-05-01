@@ -13,8 +13,8 @@ from utils.text import get_text_template as get_dataset_text_template
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":

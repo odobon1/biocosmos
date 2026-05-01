@@ -6,7 +6,7 @@ metadata/lepid/class_data.pkl
 
 Structure:
 class_data = {
-    sid: {
+    cid: {
         "family": "<family>",
         "subfamily": "<subfamily>",
         "tribe": "<tribe>",
@@ -22,13 +22,13 @@ from tqdm import tqdm  # type: ignore[import]
 import pandas as pd  # type: ignore[import]
 
 from utils.utils import paths, load_pickle, save_pickle
-from preprocessing.lepid.species_ids import get_sids_lepid
+from preprocessing.lepid.species_ids import get_cids_lepid
 
 import pdb
 
 
 def generate_class_data() -> None:
-    sids = get_sids_lepid()
+    cids = get_cids_lepid()
     df_metadata_tax = pd.read_csv(paths["lepid_metadata_tax"])
     genus_2_tax = (
         df_metadata_tax
@@ -36,16 +36,16 @@ def generate_class_data() -> None:
         .set_index("genus")[["subfamily", "tribe"]]
         .to_dict(orient="index")
     )
-    sids2commons = load_pickle(paths["preproc"]["lepid"] / "intermediaries/sids2commons.pkl")
+    cids2commons = load_pickle(paths["preproc"]["lepid"] / "intermediaries/cids2commons.pkl")
 
     class_data = {}
-    for family in tqdm(sids.keys(), desc="Generating class data"):
-        genus_2_sids = {}
-        for sid in sids[family]:
-            genus = sid.split("_")[0]
-            genus_2_sids.setdefault(genus, []).append(sid)
+    for family in tqdm(cids.keys(), desc="Generating class data"):
+        genus_2_cids = {}
+        for cid in cids[family]:
+            genus = cid.split("_")[0]
+            genus_2_cids.setdefault(genus, []).append(cid)
 
-        for genus in sorted(genus_2_sids.keys()):
+        for genus in sorted(genus_2_cids.keys()):
             tax_genus = genus_2_tax.get(genus)
             if tax_genus is None:
                 subfamily = None
@@ -58,14 +58,14 @@ def generate_class_data() -> None:
                 if tribe == "x":
                     tribe = None
 
-            for sid in sorted(genus_2_sids[genus]):
-                class_data[sid] = {
+            for cid in sorted(genus_2_cids[genus]):
+                class_data[cid] = {
                     "family": family,
                     "subfamily": subfamily,
                     "tribe": tribe,
                     "genus": genus,
-                    "species": sid,
-                    "common_name": sids2commons[sid],
+                    "species": cid,
+                    "common_name": cids2commons[cid],
                 }
 
     save_pickle(class_data, paths["metadata"]["lepid"] / "class_data.pkl")

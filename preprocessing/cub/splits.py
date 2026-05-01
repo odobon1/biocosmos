@@ -10,11 +10,13 @@ from preprocessing.common.splits import (
     build_class_counts_train,
     build_dev_skeys_partitions,
     build_id_eval_nshot,
+    build_trainval_skeys_partition,
     generate_n_shot_table,
     save_split,
     strat_split,
+    generate_basic_split_stats_table,
 )
-from preprocessing.cub.splits_utils import build_data_indexes_cub, generate_split_stats_table
+from preprocessing.cub.splits_utils import build_data_indexes_cub
 from utils.config import get_config_splits
 from utils.utils import load_pickle, paths, seed_libs
 
@@ -35,8 +37,8 @@ def _class_dir_to_common_name(class_dir: str) -> str:
     _, raw_name = class_dir.split(".", 1)
     return raw_name.lower()
 
-def _build_classdir_to_sid(class_data):
-    classdir_to_sid = {}
+def _build_classdir_to_cid(class_data):
+    classdir_to_cid = {}
     for cid, cid_data in class_data.items():
         species = cid_data.get("species")
         if not isinstance(species, str) or not species:
@@ -44,16 +46,16 @@ def _build_classdir_to_sid(class_data):
         common_name = cid_data.get("common_name", cid)
         if not isinstance(common_name, str) or not common_name:
             raise ValueError(f"Invalid common_name for cid='{cid}': {common_name}")
-        classdir_to_sid[common_name] = species
-    return classdir_to_sid
+        classdir_to_cid[common_name] = species
+    return classdir_to_cid
 
 def _build_img_ptrs(index_rfpaths_all, class_data):
-    classdir_to_sid = _build_classdir_to_sid(class_data)
+    classdir_to_cid = _build_classdir_to_cid(class_data)
 
     img_ptrs = defaultdict(dict)
-    sid_2_samp_idxs = defaultdict(list)
+    cid_2_samp_idxs = defaultdict(list)
     rfpath_2_skey = {}
-    sid_offsets = defaultdict(int)
+    cid_offsets = defaultdict(int)
 
     for rfpath in index_rfpaths_all:
         parts = rfpath.split("/")
@@ -61,24 +63,24 @@ def _build_img_ptrs(index_rfpaths_all, class_data):
             raise ValueError(f"Unexpected CUB rfpath format: {rfpath}")
         class_dir = parts[0]
         class_name = _class_dir_to_common_name(class_dir)
-        if class_name not in classdir_to_sid:
+        if class_name not in classdir_to_cid:
             raise KeyError(f"CUB class directory '{class_dir}' missing from class_data mapping")
 
-        sid = classdir_to_sid[class_name]
-        samp_idx = sid_offsets[sid]
-        sid_offsets[sid] += 1
+        cid = classdir_to_cid[class_name]
+        samp_idx = cid_offsets[cid]
+        cid_offsets[cid] += 1
 
-        img_ptrs[sid][samp_idx] = rfpath
-        sid_2_samp_idxs[sid].append(samp_idx)
-        rfpath_2_skey[rfpath] = (sid, samp_idx)
+        img_ptrs[cid][samp_idx] = rfpath
+        cid_2_samp_idxs[cid].append(samp_idx)
+        rfpath_2_skey[rfpath] = (cid, samp_idx)
 
-    sids = sorted(img_ptrs.keys())
+    cids = sorted(img_ptrs.keys())
     n_samps_dict = {
-        sid: len(sid_2_samp_idxs[sid])
-        for sid in sids
+        cid: len(cid_2_samp_idxs[cid])
+        for cid in cids
     }
 
-    return img_ptrs, sid_2_samp_idxs, rfpath_2_skey, sids, n_samps_dict
+    return img_ptrs, cid_2_samp_idxs, rfpath_2_skey, cids, n_samps_dict
 
 def _build_skeys_from_rfpaths(index_rfpaths, rfpath_2_skey, partition_name: str):
     skeys = set()
@@ -92,67 +94,67 @@ def _build_skeys_from_rfpaths(index_rfpaths, rfpath_2_skey, partition_name: str)
 
     return skeys
 
-def _choose_ood_val_sids(
-    sids_train,
-    n_sids_total_target,
+def _choose_ood_val_cids(
+    cids_train,
+    n_cids_total_target,
     cfg,
 ):
-    """Pick exactly round(n_sids_total_target * pct_partition) species for OOD-val."""
-    n_sids_ood_val_target = round(n_sids_total_target * cfg.pct_partition)
+    """Pick exactly round(n_cids_total_target * pct_partition) species for OOD-val."""
+    n_cids_ood_val_target = round(n_cids_total_target * cfg.pct_partition)
 
-    if n_sids_ood_val_target > len(sids_train):
+    if n_cids_ood_val_target > len(cids_train):
         raise ValueError(
-            f"Target OOD-val sid count ({n_sids_ood_val_target}) exceeds available train sid count ({len(sids_train)})"
+            f"Target OOD-val cid count ({n_cids_ood_val_target}) exceeds available train cid count ({len(cids_train)})"
         )
 
-    if n_sids_ood_val_target == 0:
+    if n_cids_ood_val_target == 0:
         return set()
 
     rng = np.random.default_rng(cfg.seed)
-    sids_train_sorted = sorted(sids_train)
-    return set(rng.choice(sids_train_sorted, size=n_sids_ood_val_target, replace=False).tolist())
+    cids_train_sorted = sorted(cids_train)
+    return set(rng.choice(cids_train_sorted, size=n_cids_ood_val_target, replace=False).tolist())
 
 def _split_train_into_train_idval_oodval(
     skeys_train_pool,
-    n_sids_total_target,
+    n_cids_total_target,
     n_samps_total_target,
     cfg,
 ):
-    sid_2_skeys_train = defaultdict(list)
-    for sid, samp_idx in sorted(skeys_train_pool):
-        sid_2_skeys_train[sid].append((sid, samp_idx))
+    cid_2_skeys_train = defaultdict(list)
+    for cid, samp_idx in sorted(skeys_train_pool):
+        cid_2_skeys_train[cid].append((cid, samp_idx))
 
-    sids_train = set(sid_2_skeys_train.keys())
+    cids_train = set(cid_2_skeys_train.keys())
 
-    sids_ood_val = _choose_ood_val_sids(
-        sids_train=sids_train,
-        n_sids_total_target=n_sids_total_target,
+    cids_ood_val = _choose_ood_val_cids(
+        cids_train=cids_train,
+        n_cids_total_target=n_cids_total_target,
         cfg=cfg,
     )
 
     skeys_ood_val = {
         skey
-        for sid in sids_ood_val
-        for skey in sid_2_skeys_train[sid]
+        for cid in cids_ood_val
+        for skey in cid_2_skeys_train[cid]
     }
 
     skeys_id_pool = skeys_train_pool - skeys_ood_val
-    sid_2_skeys_id_pool = defaultdict(list)
-    for sid, samp_idx in sorted(skeys_id_pool):
-        sid_2_skeys_id_pool[sid].append((sid, samp_idx))
+    cid_2_skeys_id_pool = defaultdict(list)
+    for cid, samp_idx in sorted(skeys_id_pool):
+        cid_2_skeys_id_pool[cid].append((cid, samp_idx))
 
-    sids_id_pool = set(sid_2_skeys_id_pool.keys())
-    sids_id_singles = {
-        sid
-        for sid in sorted(sids_id_pool)
-        if len(sid_2_skeys_id_pool[sid]) == 1
+    cids_id_pool = set(cid_2_skeys_id_pool.keys())
+    cids_id_singles = {
+        cid
+        for cid in sorted(cids_id_pool)
+        if len(cid_2_skeys_id_pool[cid]) == 1
     }
-    sids_id_multis = sids_id_pool - sids_id_singles
+    cids_id_multis = cids_id_pool - cids_id_singles
 
     skeys_id_multis = {
         skey
-        for sid in sids_id_multis
-        for skey in sid_2_skeys_id_pool[sid]
+        for cid in cids_id_multis
+        for skey in cid_2_skeys_id_pool[cid]
     }
 
     n_samps_id_val_target = round(n_samps_total_target * cfg.pct_partition)
@@ -166,37 +168,37 @@ def _split_train_into_train_idval_oodval(
         skeys_train_multis = set(skeys_id_multis)
     else:
         n_insts_2_classes_s = defaultdict(list)
-        sid_2_skeys_id_multis = defaultdict(list)
+        cid_2_skeys_id_multis = defaultdict(list)
 
-        for sid in sorted(sids_id_multis):
-            sid_skeys = list(sorted(sid_2_skeys_id_pool[sid]))
-            sid_2_skeys_id_multis[sid] = sid_skeys
-            n_insts_2_classes_s[len(sid_skeys)].append(sid)
+        for cid in sorted(cids_id_multis):
+            cid_skeys = list(sorted(cid_2_skeys_id_pool[cid]))
+            cid_2_skeys_id_multis[cid] = cid_skeys
+            n_insts_2_classes_s[len(cid_skeys)].append(cid)
 
         pct_id_val = n_samps_id_val_target / len(skeys_id_multis)
 
         skeys_train_multis, skeys_id_val_a, skeys_id_val_b = strat_split(
-            n_classes=len(sids_id_multis),
+            n_classes=len(cids_id_multis),
             n_draws=n_samps_id_val_target,
             pct_eval=pct_id_val,
             n_insts_2_classes=n_insts_2_classes_s,
-            class_2_insts=sid_2_skeys_id_multis,
+            class_2_insts=cid_2_skeys_id_multis,
             insts=set(skeys_id_multis),
             seed=cfg.seed,
         )
         skeys_id_val = set(skeys_id_val_a).union(skeys_id_val_b)
 
-        # Keep at least one train sample for each multi-instance ID sid.
-        for sid in sorted(sids_id_multis):
-            sid_skeys = set(sid_2_skeys_id_multis[sid])
-            if sid_skeys.intersection(skeys_train_multis):
+        # Keep at least one train sample for each multi-instance ID cid.
+        for cid in sorted(cids_id_multis):
+            cid_skeys = set(cid_2_skeys_id_multis[cid])
+            if cid_skeys.intersection(skeys_train_multis):
                 continue
 
-            sid_skeys_val = sorted(sid_skeys.intersection(skeys_id_val))
-            if not sid_skeys_val:
-                raise ValueError(f"Could not preserve train coverage for sid '{sid}'")
+            cid_skeys_val = sorted(cid_skeys.intersection(skeys_id_val))
+            if not cid_skeys_val:
+                raise ValueError(f"Could not preserve train coverage for cid '{cid}'")
 
-            skey_move = sid_skeys_val[0]
+            skey_move = cid_skeys_val[0]
             skeys_id_val.remove(skey_move)
             skeys_train_multis.add(skey_move)
 
@@ -207,8 +209,8 @@ def _split_train_into_train_idval_oodval(
             )
 
     skeys_id_singles = {
-        sid_2_skeys_id_pool[sid][0]
-        for sid in sorted(sids_id_singles)
+        cid_2_skeys_id_pool[cid][0]
+        for cid in sorted(cids_id_singles)
     }
     skeys_train = set(skeys_train_multis).union(skeys_id_singles)
 
@@ -220,12 +222,12 @@ def _split_train_into_train_idval_oodval(
 
     return skeys_train, skeys_id_val, skeys_ood_val
 
-def _build_sid_2_skeys_id(skeys_train, skeys_id_val, skeys_id_test):
-    sid_2_skeys_id = defaultdict(list)
+def _build_cid_2_skeys_id(skeys_train, skeys_id_val, skeys_id_test):
+    cid_2_skeys_id = defaultdict(list)
     skeys_id_all = set(skeys_train).union(skeys_id_val).union(skeys_id_test)
-    for sid, samp_idx in sorted(skeys_id_all):
-        sid_2_skeys_id[sid].append((sid, samp_idx))
-    return sid_2_skeys_id
+    for cid, samp_idx in sorted(skeys_id_all):
+        cid_2_skeys_id[cid].append((cid, samp_idx))
+    return cid_2_skeys_id
 
 def build_splits() -> None:
     cfg = get_config_splits()
@@ -258,7 +260,7 @@ def build_splits() -> None:
     index_rfpaths_test_id = index_rfpaths_all[idxs_test_id]
     index_rfpaths_test_ood = index_rfpaths_all[idxs_test_ood]
 
-    img_ptrs, _, rfpath_2_skey, sids, n_samps_dict = _build_img_ptrs(index_rfpaths_all, class_data)
+    img_ptrs, _, rfpath_2_skey, cids, n_samps_dict = _build_img_ptrs(index_rfpaths_all, class_data)
 
     skeys_train_pool = _build_skeys_from_rfpaths(index_rfpaths_train, rfpath_2_skey, "train_pool")
     skeys_id_test = _build_skeys_from_rfpaths(index_rfpaths_test_id, rfpath_2_skey, "id_test")
@@ -274,13 +276,13 @@ def build_splits() -> None:
     if skeys_id_test.intersection(skeys_ood_test):
         raise ValueError("id_test and ood_test partitions overlap")
 
-    n_sids_total_target = len(sids)
+    n_cids_total_target = len(cids)
     n_samps_total_target = sum(n_samps_dict.values())
 
     print("Constructing train/ID-val/OOD-val from train pool...")
     skeys_train, skeys_id_val, skeys_ood_val = _split_train_into_train_idval_oodval(
         skeys_train_pool=skeys_train_pool,
-        n_sids_total_target=n_sids_total_target,
+        n_cids_total_target=n_cids_total_target,
         n_samps_total_target=n_samps_total_target,
         cfg=cfg,
     )
@@ -293,9 +295,12 @@ def build_splits() -> None:
         "ood_val": skeys_ood_val,
         "ood_test": skeys_ood_test,
     }
+    skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
 
     all_skeys = set()
     for partition_name, skeys in skeys_partitions.items():
+        if partition_name == "trainval":
+            continue
         intersection = all_skeys.intersection(skeys)
         if intersection:
             raise ValueError(f"Partition '{partition_name}' overlaps previous partitions")
@@ -309,19 +314,19 @@ def build_splits() -> None:
 
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
-    sid_2_skeys_id = _build_sid_2_skeys_id(skeys_train, skeys_id_val, skeys_id_test)
+    cid_2_skeys_id = _build_cid_2_skeys_id(skeys_train, skeys_id_val, skeys_id_test)
     # Only species with at least one training sample are valid for n-shot tracking.
     # Species selected for OOD-val may still appear in the fixed id_test (allowed by
     # design), but they have 0 train samples and must be excluded here.
-    sids_id = {sid for sid, _ in skeys_train}
+    cids_id = {cid for cid, _ in skeys_train}
 
     print("Constructing n-shot tracking structures...")
-    id_eval_nshot = build_id_eval_nshot(cfg, sids_id, skeys_partitions, sid_2_skeys_id)
+    id_eval_nshot = build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id)
     print("n-shot tracking complete!")
 
     print("Generating data indexes...")
-    data_indexes = build_data_indexes_cub(sids, skeys_partitions, img_ptrs)
-    data_indexes_dev = build_data_indexes_cub(sids, skeys_partitions_dev, img_ptrs)
+    data_indexes = build_data_indexes_cub(cids, skeys_partitions, img_ptrs)
+    data_indexes_dev = build_data_indexes_cub(cids, skeys_partitions_dev, img_ptrs)
     print("Data indexes complete!")
 
     print("Generating class counts for train partition...")
@@ -349,17 +354,11 @@ def build_splits() -> None:
     # SPLIT STATS TABLE
 
     print("Generating split stats table...")
-    sids_ood_val = {sid for sid, _ in skeys_ood_val}
-    sids_id_test = {sid for sid, _ in skeys_id_test}
-    sids_ood_test = {sid for sid, _ in skeys_ood_test}
-    generate_split_stats_table(
-        sids_id,
-        sids_ood_val,
-        sids_id_test,
-        sids_ood_test,
-        skeys_partitions,
-        dpath_figs,
-        len(sids),
+    generate_basic_split_stats_table(
+        skeys_partitions=skeys_partitions,
+        dpath_figs=dpath_figs,
+        n_cids_total=len(cids),
+        title="Split Stats (CUB)",
     )
     print("Split stats table complete!")
 

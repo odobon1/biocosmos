@@ -69,7 +69,7 @@ def _gbif_common_name(
     name = (items[0].get("vernacularName") or "").strip()
     return name or None
 
-def build_sids2commons(
+def build_cids2commons(
     sids: Iterable[str],
     *,
     max_workers: int = 16,
@@ -78,7 +78,7 @@ def build_sids2commons(
     progress_desc: str = "Retrieving Common Names",
 ) -> Dict[str, str | None]:
     sids = sorted(sids)
-    sids2commons: Dict[str, str | None] = {}
+    cids2commons: Dict[str, str | None] = {}
     thread_local = threading.local()
 
     def fetch_one(sid: str) -> tuple[str, str | None]:
@@ -100,6 +100,6 @@ def build_sids2commons(
         futures = {executor.submit(fetch_one, sid): sid for sid in sids}
         for future in tqdm(as_completed(futures), total=len(futures), desc=progress_desc):
             sid, common = future.result()
-            sids2commons[sid] = common
+            cids2commons[sid] = common
 
-    return sids2commons
+    return cids2commons

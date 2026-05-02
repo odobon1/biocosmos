@@ -2,7 +2,7 @@ import matplotlib  # type: ignore[import]
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore[import]
 import matplotlib.gridspec as gridspec  # type: ignore[import]
-from matplotlib.ticker import FormatStrFormatter, MaxNLocator, NullLocator  # type: ignore[import]
+from matplotlib.ticker import FuncFormatter, FormatStrFormatter  # type: ignore[import]
 import numpy as np  # type: ignore[import]
 import shutil
 from dataclasses import asdict
@@ -123,14 +123,18 @@ class ArtifactManager:
         save_json(metadata, fpath_meta)
 
     @staticmethod
-    def save_metadata_model(dpath_model, scores_val, idx_epoch_chkpt, idx_epoch):
+    def save_metadata_model(dpath_model, scores_val, samps_seen_chkpt, samps_seen):
         fpath_meta = dpath_model / "metadata_model.json"
         scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
         metadata = {
             "scores_val": scores_val,
-            "idx_epoch":  f"{idx_epoch_chkpt}/{idx_epoch}",
+            "samps_seen": f"{samps_seen_chkpt:,}/{samps_seen:,}",
         }
         save_json(metadata, fpath_meta)
+
+
+def _samples_seen_tick_formatter(value, _pos):
+    return f"{value / 1_000_000:g}"
 
 def plot_metrics(
         data_tracker, 
@@ -152,8 +156,7 @@ def plot_metrics(
     if not partition_names or "comp_map" not in data:
         return
 
-    x_len = len(data["comp_map"])
-    x = list(range(0, x_len))
+    x = data["samps_seen"]
 
     bucket_partition_name = next(
         (
@@ -187,60 +190,6 @@ def plot_metrics(
         figsize,
         height_ratios,
     )
-
-
-def plot_partition_metrics(
-    data,
-    x,
-    dpath_trial,
-    partition_names,
-    fontsize_axes,
-    fontsize_ticks,
-    fontsize_legend,
-    subplot_border_width,
-):
-    retrieval_specs = [
-        ("i2t_map", "I2T", "blue"),
-        ("i2i_map", "I2I", "red"),
-        ("t2i_map", "T2I", "green"),
-    ]
-
-    for partition_name in partition_names:
-        fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-
-        for metric_name, label, color in retrieval_specs:
-            axes[0].plot(x, data[f"{partition_name}_{metric_name}"], label=label, color=color)
-        axes[0].plot(x, data[f"{partition_name}_map"], label="Composite", color="black")
-        axes[0].set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
-        axes[0].set_ylim(0, 1)
-        axes[0].legend(loc="lower right", fontsize=fontsize_legend)
-        axes[0].grid(True)
-
-        axes[1].plot(x, data[f"{partition_name}_i2t_prec1"], label="I2T Prec@1", color="blue")
-        axes[1].set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
-        axes[1].set_ylim(0, 1)
-        axes[1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
-        axes[1].xaxis.set_major_locator(MaxNLocator(integer=True))
-        axes[1].xaxis.set_minor_locator(NullLocator())
-        axes[1].legend(loc="lower right", fontsize=fontsize_legend)
-        axes[1].grid(True)
-
-        for ax in axes:
-            ax.tick_params(labelsize=fontsize_ticks)
-            for spine in ax.spines.values():
-                spine.set_linewidth(subplot_border_width)
-                spine.set_edgecolor("black")
-
-        fig.suptitle(
-            f"Train Metrics: {'-'.join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split('_'))])}",
-            fontweight="bold",
-            y=0.98,
-            fontsize=18,
-        )
-        plt.tight_layout()
-        fig.savefig(dpath_trial / "plots" / f"train_metrics_partition_{partition_name}.png")
-        plt.close(fig)
-
 
 def plot_composite_metrics(
     data,
@@ -330,9 +279,8 @@ def plot_composite_metrics(
     ax4.yaxis.set_offset_position("right")
     ax4.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
     ax4.yaxis.get_offset_text().set_visible(False)
-    ax4.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
-    ax4.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax4.xaxis.set_minor_locator(NullLocator())
+    ax4.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
+    ax4.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
     ax4.grid(True)
     ax4.tick_params(labelsize=fontsize_ticks)
 
@@ -347,7 +295,7 @@ def plot_composite_metrics(
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
 
-    fig.suptitle("Train Metrics: Composite", fontweight="bold", y=0.98, fontsize=20)
+    fig.suptitle("Train Metrics", fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
     fig.savefig(dpath_trial / "plots/train_metrics.png")

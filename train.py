@@ -47,6 +47,7 @@ class TrialDataTracker:
         self.fpath_data = dpath_trial / "data_trial.pkl"
 
         self.data = {
+            "samps_seen": [],
             "comp_map": [],
             "i2i_map": [],
             "comp_loss": [],
@@ -55,7 +56,9 @@ class TrialDataTracker:
             "loss_raw_train": [],
         }
 
-    def update(self, scores_val, lr=None, loss_train=None, loss_raw_train=None):
+    def update(self, scores_val, samps_seen=None, lr=None, loss_train=None, loss_raw_train=None):
+
+        self.data["samps_seen"].append(samps_seen)
 
         for score_name, score_value in scores_val.items():
             if score_name not in self.data:
@@ -212,8 +215,8 @@ class TrainPipeline:
             ArtifactManager.save_metadata_trial()
         self.init_opt_and_lr_sched()
 
-        self.lr_warmup   = self.cfg.opt["lr"]["warmup"]
-        self.samps_seen  = 0
+        self.lr_warmup = self.cfg.opt["lr"]["warmup"]
+        self.n_samps_seen = 0
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
         self.logged_train_text = False
 
@@ -251,10 +254,10 @@ class TrainPipeline:
             self.scaler = GradScaler()
 
     def _update_lr_warmup(self) -> float:
-        if self.lr_warmup == 0 or self.samps_seen >= self.lr_warmup:
+        if self.lr_warmup == 0 or self.n_samps_seen >= self.lr_warmup:
             lr = self.optimizer.param_groups[0]["lr"]
         else:
-            frac = self.samps_seen / self.lr_warmup
+            frac = self.n_samps_seen / self.lr_warmup
             lr = self.lr_init_nom * frac
             for pg in self.optimizer.param_groups:
                 pg["lr"] = lr
@@ -275,15 +278,15 @@ class TrainPipeline:
             scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw)
             if self.gpu_rank == 0:
                 data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
-                data_tracker.update(scores_val)
+                data_tracker.update(scores_val, samps_seen=0)
                 PrintLog.eval(scores_val, self.val_pipe, header="Base")
                 PrintLog.texts_eval(self.val_pipe.get_eval_texts())
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()
 
-            idx_epoch_best_comp = 0
-            idx_epoch_best_i2i = 0
+            samps_seen_best_comp = 0
+            samps_seen_best_i2i = 0
             scores_val_best_comp = {}
             scores_val_best_i2i = {}
             loss_val_best = np.inf
@@ -319,7 +322,7 @@ class TrainPipeline:
                     imgs_sb = imgs_sb.to(self.cfg.device, non_blocking=True)
                     class_encs_sb = class_encs_sb.to(self.cfg.device)
                     B = imgs_sb.size(0) * self.gpu_world_size
-                    self.samps_seen += B
+                    self.n_samps_seen += B
 
                     if self.lr_warmup > 0:
                         lr = self._update_lr_warmup()
@@ -371,6 +374,7 @@ class TrainPipeline:
                 if self.gpu_rank == 0:
                     data_tracker.update(
                         scores_val, 
+                        samps_seen=self.n_samps_seen,
                         lr=lr_mean.value(), 
                         loss_train=loss_mean.value(), 
                         loss_raw_train=loss_raw_mean.value(),
@@ -388,31 +392,31 @@ class TrainPipeline:
 
                     if is_best_comp:
                         self.modelw.save(ArtifactManager.dpath_model_best_comp)
-                        idx_epoch_best_comp  = idx_epoch
+                        samps_seen_best_comp = self.n_samps_seen
                         scores_val_best_comp = scores_val
                     if is_best_i2i:
                         self.modelw.save(ArtifactManager.dpath_model_best_i2i)
-                        idx_epoch_best_i2i  = idx_epoch
+                        samps_seen_best_i2i = self.n_samps_seen
                         scores_val_best_i2i = scores_val
                     if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_i2i:
                         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
                         ArtifactManager.save_metadata_model(
                             ArtifactManager.dpath_model_checkpoint, 
                             scores_val, 
-                            idx_epoch, 
-                            idx_epoch
+                            self.n_samps_seen,
+                            self.n_samps_seen,
                         )
                         ArtifactManager.save_metadata_model(
                             ArtifactManager.dpath_model_best_comp, 
                             scores_val_best_comp, 
-                            idx_epoch_best_comp, 
-                            idx_epoch
+                            samps_seen_best_comp,
+                            self.n_samps_seen,
                         )
                         ArtifactManager.save_metadata_model(
                             ArtifactManager.dpath_model_best_i2i, 
                             scores_val_best_i2i, 
-                            idx_epoch_best_i2i, 
-                            idx_epoch
+                            samps_seen_best_i2i,
+                            self.n_samps_seen,
                         )
                         ArtifactManager.save_metadata_trial(time_train_mean=time_train_mean.value(), time_val_mean=time_val_mean.value())
                         data_tracker.save()

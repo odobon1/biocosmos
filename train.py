@@ -93,7 +93,11 @@ class LRSchedulerWrapper:
             elif self.valid_type == "perf":
                 self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
         elif self.type == "cos":
-            self.sched = CosineAnnealingLR(self.opt, **args_sched)
+            n_epochs = getattr(config, "n_epochs")
+            eta_min_factor = args.get("eta_min_factor")
+            lr_init = self.opt.param_groups[0]["lr"]
+            eta_min = lr_init * float(eta_min_factor)
+            self.sched = CosineAnnealingLR(self.opt, T_max=n_epochs, eta_min=eta_min)
         elif self.type == "coswr":
             self.sched = CosineAnnealingWarmRestarts(self.opt, **args_sched)
         elif self.type == "cosXexp":
@@ -286,7 +290,7 @@ class TrainPipeline:
             for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
                 if self.gpu_rank == 0:
-                    PrintLog.epoch_header(idx_epoch)
+                    PrintLog.epoch_header(idx_epoch, self.cfg.n_epochs)
                     lr = self.lr_schedw.get_lr()
                     PrintLog.train_header(lr)
 

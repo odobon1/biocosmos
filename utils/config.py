@@ -1,8 +1,9 @@
 import torch  # type: ignore[import]
 from dataclasses import dataclass, field
+import math
 import yaml  # type: ignore[import]
 
-from utils.utils import PrintLog, load_json, paths
+from utils.utils import PrintLog, load_json, load_split, paths
 from utils.hardware import compute_dataloader_workers_prefetch
 
 import pdb
@@ -17,7 +18,7 @@ class TrainConfig:
     dataset: str
     split_name: str
 
-    n_epochs: int
+    sample_volume: int
     chkpt_every: int
     batch_size: int
     dv_batching: bool
@@ -36,6 +37,11 @@ class TrainConfig:
     hw: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self):
+
+        split = load_split(self.split_name, dataset=self.dataset)
+        size_train = len(split.data_indexes["train"])
+        samps_per_epoch = size_train - size_train % self.batch_size
+        self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
 
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")

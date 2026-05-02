@@ -13,8 +13,8 @@ from utils.text import get_text_template as get_dataset_text_template
 import pdb
 
 
-# CLUSTER = "pace"  # PACE
-CLUSTER = "hpg"  # HiPerGator
+CLUSTER = "pace"  # PACE
+# CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":
@@ -199,8 +199,8 @@ class PrintLog:
         PrintLog.wrote_text_eval = True
 
     @staticmethod
-    def epoch_header(idx_epoch):
-        header_epoch = f" Epoch {idx_epoch} "
+    def epoch_header(idx_epoch, n_epochs):
+        header_epoch = f" Epoch {idx_epoch}/{n_epochs} "
         header_epoch = (
             f"{header_epoch:#^{75}}"
             f"\n"
@@ -347,7 +347,7 @@ class PrintLog:
         if bucket_comp_keys:
             nshot_comp_lines = f"{' N-Shot Composite mAP ':-^{75}}\n"
             labels = [
-                f"({k.removeprefix(bucket_partition_name + '_').removesuffix('_comp').upper()})-shot"
+                f"{k.removeprefix(bucket_partition_name + '_').removesuffix('_comp')}"
                 for k in bucket_comp_keys
             ]
             len_max = max(len(label) for label in labels)

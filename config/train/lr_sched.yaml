@@ -19,10 +19,7 @@ plat:  # may also want to tweak threshold / eps
 # Cosine LR Scheduler
 cos:
   args:
-    dummy: null
-  args_sched:
-    T_max:   5  # half-period
-    eta_min: 1.0e-7
+    eta_min_factor: 1.0e-3  # eta_min = opt.lr.init * eta_min_factor
 
 # Cosine Warm-Restarts LR Scheduler
 coswr:

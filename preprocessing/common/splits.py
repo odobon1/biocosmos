@@ -789,7 +789,7 @@ def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_ti
     for (_, _), cell in tbl.get_celld().items():
         cell.set_linewidth(0.5)
 
-    plt.title("n-shot Bucket Stats: [Num. Samples (Num. Species)]", fontsize=fontsize_title, fontweight="bold", y=0.70)
+    plt.title("n-shot Bucket Stats: [Num. Samples (Num. Classes)]", fontsize=fontsize_title, fontweight="bold", y=0.70)
     plt.savefig(str(dpath_figs / "stats_nshot.png"), dpi=300, bbox_inches="tight")
 
 def count_unique_cids_from_skeys(skeys) -> int:

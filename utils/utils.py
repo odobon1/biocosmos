@@ -159,6 +159,7 @@ class PrintLog:
     log_batch_grad_norm = None
     log_batch_temp_bias = None
     log_epoch = None
+    log_eval = None
     log_init  = None
     log_text  = None
     log_text_eval = None
@@ -174,6 +175,7 @@ class PrintLog:
         PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
         PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
+        PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
         PrintLog.log_init  = open(dpath_logs / "init.log",  "a", buffering=1)
         PrintLog.log_text  = open(dpath_logs / "text.log",  "a", buffering=1)
         PrintLog.log_text_eval = open(dpath_logs / "text_eval.log",  "a", buffering=1)
@@ -224,15 +226,15 @@ class PrintLog:
             PrintLog.log_epoch.write(header_train)
 
     @staticmethod
-    def epoch(time_train, time_train_avg, time_val, time_val_avg, loss_train_avg, loss_train_raw_avg):
+    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, samps_seen):
 
         epoch_info = (
+            f"Samples Seen -------- {samps_seen:,}\n"
             f"Train Loss --------- {loss_train_avg:.3e}\n"
             f"Train Loss (raw) --- {loss_train_raw_avg:.3e}\n"
             f"\n"
             f"{' Elapsed Time ':=^{75}}\n"
             f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)\n"
-            f"Validation --- {time_val:.2f} s (avg: {time_val_avg:.2f} s)\n"
             f"\n"
         )
         print(epoch_info)
@@ -313,21 +315,33 @@ class PrintLog:
         scores_eval: Dict[str, float],
         eval_pipe,
         header: Optional[str] = None,
+        samps_seen: Optional[int] = None,
+        idx_epoch: Optional[int] = None,
+        time_val: Optional[float] = None,
+        log_to: str = "epoch",
     ) -> None:
         
         partition_names = eval_pipe.partition_names
         nshot_bucket_names = eval_pipe.nshot_bucket_names
         bucket_partition_name = eval_pipe.bucket_partition_name
 
+        if log_to == "eval":
+            target_log = PrintLog.log_eval
+        elif log_to == "epoch":
+            target_log = PrintLog.log_epoch
+        else:
+            target_log = None
+
+        header_str = ""
         if header is not None:
-            header = f" {header} "
-            header = (
-                f"{header:#^{75}}"
+            header_wrapped = f" {header} "
+            header_str = (
+                f"{header_wrapped:#^{75}}"
                 f"\n"
             )
-            print(header)
-            if PrintLog.logging:
-                PrintLog.log_epoch.write(header)
+            print(header_str)
+            if PrintLog.logging and target_log is not None:
+                target_log.write(header_str)
 
         if eval_pipe.best_comp_map is not None:
             best_comp_map_str = f" (best: {eval_pipe.best_comp_map:.4f})"
@@ -379,9 +393,20 @@ class PrintLog:
         for partition_name in partition_names:
             loss_lines += _metric_line(partition_name, f"{scores_eval[f'{partition_name}_loss']:.3e}")
 
+        context_lines = ""
+        if idx_epoch is not None:
+            context_lines += f"Epoch -------- {idx_epoch}\n"
+        if samps_seen is not None:
+            context_lines += f"Samples Seen - {samps_seen:,}\n"
+        if time_val is not None:
+            context_lines += f"Validation --- {time_val:.2f} s\n"
+        if context_lines:
+            context_lines += "\n"
+
         header = " Eval "
         eval_printout = (
             f"{header:=^{75}}\n"
+            f"{context_lines}"
             f"{partition_lines}"
             f"{nshot_comp_lines}"
             f"{composite_lines}"
@@ -390,8 +415,8 @@ class PrintLog:
         )
         print(eval_printout)
 
-        if PrintLog.logging:
-            PrintLog.log_epoch.write(eval_printout)
+        if PrintLog.logging and target_log is not None:
+            target_log.write(eval_printout)
 
     @staticmethod
     def init_train(cfg_train):
@@ -406,6 +431,7 @@ class PrintLog:
             "",
             f"Batch Size ---- {cfg_train.batch_size}",
             f"DV Batching --- {cfg_train.dv_batching}",
+            f"Eval Every ---- {cfg_train.eval_every:,} samples",
             "",
             f"=== Architecture ===",
             f"Model Type --- {cfg_train.arch['model_type']}",
@@ -537,13 +563,18 @@ class PrintLog:
 
     @staticmethod
     def close_logs():
-        PrintLog.log_batch_general.close()
-        PrintLog.log_batch_grad_norm.close()
-        PrintLog.log_batch_temp_bias.close()
-        PrintLog.log_epoch.close()
-        PrintLog.log_init.close()
-        PrintLog.log_text.close()
-        PrintLog.log_text_eval.close()
+        for handle in (
+            PrintLog.log_batch_general,
+            PrintLog.log_batch_grad_norm,
+            PrintLog.log_batch_temp_bias,
+            PrintLog.log_epoch,
+            PrintLog.log_eval,
+            PrintLog.log_init,
+            PrintLog.log_text,
+            PrintLog.log_text_eval,
+        ):
+            if handle is not None and not handle.closed:
+                handle.close()
 
 def get_subdirectory_names(dir_path):
     return [p.name for p in Path(dir_path).iterdir() if p.is_dir()]

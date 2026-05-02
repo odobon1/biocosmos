@@ -19,6 +19,7 @@ class TrainConfig:
     split_name: str
 
     sample_volume: int
+    eval_every: int
     chkpt_every: int
     batch_size: int
     dv_batching: bool
@@ -72,6 +73,9 @@ class TrainConfig:
 
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
+
+        if self.eval_every <= 0:
+            raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(

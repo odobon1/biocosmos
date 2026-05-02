@@ -1,10 +1,11 @@
 study_name: dev
-experiment_name: dev_lepid_clip
+experiment_name: dev_cub_clip_3
 seed: 42
-dataset: lepid  # {bryo, cub, lepid, nymph}
+dataset: cub  # {bryo, cub, lepid, nymph}
 split_name: D10  # {D10, dev}
 
 sample_volume: 1_000_000
+eval_every: 10_000
 chkpt_every: 1
 batch_size: 512  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching

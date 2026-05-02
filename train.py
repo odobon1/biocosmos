@@ -12,7 +12,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[imp
 from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 import time
-import numpy as np  # type: ignore[import]
 import math
 
 from utils.utils import (
@@ -46,31 +45,44 @@ class TrialDataTracker:
 
         self.fpath_data = dpath_trial / "data_trial.pkl"
 
-        self.data = {
+        self.data_epoch = {
             "samps_seen": [],
-            "comp_map": [],
-            "i2i_map": [],
-            "comp_loss": [],
             "lr": [],
             "loss_train": [],
             "loss_raw_train": [],
         }
+        self.data_eval = {
+            "samps_seen": [],
+            "idx_epoch": [],
+            "comp_map": [],
+            "i2i_map": [],
+            "comp_loss": [],
+        }
+        self.data = {
+            "epoch": self.data_epoch,
+            "eval": self.data_eval,
+        }
 
-    def update(self, scores_val, samps_seen=None, lr=None, loss_train=None, loss_raw_train=None):
+    def update_epoch(self, samps_seen, lr=None, loss_train=None, loss_raw_train=None):
 
-        self.data["samps_seen"].append(samps_seen)
-
-        for score_name, score_value in scores_val.items():
-            if score_name not in self.data:
-                self.data[score_name] = []
-            self.data[score_name].append(float(score_value))
+        self.data_epoch["samps_seen"].append(samps_seen)
 
         if lr is not None:
-            self.data["lr"].append(lr)
+            self.data_epoch["lr"].append(lr)
         if loss_train is not None:
-            self.data["loss_train"].append(loss_train)
+            self.data_epoch["loss_train"].append(loss_train)
         if loss_raw_train is not None:
-            self.data["loss_raw_train"].append(loss_raw_train)
+            self.data_epoch["loss_raw_train"].append(loss_raw_train)
+
+    def update_eval(self, scores_val, samps_seen, idx_epoch):
+
+        self.data_eval["samps_seen"].append(samps_seen)
+        self.data_eval["idx_epoch"].append(idx_epoch)
+
+        for score_name, score_value in scores_val.items():
+            if score_name not in self.data_eval:
+                self.data_eval[score_name] = []
+            self.data_eval[score_name].append(float(score_value))
 
     def save(self):
         save_pickle(self.data, self.fpath_data)
@@ -217,6 +229,7 @@ class TrainPipeline:
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]
         self.n_samps_seen = 0
+        self.next_eval_threshold = self.cfg.eval_every
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
         self.logged_train_text = False
 
@@ -275,21 +288,34 @@ class TrainPipeline:
 
     def train(self):
         try:
-            scores_val, _, _, _ = self.val_pipe.run_validation(self.modelw)
+            scores_val, _, _, time_val_base = self.val_pipe.run_validation(self.modelw)
+            scores_val = self._broadcast_obj(scores_val)
+            time_val_base = self._broadcast_obj(time_val_base)
+
             if self.gpu_rank == 0:
                 data_tracker = TrialDataTracker(ArtifactManager.dpath_trial)
-                data_tracker.update(scores_val, samps_seen=0)
-                PrintLog.eval(scores_val, self.val_pipe, header="Base")
+                data_tracker.update_eval(scores_val, samps_seen=0, idx_epoch=0)
+                PrintLog.eval(
+                    scores_val,
+                    self.val_pipe,
+                    header="Base",
+                    samps_seen=0,
+                    idx_epoch=0,
+                    time_val=time_val_base,
+                    log_to="eval",
+                )
                 PrintLog.texts_eval(self.val_pipe.get_eval_texts())
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()
+                time_val_mean.update(time_val_base)
 
             samps_seen_best_comp = 0
             samps_seen_best_i2i = 0
-            scores_val_best_comp = {}
-            scores_val_best_i2i = {}
-            loss_val_best = np.inf
+            scores_val_best_comp = scores_val
+            scores_val_best_i2i = scores_val
+            scores_val_latest = scores_val
+
             for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
                 if self.gpu_rank == 0:
@@ -358,51 +384,89 @@ class TrainPipeline:
                         loss_mean.update(loss)
                         loss_raw_mean.update(loss_raw)
 
+                    while self.n_samps_seen >= self.next_eval_threshold:
+                        threshold_hit = self.next_eval_threshold
+                        self.next_eval_threshold += self.cfg.eval_every
+
+                        scores_val, is_best_comp, is_best_i2i, time_val = self.val_pipe.run_validation(self.modelw)
+
+                        # broadcast results from GPU rank 0 to all ranks
+                        scores_val = self._broadcast_obj(scores_val)
+                        is_best_comp = self._broadcast_obj(is_best_comp)
+                        is_best_i2i = self._broadcast_obj(is_best_i2i)
+                        time_val = self._broadcast_obj(time_val)
+                        scores_val_latest = scores_val
+
+                        if self.gpu_rank == 0:
+                            time_val_mean.update(time_val)
+                            data_tracker.update_eval(scores_val, samps_seen=self.n_samps_seen, idx_epoch=idx_epoch)
+                            PrintLog.eval(
+                                scores_val,
+                                self.val_pipe,
+                                header=f"Threshold {threshold_hit:,}",
+                                samps_seen=self.n_samps_seen,
+                                idx_epoch=idx_epoch,
+                                time_val=time_val,
+                                log_to="eval",
+                            )
+
+                            if is_best_comp:
+                                self.modelw.save(ArtifactManager.dpath_model_best_comp)
+                                samps_seen_best_comp = self.n_samps_seen
+                                scores_val_best_comp = scores_val
+                            if is_best_i2i:
+                                self.modelw.save(ArtifactManager.dpath_model_best_i2i)
+                                samps_seen_best_i2i = self.n_samps_seen
+                                scores_val_best_i2i = scores_val
+                            if is_best_comp or is_best_i2i:
+                                self.modelw.save(ArtifactManager.dpath_model_checkpoint)
+                                ArtifactManager.save_metadata_model(
+                                    ArtifactManager.dpath_model_checkpoint,
+                                    scores_val,
+                                    self.n_samps_seen,
+                                    self.n_samps_seen,
+                                )
+                                ArtifactManager.save_metadata_model(
+                                    ArtifactManager.dpath_model_best_comp,
+                                    scores_val_best_comp,
+                                    samps_seen_best_comp,
+                                    self.n_samps_seen,
+                                )
+                                ArtifactManager.save_metadata_model(
+                                    ArtifactManager.dpath_model_best_i2i,
+                                    scores_val_best_i2i,
+                                    samps_seen_best_i2i,
+                                    self.n_samps_seen,
+                                )
+                                ArtifactManager.save_metadata_trial(
+                                    time_train_mean=time_train_mean.value(),
+                                    time_val_mean=time_val_mean.value(),
+                                )
+                                data_tracker.save()
+                                plot_metrics(data_tracker, ArtifactManager.dpath_trial)
+
                 loss_train_avg = loss_mean.value()
 
                 time_train_end = time.time()
                 time_train = time_train_end - time_train_start
 
-                scores_val, is_best_comp, is_best_i2i, time_val = self.val_pipe.run_validation(self.modelw)
-
-                # broadcast results from GPU rank 0 to all ranks
-                scores_val = self._broadcast_obj(scores_val)
-                is_best_comp = self._broadcast_obj(is_best_comp)
-                is_best_i2i = self._broadcast_obj(is_best_i2i)
-                time_val = self._broadcast_obj(time_val)
-
-                if self.gpu_rank == 0:
-                    data_tracker.update(
-                        scores_val, 
-                        samps_seen=self.n_samps_seen,
-                        lr=lr_mean.value(), 
-                        loss_train=loss_mean.value(), 
-                        loss_raw_train=loss_raw_mean.value(),
-                    )
-
-                if scores_val["comp_loss"] < loss_val_best:
-                    loss_val_best = scores_val["comp_loss"]
-
-                self.lr_schedw.step(scores_val)
+                self.lr_schedw.step(scores_val_latest)
 
                 if self.gpu_rank == 0:
 
                     time_train_mean.update(time_train)
-                    time_val_mean.update(time_val)
+                    data_tracker.update_epoch(
+                        samps_seen=self.n_samps_seen,
+                        lr=lr_mean.value(),
+                        loss_train=loss_mean.value(),
+                        loss_raw_train=loss_raw_mean.value(),
+                    )
 
-                    if is_best_comp:
-                        self.modelw.save(ArtifactManager.dpath_model_best_comp)
-                        samps_seen_best_comp = self.n_samps_seen
-                        scores_val_best_comp = scores_val
-                    if is_best_i2i:
-                        self.modelw.save(ArtifactManager.dpath_model_best_i2i)
-                        samps_seen_best_i2i = self.n_samps_seen
-                        scores_val_best_i2i = scores_val
-                    if idx_epoch % self.cfg.chkpt_every == 0 or is_best_comp or is_best_i2i:
+                    if idx_epoch % self.cfg.chkpt_every == 0:
                         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
                         ArtifactManager.save_metadata_model(
-                            ArtifactManager.dpath_model_checkpoint, 
-                            scores_val, 
+                            ArtifactManager.dpath_model_checkpoint,
+                            scores_val_latest,
                             self.n_samps_seen,
                             self.n_samps_seen,
                         )
@@ -423,14 +487,68 @@ class TrainPipeline:
                         plot_metrics(data_tracker, ArtifactManager.dpath_trial)
 
                     PrintLog.epoch(
-                        time_train, 
-                        time_train_mean.value(), 
-                        time_val, 
-                        time_val_mean.value(), 
+                        time_train,
+                        time_train_mean.value(),
                         loss_train_avg,
                         loss_raw_mean.value(),
+                        self.n_samps_seen,
                     )
-                    PrintLog.eval(scores_val, self.val_pipe)
+
+            scores_val, is_best_comp, is_best_i2i, time_val = self.val_pipe.run_validation(self.modelw)
+
+            # broadcast results from GPU rank 0 to all ranks
+            scores_val = self._broadcast_obj(scores_val)
+            is_best_comp = self._broadcast_obj(is_best_comp)
+            is_best_i2i = self._broadcast_obj(is_best_i2i)
+            time_val = self._broadcast_obj(time_val)
+
+            if self.gpu_rank == 0:
+                time_val_mean.update(time_val)
+                data_tracker.update_eval(scores_val, samps_seen=self.n_samps_seen, idx_epoch=self.cfg.n_epochs)
+                PrintLog.eval(
+                    scores_val,
+                    self.val_pipe,
+                    header="Final",
+                    samps_seen=self.n_samps_seen,
+                    idx_epoch=self.cfg.n_epochs,
+                    time_val=time_val,
+                    log_to="eval",
+                )
+
+                if is_best_comp:
+                    self.modelw.save(ArtifactManager.dpath_model_best_comp)
+                    samps_seen_best_comp = self.n_samps_seen
+                    scores_val_best_comp = scores_val
+                if is_best_i2i:
+                    self.modelw.save(ArtifactManager.dpath_model_best_i2i)
+                    samps_seen_best_i2i = self.n_samps_seen
+                    scores_val_best_i2i = scores_val
+
+                self.modelw.save(ArtifactManager.dpath_model_checkpoint)
+                ArtifactManager.save_metadata_model(
+                    ArtifactManager.dpath_model_checkpoint,
+                    scores_val,
+                    self.n_samps_seen,
+                    self.n_samps_seen,
+                )
+                ArtifactManager.save_metadata_model(
+                    ArtifactManager.dpath_model_best_comp,
+                    scores_val_best_comp,
+                    samps_seen_best_comp,
+                    self.n_samps_seen,
+                )
+                ArtifactManager.save_metadata_model(
+                    ArtifactManager.dpath_model_best_i2i,
+                    scores_val_best_i2i,
+                    samps_seen_best_i2i,
+                    self.n_samps_seen,
+                )
+                ArtifactManager.save_metadata_trial(
+                    time_train_mean=time_train_mean.value(),
+                    time_val_mean=time_val_mean.value(),
+                )
+                data_tracker.save()
+                plot_metrics(data_tracker, ArtifactManager.dpath_trial)
 
         finally:
             if self.gpu_rank == 0:
@@ -462,6 +580,7 @@ def main():
     train_pipe.train()
 
     cleanup_ddp()
+
 
 if __name__ == "__main__":
     main()

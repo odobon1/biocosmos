@@ -3,7 +3,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore[import]
 import matplotlib.gridspec as gridspec  # type: ignore[import]
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter  # type: ignore[import]
-import numpy as np  # type: ignore[import]
 import shutil
 from dataclasses import asdict
 
@@ -147,16 +146,28 @@ def plot_metrics(
         height_ratios       =[2, 2, 2, 2, 1],
     ):
     data = data_tracker.data
+    if "epoch" in data and "eval" in data:
+        data_epoch = data["epoch"]
+        data_eval = data["eval"]
+    else:
+        data_eval = data
+        data_epoch = {
+            "samps_seen": data.get("samps_seen", []),
+            "lr": data.get("lr", []),
+            "loss_train": data.get("loss_train", []),
+            "loss_raw_train": data.get("loss_raw_train", []),
+        }
 
     partition_names = [
         key.removesuffix("_i2t_map")
-        for key in data.keys()
+        for key in data_eval.keys()
         if key.endswith("_i2t_map")
     ]
-    if not partition_names or "comp_map" not in data:
+    if not partition_names or "comp_map" not in data_eval:
         return
 
-    x = data["samps_seen"]
+    x_eval = data_eval["samps_seen"]
+    x_epoch = data_epoch["samps_seen"]
 
     bucket_partition_name = next(
         (
@@ -164,7 +175,7 @@ def plot_metrics(
             for partition_name in partition_names
             if any(
                 key.startswith(f"{partition_name}_") and key.endswith("_comp")
-                for key in data.keys()
+                for key in data_eval.keys()
             )
         ),
         None,
@@ -172,13 +183,15 @@ def plot_metrics(
     bucket_comp_keys = []
     if bucket_partition_name is not None:
         bucket_comp_keys = [
-            key for key in data.keys()
+            key for key in data_eval.keys()
             if key.startswith(f"{bucket_partition_name}_") and key.endswith("_comp")
         ]
 
     plot_composite_metrics(
-        data,
-        x,
+        data_epoch,
+        data_eval,
+        x_epoch,
+        x_eval,
         dpath_trial,
         partition_names,
         bucket_partition_name,
@@ -192,8 +205,10 @@ def plot_metrics(
     )
 
 def plot_composite_metrics(
-    data,
-    x,
+    data_epoch,
+    data_eval,
+    x_epoch,
+    x_eval,
     dpath_trial,
     partition_names,
     bucket_partition_name,
@@ -226,8 +241,8 @@ def plot_composite_metrics(
             continue
         for metric_name, metric_label, color in retrieval_specs:
             key = f"{partition_name}_{metric_name}"
-            if key in data:
-                ax0.plot(x, data[key], label=f"{partition_label} {metric_label}", color=color, linestyle=linestyle)
+            if key in data_eval:
+                ax0.plot(x_eval, data_eval[key], label=f"{partition_label} {metric_label}", color=color, linestyle=linestyle)
 
     ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
@@ -239,7 +254,7 @@ def plot_composite_metrics(
     if bucket_comp_keys:
         for key in bucket_comp_keys:
             label = key.removeprefix(f"{bucket_partition_name}_").removesuffix("_comp")
-            maybe_plot(ax1, x, data, key, label, linestyle=":")
+            maybe_plot(ax1, x_eval, data_eval, key, label, linestyle=":")
         ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
@@ -248,11 +263,13 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        ax2.plot(
-            x,
-            data[f"{partition_name}_i2t_prec1"],
-            label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} I2T Prec@1',
-        )
+        key = f"{partition_name}_i2t_prec1"
+        if key in data_eval:
+            ax2.plot(
+                x_eval,
+                data_eval[key],
+                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} I2T Prec@1',
+            )
     ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
     ax2.legend(loc="lower right", fontsize=fontsize_legend)
@@ -260,10 +277,14 @@ def plot_composite_metrics(
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
-    ax3.plot(x, [np.nan] + data["loss_train"], label="Train Loss")
-    ax3.plot(x, [np.nan] + data["loss_raw_train"], label="Train Loss (Raw)")
+    if len(data_epoch.get("loss_train", [])) == len(x_epoch):
+        ax3.plot(x_epoch, data_epoch["loss_train"], label="Train Loss")
+    if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
+        ax3.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition_name in partition_names:
-        ax3.plot(x, data[f"{partition_name}_loss"], label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss')
+        key = f"{partition_name}_loss"
+        if key in data_eval:
+            ax3.plot(x_eval, data_eval[key], label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss')
     ax3.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
     ax3.set_yscale("log")
     ax3.minorticks_on()
@@ -273,7 +294,8 @@ def plot_composite_metrics(
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-    ax4.plot(x, [np.nan] + data["lr"])
+    if len(data_epoch.get("lr", [])) == len(x_epoch):
+        ax4.plot(x_epoch, data_epoch["lr"])
     ax4.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
     ax4.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
     ax4.yaxis.set_offset_position("right")

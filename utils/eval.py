@@ -326,12 +326,34 @@ def compute_map_img2img(
     dist.all_reduce(stats, op=dist.ReduceOp.SUM)
 
     ap_sum_global = stats[0].item()
-    n_nsq_global  = stats[1].item()
+    n_nsq_global = stats[1].item()
 
-    map_i2i = ap_sum_global / n_nsq_global
+    map = ap_sum_global / n_nsq_global
+
+    # Macro mAP: class-balanced mean AP, excluding singleton queries (NaN ap)
+    if Q > 0:
+        global_max_class = class_encs_q.max().reshape(1).clone()
+    else:
+        global_max_class = torch.zeros(1, dtype=torch.long, device=device)
+    dist.all_reduce(global_max_class, op=dist.ReduceOp.MAX)
+    num_classes = int(global_max_class.item()) + 1
+
+    class_ap_sums = torch.zeros(num_classes, device=device)
+    class_ap_counts = torch.zeros(num_classes, device=device)
+    if has_pos_local.any():
+        valid_encs = class_encs_q[has_pos_local]
+        valid_aps = ap_local[has_pos_local]
+        class_ap_sums.scatter_add_(0, valid_encs, valid_aps)
+        class_ap_counts.scatter_add_(0, valid_encs, torch.ones_like(valid_aps))
+    dist.all_reduce(class_ap_sums,   op=dist.ReduceOp.SUM)
+    dist.all_reduce(class_ap_counts, op=dist.ReduceOp.SUM)
+    active_classes = class_ap_counts > 0
+    per_class_means = class_ap_sums[active_classes] / class_ap_counts[active_classes]
+    macro_map = per_class_means.mean().item() if active_classes.any() else float("nan")
 
     scores_i2i = {
-        "map": map_i2i,
+        "map": map,
+        "macro_map": macro_map,
         "ap": ap_local.detach().cpu(),
         "has_pos": has_pos_local.detach().cpu(),
     }
@@ -382,12 +404,27 @@ def compute_map_cross_modal(
     pos_counts = pos_mask.sum(dim=1).float()  # pt[Q]
     ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # pt[Q]
 
-    map_score = ap.mean().item()
+    map = ap.mean().item()
+
+    # Macro mAP: class-balanced mean AP
+    num_classes_q = int(class_encs_q.max().item()) + 1
+    class_ap_sums = torch.zeros(num_classes_q, device=device)
+    class_ap_counts = torch.zeros(num_classes_q, device=device)
+    valid_mask = ~torch.isnan(ap)
+    if valid_mask.any():
+        valid_encs = class_encs_q[valid_mask]
+        valid_aps = ap[valid_mask]
+        class_ap_sums.scatter_add_(0, valid_encs, valid_aps)
+        class_ap_counts.scatter_add_(0, valid_encs, torch.ones_like(valid_aps))
+    active_classes = class_ap_counts > 0
+    per_class_means = class_ap_sums[active_classes] / class_ap_counts[active_classes]
+    macro_map = per_class_means.mean().item() if active_classes.any() else float("nan")
 
     prec1 = pos_mask[:, 0].float()
 
     scores_cross_modal = {
-        "map": map_score,
+        "map": map,
+        "macro_map": macro_map,
         "ap": ap.detach().cpu(),
         "prec1": prec1.detach().cpu(),
     }

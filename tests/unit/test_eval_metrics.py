@@ -1,3 +1,7 @@
+"""
+python -m pytest tests/unit/test_eval_metrics.py
+"""
+
 import pytest  # type: ignore[import]
 import torch
 
@@ -118,6 +122,7 @@ def test_compute_map_img2img_toy(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert scores["map"] == pytest.approx(0.5805555555, abs=1e-6)
+    assert scores["macro_map"] == pytest.approx(0.5805555555, abs=1e-6)
 
 
 @pytest.mark.gpu
@@ -145,6 +150,7 @@ def test_compute_map_img2img_singleton_queries_are_excluded(monkeypatch: pytest.
     )
 
     assert scores["map"] == pytest.approx(0.5805555555, abs=1e-6)
+    assert scores["macro_map"] == pytest.approx(0.5805555555, abs=1e-6)
 
 
 @pytest.mark.gpu
@@ -188,6 +194,7 @@ def test_compute_map_img2img_extra_gallery_singletons(monkeypatch: pytest.Monkey
     )
 
     assert scores["map"] == pytest.approx(0.3524801587301587, abs=1e-6)
+    assert scores["macro_map"] == pytest.approx(0.3524801587301587, abs=1e-6)
 
 
 @pytest.mark.gpu
@@ -231,3 +238,4 @@ def test_compute_map_cross_modal_extra_gallery_singletons(monkeypatch: pytest.Mo
     )
 
     assert scores["map"] == pytest.approx(0.6862674362674362, abs=1e-6)
+    assert scores["macro_map"] == pytest.approx(0.7559857837635615, abs=1e-6)

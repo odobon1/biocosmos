@@ -336,7 +336,7 @@ class PrintLog:
         if header is not None:
             header_wrapped = f" {header} "
             header_str = (
-                f"{header_wrapped:#^{75}}"
+                f"{header_wrapped:=^{75}}"
                 f"\n"
             )
             print(header_str)

@@ -196,6 +196,8 @@ def plot_metrics(
         height_ratios,
         retrieval_metric_names=("i2t_map", "i2i_map", "t2i_map"),
         retrieval_ylabel="mAP Scores",
+        accuracy_metric_name="i2t_acc",
+        accuracy_ylabel="I2T Accuracy",
         plot_title="Train Metrics",
         output_filename="train_metrics.png",
     )
@@ -217,6 +219,8 @@ def plot_metrics(
         height_ratios,
         retrieval_metric_names=("i2t_macro_map", "i2i_macro_map", "t2i_macro_map"),
         retrieval_ylabel="Macro mAP Scores",
+        accuracy_metric_name="i2t_macro_acc",
+        accuracy_ylabel="I2T Per-Class Accuracy",
         plot_title="Train Metrics (Macro)",
         output_filename="train_metrics_macro.png",
     )
@@ -238,6 +242,8 @@ def plot_composite_metrics(
     height_ratios,
     retrieval_metric_names,
     retrieval_ylabel,
+    accuracy_metric_name,
+    accuracy_ylabel,
     plot_title,
     output_filename,
 ):
@@ -290,13 +296,13 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        if "i2t_prec1" in data_eval.get(partition_name, {}):
+        if accuracy_metric_name in data_eval.get(partition_name, {}):
             ax2.plot(
                 x_eval,
-                data_eval[partition_name]["i2t_prec1"],
-                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} I2T Prec@1',
+                data_eval[partition_name][accuracy_metric_name],
+                label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))]),
             )
-    ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
+    ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
     ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)

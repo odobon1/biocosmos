@@ -173,6 +173,7 @@ class SplitPartitionEvalPipeline:
             class_encs_q=class_encs_img_all.cpu(),
             embs_g=embs_text_all.cpu(),
             class_encs_g=self.index_text_class_encs,
+            compute_accuracy=True,
         )
         scores_i2i = compute_map_img2img(
             embs_q=embs_img_all,
@@ -188,19 +189,20 @@ class SplitPartitionEvalPipeline:
         )
 
         eval_scores = {
-            "i2t_prec1":     scores_i2t["prec1"].mean().item(),
-            "i2t_map":       scores_i2t["map"],
+            "i2t_acc": scores_i2t["acc"],
+            "i2t_macro_acc": scores_i2t["macro_acc"],
+            "i2t_map": scores_i2t["map"],
             "i2t_macro_map": scores_i2t["macro_map"],
-            "i2i_map":       scores_i2i["map"],
+            "i2i_map": scores_i2i["map"],
             "i2i_macro_map": scores_i2i["macro_map"],
-            "t2i_map":       scores_t2i["map"],
+            "t2i_map": scores_t2i["map"],
             "t2i_macro_map": scores_t2i["macro_map"],
         }
 
         if self.partition_name == "id":
             bucket_i2t_prec1 = reduce_bucketed_query_metric_by_class_enc(
                 class_encs_q=class_encs_img_all.cpu(),
-                values=scores_i2t["prec1"],
+                values=scores_i2t["accs"],
                 class_enc_to_bucket=self.class_enc_to_bucket,
                 bucket_names=self.nshot_bucket_names,
             )
@@ -372,6 +374,7 @@ def compute_map_cross_modal(
     class_encs_q: torch.Tensor, 
     embs_g: torch.Tensor, 
     class_encs_g: torch.Tensor,
+    compute_accuracy: bool = False,
 ) -> Union[float, Dict[str, Any]]:
     """
     Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
@@ -427,14 +430,27 @@ def compute_map_cross_modal(
     per_class_means = class_ap_sums[active_classes] / class_ap_counts[active_classes]
     macro_map = per_class_means.mean().item() if active_classes.any() else float("nan")
 
-    prec1 = pos_mask[:, 0].float()
-
     scores_cross_modal = {
         "map": map,
         "macro_map": macro_map,
         "ap": ap.detach().cpu(),
-        "prec1": prec1.detach().cpu(),
     }
+
+    if compute_accuracy:
+        acc = pos_mask[:, 0].float()
+
+        # Macro accuracy: class-balanced top-1 retrieval accuracy.
+        class_acc_sums = torch.zeros(num_classes_q, device=device)
+        class_acc_counts = torch.zeros(num_classes_q, device=device)
+        class_acc_sums.scatter_add_(0, class_encs_q, acc)
+        class_acc_counts.scatter_add_(0, class_encs_q, torch.ones_like(acc))
+        active_acc_classes = class_acc_counts > 0
+        per_class_acc = class_acc_sums[active_acc_classes] / class_acc_counts[active_acc_classes]
+        macro_acc = per_class_acc.mean().item() if active_acc_classes.any() else float("nan")
+
+        scores_cross_modal["acc"] = acc.detach().cpu().mean().item()
+        scores_cross_modal["accs"] = acc.detach().cpu()
+        scores_cross_modal["macro_acc"] = macro_acc
 
     return scores_cross_modal
 

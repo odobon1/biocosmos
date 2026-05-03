@@ -239,3 +239,83 @@ def test_compute_map_cross_modal_extra_gallery_singletons(monkeypatch: pytest.Mo
 
     assert scores["map"] == pytest.approx(0.6862674362674362, abs=1e-6)
     assert scores["macro_map"] == pytest.approx(0.7559857837635615, abs=1e-6)
+
+
+@pytest.mark.gpu
+def test_compute_acc_macro_acc_cross_modal_extra_gallery_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_distributed_collectives(monkeypatch)
+
+    device = torch.device("cuda")
+    embs_q = torch.tensor([
+        [ 1.30, 0.01, 1.00],
+        [-1.10, 0.01, 1.00],
+        [-1.30, 0.01, 1.00],
+        [ 1.10, 0.01, 1.00],
+        [ 1.00, 0.01, 1.00],
+        [-1.00, 0.01, 1.00],
+        [-1.00, 0.11, 1.00],
+    ], dtype=torch.float32, device=device)
+    embs_q = torch.nn.functional.normalize(embs_q, p=2, dim=1)
+    class_encs_q = torch.tensor([0, 1, 1, 0, 1, 0, 2], dtype=torch.long, device=device)
+
+    embs_g = torch.tensor([
+        [ 1.30, 0.01, 1.00],
+        [-1.10, 0.01, 1.00],
+        [-1.30, 0.01, 1.00],
+        [ 1.00, 0.01, 1.00],
+        [-1.00, 0.01, 1.00],
+        [-1.00, 0.11, 1.00],
+        [-1.00, 0.01, 1.20],
+        [-1.00, 0.51, 1.00],
+        [ 1.10, 0.01, 1.00],
+        [-1.50, 0.01, 1.00],
+        [-1.00, 0.91, 1.00],
+    ], dtype=torch.float32, device=device)
+    embs_g = torch.nn.functional.normalize(embs_g, p=2, dim=1)
+    class_encs_g = torch.tensor([0, 1, 1, 0, 1, 0, 2, 3, 4, 5, 6], dtype=torch.long, device=device)
+
+    scores = compute_map_cross_modal(
+        embs_q=embs_q,
+        class_encs_q=class_encs_q,
+        embs_g=embs_g,
+        class_encs_g=class_encs_g,
+    )
+
+    print(scores["acc"])
+    print(scores["macro_acc"])
+    assert scores["acc"] == pytest.approx(0.42857142857142855, abs=1e-6)
+    assert scores["macro_acc"] == pytest.approx(0.3333333333333333, abs=1e-6)
+
+
+@pytest.mark.gpu
+def test_compute_map_cross_modal_without_accuracy(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_distributed_collectives(monkeypatch)
+
+    device = torch.device("cuda")
+    embs_q = torch.tensor([
+        [1.30, 0.01, 1.00],
+        [-1.10, 0.01, 1.00],
+    ], dtype=torch.float32, device=device)
+    embs_q = torch.nn.functional.normalize(embs_q, p=2, dim=1)
+    class_encs_q = torch.tensor([0, 1], dtype=torch.long, device=device)
+
+    embs_g = torch.tensor([
+        [1.30, 0.01, 1.00],
+        [-1.10, 0.01, 1.00],
+        [-1.30, 0.01, 1.00],
+    ], dtype=torch.float32, device=device)
+    embs_g = torch.nn.functional.normalize(embs_g, p=2, dim=1)
+    class_encs_g = torch.tensor([0, 1, 1], dtype=torch.long, device=device)
+
+    scores = compute_map_cross_modal(
+        embs_q=embs_q,
+        class_encs_q=class_encs_q,
+        embs_g=embs_g,
+        class_encs_g=class_encs_g,
+        compute_accuracy=False,
+    )
+
+    assert "acc" not in scores
+    assert "accs" not in scores
+    assert "macro_acc" not in scores
+    assert scores["map"] == pytest.approx(1.0, abs=1e-6)

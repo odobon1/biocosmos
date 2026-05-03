@@ -14,15 +14,40 @@ from utils.utils import load_split
 import pdb
 
 
-RETRIEVAL_MODALITIES = ("i2t_map", "i2i_map", "t2i_map")
+RETRIEVAL_MODALITIES = ("i2t", "i2i", "t2i")
 
 
-def compute_partition_map(scores_partition: Dict[str, float]) -> float:
-    return sum(scores_partition[metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+def compute_partition_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
+    return sum(scores_partition["standard"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
 
-def compute_partition_macro_map(scores_partition: Dict[str, float]) -> float:
-    macro_keys = tuple(f"{m.replace('_map', '_macro_map')}" for m in RETRIEVAL_MODALITIES)
-    return sum(scores_partition[k] for k in macro_keys) / len(macro_keys)
+def compute_partition_macro_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
+    return sum(scores_partition["per_class"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+
+def compute_class_means_from_query_metric(
+    class_encs_q: torch.Tensor,
+    values: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Reduce per-query metric values into per-class means indexed by class encoding.
+    Inactive classes are returned as NaN.
+    """
+
+    device = class_encs_q.device
+    num_classes_q = int(class_encs_q.max().item()) + 1
+    class_value_sums = torch.zeros(num_classes_q, device=device)
+    class_value_counts = torch.zeros(num_classes_q, device=device)
+
+    valid_mask = ~torch.isnan(values)
+    if valid_mask.any():
+        valid_encs = class_encs_q[valid_mask]
+        valid_values = values[valid_mask]
+        class_value_sums.scatter_add_(0, valid_encs, valid_values)
+        class_value_counts.scatter_add_(0, valid_encs, torch.ones_like(valid_values))
+
+    active_classes = class_value_counts > 0
+    class_values = torch.full((num_classes_q,), float("nan"), device=device)
+    class_values[active_classes] = class_value_sums[active_classes] / class_value_counts[active_classes]
+    return class_values
 
 def list_eval_partition_names(split: Any, eval_type: str) -> List[str]:
     partition_names = []
@@ -189,14 +214,26 @@ class SplitPartitionEvalPipeline:
         )
 
         eval_scores = {
-            "i2t_acc": scores_i2t["acc"],
-            "i2t_macro_acc": scores_i2t["macro_acc"],
-            "i2t_map": scores_i2t["map"],
-            "i2t_macro_map": scores_i2t["macro_map"],
-            "i2i_map": scores_i2i["map"],
-            "i2i_macro_map": scores_i2i["macro_map"],
-            "t2i_map": scores_t2i["map"],
-            "t2i_macro_map": scores_t2i["macro_map"],
+            "standard": {
+                "acc": {
+                    "i2t": scores_i2t["acc"],
+                },
+                "map": {
+                    "i2t": scores_i2t["map"],
+                    "i2i": scores_i2i["map"],
+                    "t2i": scores_t2i["map"],
+                },
+            },
+            "per_class": {
+                "acc": {
+                    "i2t": scores_i2t["macro_acc"],
+                },
+                "map": {
+                    "i2t": scores_i2t["macro_map"],
+                    "i2i": scores_i2i["macro_map"],
+                    "t2i": scores_t2i["macro_map"],
+                },
+            },
         }
 
         if self.partition_name == "id":
@@ -237,6 +274,12 @@ class SplitPartitionEvalPipeline:
                 bucket_names=self.nshot_bucket_names,
             )
 
+            bucket_i2t_macro_acc = reduce_bucketed_macro_metric_from_class_values(
+                class_values=scores_i2t["class_acc"],
+                class_enc_to_bucket=self.class_enc_to_bucket,
+                bucket_names=self.nshot_bucket_names,
+            )
+
             bucket_t2i_macro_map = reduce_bucketed_macro_map_from_class_ap(
                 class_ap=scores_t2i["class_ap"],
                 class_enc_to_bucket=self.class_enc_to_bucket,
@@ -261,7 +304,11 @@ class SplitPartitionEvalPipeline:
                 # Skip empty buckets instead of raising due to missing keys.
                 if bucket_vals:
                     bucket_comp = sum(bucket_vals) / len(bucket_vals)
-                    eval_scores[f"{bucket_name}_comp"] = bucket_comp
+                    eval_scores["standard"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp
+
+                bucket_acc = bucket_i2t_prec1.get(bucket_name)
+                if bucket_acc is not None and not (isinstance(bucket_acc, float) and math.isnan(bucket_acc)):
+                    eval_scores["standard"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_acc
 
                 bucket_macro_vals = []
                 for bucket_scores in (bucket_i2t_macro_map, bucket_i2i_macro_map, bucket_t2i_macro_map):
@@ -272,7 +319,11 @@ class SplitPartitionEvalPipeline:
 
                 if bucket_macro_vals:
                     bucket_comp_macro = sum(bucket_macro_vals) / len(bucket_macro_vals)
-                    eval_scores[f"{bucket_name}_comp_macro"] = bucket_comp_macro
+                    eval_scores["per_class"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
+
+                bucket_macro_acc = bucket_i2t_macro_acc.get(bucket_name)
+                if bucket_macro_acc is not None and not (isinstance(bucket_macro_acc, float) and math.isnan(bucket_macro_acc)):
+                    eval_scores["per_class"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_macro_acc
 
         return eval_scores
 
@@ -446,18 +497,8 @@ def compute_map_cross_modal(
     map = ap.mean().item()
 
     # Macro mAP: class-balanced mean AP
-    num_classes_q = int(class_encs_q.max().item()) + 1
-    class_ap_sums = torch.zeros(num_classes_q, device=device)
-    class_ap_counts = torch.zeros(num_classes_q, device=device)
-    valid_mask = ~torch.isnan(ap)
-    if valid_mask.any():
-        valid_encs = class_encs_q[valid_mask]
-        valid_aps = ap[valid_mask]
-        class_ap_sums.scatter_add_(0, valid_encs, valid_aps)
-        class_ap_counts.scatter_add_(0, valid_encs, torch.ones_like(valid_aps))
-    active_classes = class_ap_counts > 0
-    class_ap = torch.full((num_classes_q,), float("nan"), device=device)
-    class_ap[active_classes] = class_ap_sums[active_classes] / class_ap_counts[active_classes]
+    class_ap = compute_class_means_from_query_metric(class_encs_q=class_encs_q, values=ap)
+    active_classes = ~torch.isnan(class_ap)
     macro_map = class_ap[active_classes].mean().item() if active_classes.any() else float("nan")
 
     scores_cross_modal = {
@@ -471,16 +512,13 @@ def compute_map_cross_modal(
         acc = pos_mask[:, 0].float()
 
         # Macro accuracy: class-balanced top-1 retrieval accuracy.
-        class_acc_sums = torch.zeros(num_classes_q, device=device)
-        class_acc_counts = torch.zeros(num_classes_q, device=device)
-        class_acc_sums.scatter_add_(0, class_encs_q, acc)
-        class_acc_counts.scatter_add_(0, class_encs_q, torch.ones_like(acc))
-        active_acc_classes = class_acc_counts > 0
-        per_class_acc = class_acc_sums[active_acc_classes] / class_acc_counts[active_acc_classes]
-        macro_acc = per_class_acc.mean().item() if active_acc_classes.any() else float("nan")
+        class_acc = compute_class_means_from_query_metric(class_encs_q=class_encs_q, values=acc)
+        active_acc_classes = ~torch.isnan(class_acc)
+        macro_acc = class_acc[active_acc_classes].mean().item() if active_acc_classes.any() else float("nan")
 
         scores_cross_modal["acc"] = acc.detach().cpu().mean().item()
         scores_cross_modal["accs"] = acc.detach().cpu()
+        scores_cross_modal["class_acc"] = class_acc.detach().cpu()
         scores_cross_modal["macro_acc"] = macro_acc
 
     return scores_cross_modal
@@ -546,40 +584,21 @@ class ValidationPipeline:
         partition_macro_maps = []
         partition_i2i_maps = []
         partition_i2i_macro_maps = []
-        nshot_scores: Dict[str, float] = {}
-        nshot_scores_macro: Dict[str, float] = {}
         time_elapsed_val = 0.0
 
         for partition_name in self.partition_names:
             scores_partition, loss_avg_partition, time_elapsed_partition = self.partition_pipes[partition_name].evaluate_split(modelw)
 
-            scores_partition_core = {
-                key: val
-                for key, val in scores_partition.items()
-                if not key.endswith("_comp") and not key.endswith("_comp_macro")
-            }
-            if partition_name == self.bucket_partition_name:
-                nshot_scores = {
-                    key.removesuffix("_comp"): val
-                    for key, val in scores_partition.items()
-                    if key.endswith("_comp") and not key.endswith("_comp_macro")
-                }
-                nshot_scores_macro = {
-                    key.removesuffix("_comp_macro"): val
-                    for key, val in scores_partition.items()
-                    if key.endswith("_comp_macro")
-                }
-
-            partition_map = compute_partition_map(scores_partition_core)
-            partition_macro_map = compute_partition_macro_map(scores_partition_core)
+            partition_map = compute_partition_map(scores_partition)
+            partition_macro_map = compute_partition_macro_map(scores_partition)
             partition_maps.append(partition_map)
             partition_macro_maps.append(partition_macro_map)
-            partition_i2i_maps.append(scores_partition_core["i2i_map"])
-            partition_i2i_macro_maps.append(scores_partition_core["i2i_macro_map"])
+            partition_i2i_maps.append(scores_partition["standard"]["map"]["i2i"])
+            partition_i2i_macro_maps.append(scores_partition["per_class"]["map"]["i2i"])
             time_elapsed_val += time_elapsed_partition
 
             scores_val[partition_name] = {
-                **scores_partition_core,
+                **scores_partition,
                 "loss": loss_avg_partition,
             }
 
@@ -589,17 +608,22 @@ class ValidationPipeline:
         i2i_macro_map = sum(partition_i2i_macro_maps) / len(partition_i2i_macro_maps)
 
         scores_val["comp"] = {
-            "map": comp_map,
-            "macro_map": comp_macro_map,
+            "standard": {
+                "map": {
+                    "all": comp_map,
+                    "i2i": i2i_map,
+                },
+            },
+            "per_class": {
+                "map": {
+                    "all": comp_macro_map,
+                    "i2i": i2i_macro_map,
+                },
+            },
         }
         for p_name, p_map, p_macro_map in zip(self.partition_names, partition_maps, partition_macro_maps):
-            scores_val["comp"][p_name] = {"map": p_map, "macro_map": p_macro_map}
-        scores_val["comp"]["i2i_map"] = i2i_map
-        scores_val["comp"]["i2i_macro_map"] = i2i_macro_map
-        if nshot_scores:
-            scores_val["comp"]["n-shot"] = nshot_scores
-        if nshot_scores_macro:
-            scores_val["comp"]["n-shot-macro"] = nshot_scores_macro
+            scores_val["comp"]["standard"]["map"][p_name] = p_map
+            scores_val["comp"]["per_class"]["map"][p_name] = p_macro_map
 
         is_best_comp, is_best_i2i = self.check_bests(comp_map, i2i_map)
 
@@ -762,19 +786,39 @@ def reduce_bucketed_macro_map_from_class_ap(
     - bucket_names -------- Ordered list of bucket names
     """
 
-    if hasattr(class_ap, "tolist"):
-        class_ap = class_ap.tolist()
+    return reduce_bucketed_macro_metric_from_class_values(
+        class_values=class_ap,
+        class_enc_to_bucket=class_enc_to_bucket,
+        bucket_names=bucket_names,
+    )
+
+def reduce_bucketed_macro_metric_from_class_values(
+    class_values,
+    class_enc_to_bucket: Dict[int, str],
+    bucket_names: List[str],
+) -> Dict[str, float]:
+    """
+    Group precomputed per-class metric means into bucket macro means.
+
+    Args:
+    - class_values -------- Per-class metric values (indexed by class_enc, NaN for inactive classes)
+    - class_enc_to_bucket - Maps class encoding -> bucket name
+    - bucket_names -------- Ordered list of bucket names
+    """
+
+    if hasattr(class_values, "tolist"):
+        class_values = class_values.tolist()
 
     bucket_sum = defaultdict(float)
     bucket_count = defaultdict(int)
 
-    for class_enc, ap_val in enumerate(class_ap):
-        if math.isnan(ap_val):
+    for class_enc, metric_val in enumerate(class_values):
+        if math.isnan(metric_val):
             continue
         if class_enc not in class_enc_to_bucket:
             continue
         bucket_name = class_enc_to_bucket[class_enc]
-        bucket_sum[bucket_name] += float(ap_val)
+        bucket_sum[bucket_name] += float(metric_val)
         bucket_count[bucket_name] += 1
 
     out = {}

@@ -55,11 +55,12 @@ class TrialDataTracker:
             "samps_seen": [],
             "idx_epoch": [],
             "comp": {
-                "map": [],
-                "macro_map": [],
-                "i2i_map": [],
-                "i2i_macro_map": [],
-                "n-shot": {},
+                "standard": {
+                    "map": {},
+                },
+                "per_class": {
+                    "map": {},
+                },
             },
         }
         self.data = {
@@ -134,7 +135,7 @@ class LRSchedulerWrapper:
     def step(self, scores_val):
 
         if self.type == "plat":
-            valid_signal = scores_val["comp"]["map"]
+            valid_signal = scores_val["comp"]["standard"]["map"]["all"]
             lr_prev = self.get_lr()
             self.sched.step(valid_signal)
             if self.get_lr() < lr_prev:  # if current LR < previous LR

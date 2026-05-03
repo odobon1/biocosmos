@@ -351,11 +351,18 @@ class PrintLog:
             best_i2i_map_str = ""
 
         bucket_comp_keys = []
+        bucket_comp_acc_keys = []
         bucket_comp_macro_keys = []
+        bucket_comp_macro_acc_keys = []
         nshot_comp_lines = ""
+        nshot_comp_acc_lines = ""
         nshot_comp_macro_lines = ""
+        nshot_comp_macro_acc_lines = ""
 
-        bucket_scores = scores_eval.get("comp", {}).get("n-shot", {})
+        id_partition_name = next((name for name in partition_names if name.startswith("id")), None)
+        id_scores = scores_eval.get(id_partition_name, {}) if id_partition_name is not None else {}
+
+        bucket_scores = id_scores.get("standard", {}).get("map", {}).get("n-shot", {})
         bucket_comp_keys = [
             bucket_name
             for bucket_name in nshot_bucket_names
@@ -367,9 +374,23 @@ class PrintLog:
             for bucket_name in bucket_comp_keys:
                 label = bucket_name
                 n_dashes = len_max - len(label) + 3
-                nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval['comp']['n-shot'][bucket_name]:.4f}\n"
+                nshot_comp_lines += f"{label} {'-' * n_dashes} {bucket_scores[bucket_name]:.4f}\n"
 
-        bucket_scores_macro = scores_eval.get("comp", {}).get("n-shot-macro", {})
+        bucket_scores_acc = id_scores.get("standard", {}).get("acc", {}).get("n-shot", {})
+        bucket_comp_acc_keys = [
+            bucket_name
+            for bucket_name in nshot_bucket_names
+            if bucket_name in bucket_scores_acc
+        ]
+        if bucket_comp_acc_keys:
+            nshot_comp_acc_lines = f"{' N-Shot Composite Accuracy ':-^{75}}\n"
+            len_max = max(len(label) for label in bucket_comp_acc_keys)
+            for bucket_name in bucket_comp_acc_keys:
+                label = bucket_name
+                n_dashes = len_max - len(label) + 3
+                nshot_comp_acc_lines += f"{label} {'-' * n_dashes} {bucket_scores_acc[bucket_name]:.4f}\n"
+
+        bucket_scores_macro = id_scores.get("per_class", {}).get("map", {}).get("n-shot", {})
         bucket_comp_macro_keys = [
             bucket_name
             for bucket_name in nshot_bucket_names
@@ -381,22 +402,55 @@ class PrintLog:
             for bucket_name in bucket_comp_macro_keys:
                 label = bucket_name
                 n_dashes = len_max - len(label) + 3
-                nshot_comp_macro_lines += f"{label} {'-' * n_dashes} {scores_eval['comp']['n-shot-macro'][bucket_name]:.4f}\n"
+                nshot_comp_macro_lines += f"{label} {'-' * n_dashes} {bucket_scores_macro[bucket_name]:.4f}\n"
+
+        bucket_scores_macro_acc = id_scores.get("per_class", {}).get("acc", {}).get("n-shot", {})
+        bucket_comp_macro_acc_keys = [
+            bucket_name
+            for bucket_name in nshot_bucket_names
+            if bucket_name in bucket_scores_macro_acc
+        ]
+        if bucket_comp_macro_acc_keys:
+            nshot_comp_macro_acc_lines = f"{' N-Shot Composite Per-Class Accuracy ':-^{75}}\n"
+            len_max = max(len(label) for label in bucket_comp_macro_acc_keys)
+            for bucket_name in bucket_comp_macro_acc_keys:
+                label = bucket_name
+                n_dashes = len_max - len(label) + 3
+                nshot_comp_macro_acc_lines += f"{label} {'-' * n_dashes} {bucket_scores_macro_acc[bucket_name]:.4f}\n"
 
         map_lines = ""
+        acc_data = []
         for partition_name in partition_names:
+            partition_scores = scores_eval[partition_name]
+            standard_map_scores = partition_scores.get("standard", {}).get("map", {})
+            per_class_map_scores = partition_scores.get("per_class", {}).get("map", {})
+            standard_acc_scores = partition_scores.get("standard", {}).get("acc", {})
+            per_class_acc_scores = partition_scores.get("per_class", {}).get("acc", {})
             map_lines += (
-                f"{f' {partition_name.upper()} mAP ':-^{75}}\n"
-                f"I2T --- {scores_eval[partition_name]['i2t_map']:.4f}\n"
-                f"I2I --- {scores_eval[partition_name]['i2i_map']:.4f}\n"
-                f"T2I --- {scores_eval[partition_name]['t2i_map']:.4f}\n"
+                f"{f' {partition_name.upper()} Standard mAP ':-^{75}}\n"
+                f"I2T --- {standard_map_scores['i2t']:.4f}\n"
+                f"I2I --- {standard_map_scores['i2i']:.4f}\n"
+                f"T2I --- {standard_map_scores['t2i']:.4f}\n"
             )
             map_lines += (
-                f"{f' {partition_name.upper()} Macro mAP ':-^{75}}\n"
-                f"I2T --- {scores_eval[partition_name]['i2t_macro_map']:.4f}\n"
-                f"I2I --- {scores_eval[partition_name]['i2i_macro_map']:.4f}\n"
-                f"T2I --- {scores_eval[partition_name]['t2i_macro_map']:.4f}\n"
+                f"{f' {partition_name.upper()} Per-Class mAP ':-^{75}}\n"
+                f"I2T --- {per_class_map_scores['i2t']:.4f}\n"
+                f"I2I --- {per_class_map_scores['i2i']:.4f}\n"
+                f"T2I --- {per_class_map_scores['t2i']:.4f}\n"
             )
+
+            if "i2t" in standard_acc_scores:
+                acc_data.append((f"{partition_name.upper()} Accuracy", standard_acc_scores["i2t"]))
+            if "i2t" in per_class_acc_scores:
+                acc_data.append((f"{partition_name.upper()} Per-Class Accuracy", per_class_acc_scores["i2t"]))
+
+        accuracy_lines = ""
+        if acc_data:
+            accuracy_lines = f"{' I2T Accuracy ':-^{75}}\n"
+            len_max = max(len(label) for label, _ in acc_data)
+            for label, value in acc_data:
+                n_dashes = len_max - len(label) + 3
+                accuracy_lines += f"{label} {'-' * n_dashes} {value:.4f}\n"
 
         def _metric_line(label: str, value_str: str) -> str:
             # Keep a minimum of 3 dashes while aligning labels to a fixed width.
@@ -404,16 +458,16 @@ class PrintLog:
             return f"{label} {'-' * n_dashes} {value_str}\n"
 
         composite_lines = f"{' Composite mAP ':-^{75}}\n"
-        composite_lines += _metric_line("All", f"{scores_eval['comp']['map']:.4f}{best_comp_map_str}")
-        composite_lines += _metric_line("I2I", f"{scores_eval['comp']['i2i_map']:.4f}{best_i2i_map_str}")
+        composite_lines += _metric_line("All", f"{scores_eval['comp']['standard']['map']['all']:.4f}{best_comp_map_str}")
+        composite_lines += _metric_line("I2I", f"{scores_eval['comp']['standard']['map']['i2i']:.4f}{best_i2i_map_str}")
         for partition_name in partition_names:
-            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp'][partition_name]['map']:.4f}")
+            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp']['standard']['map'][partition_name]:.4f}")
 
         composite_macro_lines = f"{' Composite macro mAP ':-^{75}}\n"
-        composite_macro_lines += _metric_line("All", f"{scores_eval['comp']['macro_map']:.4f}")
-        composite_macro_lines += _metric_line("I2I", f"{scores_eval['comp']['i2i_macro_map']:.4f}")
+        composite_macro_lines += _metric_line("All", f"{scores_eval['comp']['per_class']['map']['all']:.4f}")
+        composite_macro_lines += _metric_line("I2I", f"{scores_eval['comp']['per_class']['map']['i2i']:.4f}")
         for partition_name in partition_names:
-            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp'][partition_name]['macro_map']:.4f}")
+            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp']['per_class']['map'][partition_name]:.4f}")
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         for partition_name in partition_names:
@@ -434,8 +488,11 @@ class PrintLog:
             f"{header:=^{75}}\n"
             f"{context_lines}"
             f"{map_lines}"
+            f"{accuracy_lines}"
             f"{nshot_comp_lines}"
+            f"{nshot_comp_acc_lines}"
             f"{nshot_comp_macro_lines}"
+            f"{nshot_comp_macro_acc_lines}"
             f"{composite_lines}"
             f"{composite_macro_lines}"
             f"{loss_lines}"

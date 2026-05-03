@@ -143,12 +143,12 @@ def _samples_seen_tick_formatter(value, _pos):
 def plot_metrics(
         data_tracker, 
         dpath_trial,
-        fontsize_axes       =12, 
-        fontsize_ticks      =8, 
-        fontsize_legend     =8,
+        fontsize_axes=12, 
+        fontsize_ticks=8, 
+        fontsize_legend=8,
         subplot_border_width=1,
-        figsize             =(10, 12),
-        height_ratios       =[2, 2, 2, 2, 1],
+        figsize=(10, 14),
+        height_ratios=[2, 2, 2, 2, 2, 1],
     ):
     data = data_tracker.data
     if "epoch" in data and "eval" in data:
@@ -166,7 +166,9 @@ def plot_metrics(
     partition_names = [
         partition_name
         for partition_name, partition_scores in data_eval.items()
-        if isinstance(partition_scores, dict) and "i2t_map" in partition_scores
+        if isinstance(partition_scores, dict)
+        and "standard" in partition_scores
+        and "per_class" in partition_scores
     ]
     if not partition_names or "comp" not in data_eval:
         return
@@ -174,9 +176,9 @@ def plot_metrics(
     x_eval = data_eval["samps_seen"]
     x_epoch = data_epoch["samps_seen"]
 
-    bucket_partition_name = None
+    bucket_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     bucket_comp_keys = [
-        key for key in data_eval.get("comp", {}).get("n-shot", {}).keys()
+        key for key in data_eval.get(bucket_partition_name, {}).get("standard", {}).get("map", {}).get("n-shot", {}).keys()
     ]
 
     plot_composite_metrics(
@@ -194,10 +196,12 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        retrieval_metric_names=("i2t_map", "i2i_map", "t2i_map"),
+        retrieval_metric_names=("i2t", "i2i", "t2i"),
+        partition_metric_group="standard",
         retrieval_ylabel="mAP Scores",
-        accuracy_metric_name="i2t_acc",
+        accuracy_metric_name="i2t",
         accuracy_ylabel="I2T Accuracy",
+        nshot_accuracy_ylabel="n-shot Accuracy (ID)",
         plot_title="Train Metrics",
         output_filename="train_metrics.png",
     )
@@ -217,10 +221,12 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        retrieval_metric_names=("i2t_macro_map", "i2i_macro_map", "t2i_macro_map"),
+        retrieval_metric_names=("i2t", "i2i", "t2i"),
+        partition_metric_group="per_class",
         retrieval_ylabel="Macro mAP Scores",
-        accuracy_metric_name="i2t_macro_acc",
+        accuracy_metric_name="i2t",
         accuracy_ylabel="I2T Per-Class Accuracy",
+        nshot_accuracy_ylabel="n-shot Per-Class\nAccuracy (ID)",
         plot_title="Train Metrics (Macro)",
         output_filename="train_metrics_macro.png",
     )
@@ -241,9 +247,11 @@ def plot_composite_metrics(
     figsize,
     height_ratios,
     retrieval_metric_names,
+    partition_metric_group,
     retrieval_ylabel,
     accuracy_metric_name,
     accuracy_ylabel,
+    nshot_accuracy_ylabel,
     plot_title,
     output_filename,
 ):
@@ -266,11 +274,12 @@ def plot_composite_metrics(
     for partition_name, partition_label, linestyle in style_specs:
         if partition_name is None:
             continue
+        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {}).get("map", {})
         for metric_name, metric_label, color in retrieval_specs:
-            if metric_name in data_eval.get(partition_name, {}):
+            if metric_name in partition_group_scores:
                 ax0.plot(
                     x_eval,
-                    data_eval[partition_name][metric_name],
+                    partition_group_scores[metric_name],
                     label=f"{partition_label} {metric_label}",
                     color=color,
                     linestyle=linestyle,
@@ -283,10 +292,11 @@ def plot_composite_metrics(
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    is_macro_plot = "macro" in retrieval_metric_names[0]
-    nshot_key = "n-shot-macro" if is_macro_plot else "n-shot"
+    is_macro_plot = partition_metric_group == "per_class"
+    id_mode_scores = data_eval.get(bucket_partition_name, {}).get(partition_metric_group, {})
+    nshot_key = "n-shot"
     nshot_ylabel = "n-shot Macro mAP (ID)" if is_macro_plot else "n-shot mAP (ID)"
-    comp_nshot = data_eval.get("comp", {}).get(nshot_key, {})
+    comp_nshot = id_mode_scores.get("map", {}).get(nshot_key, {})
     if bucket_comp_keys:
         for key in bucket_comp_keys:
             label = key
@@ -300,10 +310,11 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        if accuracy_metric_name in data_eval.get(partition_name, {}):
+        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {}).get("acc", {})
+        if accuracy_metric_name in partition_group_scores:
             ax2.plot(
                 x_eval,
-                data_eval[partition_name][accuracy_metric_name],
+                partition_group_scores[accuracy_metric_name],
                 label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))]),
             )
     ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
@@ -313,42 +324,54 @@ def plot_composite_metrics(
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
-    if len(data_epoch.get("loss_train", [])) == len(x_epoch):
-        ax3.plot(x_epoch, data_epoch["loss_train"], label="Train Loss")
-    if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
-        ax3.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
-    for partition_name in partition_names:
-        if "loss" in data_eval.get(partition_name, {}):
-            ax3.plot(
-                x_eval,
-                data_eval[partition_name]["loss"],
-                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss',
-            )
-    ax3.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
-    ax3.set_yscale("log")
-    ax3.minorticks_on()
-    ax3.grid(which="minor", axis="y")
-    ax3.legend(loc="upper right", fontsize=fontsize_legend)
+    comp_nshot_acc = id_mode_scores.get("acc", {}).get("n-shot", {})
+    if bucket_comp_keys:
+        for key in bucket_comp_keys:
+            maybe_plot(ax3, x_eval, comp_nshot_acc, key, key, linestyle=":")
+        if comp_nshot_acc:
+            ax3.legend(loc="lower right", fontsize=fontsize_legend)
+    ax3.set_ylabel(nshot_accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
+    ax3.set_ylim(0, 1)
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-    if len(data_epoch.get("lr", [])) == len(x_epoch):
-        ax4.plot(x_epoch, data_epoch["lr"])
-    ax4.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax4.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax4.yaxis.set_offset_position("right")
-    ax4.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax4.yaxis.get_offset_text().set_visible(False)
-    ax4.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
-    ax4.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    if len(data_epoch.get("loss_train", [])) == len(x_epoch):
+        ax4.plot(x_epoch, data_epoch["loss_train"], label="Train Loss")
+    if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
+        ax4.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
+    for partition_name in partition_names:
+        if "loss" in data_eval.get(partition_name, {}):
+            ax4.plot(
+                x_eval,
+                data_eval[partition_name]["loss"],
+                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss',
+            )
+    ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
+    ax4.set_yscale("log")
+    ax4.minorticks_on()
+    ax4.grid(which="minor", axis="y")
+    ax4.legend(loc="upper right", fontsize=fontsize_legend)
     ax4.grid(True)
-    ax4.tick_params(labelsize=fontsize_ticks)
+    ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    for ax in (ax0, ax1, ax2, ax3, ax4):
+    ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
+    if len(data_epoch.get("lr", [])) == len(x_epoch):
+        ax5.plot(x_epoch, data_epoch["lr"])
+    ax5.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax5.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax5.yaxis.set_offset_position("right")
+    ax5.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax5.yaxis.get_offset_text().set_visible(False)
+    ax5.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
+    ax5.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    ax5.grid(True)
+    ax5.tick_params(labelsize=fontsize_ticks)
+
+    for ax in (ax0, ax1, ax2, ax3, ax4, ax5):
         ax.label_outer()
 
-    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4)):
+    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5)):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")

@@ -239,6 +239,7 @@ def test_compute_map_cross_modal_extra_gallery_singletons(monkeypatch: pytest.Mo
         class_encs_q=class_encs_q,
         embs_g=embs_g,
         class_encs_g=class_encs_g,
+        compute_accuracy=True,
     )
 
     assert scores["map"] == pytest.approx(0.6862674362674362, abs=1e-6)
@@ -283,6 +284,7 @@ def test_compute_acc_macro_acc_cross_modal_extra_gallery_singletons(monkeypatch:
         class_encs_q=class_encs_q,
         embs_g=embs_g,
         class_encs_g=class_encs_g,
+        compute_accuracy=True,
     )
 
     print(scores["acc"])

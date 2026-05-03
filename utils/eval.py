@@ -17,17 +17,10 @@ import pdb
 RETRIEVAL_MODALITIES = ("i2t", "i2i", "t2i")
 
 
-def compute_partition_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
-    return sum(scores_partition["standard"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
-
-def compute_partition_macro_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
-    return sum(scores_partition["per_class"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
-
-def compute_partition_full_set_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
-    return sum(scores_partition["standard"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
-
-def compute_partition_full_set_macro_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
-    return sum(scores_partition["per_class"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+def harmonic_mean(values):
+    n = len(values)
+    reciprocal_sum = sum(1 / v for v in values)
+    return n / reciprocal_sum
 
 def compute_class_means_from_query_metric(
     class_encs_q: torch.Tensor,
@@ -303,7 +296,7 @@ class SplitPartitionEvalPipeline:
                 bucket_vals.append(val)
 
             if bucket_vals:
-                bucket_comp = sum(bucket_vals) / len(bucket_vals)
+                bucket_comp = harmonic_mean(bucket_vals)
                 eval_scores["standard"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp
 
             bucket_acc = bucket_i2t_prec1.get(bucket_name)
@@ -318,7 +311,7 @@ class SplitPartitionEvalPipeline:
                 bucket_macro_vals.append(val)
 
             if bucket_macro_vals:
-                bucket_comp_macro = sum(bucket_macro_vals) / len(bucket_macro_vals)
+                bucket_comp_macro = harmonic_mean(bucket_macro_vals)
                 eval_scores["per_class"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
 
             bucket_macro_acc = bucket_i2t_macro_acc.get(bucket_name)
@@ -757,14 +750,14 @@ class ValidationPipeline:
                 },
             }
 
-            partition_map = compute_partition_map(scores_partition)
-            partition_macro_map = compute_partition_macro_map(scores_partition)
+            partition_map = harmonic_mean([scores_partition["standard"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
+            partition_macro_map = harmonic_mean([scores_partition["per_class"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
             partition_maps.append(partition_map)
             partition_macro_maps.append(partition_macro_map)
             partition_i2i_maps.append(scores_partition["standard"]["map"]["i2i"])
             partition_i2i_macro_maps.append(scores_partition["per_class"]["map"]["i2i"])
-            partition_full_set_map = compute_partition_full_set_map(scores_partition)
-            partition_full_set_macro_map = compute_partition_full_set_macro_map(scores_partition)
+            partition_full_set_map = harmonic_mean([scores_partition["standard"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
+            partition_full_set_macro_map = harmonic_mean([scores_partition["per_class"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
             partition_full_set_maps.append(partition_full_set_map)
             partition_full_set_macro_maps.append(partition_full_set_macro_map)
             partition_full_set_i2i_maps.append(scores_partition["standard"]["full_set"]["map"]["i2i"])
@@ -775,14 +768,14 @@ class ValidationPipeline:
                 "loss": loss_avg_partition,
             }
 
-        comp_map = sum(partition_maps) / len(partition_maps)
-        comp_macro_map = sum(partition_macro_maps) / len(partition_macro_maps)
-        i2i_map = sum(partition_i2i_maps) / len(partition_i2i_maps)
-        i2i_macro_map = sum(partition_i2i_macro_maps) / len(partition_i2i_macro_maps)
-        full_set_comp_map = sum(partition_full_set_maps) / len(partition_full_set_maps)
-        full_set_comp_macro_map = sum(partition_full_set_macro_maps) / len(partition_full_set_macro_maps)
-        full_set_i2i_map = sum(partition_full_set_i2i_maps) / len(partition_full_set_i2i_maps)
-        full_set_i2i_macro_map = sum(partition_full_set_i2i_macro_maps) / len(partition_full_set_i2i_macro_maps)
+        comp_map = harmonic_mean(partition_maps)
+        comp_macro_map = harmonic_mean(partition_macro_maps)
+        i2i_map = harmonic_mean(partition_i2i_maps)
+        i2i_macro_map = harmonic_mean(partition_i2i_macro_maps)
+        full_set_comp_map = harmonic_mean(partition_full_set_maps)
+        full_set_comp_macro_map = harmonic_mean(partition_full_set_macro_maps)
+        full_set_i2i_map = harmonic_mean(partition_full_set_i2i_maps)
+        full_set_i2i_macro_map = harmonic_mean(partition_full_set_i2i_macro_maps)
 
         scores_val["comp"] = {
             "standard": {

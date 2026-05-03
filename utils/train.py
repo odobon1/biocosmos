@@ -177,8 +177,12 @@ def plot_metrics(
     x_epoch = data_epoch["samps_seen"]
 
     bucket_partition_name = next((name for name in partition_names if name.startswith("id")), None)
-    bucket_comp_keys = [
+    bucket_comp_keys_standard = [
         key for key in data_eval.get(bucket_partition_name, {}).get("standard", {}).get("map", {}).get("n-shot", {}).keys()
+    ]
+    bucket_comp_keys_full_set = [
+        key
+        for key in data_eval.get(bucket_partition_name, {}).get("standard", {}).get("full_set", {}).get("map", {}).get("n-shot", {}).keys()
     ]
 
     plot_composite_metrics(
@@ -189,17 +193,16 @@ def plot_metrics(
         dpath_trial,
         partition_names,
         bucket_partition_name,
-        bucket_comp_keys,
+        bucket_comp_keys_standard,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
         subplot_border_width,
         figsize,
         height_ratios,
-        retrieval_metric_names=("i2t", "i2i", "t2i"),
         partition_metric_group="standard",
+        full_set=False,
         retrieval_ylabel="mAP Scores",
-        accuracy_metric_name="i2t",
         accuracy_ylabel="I2T Accuracy",
         nshot_accuracy_ylabel="n-shot Accuracy (ID)",
         plot_title="Train Metrics",
@@ -214,21 +217,68 @@ def plot_metrics(
         dpath_trial,
         partition_names,
         bucket_partition_name,
-        bucket_comp_keys,
+        bucket_comp_keys_standard,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
         subplot_border_width,
         figsize,
         height_ratios,
-        retrieval_metric_names=("i2t", "i2i", "t2i"),
         partition_metric_group="per_class",
+        full_set=False,
         retrieval_ylabel="Macro mAP Scores",
-        accuracy_metric_name="i2t",
         accuracy_ylabel="I2T Per-Class Accuracy",
         nshot_accuracy_ylabel="n-shot Per-Class\nAccuracy (ID)",
         plot_title="Train Metrics (Macro)",
         output_filename="train_metrics_macro.png",
+    )
+
+    plot_composite_metrics(
+        data_epoch,
+        data_eval,
+        x_epoch,
+        x_eval,
+        dpath_trial,
+        partition_names,
+        bucket_partition_name,
+        bucket_comp_keys_full_set,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        figsize,
+        height_ratios,
+        partition_metric_group="standard",
+        full_set=True,
+        retrieval_ylabel="Full-Set mAP Scores",
+        accuracy_ylabel="Full-Set I2T Accuracy",
+        nshot_accuracy_ylabel="Full-Set n-shot Accuracy (ID)",
+        plot_title="Train Metrics (Full-Set)",
+        output_filename="train_metrics_fullset.png",
+    )
+
+    plot_composite_metrics(
+        data_epoch,
+        data_eval,
+        x_epoch,
+        x_eval,
+        dpath_trial,
+        partition_names,
+        bucket_partition_name,
+        bucket_comp_keys_full_set,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        figsize,
+        height_ratios,
+        partition_metric_group="per_class",
+        full_set=True,
+        retrieval_ylabel="Full-Set Macro mAP Scores",
+        accuracy_ylabel="Full-Set I2T Per-Class Accuracy",
+        nshot_accuracy_ylabel="Full-Set n-shot Per-Class\nAccuracy (ID)",
+        plot_title="Train Metrics (Macro Full-Set)",
+        output_filename="train_metrics_macro_fullset.png",
     )
 
 def plot_composite_metrics(
@@ -246,10 +296,9 @@ def plot_composite_metrics(
     subplot_border_width,
     figsize,
     height_ratios,
-    retrieval_metric_names,
     partition_metric_group,
+    full_set,
     retrieval_ylabel,
-    accuracy_metric_name,
     accuracy_ylabel,
     nshot_accuracy_ylabel,
     plot_title,
@@ -263,9 +312,9 @@ def plot_composite_metrics(
     id_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     ood_partition_name = next((name for name in partition_names if name.startswith("ood")), None)
     retrieval_specs = (
-        (retrieval_metric_names[0], "I2T", "blue"),
-        (retrieval_metric_names[1], "I2I", "red"),
-        (retrieval_metric_names[2], "T2I", "green"),
+        ("i2t", "I2T", "blue"),
+        ("i2i", "I2I", "red"),
+        ("t2i", "T2I", "green"),
     )
     style_specs = (
         (id_partition_name, "ID", "-"),
@@ -274,7 +323,10 @@ def plot_composite_metrics(
     for partition_name, partition_label, linestyle in style_specs:
         if partition_name is None:
             continue
-        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {}).get("map", {})
+        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {})
+        if full_set:
+            partition_group_scores = partition_group_scores.get("full_set", {})
+        partition_group_scores = partition_group_scores.get("map", {})
         for metric_name, metric_label, color in retrieval_specs:
             if metric_name in partition_group_scores:
                 ax0.plot(
@@ -294,8 +346,13 @@ def plot_composite_metrics(
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
     is_macro_plot = partition_metric_group == "per_class"
     id_mode_scores = data_eval.get(bucket_partition_name, {}).get(partition_metric_group, {})
+    if full_set:
+        id_mode_scores = id_mode_scores.get("full_set", {})
     nshot_key = "n-shot"
-    nshot_ylabel = "n-shot Macro mAP (ID)" if is_macro_plot else "n-shot mAP (ID)"
+    if is_macro_plot:
+        nshot_ylabel = "Full-Set n-shot Macro mAP (ID)" if full_set else "n-shot Macro mAP (ID)"
+    else:
+        nshot_ylabel = "Full-Set n-shot mAP (ID)" if full_set else "n-shot mAP (ID)"
     comp_nshot = id_mode_scores.get("map", {}).get(nshot_key, {})
     if bucket_comp_keys:
         for key in bucket_comp_keys:
@@ -310,11 +367,14 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {}).get("acc", {})
-        if accuracy_metric_name in partition_group_scores:
+        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {})
+        if full_set:
+            partition_group_scores = partition_group_scores.get("full_set", {})
+        partition_group_scores = partition_group_scores.get("acc", {})
+        if "i2t" in partition_group_scores:
             ax2.plot(
                 x_eval,
-                partition_group_scores[accuracy_metric_name],
+                partition_group_scores["i2t"],
                 label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))]),
             )
     ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")

@@ -23,6 +23,12 @@ def compute_partition_map(scores_partition: Dict[str, Dict[str, float]]) -> floa
 def compute_partition_macro_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
     return sum(scores_partition["per_class"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
 
+def compute_partition_full_set_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
+    return sum(scores_partition["standard"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+
+def compute_partition_full_set_macro_map(scores_partition: Dict[str, Dict[str, float]]) -> float:
+    return sum(scores_partition["per_class"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
+
 def compute_class_means_from_query_metric(
     class_encs_q: torch.Tensor,
     values: torch.Tensor,
@@ -82,6 +88,7 @@ class SplitPartitionEvalPipeline:
 
         self.index_data = index_data
         self.cid2enc = cid2enc
+        self.index_text_cids = list(cid2enc.keys())
 
         self.index_text, self.index_text_class_encs = spawn_partition_indexes_txts(
             cid2enc=cid2enc,
@@ -118,12 +125,11 @@ class SplitPartitionEvalPipeline:
             self.class_enc_to_bucket = {}
 
     @torch.no_grad()
-    def evaluate_split(
+    def collect_eval_artifacts(
         self, 
         modelw: Any,
-    ) -> Tuple[Dict[str, float], float, float]:
+    ) -> Tuple[Dict[str, Any], float]:
         
-        time_start = time.time()
         modelw.model.eval()
 
         # text embeddings
@@ -136,6 +142,7 @@ class SplitPartitionEvalPipeline:
         # image embeddings
         embs_imgs      = []
         class_encs_img = []
+        cids_img       = []
         loss_total     = 0.0
         n_samps_loss   = 0
 
@@ -157,6 +164,7 @@ class SplitPartitionEvalPipeline:
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())
+            cids_img.extend(targ_data["cid"] for targ_data in targ_data_sb)
 
             batch_loss = loss.detach().item() * B
             loss_total += batch_loss
@@ -164,8 +172,6 @@ class SplitPartitionEvalPipeline:
 
         embs_img_all = torch.cat(embs_imgs, dim=0).to(modelw.device)  # pt[Q, D]
         class_encs_img_all = torch.cat(class_encs_img, dim=0).to(modelw.device)  # pt[Q]
-
-        eval_scores  = self.compute_map_scores(embs_img_all, class_encs_img_all, embs_text_all)
 
         # reduce scalars (loss & accuracy)
         stats = torch.tensor([
@@ -181,37 +187,31 @@ class SplitPartitionEvalPipeline:
 
         modelw.model.train()
 
-        time_end = time.time()
-        time_elapsed = time_end - time_start
+        artifacts = {
+            "embs_img": embs_img_all,
+            "class_encs_img": class_encs_img_all,
+            "cids_img": cids_img,
+            "embs_text": embs_text_all,
+            "class_encs_text": self.index_text_class_encs,
+            "cids_text": list(self.index_text_cids),
+        }
 
-        return eval_scores, loss_avg, time_elapsed
+        return artifacts, loss_avg
 
-    def compute_map_scores(
-        self, 
-        embs_img_all: torch.Tensor, 
-        class_encs_img_all: torch.Tensor, 
-        embs_text_all: torch.Tensor
-    ) -> Dict[str, float]:
+    @staticmethod
+    def _encode_cids(cids: List[str], cid2enc: Dict[str, int], device: torch.device) -> torch.Tensor:
+        return torch.tensor([cid2enc[cid] for cid in cids], device=device, dtype=torch.long)
 
-        scores_i2t = compute_map_cross_modal(
-            embs_q=embs_img_all.cpu(),
-            class_encs_q=class_encs_img_all.cpu(),
-            embs_g=embs_text_all.cpu(),
-            class_encs_g=self.index_text_class_encs,
-            compute_accuracy=True,
-        )
-        scores_i2i = compute_map_img2img(
-            embs_q=embs_img_all,
-            class_encs_q=class_encs_img_all,
-            embs_g=embs_img_all,
-            class_encs_g=class_encs_img_all,
-        )
-        scores_t2i = compute_map_cross_modal(
-            embs_q=embs_text_all.cpu(),
-            class_encs_q=self.index_text_class_encs,
-            embs_g=embs_img_all.cpu(),
-            class_encs_g=class_encs_img_all.cpu(),
-        )
+    def _build_metric_views(
+        self,
+        scores_i2t: Dict[str, Any],
+        scores_i2i: Dict[str, Any],
+        scores_t2i: Dict[str, Any],
+        class_encs_img_q: torch.Tensor,
+        class_encs_text_q: torch.Tensor,
+        class_enc_to_bucket: Optional[Dict[int, str]] = None,
+        nshot_bucket_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
 
         eval_scores = {
             "standard": {
@@ -236,96 +236,142 @@ class SplitPartitionEvalPipeline:
             },
         }
 
-        if self.partition_name == "id":
-            bucket_i2t_prec1 = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_all.cpu(),
-                values=scores_i2t["accs"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        if not class_enc_to_bucket or not nshot_bucket_names:
+            return eval_scores
 
-            bucket_i2t_map = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_all.cpu(),
-                values=scores_i2t["ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_i2t_prec1 = reduce_bucketed_query_metric_by_class_enc(
+            class_encs_q=class_encs_img_q.cpu(),
+            values=scores_i2t["accs"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            bucket_t2i_map = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=self.index_text_class_encs.cpu(),
-                values=scores_t2i["ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_i2t_map = reduce_bucketed_query_metric_by_class_enc(
+            class_encs_q=class_encs_img_q.cpu(),
+            values=scores_i2t["ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            bucket_i2i_map = reduce_bucketed_query_metric_by_class_enc(
-                class_encs_q=class_encs_img_all.cpu(),
-                values=scores_i2i["ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-                valid_mask=scores_i2i["has_pos"],
-                distributed=True,
-                device=self.cfg.device,
-            )
+        bucket_t2i_map = reduce_bucketed_query_metric_by_class_enc(
+            class_encs_q=class_encs_text_q.cpu(),
+            values=scores_t2i["ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            bucket_i2t_macro_map = reduce_bucketed_macro_map_from_class_ap(
-                class_ap=scores_i2t["class_ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_i2i_map = reduce_bucketed_query_metric_by_class_enc(
+            class_encs_q=class_encs_img_q.cpu(),
+            values=scores_i2i["ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+            valid_mask=scores_i2i["has_pos"],
+            distributed=True,
+            device=self.cfg.device,
+        )
 
-            bucket_i2t_macro_acc = reduce_bucketed_macro_metric_from_class_values(
-                class_values=scores_i2t["class_acc"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_i2t_macro_map = reduce_bucketed_macro_map_from_class_ap(
+            class_ap=scores_i2t["class_ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            bucket_t2i_macro_map = reduce_bucketed_macro_map_from_class_ap(
-                class_ap=scores_t2i["class_ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_i2t_macro_acc = reduce_bucketed_macro_metric_from_class_values(
+            class_values=scores_i2t["class_acc"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            bucket_i2i_macro_map = reduce_bucketed_macro_map_from_class_ap(
-                class_ap=scores_i2i["class_ap"],
-                class_enc_to_bucket=self.class_enc_to_bucket,
-                bucket_names=self.nshot_bucket_names,
-            )
+        bucket_t2i_macro_map = reduce_bucketed_macro_map_from_class_ap(
+            class_ap=scores_t2i["class_ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-            for bucket_name in self.nshot_bucket_names:
-                bucket_vals = []
-                for bucket_scores in (bucket_i2t_map, bucket_i2i_map, bucket_t2i_map):
-                    val = bucket_scores.get(bucket_name)
-                    if val is None or (isinstance(val, float) and math.isnan(val)):
-                        continue
-                    bucket_vals.append(val)
+        bucket_i2i_macro_map = reduce_bucketed_macro_map_from_class_ap(
+            class_ap=scores_i2i["class_ap"],
+            class_enc_to_bucket=class_enc_to_bucket,
+            bucket_names=nshot_bucket_names,
+        )
 
-                # Some splits may not contain classes for every n-shot bucket.
-                # Skip empty buckets instead of raising due to missing keys.
-                if bucket_vals:
-                    bucket_comp = sum(bucket_vals) / len(bucket_vals)
-                    eval_scores["standard"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp
+        for bucket_name in nshot_bucket_names:
+            bucket_vals = []
+            for bucket_scores in (bucket_i2t_map, bucket_i2i_map, bucket_t2i_map):
+                val = bucket_scores.get(bucket_name)
+                if val is None or (isinstance(val, float) and math.isnan(val)):
+                    continue
+                bucket_vals.append(val)
 
-                bucket_acc = bucket_i2t_prec1.get(bucket_name)
-                if bucket_acc is not None and not (isinstance(bucket_acc, float) and math.isnan(bucket_acc)):
-                    eval_scores["standard"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_acc
+            if bucket_vals:
+                bucket_comp = sum(bucket_vals) / len(bucket_vals)
+                eval_scores["standard"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp
 
-                bucket_macro_vals = []
-                for bucket_scores in (bucket_i2t_macro_map, bucket_i2i_macro_map, bucket_t2i_macro_map):
-                    val = bucket_scores.get(bucket_name)
-                    if val is None or (isinstance(val, float) and math.isnan(val)):
-                        continue
-                    bucket_macro_vals.append(val)
+            bucket_acc = bucket_i2t_prec1.get(bucket_name)
+            if bucket_acc is not None and not (isinstance(bucket_acc, float) and math.isnan(bucket_acc)):
+                eval_scores["standard"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_acc
 
-                if bucket_macro_vals:
-                    bucket_comp_macro = sum(bucket_macro_vals) / len(bucket_macro_vals)
-                    eval_scores["per_class"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
+            bucket_macro_vals = []
+            for bucket_scores in (bucket_i2t_macro_map, bucket_i2i_macro_map, bucket_t2i_macro_map):
+                val = bucket_scores.get(bucket_name)
+                if val is None or (isinstance(val, float) and math.isnan(val)):
+                    continue
+                bucket_macro_vals.append(val)
 
-                bucket_macro_acc = bucket_i2t_macro_acc.get(bucket_name)
-                if bucket_macro_acc is not None and not (isinstance(bucket_macro_acc, float) and math.isnan(bucket_macro_acc)):
-                    eval_scores["per_class"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_macro_acc
+            if bucket_macro_vals:
+                bucket_comp_macro = sum(bucket_macro_vals) / len(bucket_macro_vals)
+                eval_scores["per_class"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
+
+            bucket_macro_acc = bucket_i2t_macro_acc.get(bucket_name)
+            if bucket_macro_acc is not None and not (isinstance(bucket_macro_acc, float) and math.isnan(bucket_macro_acc)):
+                eval_scores["per_class"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_macro_acc
 
         return eval_scores
+
+    def compute_map_scores(
+        self, 
+        embs_img_q: torch.Tensor,
+        class_encs_img_q: torch.Tensor,
+        embs_text_q: torch.Tensor,
+        class_encs_text_q: torch.Tensor,
+        embs_img_g: torch.Tensor,
+        class_encs_img_g: torch.Tensor,
+        embs_text_g: torch.Tensor,
+        class_encs_text_g: torch.Tensor,
+        self_match_idxs_g: Optional[torch.Tensor] = None,
+        class_enc_to_bucket: Optional[Dict[int, str]] = None,
+        nshot_bucket_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+
+        scores_i2t = compute_map_cross_modal(
+            embs_q=embs_img_q.cpu(),
+            class_encs_q=class_encs_img_q.cpu(),
+            embs_g=embs_text_g.cpu(),
+            class_encs_g=class_encs_text_g.cpu(),
+            compute_accuracy=True,
+        )
+        scores_i2i = compute_map_img2img(
+            embs_q=embs_img_q,
+            class_encs_q=class_encs_img_q,
+            embs_g=embs_img_g,
+            class_encs_g=class_encs_img_g,
+            self_match_idxs_g=self_match_idxs_g,
+        )
+        scores_t2i = compute_map_cross_modal(
+            embs_q=embs_text_q.cpu(),
+            class_encs_q=class_encs_text_q.cpu(),
+            embs_g=embs_img_g.cpu(),
+            class_encs_g=class_encs_img_g.cpu(),
+        )
+
+        return self._build_metric_views(
+            scores_i2t=scores_i2t,
+            scores_i2i=scores_i2i,
+            scores_t2i=scores_t2i,
+            class_encs_img_q=class_encs_img_q,
+            class_encs_text_q=class_encs_text_q,
+            class_enc_to_bucket=class_enc_to_bucket,
+            nshot_bucket_names=nshot_bucket_names,
+        )
 
 
 def compute_map_img2img(
@@ -333,6 +379,7 @@ def compute_map_img2img(
     class_encs_q: torch.Tensor,
     embs_g: torch.Tensor,
     class_encs_g: torch.Tensor,
+    self_match_idxs_g: Optional[torch.Tensor] = None,
     chunk_size: int = 16384,
 ) -> Union[float, Dict[str, Any]]:
     """
@@ -353,12 +400,13 @@ def compute_map_img2img(
     """
 
     device = embs_q.device
-    rank   = dist.get_rank()
-
     Q = embs_q.size(0)  # num. query images
     N = embs_g.size(0)  # num. gallery images
 
-    rank_offset = rank * Q
+    if self_match_idxs_g is None:
+        self_match_idxs_g = torch.arange(Q, device=device, dtype=torch.long)
+    else:
+        self_match_idxs_g = self_match_idxs_g.to(device=device, dtype=torch.long)
     
     ap_local = None
     has_pos_local = None
@@ -375,8 +423,11 @@ def compute_map_img2img(
         
         # chunked similarity matrix (chunk x all)
         sim_chunk = compute_sim(embs_q_chunk, embs_g, "cos")  # pt[U, N]
-        # mask self-similarity
-        sim_chunk[torch.arange(i_end - i), torch.arange(rank_offset + i, rank_offset + i_end)] = float('-inf')
+        # mask self-similarity for exact query/gallery item matches
+        self_match_chunk = self_match_idxs_g[i:i_end]
+        valid_self_mask = (self_match_chunk >= 0) & (self_match_chunk < N)
+        if valid_self_mask.any():
+            sim_chunk[torch.arange(i_end - i, device=device)[valid_self_mask], self_match_chunk[valid_self_mask]] = float('-inf')
 
         # sorted indices of top-N neighbors per query (all of them except query image itself)
         _, idxs_chunk = sim_chunk.sort(dim=1, descending=True)
@@ -538,6 +589,8 @@ class ValidationPipeline:
 
         self.best_comp_map = None
         self.best_i2i_map = None
+        self.best_full_set_comp_map = None
+        self.best_full_set_i2i_map = None
 
         self.split = load_split(config.split_name, dataset=config.dataset)
         self.partition_names = list_eval_partition_names(self.split, config.eval_type)
@@ -579,15 +632,130 @@ class ValidationPipeline:
         modelw: Any, 
     ) -> Tuple[Dict[str, Any], bool, bool, float]:
 
+        time_start = time.time()
         scores_val: Dict[str, Any] = {}
         partition_maps = []
         partition_macro_maps = []
         partition_i2i_maps = []
         partition_i2i_macro_maps = []
-        time_elapsed_val = 0.0
+        partition_full_set_maps = []
+        partition_full_set_macro_maps = []
+        partition_full_set_i2i_maps = []
+        partition_full_set_i2i_macro_maps = []
+        partition_artifacts: Dict[str, Dict[str, Any]] = {}
+        partition_losses: Dict[str, float] = {}
+
+        full_set_index_data = []
+        for partition_name in self.partition_names:
+            full_set_index_data.extend(self.partition_pipes[partition_name].index_data)
+        full_set_cid2enc = {
+            cid: class_enc
+            for class_enc, cid in enumerate(dict.fromkeys(datum["cid"] for datum in full_set_index_data))
+        }
+        full_set_bucket_map = build_class_enc_to_train_nshot_bucket(
+            split_name=self.partition_pipes[self.bucket_partition_name].cfg.split_name,
+            dataset=self.partition_pipes[self.bucket_partition_name].cfg.dataset,
+            cid2enc=full_set_cid2enc,
+        ) if self.bucket_partition_name is not None else {}
 
         for partition_name in self.partition_names:
-            scores_partition, loss_avg_partition, time_elapsed_partition = self.partition_pipes[partition_name].evaluate_split(modelw)
+            pipe = self.partition_pipes[partition_name]
+            artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw)
+            partition_artifacts[partition_name] = artifacts_partition
+            partition_losses[partition_name] = loss_avg_partition
+
+        full_set_embs_img = torch.cat(
+            [partition_artifacts[partition_name]["embs_img"] for partition_name in self.partition_names],
+            dim=0,
+        )
+        full_set_class_encs_img = torch.cat(
+            [
+                SplitPartitionEvalPipeline._encode_cids(
+                    partition_artifacts[partition_name]["cids_img"],
+                    full_set_cid2enc,
+                    full_set_embs_img.device,
+                )
+                for partition_name in self.partition_names
+            ],
+            dim=0,
+        )
+        full_set_embs_text = torch.cat(
+            [partition_artifacts[partition_name]["embs_text"] for partition_name in self.partition_names],
+            dim=0,
+        )
+        full_set_class_encs_text = torch.cat(
+            [
+                SplitPartitionEvalPipeline._encode_cids(
+                    partition_artifacts[partition_name]["cids_text"],
+                    full_set_cid2enc,
+                    full_set_embs_img.device,
+                ).cpu()
+                for partition_name in self.partition_names
+            ],
+            dim=0,
+        )
+
+        img_offset = 0
+        for partition_name in self.partition_names:
+            pipe = self.partition_pipes[partition_name]
+            artifacts_partition = partition_artifacts[partition_name]
+            loss_avg_partition = partition_losses[partition_name]
+
+            standard_scores = pipe.compute_map_scores(
+                embs_img_q=artifacts_partition["embs_img"],
+                class_encs_img_q=artifacts_partition["class_encs_img"],
+                embs_text_q=artifacts_partition["embs_text"],
+                class_encs_text_q=artifacts_partition["class_encs_text"].to(artifacts_partition["embs_img"].device),
+                embs_img_g=artifacts_partition["embs_img"],
+                class_encs_img_g=artifacts_partition["class_encs_img"],
+                embs_text_g=artifacts_partition["embs_text"],
+                class_encs_text_g=artifacts_partition["class_encs_text"],
+                class_enc_to_bucket=pipe.class_enc_to_bucket if partition_name == self.bucket_partition_name else None,
+                nshot_bucket_names=pipe.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
+            )
+
+            full_set_class_encs_img_q = SplitPartitionEvalPipeline._encode_cids(
+                artifacts_partition["cids_img"],
+                full_set_cid2enc,
+                artifacts_partition["embs_img"].device,
+            )
+            full_set_class_encs_text_q = SplitPartitionEvalPipeline._encode_cids(
+                artifacts_partition["cids_text"],
+                full_set_cid2enc,
+                artifacts_partition["embs_img"].device,
+            )
+            self_match_idxs_g = torch.arange(
+                img_offset,
+                img_offset + artifacts_partition["embs_img"].size(0),
+                device=artifacts_partition["embs_img"].device,
+                dtype=torch.long,
+            )
+            img_offset += artifacts_partition["embs_img"].size(0)
+
+            full_set_scores = pipe.compute_map_scores(
+                embs_img_q=artifacts_partition["embs_img"],
+                class_encs_img_q=full_set_class_encs_img_q,
+                embs_text_q=artifacts_partition["embs_text"],
+                class_encs_text_q=full_set_class_encs_text_q,
+                embs_img_g=full_set_embs_img,
+                class_encs_img_g=full_set_class_encs_img,
+                embs_text_g=full_set_embs_text,
+                class_encs_text_g=full_set_class_encs_text,
+                self_match_idxs_g=self_match_idxs_g,
+                class_enc_to_bucket=full_set_bucket_map if partition_name == self.bucket_partition_name else None,
+                nshot_bucket_names=self.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
+            )
+
+            scores_partition = {
+                "standard": {
+                    **standard_scores["standard"],
+                    "full_set": full_set_scores["standard"],
+                },
+                "per_class": {
+                    **standard_scores["per_class"],
+                    "full_set": full_set_scores["per_class"],
+                },
+            }
 
             partition_map = compute_partition_map(scores_partition)
             partition_macro_map = compute_partition_macro_map(scores_partition)
@@ -595,7 +763,12 @@ class ValidationPipeline:
             partition_macro_maps.append(partition_macro_map)
             partition_i2i_maps.append(scores_partition["standard"]["map"]["i2i"])
             partition_i2i_macro_maps.append(scores_partition["per_class"]["map"]["i2i"])
-            time_elapsed_val += time_elapsed_partition
+            partition_full_set_map = compute_partition_full_set_map(scores_partition)
+            partition_full_set_macro_map = compute_partition_full_set_macro_map(scores_partition)
+            partition_full_set_maps.append(partition_full_set_map)
+            partition_full_set_macro_maps.append(partition_full_set_macro_map)
+            partition_full_set_i2i_maps.append(scores_partition["standard"]["full_set"]["map"]["i2i"])
+            partition_full_set_i2i_macro_maps.append(scores_partition["per_class"]["full_set"]["map"]["i2i"])
 
             scores_val[partition_name] = {
                 **scores_partition,
@@ -606,6 +779,10 @@ class ValidationPipeline:
         comp_macro_map = sum(partition_macro_maps) / len(partition_macro_maps)
         i2i_map = sum(partition_i2i_maps) / len(partition_i2i_maps)
         i2i_macro_map = sum(partition_i2i_macro_maps) / len(partition_i2i_macro_maps)
+        full_set_comp_map = sum(partition_full_set_maps) / len(partition_full_set_maps)
+        full_set_comp_macro_map = sum(partition_full_set_macro_maps) / len(partition_full_set_macro_maps)
+        full_set_i2i_map = sum(partition_full_set_i2i_maps) / len(partition_full_set_i2i_maps)
+        full_set_i2i_macro_map = sum(partition_full_set_i2i_macro_maps) / len(partition_full_set_i2i_macro_maps)
 
         scores_val["comp"] = {
             "standard": {
@@ -613,19 +790,35 @@ class ValidationPipeline:
                     "all": comp_map,
                     "i2i": i2i_map,
                 },
+                "full_set": {
+                    "map": {
+                        "all": full_set_comp_map,
+                        "i2i": full_set_i2i_map,
+                    },
+                },
             },
             "per_class": {
                 "map": {
                     "all": comp_macro_map,
                     "i2i": i2i_macro_map,
                 },
+                "full_set": {
+                    "map": {
+                        "all": full_set_comp_macro_map,
+                        "i2i": full_set_i2i_macro_map,
+                    },
+                },
             },
         }
         for p_name, p_map, p_macro_map in zip(self.partition_names, partition_maps, partition_macro_maps):
             scores_val["comp"]["standard"]["map"][p_name] = p_map
             scores_val["comp"]["per_class"]["map"][p_name] = p_macro_map
+        for p_name, p_map, p_macro_map in zip(self.partition_names, partition_full_set_maps, partition_full_set_macro_maps):
+            scores_val["comp"]["standard"]["full_set"]["map"][p_name] = p_map
+            scores_val["comp"]["per_class"]["full_set"]["map"][p_name] = p_macro_map
 
         is_best_comp, is_best_i2i = self.check_bests(comp_map, i2i_map)
+        time_elapsed_val = time.time() - time_start
 
         return scores_val, is_best_comp, is_best_i2i, time_elapsed_val
 

@@ -332,136 +332,158 @@ class PrintLog:
         else:
             target_log = None
 
-        if eval_pipe.best_comp_map is not None:
-            best_comp_map_str = f" (best: {eval_pipe.best_comp_map:.4f})"
-            best_i2i_map_str = f" (best: {eval_pipe.best_i2i_map:.4f})"
-        else:
-            best_comp_map_str = ""
-            best_i2i_map_str = ""
+        def _best_metric_str(value: Optional[float]) -> str:
+            return "" if value is None else f" (best: {value:.4f})"
 
-        bucket_comp_keys = []
-        bucket_comp_acc_keys = []
-        bucket_comp_macro_keys = []
-        bucket_comp_macro_acc_keys = []
-        nshot_comp_lines = ""
-        nshot_comp_acc_lines = ""
-        nshot_comp_macro_lines = ""
-        nshot_comp_macro_acc_lines = ""
+        def _build_nshot_lines(metric_group_scores: Dict[str, Any], title: str) -> str:
+            bucket_scores = metric_group_scores.get("n-shot", {})
+            bucket_keys = [bucket_name for bucket_name in nshot_bucket_names if bucket_name in bucket_scores]
+            if not bucket_keys:
+                return ""
 
-        id_partition_name = next((name for name in partition_names if name.startswith("id")), None)
-        id_scores = scores_eval.get(id_partition_name, {}) if id_partition_name is not None else {}
+            lines = f"{title:-^{75}}\n"
+            len_max = max(len(label) for label in bucket_keys)
+            for bucket_name in bucket_keys:
+                n_dashes = len_max - len(bucket_name) + 3
+                lines += f"{bucket_name} {'-' * n_dashes} {bucket_scores[bucket_name]:.4f}\n"
+            return lines
 
-        bucket_scores = id_scores.get("standard", {}).get("map", {}).get("n-shot", {})
-        bucket_comp_keys = [
-            bucket_name
-            for bucket_name in nshot_bucket_names
-            if bucket_name in bucket_scores
-        ]
-        if bucket_comp_keys:
-            nshot_comp_lines = f"{' N-Shot Composite mAP ':-^{75}}\n"
-            len_max = max(len(label) for label in bucket_comp_keys)
-            for bucket_name in bucket_comp_keys:
-                label = bucket_name
-                n_dashes = len_max - len(label) + 3
-                nshot_comp_lines += f"{label} {'-' * n_dashes} {bucket_scores[bucket_name]:.4f}\n"
-
-        bucket_scores_acc = id_scores.get("standard", {}).get("acc", {}).get("n-shot", {})
-        bucket_comp_acc_keys = [
-            bucket_name
-            for bucket_name in nshot_bucket_names
-            if bucket_name in bucket_scores_acc
-        ]
-        if bucket_comp_acc_keys:
-            nshot_comp_acc_lines = f"{' N-Shot Composite Accuracy ':-^{75}}\n"
-            len_max = max(len(label) for label in bucket_comp_acc_keys)
-            for bucket_name in bucket_comp_acc_keys:
-                label = bucket_name
-                n_dashes = len_max - len(label) + 3
-                nshot_comp_acc_lines += f"{label} {'-' * n_dashes} {bucket_scores_acc[bucket_name]:.4f}\n"
-
-        bucket_scores_macro = id_scores.get("per_class", {}).get("map", {}).get("n-shot", {})
-        bucket_comp_macro_keys = [
-            bucket_name
-            for bucket_name in nshot_bucket_names
-            if bucket_name in bucket_scores_macro
-        ]
-        if bucket_comp_macro_keys:
-            nshot_comp_macro_lines = f"{' N-Shot Composite Macro mAP ':-^{75}}\n"
-            len_max = max(len(label) for label in bucket_comp_macro_keys)
-            for bucket_name in bucket_comp_macro_keys:
-                label = bucket_name
-                n_dashes = len_max - len(label) + 3
-                nshot_comp_macro_lines += f"{label} {'-' * n_dashes} {bucket_scores_macro[bucket_name]:.4f}\n"
-
-        bucket_scores_macro_acc = id_scores.get("per_class", {}).get("acc", {}).get("n-shot", {})
-        bucket_comp_macro_acc_keys = [
-            bucket_name
-            for bucket_name in nshot_bucket_names
-            if bucket_name in bucket_scores_macro_acc
-        ]
-        if bucket_comp_macro_acc_keys:
-            nshot_comp_macro_acc_lines = f"{' N-Shot Composite Per-Class Accuracy ':-^{75}}\n"
-            len_max = max(len(label) for label in bucket_comp_macro_acc_keys)
-            for bucket_name in bucket_comp_macro_acc_keys:
-                label = bucket_name
-                n_dashes = len_max - len(label) + 3
-                nshot_comp_macro_acc_lines += f"{label} {'-' * n_dashes} {bucket_scores_macro_acc[bucket_name]:.4f}\n"
-
-        map_lines = ""
-        acc_data = []
-        for partition_name in partition_names:
-            partition_scores = scores_eval[partition_name]
-            standard_map_scores = partition_scores.get("standard", {}).get("map", {})
-            per_class_map_scores = partition_scores.get("per_class", {}).get("map", {})
-            standard_acc_scores = partition_scores.get("standard", {}).get("acc", {})
-            per_class_acc_scores = partition_scores.get("per_class", {}).get("acc", {})
-            map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
-            map_lines += (
+        def _partition_variant_lines(
+            variant_title: str,
+            map_scores: Dict[str, Any],
+            per_class_map_scores: Dict[str, Any],
+            partition_name: str,
+        ) -> str:
+            lines = f"{variant_title:=^{75}}\n"
+            lines += (
                 f"{' mAP ':-^{75}}\n"
-                f"I2T --- {standard_map_scores['i2t']:.4f}\n"
-                f"I2I --- {standard_map_scores['i2i']:.4f}\n"
-                f"T2I --- {standard_map_scores['t2i']:.4f}\n"
+                f"I2T --- {map_scores['i2t']:.4f}\n"
+                f"I2I --- {map_scores['i2i']:.4f}\n"
+                f"T2I --- {map_scores['t2i']:.4f}\n"
             )
-            if partition_name == id_partition_name and nshot_comp_lines:
-                map_lines += nshot_comp_lines
-            map_lines += (
+            if partition_name == bucket_partition_name:
+                lines += _build_nshot_lines(map_scores, " N-Shot Composite mAP ")
+
+            lines += (
                 f"{' Macro mAP ':-^{75}}\n"
                 f"I2T --- {per_class_map_scores['i2t']:.4f}\n"
                 f"I2I --- {per_class_map_scores['i2i']:.4f}\n"
                 f"T2I --- {per_class_map_scores['t2i']:.4f}\n"
             )
-            if partition_name == id_partition_name and nshot_comp_macro_lines:
-                map_lines += nshot_comp_macro_lines
+            if partition_name == bucket_partition_name:
+                lines += _build_nshot_lines(per_class_map_scores, " N-Shot Composite Macro mAP ")
+            return lines
 
-            if "i2t" in standard_acc_scores:
-                acc_data.append((f"{partition_name.upper()} Accuracy", standard_acc_scores["i2t"]))
-            if "i2t" in per_class_acc_scores:
-                acc_data.append((f"{partition_name.upper()} Per-Class Accuracy", per_class_acc_scores["i2t"]))
+        def _collect_accuracy_rows(score_key: Optional[str], label_suffix: str) -> List[tuple[str, float]]:
+            rows = []
+            for partition_name in partition_names:
+                partition_scores = scores_eval[partition_name]
+                standard_acc_scores = partition_scores.get("standard", {})
+                per_class_acc_scores = partition_scores.get("per_class", {})
+                if score_key is not None:
+                    standard_acc_scores = standard_acc_scores.get(score_key, {})
+                    per_class_acc_scores = per_class_acc_scores.get(score_key, {})
+                standard_acc_scores = standard_acc_scores.get("acc", {})
+                per_class_acc_scores = per_class_acc_scores.get("acc", {})
 
-        accuracy_lines = ""
-        if acc_data:
-            accuracy_lines = f"{' I2T Accuracy ':-^{75}}\n"
-            len_max = max(len(label) for label, _ in acc_data)
-            for label, value in acc_data:
+                partition_label = partition_name.upper()
+                if "i2t" in standard_acc_scores:
+                    rows.append((f"{partition_label} {label_suffix}Accuracy".strip(), standard_acc_scores["i2t"]))
+                if "i2t" in per_class_acc_scores:
+                    rows.append((f"{partition_label} {label_suffix}Per-Class Accuracy".strip(), per_class_acc_scores["i2t"]))
+            return rows
+
+        def _format_accuracy_block(title: str, rows: List[tuple[str, float]]) -> str:
+            if not rows:
+                return ""
+            lines = f"{title:-^{75}}\n"
+            len_max = max(len(label) for label, _ in rows)
+            for label, value in rows:
                 n_dashes = len_max - len(label) + 3
-                accuracy_lines += f"{label} {'-' * n_dashes} {value:.4f}\n"
+                lines += f"{label} {'-' * n_dashes} {value:.4f}\n"
+            return lines
 
         def _metric_line(label: str, value_str: str) -> str:
-            # Keep a minimum of 3 dashes while aligning labels to a fixed width.
             n_dashes = max(3, 6 - len(label))
             return f"{label} {'-' * n_dashes} {value_str}\n"
 
-        composite_lines = f"{' Composite mAP ':-^{75}}\n"
-        composite_lines += _metric_line("All", f"{scores_eval['comp']['standard']['map']['all']:.4f}{best_comp_map_str}")
-        composite_lines += _metric_line("I2I", f"{scores_eval['comp']['standard']['map']['i2i']:.4f}{best_i2i_map_str}")
-        for partition_name in partition_names:
-            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp']['standard']['map'][partition_name]:.4f}")
+        def _format_composite_block(title: str, map_scores: Dict[str, Any], best_all: Optional[float], best_i2i: Optional[float]) -> str:
+            lines = f"{title:-^{75}}\n"
+            lines += _metric_line("All", f"{map_scores['all']:.4f}{_best_metric_str(best_all)}")
+            lines += _metric_line("I2I", f"{map_scores['i2i']:.4f}{_best_metric_str(best_i2i)}")
+            for partition_name in partition_names:
+                lines += _metric_line(partition_name.upper(), f"{map_scores[partition_name]:.4f}")
+            return lines
 
-        composite_macro_lines = f"{' Composite macro mAP ':-^{75}}\n"
-        composite_macro_lines += _metric_line("All", f"{scores_eval['comp']['per_class']['map']['all']:.4f}")
-        composite_macro_lines += _metric_line("I2I", f"{scores_eval['comp']['per_class']['map']['i2i']:.4f}")
+        map_lines = ""
         for partition_name in partition_names:
-            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp']['per_class']['map'][partition_name]:.4f}")
+            partition_scores = scores_eval[partition_name]
+            standard_map_scores = partition_scores.get("standard", {}).get("map", {})
+            per_class_map_scores = partition_scores.get("per_class", {}).get("map", {})
+            map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
+            map_lines += _partition_variant_lines(
+                variant_title=" Standard ",
+                map_scores=standard_map_scores,
+                per_class_map_scores=per_class_map_scores,
+                partition_name=partition_name,
+            )
+
+            standard_full_set = partition_scores.get("standard", {}).get("full_set", {})
+            per_class_full_set = partition_scores.get("per_class", {}).get("full_set", {})
+            if standard_full_set and per_class_full_set:
+                map_lines += _partition_variant_lines(
+                    variant_title=" Full-Set ",
+                    map_scores=standard_full_set.get("map", {}),
+                    per_class_map_scores=per_class_full_set.get("map", {}),
+                    partition_name=partition_name,
+                )
+
+        accuracy_lines = _format_accuracy_block(" I2T Accuracy ", _collect_accuracy_rows(score_key=None, label_suffix=""))
+        accuracy_lines += _build_nshot_lines(
+            scores_eval.get(bucket_partition_name, {}).get("standard", {}).get("acc", {}),
+            " N-Shot Composite Accuracy ",
+        ) if bucket_partition_name is not None else ""
+        accuracy_lines += _build_nshot_lines(
+            scores_eval.get(bucket_partition_name, {}).get("per_class", {}).get("acc", {}),
+            " N-Shot Composite Per-Class Accuracy ",
+        ) if bucket_partition_name is not None else ""
+        accuracy_lines += _format_accuracy_block(" Full-Set I2T Accuracy ", _collect_accuracy_rows(score_key="full_set", label_suffix="Full-Set "))
+        accuracy_lines += _build_nshot_lines(
+            scores_eval.get(bucket_partition_name, {}).get("standard", {}).get("full_set", {}).get("acc", {}),
+            " Full-Set N-Shot Composite Accuracy ",
+        ) if bucket_partition_name is not None else ""
+        accuracy_lines += _build_nshot_lines(
+            scores_eval.get(bucket_partition_name, {}).get("per_class", {}).get("full_set", {}).get("acc", {}),
+            " Full-Set N-Shot Composite Per-Class Accuracy ",
+        ) if bucket_partition_name is not None else ""
+
+        composite_lines = _format_composite_block(
+            " Composite mAP ",
+            scores_eval["comp"]["standard"]["map"],
+            eval_pipe.best_comp_map,
+            eval_pipe.best_i2i_map,
+        )
+        if "full_set" in scores_eval["comp"]["standard"]:
+            composite_lines += _format_composite_block(
+                " Composite Full-Set mAP ",
+                scores_eval["comp"]["standard"]["full_set"]["map"],
+                getattr(eval_pipe, "best_full_set_comp_map", None),
+                getattr(eval_pipe, "best_full_set_i2i_map", None),
+            )
+
+        composite_macro_lines = _format_composite_block(
+            " Composite macro mAP ",
+            scores_eval["comp"]["per_class"]["map"],
+            None,
+            None,
+        )
+        if "full_set" in scores_eval["comp"]["per_class"]:
+            composite_macro_lines += _format_composite_block(
+                " Composite macro Full-Set mAP ",
+                scores_eval["comp"]["per_class"]["full_set"]["map"],
+                None,
+                None,
+            )
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         for partition_name in partition_names:
@@ -483,8 +505,6 @@ class PrintLog:
             f"{context_lines}"
             f"{map_lines}"
             f"{accuracy_lines}"
-            f"{nshot_comp_acc_lines}"
-            f"{nshot_comp_macro_acc_lines}"
             f"{composite_lines}"
             f"{composite_macro_lines}"
             f"{loss_lines}"

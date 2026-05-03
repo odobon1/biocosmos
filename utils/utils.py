@@ -312,7 +312,7 @@ class PrintLog:
 
     @staticmethod
     def eval(
-        scores_eval: Dict[str, float],
+        scores_eval: Dict[str, Any],
         eval_pipe,
         header: Optional[str] = None,
         samps_seen: Optional[int] = None,
@@ -353,35 +353,33 @@ class PrintLog:
         bucket_comp_keys = []
         nshot_comp_lines = ""
 
+        bucket_scores = scores_eval.get("comp", {}).get("n-shot", {})
         bucket_comp_keys = [
-            f"{bucket_partition_name}_{bucket_name}_comp"
+            bucket_name
             for bucket_name in nshot_bucket_names
-            if f"{bucket_partition_name}_{bucket_name}_comp" in scores_eval
+            if bucket_name in bucket_scores
         ]
         if bucket_comp_keys:
             nshot_comp_lines = f"{' N-Shot Composite mAP ':-^{75}}\n"
-            labels = [
-                f"{k.removeprefix(bucket_partition_name + '_').removesuffix('_comp')}"
-                for k in bucket_comp_keys
-            ]
-            len_max = max(len(label) for label in labels)
-            for k, label in zip(bucket_comp_keys, labels):
+            len_max = max(len(label) for label in bucket_comp_keys)
+            for bucket_name in bucket_comp_keys:
+                label = bucket_name
                 n_dashes = len_max - len(label) + 3
-                nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval[k]:.4f}\n"
+                nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval['comp']['n-shot'][bucket_name]:.4f}\n"
 
         map_lines = ""
         for partition_name in partition_names:
             map_lines += (
                 f"{f' {partition_name.upper()} mAP ':-^{75}}\n"
-                f"I2T --- {scores_eval[f'{partition_name}_i2t_map']:.4f}\n"
-                f"I2I --- {scores_eval[f'{partition_name}_i2i_map']:.4f}\n"
-                f"T2I --- {scores_eval[f'{partition_name}_t2i_map']:.4f}\n"
+                f"I2T --- {scores_eval[partition_name]['i2t_map']:.4f}\n"
+                f"I2I --- {scores_eval[partition_name]['i2i_map']:.4f}\n"
+                f"T2I --- {scores_eval[partition_name]['t2i_map']:.4f}\n"
             )
             map_lines += (
                 f"{f' {partition_name.upper()} Macro mAP ':-^{75}}\n"
-                f"I2T --- {scores_eval[f'{partition_name}_i2t_macro_map']:.4f}\n"
-                f"I2I --- {scores_eval[f'{partition_name}_i2i_macro_map']:.4f}\n"
-                f"T2I --- {scores_eval[f'{partition_name}_t2i_macro_map']:.4f}\n"
+                f"I2T --- {scores_eval[partition_name]['i2t_macro_map']:.4f}\n"
+                f"I2I --- {scores_eval[partition_name]['i2i_macro_map']:.4f}\n"
+                f"T2I --- {scores_eval[partition_name]['t2i_macro_map']:.4f}\n"
             )
 
         def _metric_line(label: str, value_str: str) -> str:
@@ -390,20 +388,20 @@ class PrintLog:
             return f"{label} {'-' * n_dashes} {value_str}\n"
 
         composite_lines = f"{' Composite mAP ':-^{75}}\n"
-        composite_lines += _metric_line("All", f"{scores_eval['comp_map']:.4f}{best_comp_map_str}")
-        composite_lines += _metric_line("I2I", f"{scores_eval['i2i_map']:.4f}{best_i2i_map_str}")
+        composite_lines += _metric_line("All", f"{scores_eval['comp']['map']:.4f}{best_comp_map_str}")
+        composite_lines += _metric_line("I2I", f"{scores_eval['comp']['i2i_map']:.4f}{best_i2i_map_str}")
         for partition_name in partition_names:
-            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_map']:.4f}")
+            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp'][partition_name]['map']:.4f}")
 
         composite_macro_lines = f"{' Composite macro mAP ':-^{75}}\n"
-        composite_macro_lines += _metric_line("All", f"{scores_eval['comp_macro_map']:.4f}")
-        composite_macro_lines += _metric_line("I2I", f"{scores_eval['i2i_macro_map']:.4f}")
+        composite_macro_lines += _metric_line("All", f"{scores_eval['comp']['macro_map']:.4f}")
+        composite_macro_lines += _metric_line("I2I", f"{scores_eval['comp']['i2i_macro_map']:.4f}")
         for partition_name in partition_names:
-            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_macro_map']:.4f}")
+            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval['comp'][partition_name]['macro_map']:.4f}")
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         for partition_name in partition_names:
-            loss_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_loss']:.3e}")
+            loss_lines += _metric_line(partition_name.upper(), f"{scores_eval[partition_name]['loss']:.3e}")
 
         context_lines = ""
         if idx_epoch is not None:

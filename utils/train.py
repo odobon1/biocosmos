@@ -123,8 +123,13 @@ class ArtifactManager:
 
     @staticmethod
     def save_metadata_model(dpath_model, scores_val, samps_seen_chkpt, samps_seen):
+        def format_scores(scores):
+            if isinstance(scores, dict):
+                return {k: format_scores(v) for k, v in scores.items()}
+            return f"{float(scores):.4f}"
+
         fpath_meta = dpath_model / "metadata_model.json"
-        scores_val = {k: f"{v:.4f}" for k, v in scores_val.items()}
+        scores_val = format_scores(scores_val)
         metadata = {
             "scores_val": scores_val,
             "samps_seen": f"{samps_seen_chkpt:,}/{samps_seen:,}",
@@ -159,33 +164,20 @@ def plot_metrics(
         }
 
     partition_names = [
-        key.removesuffix("_i2t_map")
-        for key in data_eval.keys()
-        if key.endswith("_i2t_map")
+        partition_name
+        for partition_name, partition_scores in data_eval.items()
+        if isinstance(partition_scores, dict) and "i2t_map" in partition_scores
     ]
-    if not partition_names or "comp_map" not in data_eval:
+    if not partition_names or "comp" not in data_eval:
         return
 
     x_eval = data_eval["samps_seen"]
     x_epoch = data_epoch["samps_seen"]
 
-    bucket_partition_name = next(
-        (
-            partition_name
-            for partition_name in partition_names
-            if any(
-                key.startswith(f"{partition_name}_") and key.endswith("_comp")
-                for key in data_eval.keys()
-            )
-        ),
-        None,
-    )
-    bucket_comp_keys = []
-    if bucket_partition_name is not None:
-        bucket_comp_keys = [
-            key for key in data_eval.keys()
-            if key.startswith(f"{bucket_partition_name}_") and key.endswith("_comp")
-        ]
+    bucket_partition_name = None
+    bucket_comp_keys = [
+        key for key in data_eval.get("comp", {}).get("n-shot", {}).keys()
+    ]
 
     plot_composite_metrics(
         data_epoch,
@@ -269,9 +261,14 @@ def plot_composite_metrics(
         if partition_name is None:
             continue
         for metric_name, metric_label, color in retrieval_specs:
-            key = f"{partition_name}_{metric_name}"
-            if key in data_eval:
-                ax0.plot(x_eval, data_eval[key], label=f"{partition_label} {metric_label}", color=color, linestyle=linestyle)
+            if metric_name in data_eval.get(partition_name, {}):
+                ax0.plot(
+                    x_eval,
+                    data_eval[partition_name][metric_name],
+                    label=f"{partition_label} {metric_label}",
+                    color=color,
+                    linestyle=linestyle,
+                )
 
     ax0.set_ylabel(retrieval_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
@@ -280,10 +277,11 @@ def plot_composite_metrics(
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
+    comp_nshot = data_eval.get("comp", {}).get("n-shot", {})
     if bucket_comp_keys:
         for key in bucket_comp_keys:
-            label = key.removeprefix(f"{bucket_partition_name}_").removesuffix("_comp")
-            maybe_plot(ax1, x_eval, data_eval, key, label, linestyle=":")
+            label = key
+            maybe_plot(ax1, x_eval, comp_nshot, key, label, linestyle=":")
         ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
@@ -292,11 +290,10 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        key = f"{partition_name}_i2t_prec1"
-        if key in data_eval:
+        if "i2t_prec1" in data_eval.get(partition_name, {}):
             ax2.plot(
                 x_eval,
-                data_eval[key],
+                data_eval[partition_name]["i2t_prec1"],
                 label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} I2T Prec@1',
             )
     ax2.set_ylabel("Precision@1", fontsize=fontsize_axes, fontweight="bold")
@@ -311,9 +308,12 @@ def plot_composite_metrics(
     if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
         ax3.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition_name in partition_names:
-        key = f"{partition_name}_loss"
-        if key in data_eval:
-            ax3.plot(x_eval, data_eval[key], label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss')
+        if "loss" in data_eval.get(partition_name, {}):
+            ax3.plot(
+                x_eval,
+                data_eval[partition_name]["loss"],
+                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss',
+            )
     ax3.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
     ax3.set_yscale("log")
     ax3.minorticks_on()

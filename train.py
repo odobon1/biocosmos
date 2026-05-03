@@ -54,9 +54,13 @@ class TrialDataTracker:
         self.data_eval = {
             "samps_seen": [],
             "idx_epoch": [],
-            "comp_map": [],
-            "i2i_map": [],
-            "comp_loss": [],
+            "comp": {
+                "map": [],
+                "macro_map": [],
+                "i2i_map": [],
+                "i2i_macro_map": [],
+                "n-shot": {},
+            },
         }
         self.data = {
             "epoch": self.data_epoch,
@@ -76,13 +80,24 @@ class TrialDataTracker:
 
     def update_eval(self, scores_val, samps_seen, idx_epoch):
 
+        def append_nested(dst, src):
+            for score_name, score_value in src.items():
+                if isinstance(score_value, dict):
+                    if score_name not in dst:
+                        dst[score_name] = {}
+                    append_nested(dst[score_name], score_value)
+                else:
+                    if score_name not in dst:
+                        dst[score_name] = []
+                    dst[score_name].append(float(score_value))
+
         self.data_eval["samps_seen"].append(samps_seen)
         self.data_eval["idx_epoch"].append(idx_epoch)
 
-        for score_name, score_value in scores_val.items():
-            if score_name not in self.data_eval:
-                self.data_eval[score_name] = []
-            self.data_eval[score_name].append(float(score_value))
+        for partition_name, partition_scores in scores_val.items():
+            if partition_name not in self.data_eval:
+                self.data_eval[partition_name] = {}
+            append_nested(self.data_eval[partition_name], partition_scores)
 
     def save(self):
         save_pickle(self.data, self.fpath_data)
@@ -101,12 +116,8 @@ class LRSchedulerWrapper:
             self.lr_min = args["lr_min"]
             self.sched  = ExponentialLR(self.opt, **args_sched)
         elif self.type == "plat":
-            self.valid_type       = args["valid_type"]
             self.reset_best_valid = args["reset_best_valid"]
-            if self.valid_type == "loss":
-                self.sched = ReduceLROnPlateau(self.opt, mode="min", **args_sched)
-            elif self.valid_type == "perf":
-                self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
+            self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
         elif self.type == "cos":
             n_epochs = getattr(config, "n_epochs")
             eta_min_factor = args.get("eta_min_factor")
@@ -123,10 +134,7 @@ class LRSchedulerWrapper:
     def step(self, scores_val):
 
         if self.type == "plat":
-            if self.valid_type == "loss":
-                valid_signal = scores_val["comp_loss"]
-            elif self.valid_type == "perf":
-                valid_signal = scores_val["comp_map"]
+            valid_signal = scores_val["comp"]["map"]
             lr_prev = self.get_lr()
             self.sched.step(valid_signal)
             if self.get_lr() < lr_prev:  # if current LR < previous LR

@@ -332,17 +332,6 @@ class PrintLog:
         else:
             target_log = None
 
-        header_str = ""
-        if header is not None:
-            header_wrapped = f" {header} "
-            header_str = (
-                f"{header_wrapped:=^{75}}"
-                f"\n"
-            )
-            print(header_str)
-            if PrintLog.logging and target_log is not None:
-                target_log.write(header_str)
-
         if eval_pipe.best_comp_map is not None:
             best_comp_map_str = f" (best: {eval_pipe.best_comp_map:.4f})"
             best_i2i_map_str = f" (best: {eval_pipe.best_i2i_map:.4f})"
@@ -426,18 +415,23 @@ class PrintLog:
             per_class_map_scores = partition_scores.get("per_class", {}).get("map", {})
             standard_acc_scores = partition_scores.get("standard", {}).get("acc", {})
             per_class_acc_scores = partition_scores.get("per_class", {}).get("acc", {})
+            map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
             map_lines += (
-                f"{f' {partition_name.upper()} Standard mAP ':-^{75}}\n"
+                f"{' mAP ':-^{75}}\n"
                 f"I2T --- {standard_map_scores['i2t']:.4f}\n"
                 f"I2I --- {standard_map_scores['i2i']:.4f}\n"
                 f"T2I --- {standard_map_scores['t2i']:.4f}\n"
             )
+            if partition_name == id_partition_name and nshot_comp_lines:
+                map_lines += nshot_comp_lines
             map_lines += (
-                f"{f' {partition_name.upper()} Per-Class mAP ':-^{75}}\n"
+                f"{' Macro mAP ':-^{75}}\n"
                 f"I2T --- {per_class_map_scores['i2t']:.4f}\n"
                 f"I2I --- {per_class_map_scores['i2i']:.4f}\n"
                 f"T2I --- {per_class_map_scores['t2i']:.4f}\n"
             )
+            if partition_name == id_partition_name and nshot_comp_macro_lines:
+                map_lines += nshot_comp_macro_lines
 
             if "i2t" in standard_acc_scores:
                 acc_data.append((f"{partition_name.upper()} Accuracy", standard_acc_scores["i2t"]))
@@ -454,7 +448,7 @@ class PrintLog:
 
         def _metric_line(label: str, value_str: str) -> str:
             # Keep a minimum of 3 dashes while aligning labels to a fixed width.
-            n_dashes = max(3, 14 - len(label))
+            n_dashes = max(3, 6 - len(label))
             return f"{label} {'-' * n_dashes} {value_str}\n"
 
         composite_lines = f"{' Composite mAP ':-^{75}}\n"
@@ -475,23 +469,21 @@ class PrintLog:
 
         context_lines = ""
         if idx_epoch is not None:
-            context_lines += f"Epoch -------- {idx_epoch}\n"
+            context_lines += f"Epoch ---------- {idx_epoch}\n"
         if samps_seen is not None:
-            context_lines += f"Samples Seen - {samps_seen:,}\n"
+            context_lines += f"Samples Seen --- {samps_seen:,}\n"
         if time_val is not None:
-            context_lines += f"Validation --- {time_val:.2f} s\n"
+            context_lines += f"Validation ----- {time_val:.2f} s\n"
         if context_lines:
             context_lines += "\n"
 
-        header = " Eval "
+        eval_header = f" Eval ({header}) " if header is not None else " Eval "
         eval_printout = (
-            f"{header:=^{75}}\n"
+            f"{eval_header:#^{75}}\n"
             f"{context_lines}"
             f"{map_lines}"
             f"{accuracy_lines}"
-            f"{nshot_comp_lines}"
             f"{nshot_comp_acc_lines}"
-            f"{nshot_comp_macro_lines}"
             f"{nshot_comp_macro_acc_lines}"
             f"{composite_lines}"
             f"{composite_macro_lines}"

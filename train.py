@@ -412,7 +412,7 @@ class TrainPipeline:
                             PrintLog.eval(
                                 scores_val,
                                 self.val_pipe,
-                                header=f"Threshold {threshold_hit:,}",
+                                header=f"{threshold_hit:,}",
                                 samps_seen=self.n_samps_seen,
                                 idx_epoch=idx_epoch,
                                 time_val=time_val,

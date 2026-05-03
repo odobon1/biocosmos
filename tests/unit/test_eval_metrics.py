@@ -3,10 +3,14 @@ python -m pytest tests/unit/test_eval_metrics.py
 """
 
 import pytest  # type: ignore[import]
-import torch
+import torch  # type: ignore[import]
 
 import utils.eval as eval_utils
-from utils.eval import compute_map_img2img, compute_map_cross_modal
+from utils.eval import (
+    compute_map_img2img,
+    compute_map_cross_modal,
+    reduce_bucketed_macro_map_from_class_ap,
+)
 from utils.head import compute_sim
 
 
@@ -319,3 +323,34 @@ def test_compute_map_cross_modal_without_accuracy(monkeypatch: pytest.MonkeyPatc
     assert "accs" not in scores
     assert "macro_acc" not in scores
     assert scores["map"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_reduce_bucketed_macro_map_from_class_ap_basic() -> None:
+    class_ap = [0.8, 0.2, 0.5, float("nan")]  # class 3 inactive
+    class_enc_to_bucket = {0: "few", 1: "few", 2: "many"}
+    bucket_names = ["few", "many", "zero"]
+
+    out = reduce_bucketed_macro_map_from_class_ap(
+        class_ap=class_ap,
+        class_enc_to_bucket=class_enc_to_bucket,
+        bucket_names=bucket_names,
+    )
+
+    assert out["few"] == pytest.approx(0.5, abs=1e-6)
+    assert out["many"] == pytest.approx(0.5, abs=1e-6)
+    assert "zero" not in out
+
+
+def test_reduce_bucketed_macro_map_from_class_ap_tensor_input() -> None:
+    class_ap = torch.tensor([0.8, 0.3, 0.5, float("nan")], dtype=torch.float32)
+    class_enc_to_bucket = {0: "few", 1: "few", 2: "many"}
+    bucket_names = ["few", "many"]
+
+    out = reduce_bucketed_macro_map_from_class_ap(
+        class_ap=class_ap,
+        class_enc_to_bucket=class_enc_to_bucket,
+        bucket_names=bucket_names,
+    )
+
+    assert out["few"] == pytest.approx(0.55, abs=1e-6)
+    assert out["many"] == pytest.approx(0.5, abs=1e-6)

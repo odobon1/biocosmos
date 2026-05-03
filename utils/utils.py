@@ -351,7 +351,9 @@ class PrintLog:
             best_i2i_map_str = ""
 
         bucket_comp_keys = []
+        bucket_comp_macro_keys = []
         nshot_comp_lines = ""
+        nshot_comp_macro_lines = ""
 
         bucket_scores = scores_eval.get("comp", {}).get("n-shot", {})
         bucket_comp_keys = [
@@ -366,6 +368,20 @@ class PrintLog:
                 label = bucket_name
                 n_dashes = len_max - len(label) + 3
                 nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval['comp']['n-shot'][bucket_name]:.4f}\n"
+
+        bucket_scores_macro = scores_eval.get("comp", {}).get("n-shot-macro", {})
+        bucket_comp_macro_keys = [
+            bucket_name
+            for bucket_name in nshot_bucket_names
+            if bucket_name in bucket_scores_macro
+        ]
+        if bucket_comp_macro_keys:
+            nshot_comp_macro_lines = f"{' N-Shot Composite Macro mAP ':-^{75}}\n"
+            len_max = max(len(label) for label in bucket_comp_macro_keys)
+            for bucket_name in bucket_comp_macro_keys:
+                label = bucket_name
+                n_dashes = len_max - len(label) + 3
+                nshot_comp_macro_lines += f"{label} {'-' * n_dashes} {scores_eval['comp']['n-shot-macro'][bucket_name]:.4f}\n"
 
         map_lines = ""
         for partition_name in partition_names:
@@ -419,6 +435,7 @@ class PrintLog:
             f"{context_lines}"
             f"{map_lines}"
             f"{nshot_comp_lines}"
+            f"{nshot_comp_macro_lines}"
             f"{composite_lines}"
             f"{composite_macro_lines}"
             f"{loss_lines}"

@@ -283,13 +283,17 @@ def plot_composite_metrics(
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    comp_nshot = data_eval.get("comp", {}).get("n-shot", {})
+    is_macro_plot = "macro" in retrieval_metric_names[0]
+    nshot_key = "n-shot-macro" if is_macro_plot else "n-shot"
+    nshot_ylabel = "n-shot Macro mAP (ID)" if is_macro_plot else "n-shot mAP (ID)"
+    comp_nshot = data_eval.get("comp", {}).get(nshot_key, {})
     if bucket_comp_keys:
         for key in bucket_comp_keys:
             label = key
             maybe_plot(ax1, x_eval, comp_nshot, key, label, linestyle=":")
-        ax1.legend(loc="lower right", fontsize=fontsize_legend)
-    ax1.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
+        if comp_nshot:
+            ax1.legend(loc="lower right", fontsize=fontsize_legend)
+    ax1.set_ylabel(nshot_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)

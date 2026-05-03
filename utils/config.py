@@ -94,9 +94,19 @@ class TrainConfig:
     def has_field(cls, name_field):
         return name_field in cls.__dataclass_fields__
 
+
+def apply_train_debug_overrides(cfg_dict: dict) -> dict:
+    cfg_dict = dict(cfg_dict)
+    dev_cfg = cfg_dict.get("dev", {}) or {}
+    if dev_cfg.get("debug_mode", False):
+        cfg_dict["split_name"] = "dev"
+        cfg_dict["eval_every"] = 5_000
+    return cfg_dict
+
 def get_config_train():
     with open(paths["config"] / "train/train.yaml") as f:
         cfg_dict = yaml.safe_load(f)
+    cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg = TrainConfig(**cfg_dict)
     cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
     cfg.loss["cfg"] = get_config_loss(cfg)

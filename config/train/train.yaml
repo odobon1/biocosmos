@@ -1,19 +1,20 @@
 study_name: dev
-experiment_name: dev_cub_clip_3
+experiment_name: dev_lepid_clip_15
 seed: 42
-dataset: cub  # {bryo, cub, lepid, nymph}
+dataset: lepid  # {bryo, cub, lepid, nymph}
 split_name: D10  # {D10, dev}
 
-sample_volume: 1_000_000
-eval_every: 10_000
+sample_volume: 10_000_000
+eval_every: 100_000
 chkpt_every: 1
-batch_size: 512  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size: 512  # 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching
 
 dev:
   allow_overwrite_trial: true
   allow_diff_study: true
   allow_diff_experiment: true
+  debug_mode: true
 
 arch:  # architecture
   model_type: clip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}

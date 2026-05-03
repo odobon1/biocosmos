@@ -282,33 +282,6 @@ class VLMWrapper(abc.ABC):
 
         return embs_txts
 
-    def img2txt_classify(
-        self, 
-        embs_imgs_b:    torch.Tensor,  # --- Tensor(B, D)
-        embs_txts:      torch.Tensor,  # --- Tensor(L, D)
-        class_encs_txt: List[int],
-    ) -> List[int]:
-        """
-        Perform image-to-text classification by computing similarities between image and text embeddings and selecting 
-        the text class with the highest similarity for each image.
-
-        Args:
-        - embs_imgs_b ------ Batch of image embeddings (D for dim. embeddings)
-        - embs_txts -------- Text embeddings
-        - class_encs_txt --- Text class encodings
-
-        Returns:
-        - Predicted text class encodings for each image in the batch
-        """
-
-        sim       = compute_sim(embs_imgs_b, embs_txts, "cos")
-        idxs_pred = sim.argmax(dim=-1)
-
-        class_encs_txt_pred = idxs_pred.tolist()
-        # class_encs_txt_pred = [class_encs_txt[i] for i in idxs_pred.tolist()]  # may want to use this if split-set indexing schema is globalized
-
-        return class_encs_txt_pred
-
     def compute_logits(self, sim: torch.Tensor, secondary: bool = False) -> torch.Tensor:
         """
         Scales similarity matrix by learnable logit scale (temperature) and adds logit bias if applicable (e.g. SigLIP).

@@ -20,6 +20,10 @@ RETRIEVAL_MODALITIES = ("i2t_map", "i2i_map", "t2i_map")
 def compute_partition_map(scores_partition: Dict[str, float]) -> float:
     return sum(scores_partition[metric] for metric in RETRIEVAL_MODALITIES) / len(RETRIEVAL_MODALITIES)
 
+def compute_partition_macro_map(scores_partition: Dict[str, float]) -> float:
+    macro_keys = tuple(f"{m.replace('_map', '_macro_map')}" for m in RETRIEVAL_MODALITIES)
+    return sum(scores_partition[k] for k in macro_keys) / len(macro_keys)
+
 def list_eval_partition_names(split: Any, eval_type: str) -> List[str]:
     partition_names = []
     seen_partition_ids = set()
@@ -184,10 +188,13 @@ class SplitPartitionEvalPipeline:
         )
 
         eval_scores = {
-            "i2t_prec1": scores_i2t["prec1"].mean().item(),
-            "i2t_map":   scores_i2t["map"],
-            "i2i_map":   scores_i2i["map"],
-            "t2i_map":   scores_t2i["map"],
+            "i2t_prec1":     scores_i2t["prec1"].mean().item(),
+            "i2t_map":       scores_i2t["map"],
+            "i2t_macro_map": scores_i2t["macro_map"],
+            "i2i_map":       scores_i2i["map"],
+            "i2i_macro_map": scores_i2i["macro_map"],
+            "t2i_map":       scores_t2i["map"],
+            "t2i_macro_map": scores_t2i["macro_map"],
         }
 
         if self.partition_name == "id":
@@ -489,7 +496,9 @@ class ValidationPipeline:
 
         scores_val: Dict[str, float] = {}
         partition_maps = []
+        partition_macro_maps = []
         partition_i2i_maps = []
+        partition_i2i_macro_maps = []
         partition_losses = []
         time_elapsed_val = 0.0
 
@@ -497,22 +506,30 @@ class ValidationPipeline:
             scores_partition, loss_avg_partition, time_elapsed_partition = self.partition_pipes[partition_name].evaluate_split(modelw)
 
             partition_map = compute_partition_map(scores_partition)
+            partition_macro_map = compute_partition_macro_map(scores_partition)
             partition_maps.append(partition_map)
+            partition_macro_maps.append(partition_macro_map)
             partition_i2i_maps.append(scores_partition["i2i_map"])
+            partition_i2i_macro_maps.append(scores_partition["i2i_macro_map"])
             partition_losses.append(loss_avg_partition)
             time_elapsed_val += time_elapsed_partition
 
             scores_val[f"{partition_name}_map"] = partition_map
+            scores_val[f"{partition_name}_macro_map"] = partition_macro_map
             scores_val[f"{partition_name}_loss"] = loss_avg_partition
             for key, val in scores_partition.items():
                 scores_val[f"{partition_name}_{key}"] = val
 
         comp_map = sum(partition_maps) / len(partition_maps)
+        comp_macro_map = sum(partition_macro_maps) / len(partition_macro_maps)
         i2i_map = sum(partition_i2i_maps) / len(partition_i2i_maps)
+        i2i_macro_map = sum(partition_i2i_macro_maps) / len(partition_i2i_macro_maps)
         comp_loss = sum(partition_losses) / len(partition_losses)
 
         scores_val["comp_map"] = comp_map
+        scores_val["comp_macro_map"] = comp_macro_map
         scores_val["i2i_map"] = i2i_map
+        scores_val["i2i_macro_map"] = i2i_macro_map
         scores_val["comp_loss"] = comp_loss
 
         is_best_comp, is_best_i2i = self.check_bests(comp_map, i2i_map)

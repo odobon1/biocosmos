@@ -369,13 +369,19 @@ class PrintLog:
                 n_dashes = len_max - len(label) + 3
                 nshot_comp_lines += f"{label} {'-' * n_dashes} {scores_eval[k]:.4f}\n"
 
-        partition_lines = ""
+        map_lines = ""
         for partition_name in partition_names:
-            partition_lines += (
-                f"{f' {partition_name} mAP ':-^{75}}\n"
+            map_lines += (
+                f"{f' {partition_name.upper()} mAP ':-^{75}}\n"
                 f"I2T --- {scores_eval[f'{partition_name}_i2t_map']:.4f}\n"
                 f"I2I --- {scores_eval[f'{partition_name}_i2i_map']:.4f}\n"
                 f"T2I --- {scores_eval[f'{partition_name}_t2i_map']:.4f}\n"
+            )
+            map_lines += (
+                f"{f' {partition_name.upper()} Macro mAP ':-^{75}}\n"
+                f"I2T --- {scores_eval[f'{partition_name}_i2t_macro_map']:.4f}\n"
+                f"I2I --- {scores_eval[f'{partition_name}_i2i_macro_map']:.4f}\n"
+                f"T2I --- {scores_eval[f'{partition_name}_t2i_macro_map']:.4f}\n"
             )
 
         def _metric_line(label: str, value_str: str) -> str:
@@ -387,11 +393,17 @@ class PrintLog:
         composite_lines += _metric_line("All", f"{scores_eval['comp_map']:.4f}{best_comp_map_str}")
         composite_lines += _metric_line("I2I", f"{scores_eval['i2i_map']:.4f}{best_i2i_map_str}")
         for partition_name in partition_names:
-            composite_lines += _metric_line(partition_name, f"{scores_eval[f'{partition_name}_map']:.4f}")
+            composite_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_map']:.4f}")
+
+        composite_macro_lines = f"{' Composite macro mAP ':-^{75}}\n"
+        composite_macro_lines += _metric_line("All", f"{scores_eval['comp_macro_map']:.4f}")
+        composite_macro_lines += _metric_line("I2I", f"{scores_eval['i2i_macro_map']:.4f}")
+        for partition_name in partition_names:
+            composite_macro_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_macro_map']:.4f}")
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         for partition_name in partition_names:
-            loss_lines += _metric_line(partition_name, f"{scores_eval[f'{partition_name}_loss']:.3e}")
+            loss_lines += _metric_line(partition_name.upper(), f"{scores_eval[f'{partition_name}_loss']:.3e}")
 
         context_lines = ""
         if idx_epoch is not None:
@@ -407,9 +419,10 @@ class PrintLog:
         eval_printout = (
             f"{header:=^{75}}\n"
             f"{context_lines}"
-            f"{partition_lines}"
+            f"{map_lines}"
             f"{nshot_comp_lines}"
             f"{composite_lines}"
+            f"{composite_macro_lines}"
             f"{loss_lines}"
             f"\n"
         )

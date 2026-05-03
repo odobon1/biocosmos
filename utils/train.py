@@ -202,6 +202,31 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
+        retrieval_metric_names=("i2t_map", "i2i_map", "t2i_map"),
+        retrieval_ylabel="mAP Scores",
+        plot_title="Train Metrics",
+        output_filename="train_metrics.png",
+    )
+
+    plot_composite_metrics(
+        data_epoch,
+        data_eval,
+        x_epoch,
+        x_eval,
+        dpath_trial,
+        partition_names,
+        bucket_partition_name,
+        bucket_comp_keys,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        figsize,
+        height_ratios,
+        retrieval_metric_names=("i2t_macro_map", "i2i_macro_map", "t2i_macro_map"),
+        retrieval_ylabel="Macro mAP Scores",
+        plot_title="Train Metrics (Macro)",
+        output_filename="train_metrics_macro.png",
     )
 
 def plot_composite_metrics(
@@ -219,6 +244,10 @@ def plot_composite_metrics(
     subplot_border_width,
     figsize,
     height_ratios,
+    retrieval_metric_names,
+    retrieval_ylabel,
+    plot_title,
+    output_filename,
 ):
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -228,9 +257,9 @@ def plot_composite_metrics(
     id_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     ood_partition_name = next((name for name in partition_names if name.startswith("ood")), None)
     retrieval_specs = (
-        ("i2t_map", "I2T", "blue"),
-        ("i2i_map", "I2I", "red"),
-        ("t2i_map", "T2I", "green"),
+        (retrieval_metric_names[0], "I2T", "blue"),
+        (retrieval_metric_names[1], "I2I", "red"),
+        (retrieval_metric_names[2], "T2I", "green"),
     )
     style_specs = (
         (id_partition_name, "ID", "-"),
@@ -244,7 +273,7 @@ def plot_composite_metrics(
             if key in data_eval:
                 ax0.plot(x_eval, data_eval[key], label=f"{partition_label} {metric_label}", color=color, linestyle=linestyle)
 
-    ax0.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
+    ax0.set_ylabel(retrieval_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
     ax0.legend(loc="lower right", fontsize=fontsize_legend)
     ax0.grid(True)
@@ -317,10 +346,10 @@ def plot_composite_metrics(
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
 
-    fig.suptitle("Train Metrics", fontweight="bold", y=0.98, fontsize=20)
+    fig.suptitle(plot_title, fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    fig.savefig(dpath_trial / "plots/train_metrics.png")
+    fig.savefig(dpath_trial / f"plots/{output_filename}")
     plt.close(fig)
 
 def maybe_plot(ax, x, data, key, label, **kwargs):

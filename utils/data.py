@@ -17,6 +17,35 @@ from utils.config import EvalConfig
 import pdb
 
 
+def build_img_cache(
+    rfpaths: list,
+    dataset: str,
+    img_pp: Callable,
+    n_workers: int,
+    cached_imgs: str,
+    desc: str = "Caching Images",
+) -> dict:
+    """
+    Load images into memory for the given list of relative paths.
+    Returns a dict keyed by rfpath so that any partition can look up images
+    by path regardless of iteration order.
+
+    - cached_imgs = 'pl': cache raw PIL images (img_pp is unused).
+    - cached_imgs = 'pp': cache preprocessed tensors (img_pp is applied).
+    """
+    def _load(rfpath):
+        img = Image.open(paths["imgs"][dataset] / rfpath).convert("RGB")
+        return img if cached_imgs == "pl" else img_pp(img)
+
+    imgs_mem = {}
+    with ThreadPoolExecutor(max_workers=n_workers) as exe:
+        for rfpath, img in zip(
+            rfpaths,
+            tqdm.tqdm(exe.map(_load, rfpaths), total=len(rfpaths), desc=desc),
+        ):
+            imgs_mem[rfpath] = img
+    return imgs_mem
+
 @dataclass
 class Split:
     data_indexes: list
@@ -103,6 +132,7 @@ class ImageTextDataset(Dataset):
         text_template,
         img_pp, 
         config,
+        imgs_mem: dict | None = None,
     ):
         self.index_data = index_data
         self.text_template = text_template
@@ -114,23 +144,17 @@ class ImageTextDataset(Dataset):
         self.n_samples = len(self.index_data)
 
         self.time_cache = None  # need to pass this var to metadata save
-        if self.cached_imgs in ("pl", "pp"):
+        if imgs_mem is not None:
+            self.imgs_mem = imgs_mem
+        elif self.cached_imgs in ("pl", "pp"):
             time_start = time.time()
-
-            def load_pp_img(rfpath):
-                img = Image.open(paths["imgs"][self.dataset] / rfpath).convert("RGB")
-                return img if self.cached_imgs == "pl" else img_pp(img)
-
-            # load all images into memory (pl: as PIL images; pp: as preprocessed tensors)
-            self.imgs_mem = []
-            with ThreadPoolExecutor(max_workers=config.n_workers) as exe:
-                for img in tqdm.tqdm(
-                    exe.map(load_pp_img, [datum["rfpath"] for datum in self.index_data]), 
-                    total=self.n_samples, 
-                    desc="Caching Images"
-                ):
-                    self.imgs_mem.append(img)
-
+            self.imgs_mem = build_img_cache(
+                rfpaths=[datum["rfpath"] for datum in self.index_data],
+                dataset=self.dataset,
+                img_pp=img_pp,
+                n_workers=config.n_workers,
+                cached_imgs=self.cached_imgs,
+            )  # dict keyed by rfpath
             time_end        = time.time()
             self.time_cache = time_end - time_start
             print(f"Time Elapsed (image caching): {self.time_cache:.1f} s")
@@ -187,9 +211,9 @@ class ImageTextDataset(Dataset):
         text = self.text_generator.generate(class_data_cid, self.text_template, meta)
 
         if self.cached_imgs == "pp":
-            img_t = self.imgs_mem[idx]
+            img_t = self.imgs_mem[self.index_data[idx]["rfpath"]]
         elif self.cached_imgs == "pl":
-            img = self.imgs_mem[idx]
+            img = self.imgs_mem[self.index_data[idx]["rfpath"]]
             img_t = self.img_pp(img)
         else:
             # load + preprocess image
@@ -286,6 +310,7 @@ def spawn_dataloader(
     img_pp: Callable,
     use_dv_sampler: bool,
     persistent_workers: bool = True,
+    imgs_mem: dict | None = None,
 ) -> Tuple[DataLoader, float | None]:
     """
 
@@ -301,7 +326,7 @@ def spawn_dataloader(
     - img_pp ---------- The image preprocessor          
     """
 
-    dataset = ImageTextDataset(index_data, text_template, img_pp, config)
+    dataset = ImageTextDataset(index_data, text_template, img_pp, config, imgs_mem=imgs_mem)
 
     bs_local = config.batch_size // dist.get_world_size()
 

@@ -1,5 +1,6 @@
 import torch  # type: ignore[import]
 from dataclasses import dataclass, field
+from copy import deepcopy
 import math
 import yaml  # type: ignore[import]
 
@@ -12,8 +13,8 @@ import pdb
 @dataclass
 class TrainConfig:
 
-    study_name: str
-    experiment_name: str
+    campaign_name: str
+    setting_name: str
     seed: int | None
     dataset: str
     split_name: str
@@ -86,7 +87,7 @@ class TrainConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram    = slurm_alloc["ram"]
 
-        self.rdpath_trial = f"artifacts/{self.study_name}/{self.experiment_name}/{self.seed}"
+        self.rdpath_trial = f"artifacts/{self.campaign_name}/{self.setting_name}/{self.dataset}/{self.seed}"
 
         self.device = torch.device("cuda")
 
@@ -100,12 +101,73 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     dev_cfg = cfg_dict.get("dev", {}) or {}
     if dev_cfg.get("debug_mode", False):
         cfg_dict["split_name"] = "dev"
+        cfg_dict["sample_volume"] = 20_000
         cfg_dict["eval_every"] = 5_000
     return cfg_dict
 
-def get_config_train():
+def _deep_merge_dict(base: dict, updates: dict) -> dict:
+    out = deepcopy(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out[key], value)
+        else:
+            out[key] = deepcopy(value)
+    return out
+
+def _set_by_slash_path(cfg_dict: dict, key_path: str, value) -> None:
+    keys = [key for key in key_path.split("/") if key]
+    if not keys:
+        raise ValueError(f"Invalid slash-style override key: '{key_path}'")
+
+    cursor = cfg_dict
+    for key in keys[:-1]:
+        if key not in cursor or not isinstance(cursor[key], dict):
+            cursor[key] = {}
+        cursor = cursor[key]
+    cursor[keys[-1]] = deepcopy(value)
+
+def _has_nested_path(cfg_dict: dict, key_path: str) -> bool:
+    keys = [key for key in key_path.split("/") if key]
+    if not keys:
+        return False
+
+    cursor = cfg_dict
+    for key in keys:
+        if not isinstance(cursor, dict) or key not in cursor:
+            return False
+        cursor = cursor[key]
+    return True
+
+def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
+    """
+    Apply overrides with deterministic precedence:
+    1) Nested dict keys are applied first and take precedence.
+    2) Slash-style keys are fallback only.
+    """
+    if not overrides:
+        return deepcopy(cfg_dict)
+
+    nested_updates = {}
+    slash_updates = {}
+    for key, value in overrides.items():
+        if isinstance(key, str) and "/" in key:
+            slash_updates[key] = value
+        else:
+            nested_updates[key] = value
+
+    merged = _deep_merge_dict(cfg_dict, nested_updates)
+    for key_path, value in slash_updates.items():
+        if _has_nested_path(nested_updates, key_path):
+            continue
+        _set_by_slash_path(merged, key_path, value)
+
+    return merged
+
+def load_train_config_dict() -> dict:
     with open(paths["config"] / "train/train.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
+        return yaml.safe_load(f)
+
+def build_train_config(cfg_dict: dict) -> TrainConfig:
     cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg = TrainConfig(**cfg_dict)
     cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
@@ -114,6 +176,11 @@ def get_config_train():
         cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
     cfg.hw = get_config_hardware()
     return cfg
+
+def get_config_train(cfg_dict: dict | None = None):
+    if cfg_dict is None:
+        cfg_dict = load_train_config_dict()
+    return build_train_config(cfg_dict)
 
 def get_config_lr_sched(lr_sched_type):
     with open(paths["config"] / "train/lr_sched.yaml") as f:
@@ -201,18 +268,18 @@ class EvalConfig:
         self.ram    = slurm_alloc["ram"]
 
         if self.rdpath_trial is not None:
-            metadata_experiment = load_json(paths["root"] / self.rdpath_trial / "../metadata_experiment.json")
-            self.arch['model_type'] = metadata_experiment["arch"]["model_type"]  # override model_type
-            self.arch['non_causal'] = metadata_experiment["arch"]["non_causal"]  # override non_causal
-            self.loss['type']       = metadata_experiment["loss"]["type"]  # override loss_type
+            metadata_setting = load_json(paths["root"] / self.rdpath_trial / "../../metadata_setting.json")
+            self.arch['model_type'] = metadata_setting["arch"]["model_type"]  # override model_type
+            self.arch['non_causal'] = metadata_setting["arch"]["non_causal"]  # override non_causal
+            self.loss['type']       = metadata_setting["loss"]["type"]  # override loss_type
 
-            if "loss2" in metadata_experiment:
-                self.loss2.update(metadata_experiment["loss2"])
+            if "loss2" in metadata_setting:
+                self.loss2.update(metadata_setting["loss2"])
             else:
                 self.loss2["mix"] = 0.0
 
-            metadata_study  = load_json(paths["root"] / self.rdpath_trial / "../../metadata_study.json")
-            self.split_name = metadata_study["split_name"]
+            metadata_campaign  = load_json(paths["root"] / self.rdpath_trial / "../../../metadata_campaign.json")
+            self.split_name = metadata_campaign["split_name"]
 
         self.device = torch.device("cuda")
 

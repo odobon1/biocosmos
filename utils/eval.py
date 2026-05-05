@@ -69,6 +69,7 @@ class SplitPartitionEvalPipeline:
             config: Any, 
             text_template: List[List[str]],
             img_pp: Callable,
+            imgs_mem: dict | None = None,
         ) -> None:
 
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
@@ -98,6 +99,7 @@ class SplitPartitionEvalPipeline:
             img_pp=img_pp,
             use_dv_sampler=False,
             persistent_workers=config.hw.persistent_workers_eval,
+            imgs_mem=imgs_mem,
         )
 
         self.cfg = config
@@ -576,6 +578,7 @@ class ValidationPipeline:
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
+        imgs_mem: dict | None = None,
     ):
 
         self.header_tag = header_tag
@@ -593,6 +596,7 @@ class ValidationPipeline:
                 config=config,
                 text_template=text_template,
                 img_pp=img_pp,
+                imgs_mem=imgs_mem,
             )
             for partition_name in self.partition_names
         }

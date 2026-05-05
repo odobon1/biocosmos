@@ -16,8 +16,8 @@ from utils.utils import (
 
 class ArtifactManager:
 
-    dpath_study = None
-    dpath_experiment = None
+    dpath_campaign = None
+    dpath_setting = None
     dpath_trial = None
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
@@ -26,17 +26,17 @@ class ArtifactManager:
     @staticmethod
     def set_paths(cfg_train):
 
-        ArtifactManager.dpath_study = paths["artifacts"] / cfg_train.study_name
-        ArtifactManager.dpath_experiment = ArtifactManager.dpath_study / cfg_train.experiment_name
+        ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign_name
+        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / cfg_train.setting_name
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_experiment / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
 
         if ArtifactManager.dpath_trial.exists():
             if cfg_train.dev['allow_overwrite_trial']:
                 shutil.rmtree(ArtifactManager.dpath_trial)
             else:
-                raise ValueError(f"Trial directory '{cfg_train.study_name}/{cfg_train.experiment_name}/{cfg_train.seed}' already exists!")
+                raise ValueError(f"Trial directory '{cfg_train.campaign_name}/{cfg_train.setting_name}/{cfg_train.dataset}/{cfg_train.seed}' already exists!")
 
         ArtifactManager.dpath_model_best_comp    = ArtifactManager.dpath_trial / "models/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
@@ -48,8 +48,8 @@ class ArtifactManager:
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
-    def save_metadata_study(cfg_train):
-        fpath_meta = ArtifactManager.dpath_study / "metadata_study.json"
+    def save_metadata_campaign(cfg_train):
+        fpath_meta = ArtifactManager.dpath_campaign / "metadata_campaign.json"
         metadata   = {
             "dataset":         cfg_train.dataset,
             "split_name":      cfg_train.split_name,
@@ -59,19 +59,19 @@ class ArtifactManager:
             "n_workers":       cfg_train.n_workers,
             "prefetch_factor": cfg_train.prefetch_factor,
         }
-        if fpath_meta.exists() and not cfg_train.dev['allow_diff_study']:
+        if fpath_meta.exists() and not cfg_train.dev['allow_diff_campaign']:
             metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Study params changed!"
+            assert metadata == metadata_loaded, "Campaign params changed!"
         else:
             save_json(metadata, fpath_meta)
 
     @staticmethod
-    def save_metadata_experiment(cfg_train):
+    def save_metadata_setting(cfg_train):
         
         def clean_metadata(metadata):
 
-            del metadata["study_name"]
-            del metadata["experiment_name"]
+            del metadata["campaign_name"]
+            del metadata["setting_name"]
             del metadata["seed"]
             del metadata["split_name"]
 
@@ -91,7 +91,7 @@ class ArtifactManager:
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]
         
-        fpath_meta = ArtifactManager.dpath_experiment / "metadata_experiment.json"
+        fpath_meta = ArtifactManager.dpath_setting / "metadata_setting.json"
         metadata   = asdict(cfg_train)
 
         # save full text combo-templates themselves and not just the names
@@ -101,9 +101,9 @@ class ArtifactManager:
         metadata["text_template"] = text_template_full
 
         clean_metadata(metadata)
-        if fpath_meta.exists() and not cfg_train.dev['allow_diff_experiment']:
+        if fpath_meta.exists() and not cfg_train.dev['allow_diff_setting']:
             metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Experiment params changed!"
+            assert metadata == metadata_loaded, "Setting params changed!"
         else:
             save_json(metadata, fpath_meta)
 

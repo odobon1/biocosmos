@@ -206,6 +206,7 @@ class TrainPipeline:
         config,
         gpu_rank: int = 0,
         gpu_world_size: int = 1,
+        imgs_mem: dict | None = None,
     ):
 
         self.modelw = modelw
@@ -227,10 +228,11 @@ class TrainPipeline:
             img_pp=self.modelw.img_pp_train,
             use_dv_sampler=self.cfg.dv_batching,
             persistent_workers=self.cfg.hw.persistent_workers_train,
+            imgs_mem=imgs_mem,
         )
 
         text_template_val = get_text_template(self.cfg.text_template["valid"], dataset=self.cfg.dataset)
-        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val)
+        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val, imgs_mem=imgs_mem)
 
         if self.gpu_rank == 0:
             ArtifactManager.save_metadata_trial()
@@ -563,18 +565,19 @@ class TrainPipeline:
             if self.gpu_rank == 0:
                 PrintLog.close_logs()
 
-def main():
+def run_training(cfg=None, imgs_mem: dict | None = None):
     gpu_rank, gpu_world_size, local_gpu_rank, device = setup_ddp()
 
-    cfg = get_config_train()
+    if cfg is None:
+        cfg = get_config_train()
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
 
     if gpu_rank == 0:
         ArtifactManager.set_paths(cfg)
         ArtifactManager.create_trial_dirs()
-        ArtifactManager.save_metadata_study(cfg)
-        ArtifactManager.save_metadata_experiment(cfg)
+        ArtifactManager.save_metadata_campaign(cfg)
+        ArtifactManager.save_metadata_setting(cfg)
         if cfg.logging:
             PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
         PrintLog.init_train(cfg)
@@ -585,10 +588,13 @@ def main():
         modelw.set_class_wts(cfg, secondary=True)
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
-    train_pipe = TrainPipeline(modelw, cfg, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size)
+    train_pipe = TrainPipeline(modelw, cfg, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size, imgs_mem=imgs_mem)
     train_pipe.train()
 
     cleanup_ddp()
+
+def main():
+    run_training()
 
 
 if __name__ == "__main__":

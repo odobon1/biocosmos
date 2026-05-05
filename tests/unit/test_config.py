@@ -1,12 +1,13 @@
 import pytest  # type: ignore[import]
 
 from utils.config import GenSplitConfig, TrainConfig
+from utils.config import apply_overrides
 
 
 def make_train_config(**overrides):
     config = {
-        "study_name": "study",
-        "experiment_name": "exp",
+        "campaign_name": "campaign",
+        "setting_name": "exp",
         "seed": 7,
         "dataset": "cub",
         "split_name": "D10",
@@ -64,7 +65,7 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert cfg.n_workers == 2
     assert cfg.prefetch_factor == 2
     assert cfg.n_gpus == 1
-    assert cfg.rdpath_trial == "artifacts/study/exp/7"
+    assert cfg.rdpath_trial == "artifacts/campaign/exp/cub/7"
     assert str(cfg.device) == "cuda"
 
 
@@ -126,3 +127,63 @@ def test_splits_config_rejects_non_positive_size_dev() -> None:
             nst_names=["1-2", "3+"],
             nst_seps=[2],
         )
+
+
+def test_apply_overrides_prefers_nested_over_slash() -> None:
+    base = {
+        "loss": {
+            "targ": "aligned",
+            "sim": "cos",
+        }
+    }
+    overrides = {
+        "loss": {"targ": "multipos"},
+        "loss/targ": "phylo",
+    }
+
+    out = apply_overrides(base, overrides)
+
+    assert out["loss"]["targ"] == "multipos"
+    assert out["loss"]["sim"] == "cos"
+
+
+def test_apply_overrides_supports_slash_fallback() -> None:
+    base = {
+        "loss": {
+            "targ": "aligned",
+            "sim": "cos",
+        }
+    }
+    overrides = {
+        "loss/targ": "phylo",
+    }
+
+    out = apply_overrides(base, overrides)
+
+    assert out["loss"]["targ"] == "phylo"
+    assert out["loss"]["sim"] == "cos"
+
+
+def test_apply_overrides_deep_merges_nested_dicts() -> None:
+    base = {
+        "opt": {
+            "lr": {
+                "init": 1.0e-5,
+                "sched": "cos",
+                "warmup": 100,
+            }
+        }
+    }
+    overrides = {
+        "opt": {
+            "lr": {
+                "sched": "exp",
+            }
+        }
+    }
+
+    out = apply_overrides(base, overrides)
+
+    assert out["opt"]["lr"]["init"] == 1.0e-5
+    assert out["opt"]["lr"]["warmup"] == 100
+    assert out["opt"]["lr"]["sched"] == "exp"

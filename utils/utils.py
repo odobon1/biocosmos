@@ -33,17 +33,21 @@ if CLUSTER == "pace":
             "cub": dpath_root / "data/cub",
         },
         "imgs":{
+            "bryo": dpath_haag / "bryo",
             "cub": dpath_root / "data/cub/CUB_200_2011/images",
             "lepid": dpath_lepid / "images",
         },
         "preproc": {
+            "bryo": dpath_root / "preprocessing/bryo",
             "cub": dpath_root / "preprocessing/cub",
             "lepid": dpath_root / "preprocessing/lepid",
         },
         "metadata": {
+            "bryo": dpath_root / "metadata/bryo",
             "cub": dpath_root / "metadata/cub",
             "lepid": dpath_root / "metadata/lepid",
         },
+        "bryo_tree_raw": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
         "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
         "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
         "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
@@ -519,8 +523,8 @@ class PrintLog:
     def init_train(cfg_train):
         lines: list[str] = [
             "",
-            f"Study ------------- {cfg_train.study_name}",
-            f"Experiment -------- {cfg_train.experiment_name}",
+            f"Campaign ---------- {cfg_train.campaign_name}",
+            f"Setting ----------- {cfg_train.setting_name}",
             f"Seed -------------- {cfg_train.seed}",
             f"Trial File Path --- {cfg_train.rdpath_trial}",
             f"Dataset ----------- {cfg_train.dataset}",

@@ -5,6 +5,7 @@ torchrun --standalone --nproc-per-node=auto -m campaign_runner
 from pathlib import Path
 from copy import deepcopy
 import gc
+import json
 import yaml  # type: ignore[import]
 
 from train import run_training
@@ -14,7 +15,7 @@ from utils.eval import list_eval_partition_names
 from utils.utils import load_split, paths
 
 
-campaign_name = "loss_ablation"
+campaign_name = "loss_ablation3"
 
 seed0 = 42
 num_seeds = 2
@@ -73,8 +74,10 @@ def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict, dict]]:
     return settings
 
 def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> None:
-    fpath = _campaign_dir() / setting_name / "overrides.yaml"
-    _save_yaml(normalized_overrides, fpath)
+    fpath = _campaign_dir() / setting_name / "overrides.json"
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    with open(fpath, "w") as f:
+        json.dump(normalized_overrides, f, indent=2, sort_keys=True)
 
 def _iter_seeds() -> list[int]:
     return list(range(seed0, seed0 + num_seeds))

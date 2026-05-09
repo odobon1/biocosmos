@@ -4,7 +4,7 @@ seed: 42
 dataset: lepid  # {bryo, cub, lepid, nymph}
 split_name: D10
 
-sample_volume: 10_000_000
+sample_volume: 1_000_000
 eval_every: 200_000
 chkpt_every: 1
 batch_size: 1024  # 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
@@ -14,6 +14,7 @@ dev:
   allow_overwrite_trial: true
   allow_diff_campaign: true
   allow_diff_setting: true
+  view_imgs: 100  # if set > 0, will save the first <view_imgs> number of images during training (post-augmentation) to a directory: <campaign_name>/<setting_name>/<dataset>/<seed>/train_imgs/
   debug_mode: false
 
 arch:  # architecture
@@ -40,7 +41,7 @@ loss2:  # secondary loss
 
 opt:  # optimization
   lr:  # learning rate
-    init: 1.0e-5
+    init: 1.0e-4
     sched: cos
     warmup: 100_000  # sample volume for linear LR warmup
     # warmup: 0

@@ -26,6 +26,7 @@ from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import ValidationPipeline
 from utils.config import get_config_train
 from utils.train import ArtifactManager, plot_metrics
+from utils.train import TrainImageDumper
 from utils.ddp import setup_ddp, cleanup_ddp
 
 import pdb
@@ -243,6 +244,12 @@ class TrainPipeline:
         self.next_eval_threshold = self.cfg.eval_every
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
         self.logged_train_text = False
+        self.train_img_dumper = TrainImageDumper(
+            cfg=self.cfg,
+            gpu_rank=self.gpu_rank,
+            gpu_world_size=self.gpu_world_size,
+            img_pp_train=self.modelw.img_pp_train,
+        )
 
     def init_opt_and_lr_sched(self):
 
@@ -351,6 +358,8 @@ class TrainPipeline:
 
                 for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
+
+                    self.train_img_dumper.dump(imgs_sb, targ_data_sb)
 
                     if self.gpu_rank == 0 and idx_epoch == 1 and idx_batch == 0 and not self.logged_train_text:
                         PrintLog.texts(texts_sb)

@@ -36,10 +36,6 @@ conda activate biocosmos_b200
 
 ## Data
 
-### Bryozoa
-
-Download `SI_Fig1(BIG).newick` from `https://datadryad.org/dataset/doi:10.5061/dryad.2v6wwpzp9` and place in `metadata/bryo/`.
-
 ## Preprocessing
 
 Run setup script:

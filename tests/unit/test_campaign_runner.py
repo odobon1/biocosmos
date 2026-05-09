@@ -1,5 +1,5 @@
 from pathlib import Path
-import yaml  # type: ignore[import]
+import json
 import pytest
 
 import campaign_runner as cr
@@ -113,11 +113,11 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
 
     cr.run_campaign()
 
-    fpath = Path(tmp_path) / "cmp_c" / "iw" / "overrides.yaml"
+    fpath = Path(tmp_path) / "cmp_c" / "iw" / "overrides.json"
     assert fpath.exists()
 
     with open(fpath) as f:
-        data = yaml.safe_load(f)
+        data = json.load(f)
 
     assert data["loss"]["targ"] == "aligned"
 

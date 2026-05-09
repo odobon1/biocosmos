@@ -7,6 +7,7 @@ from copy import deepcopy
 import gc
 import json
 import yaml  # type: ignore[import]
+import traceback
 
 from train import run_training
 from utils.config import apply_overrides, get_config_hardware, get_config_train, load_train_config_dict
@@ -15,7 +16,7 @@ from utils.eval import list_eval_partition_names
 from utils.utils import load_split, paths
 
 
-campaign_name = "loss_ablation3"
+campaign_name = "loss_ablation4"
 
 seed0 = 42
 num_seeds = 2
@@ -26,6 +27,7 @@ baseline_overrides = [
     {"loss": {"targ": "aligned"}, "name": "iw"},
     {"loss": {"targ": "multipos"}, "name": "sw"},
     {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
+    {"batch_size": 32_000, "name": "way-too-big-bs"},
 ]
 
 
@@ -37,6 +39,26 @@ def _save_yaml(data: dict, fpath: Path) -> None:
 def _load_yaml(fpath: Path) -> dict:
     with open(fpath) as f:
         return yaml.safe_load(f)
+
+def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
+    """Log trial error to both stdout and campaign error log file."""
+    error_log_path = campaign_dir / "campaign_errors.log"
+    
+    # Format error message with context
+    error_msg = (
+        f"\n[{idx}/{total}] TRIAL FAILED\n"
+        f"  seed={seed}, dataset={dataset}, setting={setting_name}\n"
+        f"  {type(exc).__name__}: {str(exc)}"
+    )
+    
+    # Print to stdout
+    print(error_msg, flush=True)
+    
+    # Write to error log file
+    with open(error_log_path, "a") as f:
+        f.write(error_msg + "\n")
+        f.write(traceback.format_exc())
+        f.write("\n" + "="*80 + "\n")
 
 def _campaign_dir() -> Path:
     return paths["artifacts"] / campaign_name
@@ -157,8 +179,19 @@ def run_campaign() -> None:
                     print(
                         f"[{idx}/{total}] seed={seed} dataset={dataset} setting={setting_name}"
                     )
-                    cfg = get_config_train(cfg_dict=cfg_dict)
-                    run_training(cfg, imgs_mem=imgs_mem_dataset)
+                    try:
+                        cfg = get_config_train(cfg_dict=cfg_dict)
+                        run_training(cfg, imgs_mem=imgs_mem_dataset)
+                    except Exception as e:
+                        _log_trial_error(
+                            campaign_dir=_campaign_dir(),
+                            idx=idx,
+                            total=total,
+                            seed=seed,
+                            dataset=dataset,
+                            setting_name=setting_name,
+                            exc=e,
+                        )
         finally:
             del imgs_mem_dataset
             gc.collect()

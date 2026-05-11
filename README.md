@@ -89,14 +89,14 @@ The **Max Batch Size** column indicates max batch size whilst training on a sing
 
 ## CLIP - ViT Variants
 
-| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain  | Num Params | Embedding <br> Dimension | (V) Layers | (V) Width | (V) Heads | (T) Layers | (T) Width | (T) Heads | **(\*1)** Learning Rate |
-|--------------------------|-------------------------------|----------------|-----------|------------|--------------------------|------------|-----------|-----------|------------|-----------|-----------|-------------------------|
-| `clip_vitb32`            | `ViT-B-32`                    | 16,384         | **(\*2)** | 151M       | 512                      | 12         | 768       | 12        | 12         | 512       | 8         | 5e-4                    |
-| `clip_vitb16`            | `ViT-B-16`                    | 8,192          | **(\*3)** | 150M       | 512                      | 12         | 768       | 12        | 12         | 512       | 8         | 5e-4                    |
-| `clip_vitl14`            | `ViT-L-14`                    | 4,096          | **(\*4)** | 428M       | 768                      | 24         | 1,024     | 16        | 12         | 768       | 12        | 4e-4                    |
-| `clip_vitl14_336`        | `ViT-L-14-336`                | 2,048          | `openai`  | 428M       | 768                      | 24         | 1,024     | 16        | 12         | 768       | 12        | 2e-5 (investigate)      |
-| `bioclip`                | `hf-hub:imageomics/bioclip`   | 8,192          | NA        | -          | -                        | -          | -         | -         | -          | -         | -         |                         |
-| `bioclip2`               | `hf-hub:imageomics/bioclip-2` | 4,096          | NA        | -          | -                        | -          | -         | -         | -          | -         | -         |                         |
+| Model ID <br> (Internal) | Model ID <br> (open_clip)     | Max Batch Size | Pretrain  | Num Params | Embedding <br> Dimension | (V) Layers | (V) Width | (V) Heads | (T) Layers | (T) Width | (T) Heads | **(\*1)** Learning Rate | Resolution (px) |
+|--------------------------|-------------------------------|----------------|-----------|------------|--------------------------|------------|-----------|-----------|------------|-----------|-----------|-------------------------|-----------------|
+| `clip_vitb32`            | `ViT-B-32`                    | 16,384         | **(\*2)** | 151M       | 512                      | 12         | 768       | 12        | 12         | 512       | 8         | 5e-4                    | 224             |
+| `clip_vitb16`            | `ViT-B-16`                    | 8,192          | **(\*3)** | 150M       | 512                      | 12         | 768       | 12        | 12         | 512       | 8         | 5e-4                    | 224             |
+| `clip_vitl14`            | `ViT-L-14`                    | 4,096          | **(\*4)** | 428M       | 768                      | 24         | 1,024     | 16        | 12         | 768       | 12        | 4e-4                    | 224             |
+| `clip_vitl14_336`        | `ViT-L-14-336`                | 2,048          | `openai`  | 428M       | 768                      | 24         | 1,024     | 16        | 12         | 768       | 12        | 2e-5 (investigate)      | 336             |
+| `bioclip`                | `hf-hub:imageomics/bioclip`   | 8,192          | NA        | -          | -                        | -          | -         | -         | -          | -         | -         |                         | -               |
+| `bioclip2`               | `hf-hub:imageomics/bioclip-2` | 4,096          | NA        | -          | -                        | -          | -         | -         | -          | -         | -         |                         | -               |
 
 **(V)** denotes vision transformer, **(T)** denotes text transformer. Model specs not included for `bioclip` and `bioclip2` because they are redundant. `bioclip` is a CLIP ViT-B/16 fine-tuned on the TOL-10M dataset, `bioclip2` is a CLIP ViT-L/14 fine-tuned on the TOL-200M dataset.
 
@@ -115,43 +115,45 @@ Note: despite the name, both the open-source OpenCLIP and the OpenAI CLIP model 
 
 ## CLIP - ResNet Variants
 
-| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain                     | Num Params | Embedding <br> Dimension |
-|--------------------------|---------------------------|----------------|------------------------------|------------|--------------------------|
-| `clip_rn50`              | `RN50`                    | 2,048          | `openai`, `yfcc15m`, `cc12m` | 102M       | 1,024                    |
-| `clip_rn101`             | `RN101`                   | 2,048          | `openai`, `yfcc15m`          | 120M       | 1,024                    |
-| `clip_rn50x4`            | `RN50x4`                  | 1,024          | `openai`                     | 178M       | 1,024                    |
-| `clip_rn50x16`           | `RN50x16`                 | 256            | `openai`                     | 291M       | 1,024                    |
-| `clip_rn50x64`           | `RN50x64`                 | 128            | `openai`                     | 623M       | 1,024                    |
+| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain                     | Num Params | Embedding <br> Dimension | Resolution (px) |
+|--------------------------|---------------------------|----------------|------------------------------|------------|--------------------------|-----------------|
+| `clip_rn50`              | `RN50`                    | 2,048          | `openai`, `yfcc15m`, `cc12m` | 102M       | 1,024                    | 224             |
+| `clip_rn101`             | `RN101`                   | 2,048          | `openai`, `yfcc15m`          | 120M       | 1,024                    | 224             |
+| `clip_rn50x4`            | `RN50x4`                  | 1,024          | `openai`                     | 178M       | 1,024                    | 288             |
+| `clip_rn50x16`           | `RN50x16`                 | 256            | `openai`                     | 291M       | 1,024                    | 384             |
+| `clip_rn50x64`           | `RN50x64`                 | 128            | `openai`                     | 623M       | 1,024                    | 448             |
 
 ## SigLIP Variants
 
-| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain | Num Params | Embedding <br> Dimension |
-|--------------------------|---------------------------|----------------|----------|------------|--------------------------|
-| `siglip_vitb16`          | `ViT-B-16-SigLIP`         | 8,192          | `webli`  | 203M       | 768                      |
-| `siglip_vitb16_384`      | `ViT-B-16-SigLIP-384`     | 2,048          | `webli`  | 203M       | 768                      |
-| `siglip_vitl16_384`      | `ViT-L-16-SigLIP-384`     | 2,048          | `webli`  | 653M       | 1,024                    |
-| `siglip_vitso400m14`     | `ViT-SO400M-14-SigLIP`    | 2,048          | `webli`  | 877M       | 1,152                    |
-| `siglip2_vitb16`         | `ViT-B-16-SigLIP2`        | 8,192          | `webli`  | 375M       | 768                      |
-| `siglip2_vitb16_384`     | `ViT-B-16-SigLIP2-384`    | 2,048          | `webli`  | 375M       | 768                      |
-| `siglip2_vitl16_384`     | `ViT-L-16-SigLIP2-384`    | 2,048          | `webli`  | 822M       | 1,024                    |
-| `siglip2_vitso400m14`    | `ViT-SO400M-14-SigLIP2`   | 2,048          | `webli`  | 1,136M     | 1,152                    |
-| `siglip2_vitgopt16_384`  | `ViT-gopt-16-SigLIP2-384` | 512            | `webli`  | 1,870M     | 1,536                    |
+| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain | Num Params | Embedding <br> Dimension | Resolution (px) |
+|--------------------------|---------------------------|----------------|----------|------------|--------------------------|-----------------|
+| `siglip_vitb16`          | `ViT-B-16-SigLIP`         | 8,192          | `webli`  | 203M       | 768                      | 224             |
+| `siglip_vitb16_256`      | `ViT-B-16-SigLIP-256`     | X              | `webli`  | 203M       | 768                      | 256             |
+| `siglip_vitb16_384`      | `ViT-B-16-SigLIP-384`     | 2,048          | `webli`  | 203M       | 768                      | 384             |
+| `siglip_vitl16_256`      | `ViT-L-16-SigLIP-256`     | X              | `webli`  | 653M       | 1,024                    | 256             |
+| `siglip_vitl16_384`      | `ViT-L-16-SigLIP-384`     | 2,048          | `webli`  | 653M       | 1,024                    | 384             |
+| `siglip_vitso400m14`     | `ViT-SO400M-14-SigLIP`    | 2,048          | `webli`  | 877M       | 1,152                    | 224             |
+| `siglip2_vitb16`         | `ViT-B-16-SigLIP2`        | 8,192          | `webli`  | 375M       | 768                      | 224             |
+| `siglip2_vitb16_384`     | `ViT-B-16-SigLIP2-384`    | 2,048          | `webli`  | 375M       | 768                      | 384             |
+| `siglip2_vitl16_384`     | `ViT-L-16-SigLIP2-384`    | 2,048          | `webli`  | 822M       | 1,024                    | 384             |
+| `siglip2_vitso400m14`    | `ViT-SO400M-14-SigLIP2`   | 2,048          | `webli`  | 1,136M     | 1,152                    | 224             |
+| `siglip2_vitgopt16_384`  | `ViT-gopt-16-SigLIP2-384` | 512            | `webli`  | 1,870M     | 1,536                    | 384             |
 
 ## ViTamin Variants
 
-| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain     | Num Params | Embedding <br> Dimension |
-|--------------------------|---------------------------|----------------|--------------|------------|--------------------------|
-| `vitamin_s`              | `ViTamin-S`               | 4,096          | `datacomp1b` | 62M        | 512                      |
-| `vitamin_s_ltt`          | `ViTamin-S-LTT`           | 4,096          | `datacomp1b` | 62M        | 512                      |
-| `vitamin_b`              | `ViTamin-B`               | 2,048          | `datacomp1b` | 128M       | 768                      |
-| `vitamin_b_ltt`          | `ViTamin-B-LTT`           | 2,048          | `datacomp1b` | 128M       | 768                      |
-| `vitamin_l`              | `ViTamin-L`               | 1,024          | `datacomp1b` | 457M       | 768                      |
-| `vitamin_l_256`          | `ViTamin-L-256`           | 1,024          | `datacomp1b` | 457M       | 768                      |
-| `vitamin_l_336`          | `ViTamin-L-336`           | 512            | `datacomp1b` | 457M       | 768                      |
-| `vitamin_l_384`          | `ViTamin-L-384`           | 512            | `datacomp1b` | 457M       | 768                      |
-| `vitamin_l2`             | `ViTamin-L2`              | 1,024          | `datacomp1b` | 688M       | 1,024                    |
-| `vitamin_l2_384`         | `ViTamin-L2-384`          | 512            | `datacomp1b` | 688M       | 1,024                    |
-| `vitamin_xl_384`         | `ViTamin-XL-384`          | 512            | `datacomp1b` | 925M       | 1,152                    |
+| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain     | Num Params | Embedding <br> Dimension | Resolution (px) |
+|--------------------------|---------------------------|----------------|--------------|------------|--------------------------|-----------------|
+| `vitamin_s`              | `ViTamin-S`               | 4,096          | `datacomp1b` | 62M        | 512                      | 224             |
+| `vitamin_s_ltt`          | `ViTamin-S-LTT`           | 4,096          | `datacomp1b` | 62M        | 512                      | 224             |
+| `vitamin_b`              | `ViTamin-B`               | 2,048          | `datacomp1b` | 128M       | 768                      | 224             |
+| `vitamin_b_ltt`          | `ViTamin-B-LTT`           | 2,048          | `datacomp1b` | 128M       | 768                      | 224             |
+| `vitamin_l`              | `ViTamin-L`               | 1,024          | `datacomp1b` | 457M       | 768                      | 224             |
+| `vitamin_l_256`          | `ViTamin-L-256`           | 1,024          | `datacomp1b` | 457M       | 768                      | 256             |
+| `vitamin_l_336`          | `ViTamin-L-336`           | 512            | `datacomp1b` | 457M       | 768                      | 336             |
+| `vitamin_l_384`          | `ViTamin-L-384`           | 512            | `datacomp1b` | 457M       | 768                      | 384             |
+| `vitamin_l2`             | `ViTamin-L2`              | 1,024          | `datacomp1b` | 688M       | 1,024                    | 224             |
+| `vitamin_l2_384`         | `ViTamin-L2-384`          | 512            | `datacomp1b` | 688M       | 1,024                    | 384             |
+| `vitamin_xl_384`         | `ViTamin-XL-384`          | 512            | `datacomp1b` | 925M       | 1,152                    | 256             |
 
 # Notes
 

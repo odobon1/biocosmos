@@ -20,6 +20,7 @@ from utils.imb import compute_class_wts
 import pdb
 
 
+#                            open_clip model name            pretrain      quick-gelu
 CLIP_MODELS = {
     "bioclip":               ("hf-hub:imageomics/bioclip",   None,         False),
     "bioclip2":              ("hf-hub:imageomics/bioclip-2", None,         False),
@@ -35,7 +36,9 @@ CLIP_MODELS = {
 }
 SIGLIP_MODELS = {
     "siglip_vitb16":         ("ViT-B-16-SigLIP",             "webli",      False),
+    "siglip_vitb16_256":     ("ViT-B-16-SigLIP-256",         "webli",      False),
     "siglip_vitb16_384":     ("ViT-B-16-SigLIP-384",         "webli",      False),
+    "siglip_vitl16_256":     ("ViT-L-16-SigLIP-256",         "webli",      False),
     "siglip_vitl16_384":     ("ViT-L-16-SigLIP-384",         "webli",      False),
     "siglip_vitso400m14":    ("ViT-SO400M-14-SigLIP",        "webli",      False),
     "siglip2_vitb16":        ("ViT-B-16-SigLIP2",            "webli",      False),

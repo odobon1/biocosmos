@@ -116,7 +116,7 @@ def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatc
     assert all(skey[0] != "cid_single" for skey in skeys_id_val.union(skeys_id_test))
 
 
-def test_build_dev_skeys_partitions_mirrors_keys_with_first_train_samples() -> None:
+def test_build_dev_skeys_partitions_uses_first_samples_per_partition() -> None:
     skeys_partitions = {
         "train": {
             ("cid_b", 2),
@@ -124,30 +124,40 @@ def test_build_dev_skeys_partitions_mirrors_keys_with_first_train_samples() -> N
             ("cid_c", 1),
             ("cid_b", 1),
         },
-        "id_val": {("cid_x", 1)},
+        "id_val": {
+            ("cid_x", 2),
+            ("cid_x", 0),
+            ("cid_x", 1),
+        },
         "id_test": {("cid_y", 2)},
-        "ood_val": {("cid_z", 3)},
+        "ood_val": {("cid_z", 3), ("cid_z", 1)},
     }
 
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=2)
 
-    expected = {("cid_a", 0), ("cid_b", 1)}
     assert set(skeys_partitions_dev.keys()) == set(skeys_partitions.keys())
-    for key in skeys_partitions_dev:
-        assert skeys_partitions_dev[key] == expected
+    assert skeys_partitions_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
+    assert skeys_partitions_dev["id_val"] == {("cid_x", 0), ("cid_x", 1)}
+    assert skeys_partitions_dev["id_test"] == {("cid_y", 2)}
+    assert skeys_partitions_dev["ood_val"] == {("cid_z", 1), ("cid_z", 3)}
 
 
 def test_build_dev_skeys_partitions_caps_to_train_size() -> None:
     skeys_partitions = {
         "train": {("cid_a", 0), ("cid_b", 1)},
-        "id_val": set(),
+        "id_val": {("cid_x", 2), ("cid_x", 1), ("cid_x", 0)},
+        "ood_test": set(),
     }
 
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=10)
 
-    expected = {("cid_a", 0), ("cid_b", 1)}
-    assert skeys_partitions_dev["train"] == expected
-    assert skeys_partitions_dev["id_val"] == expected
+    assert skeys_partitions_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
+    assert skeys_partitions_dev["id_val"] == {
+        ("cid_x", 0),
+        ("cid_x", 1),
+        ("cid_x", 2),
+    }
+    assert skeys_partitions_dev["ood_test"] == set()
 
 
 def test_build_dev_skeys_partitions_rejects_invalid_size() -> None:

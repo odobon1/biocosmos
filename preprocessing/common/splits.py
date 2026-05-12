@@ -525,12 +525,9 @@ def build_dev_skeys_partitions(skeys_partitions, size_dev):
     if size_dev <= 0:
         raise ValueError(f"size_dev must be greater than 0, got {size_dev}")
 
-    skeys_train_sorted = sorted(skeys_partitions["train"])
-    skeys_dev = set(skeys_train_sorted[:size_dev])
-
     return {
-        partition_name: set(skeys_dev)
-        for partition_name in skeys_partitions
+        partition_name: set(sorted(skeys_partition)[:size_dev])
+        for partition_name, skeys_partition in skeys_partitions.items()
     }
 
 def save_split(data_indexes, id_eval_nshot, class_counts_train, dpath_split, dpath_figs) -> None:

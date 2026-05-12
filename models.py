@@ -361,10 +361,11 @@ class VLMWrapper(abc.ABC):
 
     def _global_batch_loss(
         self,
-        embs_img_sb:   torch.Tensor,
-        embs_txt_sb:   torch.Tensor,
+        embs_img_sb: torch.Tensor,
+        embs_txt_sb: torch.Tensor,
         class_encs_sb: torch.Tensor,
-        targ_data_sb:  List[Any],
+        targ_data_sb: List[Any],
+        loss_flag: bool = True,
     ) -> torch.Tensor:
         """
         Compute loss using the full global batch:
@@ -375,6 +376,9 @@ class VLMWrapper(abc.ABC):
         embs_img_b, embs_txt_b, class_encs_b, targ_data_b = self._gather_batch(
             embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
         )
+
+        if not loss_flag:
+            return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b
 
         loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
             embs_img_b,
@@ -480,6 +484,7 @@ class VLMWrapper(abc.ABC):
         txts_sb: Tuple[str],
         class_encs_sb: torch.Tensor,
         targ_data_sb: Tuple[Any],
+        loss_flag: bool = True,
     ) -> Tuple[Any]:
         """
         Performs a single forward pass step. Encodes images and text, computes loss if flag is set.
@@ -514,6 +519,7 @@ class VLMWrapper(abc.ABC):
             embs_txt_sb,
             class_encs_sb,
             targ_data_sb,
+            loss_flag=loss_flag,
         )
 
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b

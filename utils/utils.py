@@ -490,8 +490,14 @@ class PrintLog:
             )
 
         loss_lines = f"{' Loss ':-^{75}}\n"
+        has_loss = False
         for partition_name in partition_names:
-            loss_lines += _metric_line(partition_name.upper(), f"{scores_eval[partition_name]['loss']:.3e}")
+            partition_scores = scores_eval.get(partition_name, {})
+            if "loss" in partition_scores:
+                has_loss = True
+                loss_lines += _metric_line(partition_name.upper(), f"{partition_scores['loss']:.3e}")
+        if not has_loss:
+            loss_lines += "(disabled)\n"
 
         context_lines = ""
         if idx_epoch is not None:

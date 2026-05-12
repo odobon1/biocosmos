@@ -69,6 +69,7 @@ class SplitPartitionEvalPipeline:
             config: Any, 
             text_template: List[List[str]],
             img_pp: Callable,
+            compute_loss: bool = True,
         ) -> None:
 
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
@@ -104,6 +105,7 @@ class SplitPartitionEvalPipeline:
         self.partition_name = partition_name
         self.batch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
+        self.compute_loss = compute_loss
 
         if self.partition_name == "id":
             split = load_split(config.split_name, dataset=config.dataset)
@@ -121,7 +123,7 @@ class SplitPartitionEvalPipeline:
     def collect_eval_artifacts(
         self, 
         modelw: Any,
-    ) -> Tuple[Dict[str, Any], float]:
+    ) -> Tuple[Dict[str, Any], Optional[float]]:
         
         modelw.model.eval()
 
@@ -151,32 +153,45 @@ class SplitPartitionEvalPipeline:
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb)
+                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(
+                        imgs_sb,
+                        texts_sb,
+                        class_encs_img_sb,
+                        targ_data_sb,
+                        loss_flag=self.compute_loss,
+                    )
             else:
-                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb)
+                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(
+                    imgs_sb,
+                    texts_sb,
+                    class_encs_img_sb,
+                    targ_data_sb,
+                    loss_flag=self.compute_loss,
+                )
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())
             cids_img.extend(targ_data["cid"] for targ_data in targ_data_sb)
 
-            batch_loss = loss.detach().item() * B
-            loss_total += batch_loss
-            n_samps_loss += B
+            if self.compute_loss:
+                batch_loss = loss.detach().item() * B
+                loss_total += batch_loss
+                n_samps_loss += B
 
         embs_img_all = torch.cat(embs_imgs, dim=0).to(modelw.device)  # pt[Q, D]
         class_encs_img_all = torch.cat(class_encs_img, dim=0).to(modelw.device)  # pt[Q]
 
-        # reduce scalars (loss & accuracy)
-        stats = torch.tensor([
-            loss_total,
-            n_samps_loss,
-        ], device=modelw.device)
-        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        loss_avg = None
+        if self.compute_loss:
+            stats = torch.tensor([
+                loss_total,
+                n_samps_loss,
+            ], device=modelw.device)
+            dist.all_reduce(stats, op=dist.ReduceOp.SUM)
 
-        loss_total   = stats[0].item()
-        n_samps_loss = stats[1].item()
-
-        loss_avg = loss_total / n_samps_loss
+            loss_total = stats[0].item()
+            n_samps_loss = stats[1].item()
+            loss_avg = loss_total / n_samps_loss
 
         modelw.model.train()
 
@@ -576,9 +591,11 @@ class ValidationPipeline:
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
+        compute_loss: bool = True,
     ):
 
         self.header_tag = header_tag
+        self.compute_loss = compute_loss
 
         self.best_comp_map = None
         self.best_i2i_map = None
@@ -593,6 +610,7 @@ class ValidationPipeline:
                 config=config,
                 text_template=text_template,
                 img_pp=img_pp,
+                compute_loss=compute_loss,
             )
             for partition_name in self.partition_names
         }
@@ -636,7 +654,7 @@ class ValidationPipeline:
         partition_full_set_i2i_maps = []
         partition_full_set_i2i_macro_maps = []
         partition_artifacts: Dict[str, Dict[str, Any]] = {}
-        partition_losses: Dict[str, float] = {}
+        partition_losses: Dict[str, Optional[float]] = {}
 
         full_set_index_data = []
         for partition_name in self.partition_names:
@@ -765,8 +783,9 @@ class ValidationPipeline:
 
             scores_val[partition_name] = {
                 **scores_partition,
-                "loss": loss_avg_partition,
             }
+            if self.compute_loss and loss_avg_partition is not None:
+                scores_val[partition_name]["loss"] = loss_avg_partition
 
         comp_map = harmonic_mean(partition_maps)
         comp_macro_map = harmonic_mean(partition_macro_maps)

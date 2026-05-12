@@ -21,7 +21,12 @@ def main():
         modelw.set_class_wts(config_eval, secondary=True)
 
     text_template = get_text_template(config_eval.text_template, dataset=config_eval.dataset)
-    val_pipe = ValidationPipeline(config_eval, text_template, modelw.img_pp_val)
+    val_pipe = ValidationPipeline(
+        config_eval,
+        text_template,
+        modelw.img_pp_val,
+        compute_loss=False,
+    )
 
     scores_val, _, _, _ = val_pipe.run_validation(modelw)
 

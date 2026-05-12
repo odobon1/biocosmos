@@ -168,7 +168,18 @@ class TrainPipeline:
         )
 
         text_template_val = get_text_template(self.cfg.text_template["valid"], dataset=self.cfg.dataset)
-        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val)
+        self.val_pipe = ValidationPipeline(
+            self.cfg,
+            text_template_val,
+            self.modelw.img_pp_val,
+            compute_loss=True,
+        )
+        self.val_pipe_base = ValidationPipeline(
+            self.cfg,
+            text_template_val,
+            self.modelw.img_pp_val,
+            compute_loss=False,
+        )
 
         if self.gpu_rank == 0:
             ArtifactManager.save_metadata_trial()
@@ -241,7 +252,7 @@ class TrainPipeline:
 
     def train(self):
         try:
-            scores_val, _, _, time_val_base = self.val_pipe.run_validation(self.modelw)
+            scores_val, _, _, time_val_base = self.val_pipe_base.run_validation(self.modelw)
             scores_val = self._broadcast_obj(scores_val)
             time_val_base = self._broadcast_obj(time_val_base)
 
@@ -250,14 +261,14 @@ class TrainPipeline:
                 data_tracker.update_eval(scores_val, samps_seen=0, idx_epoch=0)
                 PrintLog.eval(
                     scores_val,
-                    self.val_pipe,
+                    self.val_pipe_base,
                     header="Base",
                     samps_seen=0,
                     idx_epoch=0,
                     time_val=time_val_base,
                     log_to="eval",
                 )
-                PrintLog.texts_eval(self.val_pipe.get_eval_texts())
+                PrintLog.texts_eval(self.val_pipe_base.get_eval_texts())
 
                 time_train_mean = RunningMean()
                 time_val_mean = RunningMean()

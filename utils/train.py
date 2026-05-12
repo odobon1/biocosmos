@@ -522,7 +522,7 @@ def plot_composite_metrics(
     if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
         ax4.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition_name in partition_names:
-        if "loss" in data_eval.get(partition_name, {}):
+        if len(data_eval.get(partition_name, {}).get("loss", [])) == len(x_eval):
             ax4.plot(
                 x_eval,
                 data_eval[partition_name]["loss"],

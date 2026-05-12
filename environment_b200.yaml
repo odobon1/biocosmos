@@ -5,7 +5,6 @@ channels:
 dependencies:
   - python=3.10
   - pip
-  - accelerate
   - bidict
   - biopython
   - ipykernel
@@ -25,6 +24,7 @@ dependencies:
       - torch==2.7.1+cu128
       - torchvision==0.22.1+cu128
       - torchaudio==2.7.1+cu128
+      - accelerate
       - transformers
       - datasets
       - "timm>=1.0.0"

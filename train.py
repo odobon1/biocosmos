@@ -1,11 +1,8 @@
 import torch  # type: ignore[import]
 from torch.amp import autocast, GradScaler  # type: ignore[import]
 from torch.optim.lr_scheduler import (  # type: ignore[import]
-    ExponentialLR, 
     ReduceLROnPlateau, 
     CosineAnnealingLR, 
-    CosineAnnealingWarmRestarts,
-    LambdaLR,
 )
 import torch.distributed as dist  # type: ignore[import]
 from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[import]
@@ -114,10 +111,7 @@ class LRSchedulerWrapper:
         args       = config.lr_sched_params.get("args")
         args_sched = config.lr_sched_params.get("args_sched")
 
-        if self.type == "exp":
-            self.lr_min = args["lr_min"]
-            self.sched  = ExponentialLR(self.opt, **args_sched)
-        elif self.type == "plat":
+        if self.type == "plat":
             self.reset_best_valid = args["reset_best_valid"]
             self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
         elif self.type == "cos":
@@ -126,12 +120,6 @@ class LRSchedulerWrapper:
             lr_init = self.opt.param_groups[0]["lr"]
             eta_min = lr_init * float(eta_min_factor)
             self.sched = CosineAnnealingLR(self.opt, T_max=n_epochs, eta_min=eta_min)
-        elif self.type == "coswr":
-            self.sched = CosineAnnealingWarmRestarts(self.opt, **args_sched)
-        elif self.type == "cosXexp":
-            self.sched = CosineExponentialLR(self.opt, **args)
-        elif self.type == "coswrXexp":
-            self.sched = CosineWRExponentialLR(self.opt, **args)
 
     def step(self, scores_val):
 
@@ -144,60 +132,9 @@ class LRSchedulerWrapper:
                     self.sched.best = valid_signal
         else:
             self.sched.step()
-            if self.type == "exp" and self.get_lr() < self.lr_min:
-                for pg in self.opt.param_groups:
-                    pg["lr"] = self.lr_min
 
     def get_lr(self):
         return self.opt.param_groups[0]["lr"]
-
-class CosineExponentialLR(LambdaLR):
-
-    def __init__(self, optimizer, gamma, period, peak_ratio, lr_nom_min):
-
-        self.lr_init = optimizer.param_groups[0]["lr"]
-        self.gamma = gamma
-        self.peak_ratio = peak_ratio
-        self.period = period
-        self.lr_nom_min = lr_nom_min
-
-        super().__init__(optimizer, lr_lambda=self._lr_lambda)
-
-    def _lr_lambda(self, idx_epoch):
-
-        peak = self.lr_init * (self.gamma ** idx_epoch)
-        if peak < self.lr_nom_min:
-            peak = self.lr_nom_min
-        valley     = peak / self.peak_ratio
-        cos_factor = 0.5 * (1 + math.cos(2 * math.pi * (idx_epoch / self.period)))
-
-        lr = valley + (peak - valley) * cos_factor
-
-        return lr / self.lr_init
-
-class CosineWRExponentialLR(LambdaLR):
-
-    def __init__(self, optimizer, gamma, period, peak_ratio, lr_nom_min):
-
-        self.lr_init    = optimizer.param_groups[0]["lr"]
-        self.gamma      = gamma
-        self.peak_ratio = peak_ratio
-        self.period     = period
-        self.lr_nom_min = lr_nom_min
-
-        super().__init__(optimizer, lr_lambda=self._lr_lambda)
-
-    def _lr_lambda(self, idx_epoch):
-
-        peak = self.lr_init * (self.gamma ** idx_epoch)
-        if peak < self.lr_nom_min:
-            peak = self.lr_nom_min
-        valley     = peak / self.peak_ratio
-        cos_factor = 0.5 * (1 + math.cos(math.pi * ((idx_epoch % self.period) / self.period)))
-
-        lr = valley + (peak - valley) * cos_factor
-
-        return lr / self.lr_init
 
 class TrainPipeline:
 

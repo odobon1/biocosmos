@@ -1,10 +1,3 @@
-# Exponential LR Scheduler
-exp:
-  args:
-    lr_min: 1.0e-8
-  args_sched:
-    gamma: 0.98  # decay rate
-
 # Plateau LR Scheduler
 plat:  # may also want to tweak threshold / eps
   args:
@@ -20,27 +13,3 @@ plat:  # may also want to tweak threshold / eps
 cos:
   args:
     eta_min_factor: 1.0e-3  # eta_min = opt.lr.init * eta_min_factor
-
-# Cosine Warm-Restarts LR Scheduler
-coswr:
-  args:
-    dummy: null
-  args_sched:
-    T_0:     7  # period
-    eta_min: 1.0e-7
-
-# Cosine X Exponential LR Scheduler
-cosXexp:
-  args:
-    gamma:      0.98
-    period:     10
-    peak_ratio: 10
-    lr_nom_min: 5.0e-7
-
-# Cosine Warm-Restarts X Exponential LR Scheduler
-coswrXexp:
-  args:
-    gamma:      0.98
-    period:     10
-    peak_ratio: 10
-    lr_nom_min: 5.0e-7

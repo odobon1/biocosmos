@@ -66,8 +66,8 @@ class TrainConfig:
         if self.loss2['targ'] not in ("aligned", "multipos", "tax", "phylo"):
             raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
         
-        if self.opt['lr']['sched'] not in ("exp", "plat", "cos", "coswr", "cosXexp", "coswrXexp"):
-            raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{exp, plat, cos, coswr, cosXexp, coswrXexp}}")
+        if self.opt['lr']['sched'] not in ("plat", "cos"):
+            raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{plat, cos}}")
 
         if self.eval_type not in ("validation", "test"):
             raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")

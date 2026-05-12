@@ -177,7 +177,7 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
     overrides = {
         "opt": {
             "lr": {
-                "sched": "exp",
+                "sched": "cos",
             }
         }
     }
@@ -186,4 +186,4 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
 
     assert out["opt"]["lr"]["init"] == 1.0e-5
     assert out["opt"]["lr"]["warmup"] == 100
-    assert out["opt"]["lr"]["sched"] == "exp"
+    assert out["opt"]["lr"]["sched"] == "cos"

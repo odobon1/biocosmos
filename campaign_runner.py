@@ -5,11 +5,12 @@ torchrun --standalone --nproc-per-node=auto -m campaign_runner
 from pathlib import Path
 from copy import deepcopy
 import json
+import subprocess
+import sys
 import yaml  # type: ignore[import]
 import traceback
 
-from train import run_training
-from utils.config import apply_overrides, get_config_train, load_train_config_dict
+from utils.config import apply_overrides, load_train_config_dict
 from utils.utils import paths
 
 
@@ -18,7 +19,7 @@ CAMPAIGN_NAME = "loss_ablation"
 SEED0 = 42
 NUM_SEEDS = 2
 
-DATASETS = ("bryo", "cub", "lepid")
+DATASETS = ("lepid", "bryo", "cub")
 
 BASELINE_OVERRIDES = [
     {"loss": {"targ": "aligned"}, "name": "iw"},
@@ -40,13 +41,22 @@ def _load_yaml(fpath: Path) -> dict:
 def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
     error_log_path = campaign_dir / "campaign_errors.log"
+    trial_cfg_fpath = campaign_dir / "trial_cfgs" / f"trial_{idx:05d}.json"
     
     # Format error message with context
     error_msg = (
         f"\n[{idx}/{total}] TRIAL FAILED\n"
         f"  seed={seed}, dataset={dataset}, setting={setting_name}\n"
+        f"  cfg={trial_cfg_fpath}\n"
         f"  {type(exc).__name__}: {str(exc)}"
     )
+
+    stderr_tail = None
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = getattr(exc, "stderr", None)
+        if stderr:
+            stderr_lines = stderr.splitlines()
+            stderr_tail = "\n".join(stderr_lines[-200:])
     
     # Print to stdout
     print(error_msg, flush=True)
@@ -54,7 +64,11 @@ def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, datase
     # Write to error log file
     with open(error_log_path, "a") as f:
         f.write(error_msg + "\n")
-        f.write(traceback.format_exc())
+        if stderr_tail is not None:
+            f.write("--- stderr (tail) ---\n")
+            f.write(stderr_tail + "\n")
+        else:
+            f.write(traceback.format_exc())
         f.write("\n" + "="*80 + "\n")
 
 def _campaign_dir() -> Path:
@@ -102,6 +116,45 @@ def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
 
+def _write_trial_cfg(campaign_dir: Path, idx: int, cfg_dict: dict) -> Path:
+    cfg_dir = campaign_dir / "trial_cfgs"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_fpath = cfg_dir / f"trial_{idx:05d}.json"
+    with open(cfg_fpath, "w") as f:
+        json.dump(cfg_dict, f, indent=2, sort_keys=True)
+    return cfg_fpath
+
+
+def _run_trial_subprocess(cfg_fpath: Path) -> None:
+    cmd = [
+        "torchrun",
+        "--standalone",
+        "--nproc-per-node=auto",
+        "-m",
+        "campaign_trial_runner",
+        "--cfg-path",
+        str(cfg_fpath),
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        text=True,
+        stdout=None,
+        stderr=subprocess.PIPE,
+    )
+
+    stderr_lines = []
+    assert proc.stderr is not None
+    for line in proc.stderr:
+        sys.stderr.write(line)
+        stderr_lines.append(line.rstrip("\n"))
+
+    return_code = proc.wait()
+    if return_code != 0:
+        stderr_tail = "\n".join(stderr_lines[-200:])
+        raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_tail)
+
+
 def run_campaign() -> None:
     baseline = _load_or_create_baseline()
     settings = _expand_settings(BASELINE_OVERRIDES)
@@ -129,8 +182,8 @@ def run_campaign() -> None:
                     f"[{idx}/{total}] seed={seed} dataset={dataset} setting={setting_name}"
                 )
                 try:
-                    cfg = get_config_train(cfg_dict=cfg_dict)
-                    run_training(cfg)
+                    cfg_fpath = _write_trial_cfg(_campaign_dir(), idx, cfg_dict)
+                    _run_trial_subprocess(cfg_fpath)
                 except Exception as e:
                     _log_trial_error(
                         campaign_dir=_campaign_dir(),

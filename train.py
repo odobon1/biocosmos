@@ -9,7 +9,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[imp
 from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
 from tqdm import tqdm  # type: ignore[import]
 import time
-import math
+import sys
 
 from utils.utils import (
     save_pickle, 
@@ -27,6 +27,7 @@ from utils.train import TrainImageDumper
 from utils.ddp import setup_ddp, cleanup_ddp
 
 import pdb
+
 
 torch.set_printoptions(
     precision=4,
@@ -302,7 +303,7 @@ class TrainPipeline:
                 loss_mean = RunningMean()
                 loss_raw_mean = RunningMean()
 
-                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0))):
+                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0), file=sys.__stdout__)):
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
 
                     self.train_img_dumper.dump(imgs_sb, targ_data_sb)

@@ -6,6 +6,7 @@ from tqdm import tqdm  # type: ignore[import]
 from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 from collections import defaultdict
 import math
+import sys
 
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
@@ -142,9 +143,10 @@ class SplitPartitionEvalPipeline:
         n_samps_loss   = 0
 
         for imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb in tqdm(
-            self.dataloader, 
-            desc=f"Eval ({self.partition_name})", 
-            leave=False
+            self.dataloader,
+            desc=f"Eval ({self.partition_name})",
+            leave=False,
+            file=sys.__stdout__
         ):
             imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
             class_encs_img_sb = class_encs_img_sb.to(modelw.device, non_blocking=True)

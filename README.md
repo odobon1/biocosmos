@@ -81,6 +81,19 @@ Note: The full similarity matrix is computed for all model types, including SigL
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
 
+## Run a campaign
+1. Configure campaign matrix in `campaign_runner.py`:
+    * `CAMPAIGN_NAME`
+    * `SEED0`, `NUM_SEEDS`
+    * `DATASETS`
+    * `BASELINE_OVERRIDES`
+2. Launch campaign:
+    ```
+    torchrun --standalone --nproc-per-node=auto -m campaign_runner
+    ```
+3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
+4. If a trial fails, campaign execution continues and details are appended to `artifacts/<CAMPAIGN_NAME>/campaign_errors.log`.
+
 <br>
 
 # Supported Architectures

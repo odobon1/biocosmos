@@ -1,12 +1,13 @@
 from pathlib import Path
 import json
 import pytest
+import subprocess
 
 import campaign_runner as cr
 
 
 def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "campaign_name", "cmp_a")
+    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_a")
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     baseline_a = {
@@ -36,13 +37,13 @@ def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> 
 
 
 def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "campaign_name", "cmp_b")
-    monkeypatch.setattr(cr, "seed0", 42)
-    monkeypatch.setattr(cr, "num_seeds", 2)
+    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_b")
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "NUM_SEEDS", 2)
     monkeypatch.setattr(cr, "DATASETS", ("cub", "lepid"))
     monkeypatch.setattr(
         cr,
-        "baseline_overrides",
+        "BASELINE_OVERRIDES",
         [
             {"loss": {"targ": "aligned"}, "name": "iw"},
             {"loss": {"targ": "phylo"}, "name": "hp"},
@@ -62,14 +63,12 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
 
     scheduled = []
 
-    def _fake_get_config_train(cfg_dict):
-        return cfg_dict
-
-    def _fake_run_training(cfg):
+    def _fake_run_trial_subprocess(cfg_fpath: Path):
+        with open(cfg_fpath) as f:
+            cfg = json.load(f)
         scheduled.append((cfg["seed"], cfg["dataset"], cfg["setting_name"], cfg["loss"]["targ"]))
 
-    monkeypatch.setattr(cr, "get_config_train", _fake_get_config_train)
-    monkeypatch.setattr(cr, "run_training", _fake_run_training)
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
     cr.run_campaign()
 
@@ -84,13 +83,13 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
 
 
 def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "campaign_name", "cmp_c")
-    monkeypatch.setattr(cr, "seed0", 7)
-    monkeypatch.setattr(cr, "num_seeds", 1)
+    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_c")
+    monkeypatch.setattr(cr, "SEED0", 7)
+    monkeypatch.setattr(cr, "NUM_SEEDS", 1)
     monkeypatch.setattr(cr, "DATASETS", ("cub",))
     monkeypatch.setattr(
         cr,
-        "baseline_overrides",
+        "BASELINE_OVERRIDES",
         [
             {"loss/targ": "aligned", "name": "iw"},
         ],
@@ -106,8 +105,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
-    monkeypatch.setattr(cr, "get_config_train", lambda cfg_dict: cfg_dict)
-    monkeypatch.setattr(cr, "run_training", lambda _cfg: None)
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_fpath: None)
 
     cr.run_campaign()
 
@@ -121,10 +119,41 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
 
 
 def test_expand_settings_raises_on_duplicate_names() -> None:
-    with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
+    with pytest.raises(ValueError, match="Duplicate BASELINE_OVERRIDES name"):
         cr._expand_settings(
             [
                 {"loss": {"targ": "aligned"}, "name": "dup"},
                 {"loss": {"targ": "phylo"}, "name": "dup"},
             ]
         )
+
+
+def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_d")
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    err = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["torchrun", "..."],
+        stderr="line1\nline2\nline3",
+    )
+
+    cr._log_trial_error(
+        campaign_dir=cr._campaign_dir(),
+        idx=3,
+        total=10,
+        seed=42,
+        dataset="cub",
+        setting_name="iw",
+        exc=err,
+    )
+
+    log_fpath = Path(tmp_path) / "cmp_d" / "campaign_errors.log"
+    assert log_fpath.exists()
+
+    with open(log_fpath) as f:
+        text = f.read()
+
+    assert "TRIAL FAILED" in text
+    assert "stderr (tail)" in text
+    assert "line3" in text

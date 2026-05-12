@@ -7,7 +7,6 @@ from utils.config import get_config_eval, get_config_hardware, get_config_train
 def test_get_config_hardware_loads_yaml() -> None:
     cfg = get_config_hardware()
 
-    assert hasattr(cfg, "cached_imgs")
     assert hasattr(cfg, "mixed_prec")
     assert hasattr(cfg, "act_chkpt")
 

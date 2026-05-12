@@ -221,7 +221,6 @@ def get_config_loss(cfg_train, secondary=False):
 @dataclass
 class HardwareConfig:
 
-    cached_imgs: str | None
     mixed_prec: bool
     act_chkpt: bool
     prefetch_factor: int

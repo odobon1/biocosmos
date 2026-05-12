@@ -65,12 +65,11 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
     def _fake_get_config_train(cfg_dict):
         return cfg_dict
 
-    def _fake_run_training(cfg, imgs_mem=None):
+    def _fake_run_training(cfg):
         scheduled.append((cfg["seed"], cfg["dataset"], cfg["setting_name"], cfg["loss"]["targ"]))
 
     monkeypatch.setattr(cr, "get_config_train", _fake_get_config_train)
     monkeypatch.setattr(cr, "run_training", _fake_run_training)
-    monkeypatch.setattr(cr, "_build_img_cache", lambda _dataset, _cfg_dict: None)
 
     cr.run_campaign()
 
@@ -108,8 +107,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
     monkeypatch.setattr(cr, "get_config_train", lambda cfg_dict: cfg_dict)
-    monkeypatch.setattr(cr, "run_training", lambda _cfg, imgs_mem=None: None)
-    monkeypatch.setattr(cr, "_build_img_cache", lambda _dataset, _cfg_dict: None)
+    monkeypatch.setattr(cr, "run_training", lambda _cfg: None)
 
     cr.run_campaign()
 

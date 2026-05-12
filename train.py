@@ -207,7 +207,6 @@ class TrainPipeline:
         config,
         gpu_rank: int = 0,
         gpu_world_size: int = 1,
-        imgs_mem: dict | None = None,
     ):
 
         self.modelw = modelw
@@ -229,11 +228,10 @@ class TrainPipeline:
             img_pp=self.modelw.img_pp_train,
             use_dv_sampler=self.cfg.dv_batching,
             persistent_workers=self.cfg.hw.persistent_workers_train,
-            imgs_mem=imgs_mem,
         )
 
         text_template_val = get_text_template(self.cfg.text_template["valid"], dataset=self.cfg.dataset)
-        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val, imgs_mem=imgs_mem)
+        self.val_pipe = ValidationPipeline(self.cfg, text_template_val, self.modelw.img_pp_val)
 
         if self.gpu_rank == 0:
             ArtifactManager.save_metadata_trial()
@@ -574,7 +572,7 @@ class TrainPipeline:
             if self.gpu_rank == 0:
                 PrintLog.close_logs()
 
-def run_training(cfg=None, imgs_mem: dict | None = None):
+def run_training(cfg=None):
     gpu_rank, gpu_world_size, local_gpu_rank, device = setup_ddp()
 
     if cfg is None:
@@ -597,7 +595,7 @@ def run_training(cfg=None, imgs_mem: dict | None = None):
         modelw.set_class_wts(cfg, secondary=True)
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
-    train_pipe = TrainPipeline(modelw, cfg, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size, imgs_mem=imgs_mem)
+    train_pipe = TrainPipeline(modelw, cfg, gpu_rank=gpu_rank, gpu_world_size=gpu_world_size)
     train_pipe.train()
 
     cleanup_ddp()

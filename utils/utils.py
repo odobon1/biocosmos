@@ -13,8 +13,8 @@ from utils.text import get_text_template as get_dataset_text_template
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":
@@ -57,7 +57,7 @@ if CLUSTER == "pace":
 elif CLUSTER == "hpg":
 
     dpath_root = Path(os.getcwd())
-    dpath_group = Path("/lustre/blue2/arthur.porto-biocosmos")
+    dpath_group = Path("/lustre/blue2/arthur.porto")
     dpath_data = dpath_group / "data"
     dpath_nymph = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"
     dpath_lepid = dpath_data / "datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07"

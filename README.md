@@ -64,7 +64,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
     This reads `config/train/train.yaml`, seeds, builds the model, applies class weighting (if enabled) and trains.
 
-    Tip: LR scheduler options and parameters are in `config/train/lr_sched.yaml`. Pick via `lr_sched_type` in `train.yaml`.
+    Tip: Cosine LR scheduler parameters are in `config/train/lr_sched.yaml` and selected by `opt.lr.sched` in `train.yaml`.
 
 ## Evaluate a trained model
 1. In `config/eval.yaml`, set `rdpath_trial` to the trial directory (e.g. `artifacts/dev/dev/42`).

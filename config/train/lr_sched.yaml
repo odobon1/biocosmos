@@ -1,14 +1,3 @@
-# Plateau LR Scheduler
-plat:  # may also want to tweak threshold / eps
-  args:
-    reset_best_valid: true  # (true) reset best validation score after LR drop to avoid early plateauing
-    valid_type:       perf  # options: {perf}
-  args_sched:
-    factor:   0.61803398875  # golden ratio
-    patience: 1
-    cooldown: 1
-    min_lr:   1.0e-7
-
 # Cosine LR Scheduler
 cos:
   args:

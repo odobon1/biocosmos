@@ -1,7 +1,6 @@
 import torch  # type: ignore[import]
 from torch.amp import autocast, GradScaler  # type: ignore[import]
 from torch.optim.lr_scheduler import (  # type: ignore[import]
-    ReduceLROnPlateau, 
     CosineAnnealingLR, 
 )
 import torch.distributed as dist  # type: ignore[import]
@@ -108,35 +107,22 @@ class TrialDataTracker:
 
 class LRSchedulerWrapper:
 
-    def __init__(self, optimizer, config):
+    def __init__(self, optimizer, config, total_steps):
 
         self.opt  = optimizer
         self.type = config.opt['lr']['sched']
 
         args       = config.lr_sched_params.get("args")
-        args_sched = config.lr_sched_params.get("args_sched")
+        if self.type != "cos":
+            raise ValueError(f"Unsupported LR scheduler type: '{self.type}', expected 'cos'")
 
-        if self.type == "plat":
-            self.reset_best_valid = args["reset_best_valid"]
-            self.sched = ReduceLROnPlateau(self.opt, mode="max", **args_sched)
-        elif self.type == "cos":
-            n_epochs = getattr(config, "n_epochs")
-            eta_min_factor = args.get("eta_min_factor")
-            lr_init = self.opt.param_groups[0]["lr"]
-            eta_min = lr_init * float(eta_min_factor)
-            self.sched = CosineAnnealingLR(self.opt, T_max=n_epochs, eta_min=eta_min)
+        eta_min_factor = args.get("eta_min_factor")
+        lr_init = self.opt.param_groups[0]["lr"]
+        eta_min = lr_init * float(eta_min_factor)
+        self.sched = CosineAnnealingLR(self.opt, T_max=max(1, int(total_steps)), eta_min=eta_min)
 
-    def step(self, scores_val):
-
-        if self.type == "plat":
-            valid_signal = scores_val["comp"]["standard"]["map"]["all"]
-            lr_prev = self.get_lr()
-            self.sched.step(valid_signal)
-            if self.get_lr() < lr_prev:  # if current LR < previous LR
-                if self.reset_best_valid:
-                    self.sched.best = valid_signal
-        else:
-            self.sched.step()
+    def step(self):
+        self.sched.step()
 
     def get_lr(self):
         return self.opt.param_groups[0]["lr"]
@@ -231,6 +217,7 @@ class TrainPipeline:
         self.lr_schedw = LRSchedulerWrapper(
             self.optimizer, 
             self.cfg,
+            total_steps=self.cfg.n_epochs * len(self.dataloader),
         )
 
         if self.cfg.hw.mixed_prec:
@@ -343,6 +330,7 @@ class TrainPipeline:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
+                        self.lr_schedw.step()
                     else:
                         loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
                             imgs_sb, texts_sb, class_encs_sb, targ_data_sb
@@ -353,6 +341,7 @@ class TrainPipeline:
                         if self.gpu_rank == 0:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.optimizer.step()
+                        self.lr_schedw.step()
 
                     with torch.no_grad():
                         loss = loss.detach().item()
@@ -438,8 +427,6 @@ class TrainPipeline:
 
                 time_train_end = time.time()
                 time_train = time_train_end - time_train_start
-
-                self.lr_schedw.step(scores_val_latest)
 
                 if self.gpu_rank == 0:
 

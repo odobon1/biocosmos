@@ -268,21 +268,12 @@ def plot_metrics(
         fontsize_ticks=8, 
         fontsize_legend=8,
         subplot_border_width=1,
-        figsize=(10, 14),
-        height_ratios=[2, 2, 2, 2, 2, 1],
+        figsize=(10, 16),
+        height_ratios=[2, 2, 2, 2, 2, 1, 1],
     ):
     data = data_tracker.data
-    if "epoch" in data and "eval" in data:
-        data_epoch = data["epoch"]
-        data_eval = data["eval"]
-    else:
-        data_eval = data
-        data_epoch = {
-            "samps_seen": data.get("samps_seen", []),
-            "lr": data.get("lr", []),
-            "loss_train": data.get("loss_train", []),
-            "loss_raw_train": data.get("loss_raw_train", []),
-        }
+    data_epoch = data["epoch"]
+    data_eval = data["eval"]
 
     partition_names = [
         partition_name
@@ -295,7 +286,7 @@ def plot_metrics(
         return
 
     x_eval = data_eval["samps_seen"]
-    x_epoch = data_epoch["samps_seen"]
+    x_train = data_epoch["samps_seen"]
 
     bucket_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     bucket_comp_keys_standard = [
@@ -309,7 +300,7 @@ def plot_metrics(
     plot_composite_metrics(
         data_epoch,
         data_eval,
-        x_epoch,
+        x_train,
         x_eval,
         dpath_trial,
         partition_names,
@@ -333,7 +324,7 @@ def plot_metrics(
     plot_composite_metrics(
         data_epoch,
         data_eval,
-        x_epoch,
+        x_train,
         x_eval,
         dpath_trial,
         partition_names,
@@ -357,7 +348,7 @@ def plot_metrics(
     plot_composite_metrics(
         data_epoch,
         data_eval,
-        x_epoch,
+        x_train,
         x_eval,
         dpath_trial,
         partition_names,
@@ -381,7 +372,7 @@ def plot_metrics(
     plot_composite_metrics(
         data_epoch,
         data_eval,
-        x_epoch,
+        x_train,
         x_eval,
         dpath_trial,
         partition_names,
@@ -405,7 +396,7 @@ def plot_metrics(
 def plot_composite_metrics(
     data_epoch,
     data_eval,
-    x_epoch,
+    x_train,
     x_eval,
     dpath_trial,
     partition_names,
@@ -517,10 +508,10 @@ def plot_composite_metrics(
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-    if len(data_epoch.get("loss_train", [])) == len(x_epoch):
-        ax4.plot(x_epoch, data_epoch["loss_train"], label="Train Loss")
-    if len(data_epoch.get("loss_raw_train", [])) == len(x_epoch):
-        ax4.plot(x_epoch, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
+    if len(data_epoch.get("loss_train", [])) == len(x_train):
+        ax4.plot(x_train, data_epoch["loss_train"], label="Train Loss")
+    if len(data_epoch.get("loss_raw_train", [])) == len(x_train):
+        ax4.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition_name in partition_names:
         if len(data_eval.get(partition_name, {}).get("loss", [])) == len(x_eval):
             ax4.plot(
@@ -537,22 +528,33 @@ def plot_composite_metrics(
     ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
-    if len(data_epoch.get("lr", [])) == len(x_epoch):
-        ax5.plot(x_epoch, data_epoch["lr"])
-    ax5.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax5.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax5.yaxis.set_offset_position("right")
-    ax5.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax5.yaxis.get_offset_text().set_visible(False)
-    ax5.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
-    ax5.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    if len(data_epoch.get("grad_norm_model", [])) == len(x_train):
+        ax5.plot(x_train, data_epoch["grad_norm_model"], label="Model Grad Norm", color="green")
+    ax5.set_ylabel("Model Grad Norm", fontsize=fontsize_axes, fontweight="bold")
+    ax5.set_yscale("log")
+    ax5.minorticks_on()
+    ax5.grid(which="minor", axis="y")
+    ax5.legend(loc="upper right", fontsize=fontsize_legend)
     ax5.grid(True)
-    ax5.tick_params(labelsize=fontsize_ticks)
+    ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    for ax in (ax0, ax1, ax2, ax3, ax4, ax5):
+    ax6 = fig.add_subplot(gs[6, 0], sharex=ax0)
+    if len(data_epoch.get("lr", [])) == len(x_train):
+        ax6.plot(x_train, data_epoch["lr"])
+    ax6.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax6.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax6.yaxis.set_offset_position("right")
+    ax6.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax6.yaxis.get_offset_text().set_visible(False)
+    ax6.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
+    ax6.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    ax6.grid(True)
+    ax6.tick_params(labelsize=fontsize_ticks)
+
+    for ax in (ax0, ax1, ax2, ax3, ax4, ax5, ax6):
         ax.label_outer()
 
-    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5)):
+    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5, ax6)):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")

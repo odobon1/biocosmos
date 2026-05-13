@@ -34,6 +34,8 @@ class TrainConfig:
     text_template: dict
 
     logging: bool
+    metrics_plot_every_batches: int
+    
     eval_type: str = "validation"
 
     hw: dict = field(init=False, default_factory=dict)
@@ -77,6 +79,10 @@ class TrainConfig:
 
         if self.eval_every <= 0:
             raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
+        if self.metrics_plot_every_batches <= 0:
+            raise ValueError(
+                f"metrics_plot_every_batches must be greater than 0, got {self.metrics_plot_every_batches}"
+            )
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(

@@ -17,6 +17,7 @@ from utils.utils import (
     get_text_template, 
     RunningMean,
     PrintLog,
+    model_grad_l2_norm,
 )
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
@@ -49,6 +50,7 @@ class TrialDataTracker:
             "lr": [],
             "loss_train": [],
             "loss_raw_train": [],
+            "grad_norm_model": [],
         }
         self.data_eval = {
             "samps_seen": [],
@@ -67,7 +69,7 @@ class TrialDataTracker:
             "eval": self.data_eval,
         }
 
-    def update_epoch(self, samps_seen, lr=None, loss_train=None, loss_raw_train=None):
+    def update_train_batch(self, samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None):
 
         self.data_epoch["samps_seen"].append(samps_seen)
 
@@ -77,6 +79,8 @@ class TrialDataTracker:
             self.data_epoch["loss_train"].append(loss_train)
         if loss_raw_train is not None:
             self.data_epoch["loss_raw_train"].append(loss_raw_train)
+        if grad_norm_model is not None:
+            self.data_epoch["grad_norm_model"].append(grad_norm_model)
 
     def update_eval(self, scores_val, samps_seen, idx_epoch):
 
@@ -188,6 +192,7 @@ class TrainPipeline:
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]
         self.n_samps_seen = 0
+        self.n_batches_seen = 0
         self.next_eval_threshold = self.cfg.eval_every
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
         self.logged_train_text = False
@@ -332,6 +337,8 @@ class TrainPipeline:
                             )
                         self.scaler.scale(loss).backward()
                         self.scaler.unscale_(self.optimizer)
+                        with torch.no_grad():
+                            grad_norm_model = model_grad_l2_norm(self.modelw.model)
                         if self.gpu_rank == 0:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.scaler.step(self.optimizer)
@@ -341,6 +348,8 @@ class TrainPipeline:
                             imgs_sb, texts_sb, class_encs_sb, targ_data_sb
                         )
                         loss.backward()
+                        with torch.no_grad():
+                            grad_norm_model = model_grad_l2_norm(self.modelw.model)
                         if self.gpu_rank == 0:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.optimizer.step()
@@ -350,6 +359,19 @@ class TrainPipeline:
                         loss_raw = loss_raw.detach().item()
                         loss_mean.update(loss)
                         loss_raw_mean.update(loss_raw)
+                        self.n_batches_seen += 1
+
+                    if self.gpu_rank == 0:
+                        data_tracker.update_train_batch(
+                            samps_seen=self.n_samps_seen,
+                            lr=lr,
+                            loss_train=loss,
+                            loss_raw_train=loss_raw,
+                            grad_norm_model=grad_norm_model,
+                        )
+                        if self.n_batches_seen % self.cfg.metrics_plot_every_batches == 0:
+                            data_tracker.save()
+                            plot_metrics(data_tracker, ArtifactManager.dpath_trial)
 
                     while self.n_samps_seen >= self.next_eval_threshold:
                         threshold_hit = self.next_eval_threshold
@@ -422,12 +444,6 @@ class TrainPipeline:
                 if self.gpu_rank == 0:
 
                     time_train_mean.update(time_train)
-                    data_tracker.update_epoch(
-                        samps_seen=self.n_samps_seen,
-                        lr=lr_mean.value(),
-                        loss_train=loss_mean.value(),
-                        loss_raw_train=loss_raw_mean.value(),
-                    )
 
                     if idx_epoch % self.cfg.chkpt_every == 0:
                         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
@@ -452,6 +468,10 @@ class TrainPipeline:
                         ArtifactManager.save_metadata_trial(time_train_mean=time_train_mean.value(), time_val_mean=time_val_mean.value())
                         data_tracker.save()
                         plot_metrics(data_tracker, ArtifactManager.dpath_trial)
+
+                    # Refresh train metric plots at every epoch boundary (in addition to batch cadence).
+                    data_tracker.save()
+                    plot_metrics(data_tracker, ArtifactManager.dpath_trial)
 
                     PrintLog.epoch(
                         time_train,

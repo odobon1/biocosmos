@@ -149,6 +149,14 @@ class RunningMean:
 
     def value(self):
         return self.mean
+
+
+def model_grad_l2_norm(model: torch.nn.Module) -> float:
+    total = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            total += p.grad.detach().pow(2).sum().item()
+    return math.sqrt(total)
     
 def shuffle_list(input: List[Any], seed: int) -> List[int]:
     rng        = random.Random(seed)
@@ -254,13 +262,6 @@ class PrintLog:
             if x.grad is None:
                 return float("nan")
             return x.grad.detach().pow(2).sum().sqrt().item()
-
-        def model_grad_l2_norm(model: torch.nn.Module) -> float:
-            total = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    total += p.grad.detach().pow(2).sum().item()
-            return math.sqrt(total)
 
         def tensor_scalar_item(x) -> float:
             if x is None:

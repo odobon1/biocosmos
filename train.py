@@ -9,6 +9,7 @@ from torch.utils.data.distributed import DistributedSampler  # type: ignore[impo
 from tqdm import tqdm  # type: ignore[import]
 import time
 import sys
+import math
 
 from utils.utils import (
     save_pickle, 
@@ -217,7 +218,7 @@ class TrainPipeline:
         self.lr_schedw = LRSchedulerWrapper(
             self.optimizer, 
             self.cfg,
-            total_steps=self.cfg.n_epochs * len(self.dataloader),
+            total_steps=max(1, math.ceil(self.cfg.sample_volume / (self.cfg.batch_size * self.gpu_world_size))),
         )
 
         if self.cfg.hw.mixed_prec:
@@ -272,6 +273,7 @@ class TrainPipeline:
             scores_val_best_comp = scores_val
             scores_val_best_i2i = scores_val
             scores_val_latest = scores_val
+            stop_trial = False
 
             for idx_epoch in range(1, self.cfg.n_epochs + 1):
 
@@ -423,6 +425,10 @@ class TrainPipeline:
                                 data_tracker.save()
                                 plot_metrics(data_tracker, ArtifactManager.dpath_trial)
 
+                    if self.n_samps_seen >= self.cfg.sample_volume:
+                        stop_trial = True
+                        break
+
                 loss_train_avg = loss_mean.value()
 
                 time_train_end = time.time()
@@ -467,6 +473,9 @@ class TrainPipeline:
                         loss_raw_mean.value(),
                         self.n_samps_seen,
                     )
+
+                if stop_trial:
+                    break
 
             scores_val, is_best_comp, is_best_i2i, time_val = self.val_pipe.run_validation(self.modelw)
 

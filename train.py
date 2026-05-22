@@ -175,9 +175,9 @@ class TrainPipeline:
 
         if self.gpu_rank == 0:
             ArtifactManager.save_metadata_trial()
-        self.init_opt_and_lr_sched()
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]
+        self.init_opt_and_lr_sched()
         self.n_samps_seen = 0
         self.n_batches_seen = 0
         self.next_eval_threshold = self.cfg.eval_every
@@ -218,7 +218,7 @@ class TrainPipeline:
         self.lr_schedw = LRSchedulerWrapper(
             self.optimizer, 
             self.cfg,
-            total_steps=max(1, math.ceil(self.cfg.sample_volume / (self.cfg.batch_size * self.gpu_world_size))),
+            total_steps=max(1, math.ceil(self.cfg.sample_volume / (self.cfg.batch_size)) - math.ceil(self.lr_warmup / (self.cfg.batch_size))),
         )
 
         if self.cfg.hw.mixed_prec:
@@ -297,7 +297,7 @@ class TrainPipeline:
                 loss_mean = RunningMean()
                 loss_raw_mean = RunningMean()
 
-                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(self.gpu_rank != 0), file=sys.__stdout__)):
+                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(dist.get_rank() != 0))):
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
 
                     self.train_img_dumper.dump(imgs_sb, targ_data_sb)
@@ -332,7 +332,8 @@ class TrainPipeline:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
-                        self.lr_schedw.step()
+                        if self.n_samps_seen >= self.lr_warmup:
+                            self.lr_schedw.step()
                     else:
                         loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
                             imgs_sb, texts_sb, class_encs_sb, targ_data_sb
@@ -343,7 +344,8 @@ class TrainPipeline:
                         if self.gpu_rank == 0:
                             PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
                         self.optimizer.step()
-                        self.lr_schedw.step()
+                        if self.n_samps_seen >= self.lr_warmup:
+                            self.lr_schedw.step()
 
                     with torch.no_grad():
                         loss = loss.detach().item()

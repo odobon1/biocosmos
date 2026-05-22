@@ -20,6 +20,7 @@ def setup_ddp():
     return gpu_rank, gpu_world_size, local_gpu_rank, device
 
 def cleanup_ddp():
-    print("Cleaning up DDP...")
+    if dist.get_rank() == 0:
+        print("Cleaning up DDP...")
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()

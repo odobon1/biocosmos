@@ -62,6 +62,39 @@ def list_eval_partition_names(split: Any, eval_type: str) -> List[str]:
 
     return partition_names
 
+def gather_variable_rows(tensor: torch.Tensor) -> torch.Tensor:
+    if dist.get_world_size() == 1:
+        return tensor
+
+    device = tensor.device
+    size_local = torch.tensor([tensor.size(0)], device=device, dtype=torch.long)
+    size_parts = [torch.zeros_like(size_local) for _ in range(dist.get_world_size())]
+    dist.all_gather(size_parts, size_local)
+    sizes = [int(size.item()) for size in size_parts]
+    max_size = max(sizes, default=0)
+
+    if tensor.size(0) < max_size:
+        pad_shape = (max_size - tensor.size(0), *tensor.shape[1:])
+        pad = torch.zeros(pad_shape, device=device, dtype=tensor.dtype)
+        tensor = torch.cat([tensor, pad], dim=0)
+
+    gathered = [torch.empty_like(tensor) for _ in range(dist.get_world_size())]
+    dist.all_gather(gathered, tensor)
+
+    return torch.cat([part[:sizes[rank]] for rank, part in enumerate(gathered)], dim=0)
+
+def gather_object_list(items: List[Any]) -> List[Any]:
+    if dist.get_world_size() == 1:
+        return items
+
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, list(items))
+
+    merged = []
+    for part in gathered:
+        merged.extend(part)
+    return merged
+
 class SplitPartitionEvalPipeline:
 
     def __init__(
@@ -99,6 +132,7 @@ class SplitPartitionEvalPipeline:
             drop_last=False,
             img_pp=img_pp,
             use_dv_sampler=False,
+            exact_distributed=True,
             persistent_workers=config.hw.persistent_workers_eval,
         )
 
@@ -136,17 +170,16 @@ class SplitPartitionEvalPipeline:
             embs_text_all = modelw.embed_texts(self.index_text)
         
         # image embeddings
-        embs_imgs      = []
+        embs_imgs = []
         class_encs_img = []
-        cids_img       = []
-        loss_total     = 0.0
-        n_samps_loss   = 0
-
+        cids_img = []
+        loss_total = 0.0
+        n_samps_loss = 0
         for imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb in tqdm(
             self.dataloader,
             desc=f"Eval ({self.partition_name})",
             leave=False,
-            file=sys.__stdout__
+            disable=(dist.get_rank() != 0),
         ):
             imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
             class_encs_img_sb = class_encs_img_sb.to(modelw.device, non_blocking=True)
@@ -155,7 +188,7 @@ class SplitPartitionEvalPipeline:
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(
+                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
                         imgs_sb,
                         texts_sb,
                         class_encs_img_sb,
@@ -163,7 +196,7 @@ class SplitPartitionEvalPipeline:
                         loss_flag=self.compute_loss,
                     )
             else:
-                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step(
+                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
                     imgs_sb,
                     texts_sb,
                     class_encs_img_sb,
@@ -180,8 +213,16 @@ class SplitPartitionEvalPipeline:
                 loss_total += batch_loss
                 n_samps_loss += B
 
-        embs_img_all = torch.cat(embs_imgs, dim=0).to(modelw.device)  # pt[Q, D]
-        class_encs_img_all = torch.cat(class_encs_img, dim=0).to(modelw.device)  # pt[Q]
+        if embs_imgs:
+            embs_img_local = torch.cat(embs_imgs, dim=0).to(modelw.device)
+            class_encs_img_local = torch.cat(class_encs_img, dim=0).to(modelw.device)
+        else:
+            embs_img_local = torch.empty((0, modelw.embed_dim), device=modelw.device)
+            class_encs_img_local = torch.empty((0,), device=modelw.device, dtype=torch.long)
+
+        embs_img_all = gather_variable_rows(embs_img_local)
+        class_encs_img_all = gather_variable_rows(class_encs_img_local)
+        cids_img = gather_object_list(cids_img)
 
         loss_avg = None
         if self.compute_loss:

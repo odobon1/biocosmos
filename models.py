@@ -524,6 +524,52 @@ class VLMWrapper(abc.ABC):
 
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b
 
+    def batch_step_local(
+        self,
+        imgs_sb: torch.Tensor,
+        txts_sb: Tuple[str],
+        class_encs_sb: torch.Tensor,
+        targ_data_sb: Tuple[Any],
+        loss_flag: bool = True,
+    ) -> Tuple[Any]:
+        """
+        Eval-oriented forward pass that keeps the batch local to the current rank.
+        """
+        toks_sb = self.txt_pp(txts_sb)
+        output = self.model(imgs_sb, toks_sb)
+
+        embs_img_sb = F.normalize(output[0], dim=1)
+        embs_txt_sb = F.normalize(output[1], dim=1)
+
+        if not loss_flag:
+            return None, None, embs_img_sb, embs_txt_sb, (None, None), class_encs_sb
+
+        targ_data_list = list(targ_data_sb)
+        loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
+            embs_img_sb,
+            embs_txt_sb,
+            class_encs_sb,
+            targ_data_list,
+            self.cfg.loss,
+            secondary=False,
+        )
+
+        mix = self.cfg.loss2["mix"]
+        if mix != 0.0:
+            loss2, loss2_raw, logits2 = self._loss_for_cfg_full_batch(
+                embs_img_sb,
+                embs_txt_sb,
+                class_encs_sb,
+                targ_data_list,
+                self.cfg.loss2,
+                secondary=True,
+            )
+            loss = (1.0 - mix) * loss1 + mix * loss2
+            loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
+            return loss, loss_raw, embs_img_sb, embs_txt_sb, (logits1, logits2), class_encs_sb
+
+        return loss1, loss1_raw, embs_img_sb, embs_txt_sb, (logits1, None), class_encs_sb
+
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Any) -> None:
         model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch['model_type']]

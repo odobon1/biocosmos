@@ -1,5 +1,5 @@
 import torch  # type: ignore[import]
-from torch.utils.data import Dataset, DataLoader  # type: ignore[import]
+from torch.utils.data import Dataset, DataLoader, Sampler  # type: ignore[import]
 from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
 import torch.distributed as dist  # type: ignore[import]
 from PIL import Image  # type: ignore[import]
@@ -19,6 +19,41 @@ class Split:
     data_indexes: list
     id_eval_nshot: dict
     class_counts_train: np.ndarray
+
+class ExactDistributedSampler(Sampler[int]):
+    """
+    Distributed sampler that assigns each dataset index to exactly one rank.
+
+    Unlike torch's DistributedSampler(drop_last=False), this sampler does not pad
+    to make every rank see the same number of samples.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        shuffle: bool = False,
+        seed: int = 0,
+    ) -> None:
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.seed = seed
+        self.rank = dist.get_rank()
+        self.num_replicas = dist.get_world_size()
+        self.epoch = 0
+
+    def __iter__(self):
+        indices = list(range(len(self.dataset)))
+        if self.shuffle:
+            indices = shuffle_list(indices, self.seed + self.epoch)
+        return iter(indices[self.rank::self.num_replicas])
+
+    def __len__(self) -> int:
+        n = len(self.dataset)
+        remaining = max(n - self.rank, 0)
+        return (remaining + self.num_replicas - 1) // self.num_replicas
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
 class DorsalVentralBatchSampler:
     """
@@ -254,6 +289,7 @@ def spawn_dataloader(
     drop_last: bool,
     img_pp: Callable,
     use_dv_sampler: bool,
+    exact_distributed: bool = False,
     persistent_workers: bool = True,
 ) -> Tuple[DataLoader, float | None]:
     """
@@ -311,11 +347,18 @@ def spawn_dataloader(
             persistent_workers=persistent_workers,
         )
     else:
-        sampler = DistributedSampler(
-            dataset,
-            shuffle  =shuffle,
-            drop_last=drop_last,
-        )
+        if exact_distributed:
+            sampler = ExactDistributedSampler(
+                dataset,
+                shuffle=shuffle,
+                seed=getattr(config, "seed", 0),
+            )
+        else:
+            sampler = DistributedSampler(
+                dataset,
+                shuffle  =shuffle,
+                drop_last=drop_last,
+            )
         dataloader = DataLoader(
             dataset,
             batch_size        =bs_local,

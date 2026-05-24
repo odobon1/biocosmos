@@ -1,0 +1,7 @@
+siglip:
+  l2reg: 0.0  # SigLIP paper recommends weight_decay = 0.0 for finetuning
+  beta2: 0.95  # SigLIP paper recommends Beta2 = 0.98 (CLIP ViT)
+
+clip:
+  l2reg: 0.2  # CLIP paper recommends weight_decay = 0.2
+  beta2: 0.98  # CLIP paper recommends Beta2 = 0.98 (CLIP ViT)

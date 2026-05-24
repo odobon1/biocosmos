@@ -41,6 +41,7 @@ def _load_yaml(fpath: Path) -> dict:
 def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
     error_log_path = campaign_dir / "campaign_errors.log"
+    campaign_dir.mkdir(parents=True, exist_ok=True)
     trial_cfg_fpath = campaign_dir / "trial_cfgs" / f"trial_{idx:05d}.json"
     
     # Format error message with context

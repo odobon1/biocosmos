@@ -34,7 +34,7 @@ class TrainConfig:
     text_template: dict
 
     logging: bool
-    metrics_plot_every_batches: int
+    metrics_plot_every_batches: int = 100
     
     eval_type: str = "validation"
 
@@ -173,8 +173,61 @@ def load_train_config_dict() -> dict:
     with open(paths["config"] / "train/train.yaml") as f:
         return yaml.safe_load(f)
 
+def load_model_specific_config_dict() -> dict:
+    with open(paths["config"] / "train/model_specific.yaml") as f:
+        return yaml.safe_load(f)
+
+def _resolve_model_family(model_type: str) -> str:
+    model_type_lower = model_type.lower()
+    if "siglip" in model_type_lower:
+        return "siglip"
+    if "clip" in model_type_lower:
+        return "clip"
+    raise ValueError(
+        f"Could not resolve model family for model_type '{model_type}'. "
+        "Expected a CLIP or SigLIP model type."
+    )
+
+def apply_model_specific_opt_defaults(cfg_dict: dict) -> dict:
+    cfg_out = deepcopy(cfg_dict)
+    opt = cfg_out.get("opt", {})
+
+    if not isinstance(opt, dict):
+        raise ValueError("Config field 'opt' must be a dict.")
+
+    needs_l2reg = opt.get("l2reg") is None
+    needs_beta2 = opt.get("beta2") is None
+    if not (needs_l2reg or needs_beta2):
+        return cfg_out
+
+    arch = cfg_out.get("arch", {})
+    if not isinstance(arch, dict) or "model_type" not in arch:
+        raise ValueError("Config field 'arch/model_type' is required to resolve model-specific defaults.")
+
+    model_type = arch["model_type"]
+    family = _resolve_model_family(model_type)
+    model_specific_config = load_model_specific_config_dict()
+    family_defaults = model_specific_config.get(family)
+
+    if not isinstance(family_defaults, dict):
+        raise ValueError(f"Missing model hyperparameter defaults for family '{family}'.")
+
+    if needs_l2reg:
+        if "l2reg" not in family_defaults:
+            raise ValueError(f"Missing '{family}/l2reg' in model hyperparameter defaults.")
+        opt["l2reg"] = deepcopy(family_defaults["l2reg"])
+
+    if needs_beta2:
+        if "beta2" not in family_defaults:
+            raise ValueError(f"Missing '{family}/beta2' in model hyperparameter defaults.")
+        opt["beta2"] = deepcopy(family_defaults["beta2"])
+
+    cfg_out["opt"] = opt
+    return cfg_out
+
 def build_train_config(cfg_dict: dict) -> TrainConfig:
     cfg_dict = apply_train_debug_overrides(cfg_dict)
+    cfg_dict = apply_model_specific_opt_defaults(cfg_dict)
     cfg = TrainConfig(**cfg_dict)
     cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
     cfg.loss["cfg"] = get_config_loss(cfg)

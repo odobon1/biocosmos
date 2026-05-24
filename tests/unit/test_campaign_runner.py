@@ -1,6 +1,6 @@
 from pathlib import Path
 import json
-import pytest
+import pytest  # type: ignore[import]
 import subprocess
 
 import campaign_runner as cr
@@ -126,6 +126,54 @@ def test_expand_settings_raises_on_duplicate_names() -> None:
                 {"loss": {"targ": "phylo"}, "name": "dup"},
             ]
         )
+
+
+def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_opt")
+    monkeypatch.setattr(cr, "SEED0", 9)
+    monkeypatch.setattr(cr, "NUM_SEEDS", 1)
+    monkeypatch.setattr(cr, "DATASETS", ("cub",))
+    monkeypatch.setattr(
+        cr,
+        "BASELINE_OVERRIDES",
+        [
+            {"opt": {"l2reg": 0.33}, "opt/beta2": 0.88, "name": "opt_tune"},
+        ],
+    )
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    baseline = {
+        "campaign_name": "base_campaign",
+        "setting_name": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split_name": "D10",
+        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "arch": {"model_type": "clip_vitb16", "non_causal": False},
+        "opt": {
+            "lr": {"sched": "cos"},
+            "l2reg": None,
+            "beta1": 0.9,
+            "beta2": None,
+            "eps": 1.0e-6,
+        },
+    }
+    monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
+
+    scheduled = []
+
+    def _fake_run_trial_subprocess(cfg_fpath: Path):
+        with open(cfg_fpath) as f:
+            cfg = json.load(f)
+        scheduled.append(cfg)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign()
+
+    assert len(scheduled) == 1
+    assert scheduled[0]["opt"]["l2reg"] == 0.33
+    assert scheduled[0]["opt"]["beta2"] == 0.88
 
 
 def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) -> None:

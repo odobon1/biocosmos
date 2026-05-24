@@ -44,10 +44,9 @@ opt:  # optimization
     init: 1.0e-5
     sched: cos
     warmup: 100_000  # sample volume for linear LR warmup
-    # warmup: 0
-  l2reg: 0.0  # CLIP paper recommends weight_decay = 0.2 <-- this may be just for pretrain, look into it; SigLIP paper recommends 0.0 for finetuning
+  l2reg: null  # if `null`, resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
-  beta2: 0.95  # seminal papers recommend Beta2 = 0.98 (CLIP ViT) / 0.95 (SigLIP) ~ careful, may be for pretraining not fine-tuning
+  beta2: null  # if `null`, resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
 freeze:

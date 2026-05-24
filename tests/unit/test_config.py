@@ -2,6 +2,7 @@ import pytest  # type: ignore[import]
 
 from utils.config import GenSplitConfig, TrainConfig
 from utils.config import apply_overrides
+from utils.config import apply_model_specific_opt_defaults
 
 
 def make_train_config(**overrides):
@@ -20,7 +21,13 @@ def make_train_config(**overrides):
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "loss": {"type": "bce", "sim": "cos", "targ": "aligned"},
         "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0},
-        "opt": {"lr": {"sched": "cos"}},
+        "opt": {
+            "lr": {"sched": "cos"},
+            "l2reg": 0.0,
+            "beta1": 0.9,
+            "beta2": 0.95,
+            "eps": 1.0e-6,
+        },
         "freeze": {"text": False, "image": True},
         "text_template": {"train": "train", "valid": "bioclip_sci"},
         "logging": False,
@@ -187,3 +194,81 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
     assert out["opt"]["lr"]["init"] == 1.0e-5
     assert out["opt"]["lr"]["warmup"] == 100
     assert out["opt"]["lr"]["sched"] == "cos"
+
+
+def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "utils.config.load_model_specific_config_dict",
+        lambda: {
+            "siglip": {"l2reg": 0.0, "beta2": 0.95},
+            "clip": {"l2reg": 0.2, "beta2": 0.98},
+        },
+    )
+
+    cfg_in = make_train_config(
+        arch={"model_type": "siglip_vitb16", "non_causal": False},
+        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+    )
+
+    out = apply_model_specific_opt_defaults(cfg_in)
+
+    assert out["opt"]["l2reg"] == 0.0
+    assert out["opt"]["beta2"] == 0.95
+
+
+def test_model_specific_opt_defaults_preserve_explicit_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "utils.config.load_model_specific_config_dict",
+        lambda: {
+            "siglip": {"l2reg": 0.0, "beta2": 0.95},
+            "clip": {"l2reg": 0.2, "beta2": 0.98},
+        },
+    )
+
+    cfg_in = make_train_config(
+        arch={"model_type": "clip_vitb16", "non_causal": False},
+        opt={"lr": {"sched": "cos"}, "l2reg": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
+    )
+
+    out = apply_model_specific_opt_defaults(cfg_in)
+
+    assert out["opt"]["l2reg"] == 0.11
+    assert out["opt"]["beta2"] == 0.77
+
+
+def test_model_specific_opt_defaults_resolve_partial_null(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "utils.config.load_model_specific_config_dict",
+        lambda: {
+            "siglip": {"l2reg": 0.0, "beta2": 0.95},
+            "clip": {"l2reg": 0.2, "beta2": 0.98},
+        },
+    )
+
+    cfg_in = make_train_config(
+        arch={"model_type": "clip_vitb16", "non_causal": False},
+        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
+    )
+
+    out = apply_model_specific_opt_defaults(cfg_in)
+
+    assert out["opt"]["l2reg"] == 0.2
+    assert out["opt"]["beta2"] == 0.7
+
+
+def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "utils.config.load_model_specific_config_dict",
+        lambda: {
+            "siglip": {"l2reg": 0.0, "beta2": 0.95},
+            "clip": {"l2reg": 0.2, "beta2": 0.98},
+        },
+    )
+
+    cfg_in = make_train_config(
+        arch={"model_type": "mystery_model", "non_causal": False},
+        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+    )
+
+    with pytest.raises(ValueError, match="Could not resolve model family"):
+        apply_model_specific_opt_defaults(cfg_in)

@@ -9,7 +9,7 @@ from torch import amp  # type: ignore[import]
 import gc
 from typing import List
 
-from models import VLMWrapper, CLIP_MODELS, SIGLIP_MODELS, VITAMIN_MODELS
+from models import VLMWrapper, CLIP_MODELS, SIGLIP_MODELS
 from utils.config import get_config_train
 
 import pdb
@@ -91,7 +91,7 @@ def main():
     print(f"Probing batch sizes: {sizes}")
 
     models_bce     = list(SIGLIP_MODELS.keys())
-    models_infonce = list(CLIP_MODELS.keys()) + list(VITAMIN_MODELS.keys())
+    models_infonce = list(CLIP_MODELS.keys())
 
     for model_id in models_bce:
         probe_model(model_id, device, sizes, "bce")

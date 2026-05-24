@@ -296,7 +296,7 @@ def get_config_eval(verbose=True):
     with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = EvalConfig(**cfg_dict)
-    cfg.loss["cfg"]  = get_config_loss(cfg)
+    cfg.loss["cfg"] = get_config_loss(cfg)
     if cfg.loss2["mix"] != 0.0:
         cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
     cfg.hw = get_config_hardware()

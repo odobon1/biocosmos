@@ -28,11 +28,6 @@ CLIP_MODELS = {
     "clip_vitb32":           ("ViT-B-32",                    "openai",     True),
     "clip_vitl14":           ("ViT-L-14",                    "openai",     True),
     "clip_vitl14_336":       ("ViT-L-14-336",                "openai",     True),
-    "clip_rn50":             ("RN50",                        "openai",     True),
-    "clip_rn101":            ("RN101",                       "openai",     True),
-    "clip_rn50x4":           ("RN50x4",                      "openai",     True),
-    "clip_rn50x16":          ("RN50x16",                     "openai",     True),
-    "clip_rn50x64":          ("RN50x64",                     "openai",     True),
 }
 SIGLIP_MODELS = {
     "siglip_vitb16":         ("ViT-B-16-SigLIP",             "webli",      False),
@@ -46,19 +41,6 @@ SIGLIP_MODELS = {
     "siglip2_vitl16_384":    ("ViT-L-16-SigLIP2-384",        "webli",      False),
     "siglip2_vitso400m14":   ("ViT-SO400M-14-SigLIP2",       "webli",      False),
     "siglip2_vitgopt16_384": ("ViT-gopt-16-SigLIP2-384",     "webli",      False),
-}
-VITAMIN_MODELS = {
-    "vitamin_s":             ("ViTamin-S",                   "datacomp1b", False),
-    "vitamin_s_ltt":         ("ViTamin-S-LTT",               "datacomp1b", False),
-    "vitamin_b":             ("ViTamin-B",                   "datacomp1b", False),
-    "vitamin_b_ltt":         ("ViTamin-B-LTT",               "datacomp1b", False),
-    "vitamin_l":             ("ViTamin-L",                   "datacomp1b", False),
-    "vitamin_l_256":         ("ViTamin-L-256",               "datacomp1b", False),
-    "vitamin_l_336":         ("ViTamin-L-336",               "datacomp1b", False),
-    "vitamin_l_384":         ("ViTamin-L-384",               "datacomp1b", False),
-    "vitamin_l2":            ("ViTamin-L2",                  "datacomp1b", False),
-    "vitamin_l2_384":        ("ViTamin-L2-384",              "datacomp1b", False),
-    "vitamin_xl_384":        ("ViTamin-XL-384",              "datacomp1b", False),
 }
 
 class _AllGather(torch.autograd.Function):
@@ -198,8 +180,6 @@ class VLMWrapper(abc.ABC):
             modelw = CLIPWrapper(config)
         elif config.arch['model_type'] in SIGLIP_MODELS:
             modelw = SigLIPWrapper(config)
-        elif config.arch['model_type'] in VITAMIN_MODELS:
-            modelw = ViTaminWrapper(config)
         else:
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
@@ -228,8 +208,7 @@ class VLMWrapper(abc.ABC):
             return model.text_projection.weight.shape[0]
         if isinstance(self, SigLIPWrapper):
             return model.text.text_projection.weight.shape[0]
-        if isinstance(self, ViTaminWrapper):
-            return model.text.text_projection.shape[0]
+        raise TypeError(f"Unsupported wrapper type: {type(self).__name__}")
 
     def save(self, dpath: Path) -> None:
         fpath            = dpath / "state_dict_model.pt"
@@ -611,24 +590,3 @@ class SigLIPWrapper(VLMWrapper):
         for name, param in self.model.named_parameters():
             if name.startswith("text."):
                 param.requires_grad = False
-
-class ViTaminWrapper(VLMWrapper):
-    def __init__(self, config: Any) -> None:
-        model_name, pretrained, quick_gelu = VITAMIN_MODELS[config.arch['model_type']]
-        super().__init__(config, model_name, pretrained, quick_gelu)
-
-        self.img_res = self.img_pp_val.transforms[1].size[0]
-
-    def freeze_text_encoder(self) -> None:
-        """
-        Freezes ViTamin text encoder parameters.
-        """
-        for name, param in self.model.named_parameters():
-            if name.startswith("text."):
-                param.requires_grad = False
-
-    def disable_causal_mask_text(self) -> None:
-        """
-        Converts ViTamin text encoder's causal attention mask to non-causal.
-        """
-        self._unwrapped_model.text.attn_mask.zero_()

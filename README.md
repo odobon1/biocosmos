@@ -126,16 +126,6 @@ As we can see the CLIP ViT-series have received quite a lot of attention (no pun
 
 Note: despite the name, both the open-source OpenCLIP and the OpenAI CLIP model weights are available through `open_clip`. Pretrain dataset = "openai" --> **OpenAI CLIP** (a.k.a. "original CLIP"), trained using a private recipe on a private pretraining dataset. Pretrain dataset = <anything other than "openai"> --> **OpenCLIP** ~ community replications of CLIP trained on open sourced datasets as specified in the Pretrain column.
 
-## CLIP - ResNet Variants
-
-| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain                     | Num Params | Embedding <br> Dimension | Resolution (px) |
-|--------------------------|---------------------------|----------------|------------------------------|------------|--------------------------|-----------------|
-| `clip_rn50`              | `RN50`                    | 2,048          | `openai`, `yfcc15m`, `cc12m` | 102M       | 1,024                    | 224             |
-| `clip_rn101`             | `RN101`                   | 2,048          | `openai`, `yfcc15m`          | 120M       | 1,024                    | 224             |
-| `clip_rn50x4`            | `RN50x4`                  | 1,024          | `openai`                     | 178M       | 1,024                    | 288             |
-| `clip_rn50x16`           | `RN50x16`                 | 256            | `openai`                     | 291M       | 1,024                    | 384             |
-| `clip_rn50x64`           | `RN50x64`                 | 128            | `openai`                     | 623M       | 1,024                    | 448             |
-
 ## SigLIP Variants
 
 | Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain | Num Params | Embedding <br> Dimension | Resolution (px) |
@@ -151,22 +141,6 @@ Note: despite the name, both the open-source OpenCLIP and the OpenAI CLIP model 
 | `siglip2_vitl16_384`     | `ViT-L-16-SigLIP2-384`    | 2,048          | `webli`  | 822M       | 1,024                    | 384             |
 | `siglip2_vitso400m14`    | `ViT-SO400M-14-SigLIP2`   | 2,048          | `webli`  | 1,136M     | 1,152                    | 224             |
 | `siglip2_vitgopt16_384`  | `ViT-gopt-16-SigLIP2-384` | 512            | `webli`  | 1,870M     | 1,536                    | 384             |
-
-## ViTamin Variants
-
-| Model ID <br> (Internal) | Model ID <br> (open_clip) | Max Batch Size | Pretrain     | Num Params | Embedding <br> Dimension | Resolution (px) |
-|--------------------------|---------------------------|----------------|--------------|------------|--------------------------|-----------------|
-| `vitamin_s`              | `ViTamin-S`               | 4,096          | `datacomp1b` | 62M        | 512                      | 224             |
-| `vitamin_s_ltt`          | `ViTamin-S-LTT`           | 4,096          | `datacomp1b` | 62M        | 512                      | 224             |
-| `vitamin_b`              | `ViTamin-B`               | 2,048          | `datacomp1b` | 128M       | 768                      | 224             |
-| `vitamin_b_ltt`          | `ViTamin-B-LTT`           | 2,048          | `datacomp1b` | 128M       | 768                      | 224             |
-| `vitamin_l`              | `ViTamin-L`               | 1,024          | `datacomp1b` | 457M       | 768                      | 224             |
-| `vitamin_l_256`          | `ViTamin-L-256`           | 1,024          | `datacomp1b` | 457M       | 768                      | 256             |
-| `vitamin_l_336`          | `ViTamin-L-336`           | 512            | `datacomp1b` | 457M       | 768                      | 336             |
-| `vitamin_l_384`          | `ViTamin-L-384`           | 512            | `datacomp1b` | 457M       | 768                      | 384             |
-| `vitamin_l2`             | `ViTamin-L2`              | 1,024          | `datacomp1b` | 688M       | 1,024                    | 224             |
-| `vitamin_l2_384`         | `ViTamin-L2-384`          | 512            | `datacomp1b` | 688M       | 1,024                    | 384             |
-| `vitamin_xl_384`         | `ViTamin-XL-384`          | 512            | `datacomp1b` | 925M       | 1,152                    | 256             |
 
 # Notes
 

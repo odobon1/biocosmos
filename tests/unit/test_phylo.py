@@ -27,6 +27,9 @@ from preprocessing.common.phylo import (
 
 SAMPLE_SIZE = 50
 
+# Treat this entire module as slow so it can be excluded with: -m "not slow".
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # Helpers

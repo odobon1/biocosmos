@@ -7,6 +7,11 @@ Run all tests:
 python -m pytest
 ```
 
+Run all tests except slow tests (excludes phylo tests):
+```
+python -m pytest -m "not slow"
+```
+
 Run only unit tests:
 ```
 python -m pytest tests/unit
@@ -19,7 +24,7 @@ python -m pytest -m integration
 
 Run all tests in one file:
 ```
-python -m pytest tests/unit/test_phylo_merge.py
+python -m pytest tests/unit/test_phylo.py
 ```
 
 Run one specific test:

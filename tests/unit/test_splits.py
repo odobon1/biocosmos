@@ -3,8 +3,8 @@ python -m pytest tests/unit/test_splits.py
 """
 
 from types import SimpleNamespace
-import pandas as pd  # type: ignore[import]
-import pytest  # type: ignore[import]
+import pandas as pd
+import pytest
 
 from preprocessing.common.splits import (
     build_dev_skeys_partitions,

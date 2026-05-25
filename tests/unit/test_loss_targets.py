@@ -2,7 +2,7 @@ import importlib
 import sys
 import types
 
-import torch  # type: ignore[import]
+import torch
 
 
 def import_loss_module():

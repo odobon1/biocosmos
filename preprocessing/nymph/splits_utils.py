@@ -1,7 +1,7 @@
 import glob
-import matplotlib.pyplot as plt  # type: ignore[import]
-import pandas as pd  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import matplotlib.pyplot as plt
+import pandas as pd
+from tqdm import tqdm
 
 
 def build_img_ptrs(cids):

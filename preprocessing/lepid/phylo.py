@@ -2,8 +2,8 @@
 python -m preprocessing.lepid.phylo
 """
 
-from Bio import Phylo  # type: ignore[import]
-from Bio.Phylo.BaseTree import Clade, Tree  # type: ignore[import]
+from Bio import Phylo
+from Bio.Phylo.BaseTree import Clade, Tree
 from copy import deepcopy
 from typing import Dict, List, Optional, Set, Tuple
 

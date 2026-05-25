@@ -3,9 +3,9 @@ import copy
 import os
 import random
 from collections import Counter, defaultdict
-import matplotlib.pyplot as plt  # type: ignore[import]
-import numpy as np  # type: ignore[import]
-from sklearn.model_selection import train_test_split  # type: ignore[import]
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.model_selection import train_test_split
 
 from utils.data import species_to_genus
 

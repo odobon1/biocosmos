@@ -1,4 +1,4 @@
-import torch  # type: ignore[import]
+import torch
 from typing import List
 
 

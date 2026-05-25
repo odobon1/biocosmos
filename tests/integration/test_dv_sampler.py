@@ -1,4 +1,4 @@
-import pytest  # type: ignore[import]
+import pytest
 
 from utils.data import DorsalVentralBatchSampler, ExactDistributedSampler
 

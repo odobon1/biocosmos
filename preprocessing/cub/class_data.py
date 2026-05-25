@@ -16,10 +16,10 @@ class_data = {
     ...
 }
 """
-import pandas as pd  # type: ignore[import]
+import pandas as pd
 from scipy.io import loadmat
-from tqdm import tqdm  # type: ignore[import]
-import requests  # type: ignore[import]
+from tqdm import tqdm
+import requests
 
 from utils.utils import paths, save_pickle
 

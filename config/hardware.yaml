@@ -1,5 +1,5 @@
 mixed_prec:  true  # mixed precision for training and validation
-act_chkpt:   false  # activation checkpointing
+act_chkpt:   true  # activation checkpointing
 
 prefetch_factor: 2  # dataloader prefetch factor
 max_n_workers_gpu: 8  # max dataloader workers per GPU (null for no cap)

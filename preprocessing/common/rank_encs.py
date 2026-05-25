@@ -1,5 +1,5 @@
 from typing import Sequence
-from bidict import bidict  # type: ignore[import]
+from bidict import bidict
 
 from utils.utils import paths, load_pickle, save_pickle
 

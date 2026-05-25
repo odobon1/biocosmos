@@ -1,5 +1,5 @@
-import torch  # type: ignore[import]
-import numpy as np  # type: ignore[import]
+import torch
+import numpy as np
 
 from utils.utils import load_split
 

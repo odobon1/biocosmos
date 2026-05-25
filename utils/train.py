@@ -1,12 +1,12 @@
-import matplotlib  # type: ignore[import]
+import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # type: ignore[import]
-import matplotlib.gridspec as gridspec  # type: ignore[import]
-from matplotlib.ticker import FuncFormatter, FormatStrFormatter  # type: ignore[import]
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.ticker import FuncFormatter, FormatStrFormatter
 import shutil
 from dataclasses import asdict
-import torch  # type: ignore[import]
-from PIL import Image  # type: ignore[import]
+import torch
+from PIL import Image
 
 from utils.utils import (
     paths, 

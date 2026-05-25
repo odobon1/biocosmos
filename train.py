@@ -1,14 +1,13 @@
-import torch  # type: ignore[import]
-from torch.amp import autocast, GradScaler  # type: ignore[import]
-from torch.optim.lr_scheduler import (  # type: ignore[import]
+import torch
+from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import (
     CosineAnnealingLR, 
 )
-import torch.distributed as dist  # type: ignore[import]
-from torch.nn.parallel import DistributedDataParallel as DDP  # type: ignore[import]
-from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
 import time
-import sys
 import math
 
 from utils.utils import (
@@ -148,7 +147,7 @@ class TrainPipeline:
 
         index_data, _ = spawn_partition_data(config=self.cfg, partition_name="train")
         text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
-        self.dataloader, _ = spawn_dataloader(
+        self.dataloader = spawn_dataloader(
             index_data=index_data,
             text_template=text_template_train,
             config=self.cfg,

@@ -1,5 +1,5 @@
-import torch  # type: ignore[import]
-import torch.nn.functional as F  # type: ignore[import]
+import torch
+import torch.nn.functional as F
 
 from utils.rank_encs import compute_rank_dists
 from utils.phylo import PhyloVCV

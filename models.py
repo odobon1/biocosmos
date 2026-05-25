@@ -1,12 +1,12 @@
-import torch  # type: ignore[import]
+import torch
 # monkey-patch modeling_utils safety check
-import transformers.modeling_utils as _mu  # type: ignore[import]
+import transformers.modeling_utils as _mu
 _mu.check_torch_load_is_safe = lambda *args, **kwargs: None
 
-import torch.nn as nn  # type: ignore[import]
-import torch.nn.functional as F  # type: ignore[import]
-import torch.distributed as dist  # type: ignore[import]
-import open_clip  # type: ignore[import]
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributed as dist
+import open_clip
 import abc
 from types import SimpleNamespace
 from typing import List, Tuple, Any, Dict

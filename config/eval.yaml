@@ -6,7 +6,7 @@ dataset: lepid  # {nymph, lepid}
 split_name: D10  # {D10, dev}
 eval_type: validation  # {validation, test}
 
-batch_size: 4096  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size: 1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 
 arch:
   model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}

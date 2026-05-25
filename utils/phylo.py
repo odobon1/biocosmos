@@ -1,7 +1,7 @@
-import numpy as np  # type: ignore[import]
-import torch  # type: ignore[import]
-from Bio import Phylo  # type: ignore[import]
-from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
+import numpy as np
+import torch
+from Bio import Phylo
+from Bio.Phylo.BaseTree import Tree, Clade
 from itertools import combinations
 from typing import Dict, List
 

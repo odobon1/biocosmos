@@ -18,8 +18,8 @@ class_data = {
 }
 """
 
-from tqdm import tqdm  # type: ignore[import]
-import pandas as pd  # type: ignore[import]
+from tqdm import tqdm
+import pandas as pd
 
 from utils.utils import paths, load_pickle, save_pickle
 from preprocessing.lepid.species_ids import get_cids_lepid

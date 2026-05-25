@@ -1,8 +1,8 @@
-import torch  # type: ignore[import]
-from torch.amp import autocast  # type: ignore[import]
-import torch.distributed as dist  # type: ignore[import]
+import torch
+from torch.amp import autocast
+import torch.distributed as dist
 import time
-from tqdm import tqdm  # type: ignore[import]
+from tqdm import tqdm
 from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 from collections import defaultdict
 import math
@@ -124,7 +124,7 @@ class SplitPartitionEvalPipeline:
             dataset=config.dataset,
         )
 
-        self.dataloader, self.time_cache = spawn_dataloader(
+        self.dataloader = spawn_dataloader(
             index_data=index_data,
             text_template=text_template,
             config=config,
@@ -668,12 +668,6 @@ class ValidationPipeline:
         self.nshot_bucket_names = [] if self.bucket_partition_name is None else list(
             self.partition_pipes[self.bucket_partition_name].nshot_bucket_names
         )
-
-        self.set_time_cache()
-
-    def set_time_cache(self) -> None:
-        time_caches = [pipe.time_cache for pipe in self.partition_pipes.values() if pipe.time_cache is not None]
-        self.time_cache = None if not time_caches else sum(time_caches)
 
     def get_eval_texts(self) -> Dict[str, List[str]]:
         return {

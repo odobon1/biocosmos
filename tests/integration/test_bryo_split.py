@@ -5,7 +5,7 @@ python -m pytest tests/integration/test_bryo_split.py
 from itertools import combinations
 from types import SimpleNamespace
 
-import pytest  # type: ignore[import]
+import pytest
 
 from preprocessing.bryo.splits_utils import build_data_indexes_bryo
 from preprocessing.common.splits import (

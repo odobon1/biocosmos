@@ -1,4 +1,4 @@
-import pytest  # type: ignore[import]
+import pytest
 
 from utils.config import get_config_eval, get_config_hardware, get_config_train, load_train_config_dict
 

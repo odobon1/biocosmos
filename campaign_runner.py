@@ -7,7 +7,7 @@ from copy import deepcopy
 import json
 import subprocess
 import sys
-import yaml  # type: ignore[import]
+import yaml
 import traceback
 
 from utils.config import apply_overrides, load_train_config_dict

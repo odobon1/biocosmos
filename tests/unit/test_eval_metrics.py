@@ -2,8 +2,8 @@
 python -m pytest tests/unit/test_eval_metrics.py
 """
 
-import pytest  # type: ignore[import]
-import torch  # type: ignore[import]
+import pytest
+import torch
 
 import utils.eval as eval_utils
 from utils.eval import (

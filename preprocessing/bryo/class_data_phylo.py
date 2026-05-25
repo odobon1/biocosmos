@@ -3,11 +3,11 @@ python -m preprocessing.bryo.class_data_phylo
 """
 
 import re
-from Bio import Phylo  # type: ignore[import]
-from Bio.Phylo.BaseTree import Tree  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+from Bio import Phylo
+from Bio.Phylo.BaseTree import Tree
+from tqdm import tqdm
 from pathlib import Path
-import requests  # type: ignore[import]
+import requests
 
 from utils.utils import paths, save_pickle, get_subdirectory_names
 from preprocessing.common.phylo import augment_class_data, prune_tree, augment_tree_with_polytomies

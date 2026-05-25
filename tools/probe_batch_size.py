@@ -4,8 +4,8 @@ python -m tools.probe_batch_size
 Intended to only be run on a single GPU
 """
 
-import torch  # type: ignore[import]
-from torch import amp  # type: ignore[import]
+import torch
+from torch import amp
 import gc
 from typing import List
 

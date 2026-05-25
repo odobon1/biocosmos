@@ -1,8 +1,8 @@
-import torch  # type: ignore[import]
+import torch
 from dataclasses import dataclass, field
 from copy import deepcopy
 import math
-import yaml  # type: ignore[import]
+import yaml
 
 from utils.utils import PrintLog, load_json, load_split, paths
 from utils.hardware import compute_dataloader_workers_prefetch

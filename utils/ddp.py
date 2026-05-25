@@ -1,5 +1,5 @@
-import torch  # type: ignore[import]
-import torch.distributed as dist  # type: ignore[import]
+import torch
+import torch.distributed as dist
 import os
 
 

@@ -1,5 +1,5 @@
-import pytest  # type: ignore[import]
-import torch  # type: ignore[import]
+import pytest
+import torch
 
 from utils.head import compute_sim
 

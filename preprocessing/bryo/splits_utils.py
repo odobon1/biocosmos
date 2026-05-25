@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt  # type: ignore[import]
+import matplotlib.pyplot as plt
 
 
 def build_img_ptrs_bryo(genera):

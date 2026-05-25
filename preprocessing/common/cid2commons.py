@@ -2,10 +2,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import Dict, Iterable
 
-import requests  # type: ignore[import]
-from requests.adapters import HTTPAdapter  # type: ignore[import]
-from urllib3.util.retry import Retry  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from tqdm import tqdm
 
 
 def _make_session(max_workers: int) -> requests.Session:

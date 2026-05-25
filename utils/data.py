@@ -1,9 +1,9 @@
-import torch  # type: ignore[import]
-from torch.utils.data import Dataset, DataLoader, Sampler  # type: ignore[import]
-from torch.utils.data.distributed import DistributedSampler  # type: ignore[import]
-import torch.distributed as dist  # type: ignore[import]
-from PIL import Image  # type: ignore[import]
-import numpy as np  # type: ignore[import]
+import torch
+from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+from PIL import Image
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Tuple, Union
 
@@ -143,7 +143,6 @@ class ImageTextDataset(Dataset):
         self.text_generator = get_text_generator(self.dataset)
 
         self.n_samples = len(self.index_data)
-        self.time_cache = None  # reserved for metadata compatibility
 
         self.class_data = load_pickle(paths["metadata"][self.dataset] / "class_data.pkl")
         self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
@@ -372,7 +371,7 @@ def spawn_dataloader(
             sampler           =sampler,
         )
 
-    return dataloader, dataset.time_cache
+    return dataloader
 
 def gen_text(
     class_data_cid: Mapping[str, Any],

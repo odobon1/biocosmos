@@ -2,8 +2,8 @@
 python -m pytest tests/integration/test_lepid_split_indexes.py
 """
 
-import pandas as pd  # type: ignore[import]
-import pytest  # type: ignore[import]
+import pandas as pd
+import pytest
 
 from preprocessing.lepid.splits_utils import build_data_indexes_lepid
 

@@ -1,4 +1,4 @@
-import pytest  # type: ignore[import]
+import pytest
 
 from utils.config import GenSplitConfig, TrainConfig
 from utils.config import apply_overrides

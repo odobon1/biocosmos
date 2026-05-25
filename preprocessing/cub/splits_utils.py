@@ -1,5 +1,5 @@
 from typing import Iterable
-import matplotlib.pyplot as plt  # type: ignore[import]
+import matplotlib.pyplot as plt
 
 
 def build_data_indexes_cub(

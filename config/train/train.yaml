@@ -1,11 +1,11 @@
 campaign_name: dev
 setting_name: dev
 seed: 42
-dataset: lepid  # {bryo, cub, lepid, nymph}
+dataset: nymph  # {bryo, cub, lepid, nymph}
 split_name: D10
 
 sample_volume: 1_000_000
-eval_every: 200_000
+eval_every: 50_000
 chkpt_every: 1
 batch_size: 1024  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching

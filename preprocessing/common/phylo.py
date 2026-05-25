@@ -3,8 +3,8 @@ from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
 import heapq
 from typing import Dict, List, Optional, Tuple, Set
-from Bio.Phylo.BaseTree import Tree, Clade  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+from Bio.Phylo.BaseTree import Tree, Clade
+from tqdm import tqdm
 
 from utils.data import species_to_genus
 
@@ -17,7 +17,6 @@ RANK_ORDER = ["order", "family", "subfamily", "tribe", "genus"]
 
 def get_leaf_names(tree: Tree) -> List[str]:
     return [leaf.name for leaf in tree.get_terminals() if leaf.name is not None]
-
 
 # augment_tree_with_polytomies() helper
 def get_available_ranks(

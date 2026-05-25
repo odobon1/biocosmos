@@ -11,8 +11,8 @@ from io import StringIO
 from itertools import combinations
 import random
 
-import pytest  # type: ignore[import]
-from Bio import Phylo  # type: ignore[import]
+import pytest
+from Bio import Phylo
 
 from preprocessing.lepid.phylo import build_tree_lepid, combine_trees_lepid_nymph
 from preprocessing.nymph.phylo import build_tree_nymph

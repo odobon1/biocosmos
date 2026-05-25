@@ -1,5 +1,5 @@
 import os
-from tqdm import tqdm  # type: ignore[import]
+from tqdm import tqdm
 
 from utils.utils import paths
 from utils.data import truncate_subspecies

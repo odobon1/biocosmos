@@ -1,6 +1,6 @@
-import matplotlib.pyplot as plt  # type: ignore[import]
-import pandas as pd  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import matplotlib.pyplot as plt
+import pandas as pd
+from tqdm import tqdm
 
 from preprocessing.common.splits import truncate_subspecies
 from utils.data import species_to_genus

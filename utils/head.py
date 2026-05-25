@@ -1,4 +1,4 @@
-import torch  # type: ignore[import]
+import torch
 
 
 def compute_sim(embs_img, embs_txt, sim_type):

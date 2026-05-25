@@ -1,6 +1,6 @@
 from pathlib import Path
 import json
-import pytest  # type: ignore[import]
+import pytest
 import subprocess
 
 import campaign_runner as cr

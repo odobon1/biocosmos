@@ -2,14 +2,14 @@
 python -m tools.vis_manifold
 """
 
-import torch  # type: ignore[import]
-from torch.amp import autocast  # type: ignore[import]
-import numpy as np  # type: ignore[import]
-import matplotlib.pyplot as plt  # type: ignore[import]
-import seaborn as sns  # type: ignore[import]
-from sklearn.manifold import TSNE  # type: ignore[import]
-from sklearn.decomposition import PCA  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import torch
+from torch.amp import autocast
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from tqdm import tqdm
 import random
 
 from models import VLMWrapper
@@ -112,7 +112,7 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
 def get_dataloader(cfg, partition_name, modelw):
     text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
     index_data, _ = spawn_partition_data(config=cfg, partition_name=partition_name)
-    dataloader, _ = spawn_dataloader(
+    dataloader = spawn_dataloader(
         index_data=index_data,
         text_template=text_template,
         config=cfg,

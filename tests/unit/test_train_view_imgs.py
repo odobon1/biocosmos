@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-import torch  # type: ignore[import]
+import torch
 import utils.train as train_utils
 
 from utils.train import ArtifactManager, TrainImageDumper

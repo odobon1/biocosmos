@@ -6,11 +6,11 @@ Note: only tested with 1 GPU
 
 print("Importing modules...")
 
-import torch  # type: ignore[import]
-import torch.nn.functional as F  # type: ignore[import]
-import torch.distributed as dist  # type: ignore[import]
-from PIL import Image  # type: ignore[import]
-from tqdm import tqdm  # type: ignore[import]
+import torch
+import torch.nn.functional as F
+import torch.distributed as dist
+from PIL import Image
+from tqdm import tqdm
 
 from models import VLMWrapper
 from utils.config import get_config_eval

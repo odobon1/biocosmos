@@ -76,9 +76,11 @@ def build_df_class_data(df_common_names: pd.DataFrame) -> tuple[pd.DataFrame, li
         cname, clname = common_names[i], class_names[i]
         queried_name = COMMON_NAME_CORRECTIONS.get(cname, cname)
         result = query_gbif(queried_name, INAT_GBIF_BACKBONE)
-        # if any of the results are None, query general GBIF API
-        if any(v is None for v in result.values()):
-            result = query_gbif(queried_name)
+        result2 = query_gbif(queried_name)
+        result = {
+            k: result[k] if result[k] is not None else result2[k]
+            for k in result.keys()
+        }
         rows.append({"common_name": cname, "class_name": clname, **result})
 
         if result["species"] is None:

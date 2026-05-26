@@ -18,6 +18,7 @@ from preprocessing.common.splits import (
     generate_id_distribution_plots,
     generate_n_shot_table,
     generate_basic_split_stats_table,
+    compute_train_rgb_norm_stats,
 )
 from preprocessing.nymph.splits_utils import (
     build_data_indexes,
@@ -136,6 +137,8 @@ def build_splits():
     class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
+    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET)
+
     # SAVE SPLIT
 
     print("Saving Split...")
@@ -143,6 +146,8 @@ def build_splits():
         data_indexes,
         id_eval_nshot,
         class_counts_train,
+        norm_mean,
+        norm_std,
         dpath_split,
         dpath_figs,
     )
@@ -150,6 +155,8 @@ def build_splits():
         data_indexes_dev,
         id_eval_nshot,
         class_counts_train_dev,
+        norm_mean,
+        norm_std,
         dpath_split_dev,
         dpath_figs_dev,
     )

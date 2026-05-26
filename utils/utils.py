@@ -127,8 +127,8 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
-def load_split(split_name, dataset="nymph"):
-    split = load_pickle(paths["metadata"][dataset] / f"splits/{split_name}/split.pkl")
+def load_split(split_name, dataset_name):
+    split = load_pickle(paths["metadata"][dataset_name] / f"splits/{split_name}/split.pkl")
     return split
 
 def get_text_template(text_template_type, dataset=None):

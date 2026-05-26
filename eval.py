@@ -1,5 +1,3 @@
-import torch.distributed as dist  # type: ignore[import]
-
 from models import VLMWrapper
 from utils.eval import ValidationPipeline
 from utils.utils import get_text_template, PrintLog
@@ -24,7 +22,7 @@ def main():
     val_pipe = ValidationPipeline(
         config_eval,
         text_template,
-        modelw.img_pp_val,
+        modelw.img_pp_inf,
         compute_loss=False,
     )
 
@@ -34,6 +32,7 @@ def main():
         PrintLog.eval(scores_val, val_pipe)
 
     cleanup_ddp()
+
 
 if __name__ == "__main__":
     main()

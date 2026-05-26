@@ -50,7 +50,7 @@ for i in tqdm(range(len(sids) // config_eval.batch_size + 1)):
     sids_b = sids[start:end]
     rfpaths_b = rfpaths[start:end]
 
-    imgs = [modelw.img_pp_val(Image.open(fpath_imgs / rfpath).convert("RGB")) for rfpath in rfpaths_b]
+    imgs = [modelw.img_pp_inf(Image.open(fpath_imgs / rfpath).convert("RGB")) for rfpath in rfpaths_b]
     n_imgs = len(imgs)
     imgs = torch.stack(imgs).to(device)
 

@@ -8,14 +8,14 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import open_clip
 import abc
-from types import SimpleNamespace
 from typing import List, Tuple, Any, Dict
 from pathlib import Path
 
-from utils.utils import paths
+from utils.utils import paths, load_split
 from utils.loss import compute_loss
 from utils.head import compute_sim
 from utils.imb import compute_class_wts
+from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
 
 import pdb
 
@@ -74,7 +74,7 @@ class VLMWrapper(abc.ABC):
     """
     def __init__(
         self, 
-        config:     Any, 
+        config: Any, 
         model_name: str, 
         pretrained: str, 
         quick_gelu: bool
@@ -88,23 +88,23 @@ class VLMWrapper(abc.ABC):
         """
         self.cfg = config
 
-        model, img_pp_train, img_pp_val = open_clip.create_model_and_transforms(
+        model, img_pp_train, img_pp_inf = open_clip.create_model_and_transforms(
             model_name, 
-            pretrained      =pretrained, 
+            pretrained=pretrained, 
             force_quick_gelu=quick_gelu,
-            cache_dir       =paths["hf_cache"],
+            cache_dir=paths["hf_cache"],
         )
 
-        self.rank       = dist.get_rank()
+        self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
 
-        self.device       = config.device
-        self.type         = config.arch['model_type']
-        self.model        = model.to(self.device).eval()
+        self.device = config.device
+        self.type = config.arch['model_type']
+        self.model = model.to(self.device).eval()
         self.img_pp_train = img_pp_train
-        self.img_pp_val   = img_pp_val
+        self.img_pp_inf = img_pp_inf
 
-        tokenizer   = open_clip.get_tokenizer(model_name)
+        tokenizer = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
 
         if config.hw.act_chkpt:
@@ -146,10 +146,6 @@ class VLMWrapper(abc.ABC):
             if cfg_logits2["freeze_bias"]:
                 self.model.logit_bias2.requires_grad_(False)
 
-        if config.loss['type'] == "huber":
-            cfg_regr        = getattr(config, "regression", SimpleNamespace())
-            self.huber_beta = getattr(cfg_regr, "huber_beta", 0.1)
-
         self.sim_type = config.loss["sim"]
 
     @classmethod
@@ -165,16 +161,18 @@ class VLMWrapper(abc.ABC):
         Returns:
         - Initialized VLMWrapper subclass instance
         """
-        model_state_dict = None
+        checkpoint = None
         if config.has_field("rdpath_trial") and config.rdpath_trial is not None:
-            if verbose: print(f"Loading '{config.rdpath_trial}' ({config.save_crit})...")
-            fpath_state_dict_model = paths["root"] / config.rdpath_trial / f"models/best_{config.save_crit}/state_dict_model.pt"
-            model_state_dict       = torch.load(
+            if verbose:
+                print(f"Loading '{config.rdpath_trial}' ({config.save_crit})...")
+            fpath_state_dict_model = paths["root"] / config.rdpath_trial / f"models/best_{config.save_crit}/model.pt"
+            checkpoint = torch.load(
                 fpath_state_dict_model, 
                 map_location="cpu",  # map_location="cpu" avoids loading two copies of the entire state dict into VRAM at once
             )
         else:
-            if verbose: print("Loading base model...")
+            if verbose:
+                print("Loading base model...")
 
         if config.arch['model_type'] in CLIP_MODELS:
             modelw = CLIPWrapper(config)
@@ -184,13 +182,20 @@ class VLMWrapper(abc.ABC):
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
         modelw.loss_type = config.loss['type']
-        if model_state_dict is not None:
-            modelw._unwrapped_model.load_state_dict(model_state_dict)
+        if checkpoint is not None:
+            modelw._unwrapped_model.load_state_dict(checkpoint["model"])
+            modelw.norm_mean = checkpoint["norm_mean"]
+            modelw.norm_std = checkpoint["norm_std"]
+        else:
+            modelw.set_image_norms(config)
+
+        modelw.set_image_preprocessors()
 
         if config.arch['non_causal']:
             modelw.disable_causal_mask_text()
 
-        if verbose: print("Model loaded!\n")
+        if verbose:
+            print("Model loaded!\n")
 
         return modelw
 
@@ -210,10 +215,33 @@ class VLMWrapper(abc.ABC):
             return model.text.text_projection.weight.shape[0]
         raise TypeError(f"Unsupported wrapper type: {type(self).__name__}")
 
+    def set_image_norms(self, config: Any) -> None:
+        """
+        Sets normalization mean and std for image preprocessors based on config (dataset-specific or default).
+        """
+        if config.img_norm == "default":
+            self.norm_mean = self.img_pp_inf.transforms[-1].mean
+            self.norm_std = self.img_pp_inf.transforms[-1].std
+        elif config.img_norm == "dataset":
+            split = load_split(config.split_name, config.dataset)
+            self.norm_mean = split.norm_mean
+            self.norm_std = split.norm_std
+
+    def set_image_preprocessors(self) -> None:
+        self.img_pp_inf = make_image_preprocessor_inference(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
+        self.img_pp_train = make_image_preprocessor_train(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
+
     def save(self, dpath: Path) -> None:
-        fpath            = dpath / "state_dict_model.pt"
+        fpath = dpath / "model.pt"
         state_dict_model = self._unwrapped_model.state_dict()
-        torch.save(state_dict_model, fpath)
+        torch.save(
+            {
+                "model": state_dict_model,
+                "norm_mean": self.norm_mean,
+                "norm_std": self.norm_std,
+            }, 
+            fpath
+        )
 
     def set_class_wts(self, config: Any, secondary: bool = False) -> None:
         cfg_loss = config.loss if not secondary else config.loss2
@@ -554,7 +582,7 @@ class CLIPWrapper(VLMWrapper):
         model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
-        self.img_res = self.img_pp_val.transforms[1].size[0]
+        self.img_res = self.img_pp_inf.transforms[1].size[0]
 
     def freeze_text_encoder(self) -> None:
         """
@@ -581,7 +609,7 @@ class SigLIPWrapper(VLMWrapper):
         model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
-        self.img_res = self.img_pp_val.transforms[0].size[0]
+        self.img_res = self.img_pp_inf.transforms[0].size[0]
 
     def freeze_text_encoder(self) -> None:
         """

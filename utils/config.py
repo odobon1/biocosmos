@@ -27,6 +27,7 @@ class TrainConfig:
 
     dev: dict
     arch: dict
+    img_norm: str
     loss: dict
     loss2: dict
     opt: dict
@@ -42,47 +43,49 @@ class TrainConfig:
 
     def __post_init__(self):
 
-        split = load_split(self.split_name, dataset=self.dataset)
+        split = load_split(self.split_name, dataset_name=self.dataset)
         size_train = len(split.data_indexes["train"])
         samps_per_epoch = size_train - size_train % self.batch_size
         self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
 
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
-
-        if self.freeze["image"] and self.freeze["text"]:
-            raise ValueError("Image and text encoders are both set to frozen!")
         
-        if self.loss['type'] not in ("infonce1", "infonce2", "bce", "mse", "huber"):
-            raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce, mse, huber}}")
-        if self.loss2['type'] not in ("infonce1", "infonce2", "bce", "mse", "huber"):
-            raise ValueError(f"Unknown Loss 2 Type: '{self.loss2['type']}', must be one of {{infonce1, infonce2, bce, mse, huber}}")
+        if self.eval_every <= 0:
+            raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
+
+        if self.img_norm not in ("default", "dataset"):
+            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
+
+        if self.loss["type"] not in ("infonce1", "infonce2", "bce"):
+            raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce}}")
+        if self.loss2["type"] not in ("infonce1", "infonce2", "bce"):
+            raise ValueError(f"Unknown Loss 2 Type: '{self.loss2['type']}', must be one of {{infonce1, infonce2, bce}}")
         
         if self.loss["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
         if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
         
-        if self.loss['targ'] not in ("aligned", "multipos", "tax", "phylo"):
+        if self.loss["targ"] not in ("aligned", "multipos", "tax", "phylo"):
             raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
-        if self.loss2['targ'] not in ("aligned", "multipos", "tax", "phylo"):
+        if self.loss2["targ"] not in ("aligned", "multipos", "tax", "phylo"):
             raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
         
-        if self.opt['lr']['sched'] not in ("cos",):
-            raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{cos}}")
-
-        if self.eval_type not in ("validation", "test"):
-            raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")
-
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
 
-        if self.eval_every <= 0:
-            raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
+        if self.opt["lr"]["sched"] not in ("cos",):
+            raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{cos}}")
+
+        if self.freeze["image"] and self.freeze["text"]:
+            raise ValueError("Image and text encoders are both set to frozen!")
+
         if self.metrics_plot_every_batches <= 0:
-            raise ValueError(
-                f"metrics_plot_every_batches must be greater than 0, got {self.metrics_plot_every_batches}"
-            )
+            raise ValueError(f"metrics_plot_every_batches must be greater than 0, got {self.metrics_plot_every_batches}")
+
+        if self.eval_type not in ("validation", "test"):
+            raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
@@ -91,7 +94,7 @@ class TrainConfig:
         )
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
-        self.ram    = slurm_alloc["ram"]
+        self.ram = slurm_alloc["ram"]
 
         self.rdpath_trial = f"artifacts/{self.campaign_name}/{self.setting_name}/{self.dataset}/{self.seed}"
 
@@ -305,6 +308,7 @@ class EvalConfig:
     batch_size: int
 
     arch: dict
+    img_norm: str
     loss: dict
     loss2: dict
 
@@ -313,8 +317,12 @@ class EvalConfig:
     hw: dict = field(init=False, default_factory=dict)
     
     def __post_init__(self):
+
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
+
+        if self.img_norm not in ("default", "dataset"):
+            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(

@@ -6,6 +6,14 @@ from PIL import Image
 import numpy as np
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Tuple, Union
+from torchvision.transforms import (
+    Compose,
+    Resize,
+    CenterCrop,
+    RandomResizedCrop,
+    Normalize,
+    InterpolationMode,
+)
 
 from utils.text import get_text_generator
 from utils.utils import paths, load_pickle, load_split, shuffle_list
@@ -14,11 +22,91 @@ from utils.config import EvalConfig
 import pdb
 
 
+def make_image_preprocessor_inference(
+    img_res: int, 
+    norm_mean: Tuple[float], 
+    norm_std: Tuple[float],
+):
+    """
+    Create a preprocessing pipeline for inference.
+
+    Args:
+        img_res (int): Image resolution
+        norm_mean (Tuple[float]): Mean for normalization (3-tuple for RGB channels)
+        norm_std (Tuple[float]): Standard deviation for normalization (3-tuple for RGB channels)
+
+    Returns:
+        Compose: A torchvision Compose object with the preprocessing steps
+    """
+    pp_inf = Compose([
+        Resize(
+            size=img_res,
+            interpolation=InterpolationMode.BICUBIC,
+        ),
+        CenterCrop(size=(img_res, img_res)),
+        MaybeConvertMode(),
+        MaybeToTensor(),
+        Normalize(mean=norm_mean, std=norm_std),
+    ])
+    return pp_inf
+
+def make_image_preprocessor_train(
+    img_res: int, 
+    norm_mean: Tuple[float],
+    norm_std: Tuple[float],
+):
+    """
+    Create a preprocessing pipeline for training.
+
+    Args:
+        img_res (int): Image resolution
+        norm_mean (Tuple[float]): Mean for normalization (3-tuple for RGB channels)
+        norm_std (Tuple[float]): Standard deviation for normalization (3-tuple for RGB channels)
+
+    Returns:
+        Compose: A torchvision Compose object with the preprocessing steps
+    """
+    pp_train = Compose([
+        RandomResizedCrop(
+            size=img_res,
+            scale=(0.9, 1.0),
+            ratio=(1.0, 1.0),
+            interpolation=InterpolationMode.BICUBIC,
+        ),
+        MaybeConvertMode(),
+        MaybeToTensor(),
+        Normalize(
+            mean=norm_mean,
+            std=norm_std,
+        ),
+    ])
+    return pp_train
+
+# helper for make_image_preprocessor_inference() and make_image_preprocessor_train()
+class MaybeConvertMode:
+    def __call__(self, image):
+        # convert PIL image to RGB if needed
+        if hasattr(image, "mode") and image.mode != "RGB":
+            image = image.convert("RGB")
+        return image
+
+# helper for make_image_preprocessor_inference() and make_image_preprocessor_train()
+class MaybeToTensor:
+    def __call__(self, image):
+        import torch
+        from torchvision.transforms.functional import to_tensor
+        # avoid double-conversion
+        if isinstance(image, torch.Tensor):
+            return image
+        return to_tensor(image)
+
 @dataclass
 class Split:
     data_indexes: list
     id_eval_nshot: dict
     class_counts_train: np.ndarray
+    norm_mean: Tuple[float]
+    norm_std: Tuple[float]
 
 class ExactDistributedSampler(Sampler[int]):
     """
@@ -238,7 +326,7 @@ def spawn_partition_data(config: EvalConfig, partition_name: str):
     - split_type --- [str] --- "train" / "id" / "ood"
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
-    split = load_split(config.split_name, dataset=config.dataset)
+    split = load_split(config.split_name, dataset_name=config.dataset)
     if partition_name == "train":
         index_data = split.data_indexes["train"]
     else:

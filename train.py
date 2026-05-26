@@ -162,13 +162,13 @@ class TrainPipeline:
         self.val_pipe = ValidationPipeline(
             self.cfg,
             text_template_val,
-            self.modelw.img_pp_val,
+            self.modelw.img_pp_inf,
             compute_loss=True,
         )
         self.val_pipe_base = ValidationPipeline(
             self.cfg,
             text_template_val,
-            self.modelw.img_pp_val,
+            self.modelw.img_pp_inf,
             compute_loss=False,
         )
 

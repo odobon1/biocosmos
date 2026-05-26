@@ -1,8 +1,8 @@
 # *** split_name, model_type, loss_type, non_causal are overridden if rdpath_trial is specified ***
 rdpath_trial: null  # which trial to load from (set null for original model)
-# rdpath_trial: artifacts/phylo_nvidia/mix0-6_cos/42
+# rdpath_trial: artifacts/dev/dev_dataset/nymph/42
 save_crit: comp  # {comp, img2img}; model save criterion (only applicable if rdpath_trial != null)
-dataset: lepid  # {nymph, lepid}
+dataset: cub  # {bryo, cub, lepid, nymph}
 split_name: D10  # {D10, dev}
 eval_type: validation  # {validation, test}
 
@@ -11,6 +11,8 @@ batch_size: 1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 arch:
   model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false
+
+img_norm: default  # {default, dataset}
 
 loss:
   type: bce  # {infonce1, infonce2, bce}

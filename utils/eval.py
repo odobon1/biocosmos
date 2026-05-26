@@ -143,7 +143,7 @@ class SplitPartitionEvalPipeline:
         self.compute_loss = compute_loss
 
         if self.partition_name == "id":
-            split = load_split(config.split_name, dataset=config.dataset)
+            split = load_split(config.split_name, dataset_name=config.dataset)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 split_name=config.split_name,
@@ -645,7 +645,7 @@ class ValidationPipeline:
         self.best_full_set_comp_map = None
         self.best_full_set_i2i_map = None
 
-        self.split = load_split(config.split_name, dataset=config.dataset)
+        self.split = load_split(config.split_name, dataset_name=config.dataset)
         self.partition_names = list_eval_partition_names(self.split, config.eval_type)
         self.partition_pipes = {
             partition_name: SplitPartitionEvalPipeline(
@@ -894,7 +894,7 @@ def build_class_enc_to_train_nshot_bucket(
     Build class_enc -> bucket_name using ID-val bucket memberships.
     """
 
-    split = load_split(split_name, dataset=dataset)
+    split = load_split(split_name, dataset_name=dataset)
     class_enc_to_bucket = {}
 
     for bucket_name in split.id_eval_nshot["names"]:

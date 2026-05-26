@@ -7,7 +7,7 @@ from utils.utils import load_split
 def compute_class_wts(split_name, cfg_loss, dataset):
 
     # note: needs to be untangled....
-    split       = load_split(split_name, dataset=dataset)
+    split       = load_split(split_name, dataset_name=dataset)
     counts      = split.class_counts_train
     pair_counts = np.outer(counts, counts)
     n_classes   = len(counts)

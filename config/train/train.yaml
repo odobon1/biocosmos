@@ -1,5 +1,5 @@
 campaign_name: dev
-setting_name: dev
+setting_name: dev_dataset
 seed: 42
 dataset: nymph  # {bryo, cub, lepid, nymph}
 split_name: D10
@@ -20,6 +20,8 @@ dev:
 arch:  # architecture
   model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
+
+img_norm: dataset  # {default, dataset}
 
 loss:
   type: bce  # {infonce1, infonce2, bce}

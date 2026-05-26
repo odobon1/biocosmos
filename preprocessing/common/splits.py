@@ -6,9 +6,86 @@ from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
+from concurrent.futures import ProcessPoolExecutor
+from PIL import Image
+from tqdm import tqdm
+from typing import Dict, List, Tuple
 
-from utils.data import species_to_genus
+from utils.data import species_to_genus, Split
+from utils.utils import paths, save_pickle
 
+
+def compute_train_rgb_norm_stats(data_index_train: List[Dict], dataset_name: str) -> Tuple[Tuple[float], Tuple[float]]:
+    """
+    Compute train RGB normalization stats with equal image weighting.
+
+    Each image is summarized by channel-wise mean and variance, then merged into
+    aggregate moments using Chan/Welford-style group merging. All images are weighted
+    equally so aggregate stats are invariant to varying image resolutions.
+
+    Args:
+        data_index_train: List of dictionaries containing training data information.
+        dataset_name: Name of the dataset.
+    Returns:
+        norm_mean: 3-tuple (R, G, B)
+        norm_std: 3-tuple (R, G, B)
+    """
+    def merge_chan(
+        n_a: float,
+        mean_a: np.ndarray,
+        m2_a: np.ndarray,
+        n_b: float,
+        mean_b: np.ndarray,
+        m2_b: np.ndarray,
+    ):
+        """Merge two moment groups using Chan's parallel-variance formula."""
+        if n_b == 0:
+            return n_a, mean_a, m2_a
+        if n_a == 0:
+            return n_b, mean_b.copy(), m2_b.copy()
+
+        delta_mean = mean_b - mean_a
+        n_tot = n_a + n_b
+        mean_tot = mean_a + delta_mean * (n_b / n_tot)
+        m2_tot = m2_a + m2_b + delta_mean**2 * (n_a * n_b / n_tot)
+        return n_tot, mean_tot, m2_tot
+
+    n_agg = 0.0
+    mean_agg = np.zeros(3, dtype=np.float64)
+    m2_agg = np.zeros(3, dtype=np.float64)
+
+    imgs_root = paths["imgs"][dataset_name]
+    image_fpaths = [imgs_root / datum["rfpath"] for datum in data_index_train]
+
+    with ProcessPoolExecutor() as ex:
+        results = ex.map(process_image, image_fpaths)
+        for mean_img, m2_img in tqdm(results, total=len(image_fpaths), desc="Computing train norm stats"):
+            n_agg, mean_agg, m2_agg = merge_chan(
+                n_a=n_agg,
+                mean_a=mean_agg,
+                m2_a=m2_agg,
+                n_b=1.0,
+                mean_b=mean_img,
+                m2_b=m2_img,
+            )
+
+    var_agg = m2_agg / n_agg
+    std_agg = np.sqrt(np.clip(var_agg, 0.0, None))
+
+    norm_mean = tuple(float(x) for x in mean_agg)
+    norm_std = tuple(float(x) for x in std_agg)
+    
+    return norm_mean, norm_std
+
+# helper for compute_train_rgb_norm_stats()
+def process_image(fpath_img):
+    with Image.open(fpath_img) as img:
+        arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+
+    mean_img = arr.mean(axis=(0, 1), dtype=np.float64)
+    m2_img = arr.var(axis=(0, 1), dtype=np.float64)
+
+    return mean_img, m2_img
 
 def truncate_subspecies(s: str) -> str:
     parts = s.split("_", 2)
@@ -530,11 +607,8 @@ def build_dev_skeys_partitions(skeys_partitions, size_dev):
         for partition_name, skeys_partition in skeys_partitions.items()
     }
 
-def save_split(data_indexes, id_eval_nshot, class_counts_train, dpath_split, dpath_figs) -> None:
-    from utils.data import Split
-    from utils.utils import save_pickle
-
-    split = Split(data_indexes, id_eval_nshot, class_counts_train)
+def save_split(data_indexes, id_eval_nshot, class_counts_train, norm_mean, norm_std, dpath_split, dpath_figs) -> None:
+    split = Split(data_indexes, id_eval_nshot, class_counts_train, norm_mean, norm_std)
     os.makedirs(dpath_split, exist_ok=True)
     os.makedirs(dpath_figs, exist_ok=True)
     save_pickle(split, dpath_split / "split.pkl")

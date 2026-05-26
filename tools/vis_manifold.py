@@ -118,7 +118,7 @@ def get_dataloader(cfg, partition_name, modelw):
         config=cfg,
         shuffle=False,
         drop_last=False,
-        img_pp=modelw.img_pp_val,
+        img_pp=modelw.img_pp_inf,
         use_dv_sampler=False,
     )
     return dataloader

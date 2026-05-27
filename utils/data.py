@@ -13,14 +13,78 @@ from torchvision.transforms import (
     RandomResizedCrop,
     Normalize,
     InterpolationMode,
+    RandomHorizontalFlip,
+    ColorJitter,
+    RandomApply,
+    GaussianBlur,
+    Lambda,
 )
+import torchvision.transforms.functional as F
+import random
+
 
 from utils.text import get_text_generator
 from utils.utils import paths, load_pickle, load_split, shuffle_list
-from utils.config import EvalConfig
+from utils.config import EvalConfig, _default_train_aug_cfg
 
 import pdb
 
+
+def _merge_aug_cfg(aug_cfg: Mapping[str, Any] | None) -> dict:
+    default_aug_cfg = _default_train_aug_cfg()
+    if aug_cfg is None:
+        return default_aug_cfg
+
+    aug_cfg = dict(aug_cfg)
+    merged = {**default_aug_cfg, **aug_cfg}
+    merged["rrcrop"] = {**default_aug_cfg["rrcrop"], **dict(aug_cfg.get("rrcrop", {}))}
+    merged["cjit"] = {**default_aug_cfg["cjit"], **dict(aug_cfg.get("cjit", {}))}
+    merged["gblur"] = {**default_aug_cfg["gblur"], **dict(aug_cfg.get("gblur", {}))}
+    return merged
+
+def build_train_augmentation_transforms(
+    img_res: int,
+    aug_cfg: Mapping[str, Any] | None = None,
+) -> Compose:
+    aug_cfg = _merge_aug_cfg(aug_cfg)
+    kernel_size_gb = int(aug_cfg["gblur"]["kernel_size"])
+    sharpness_min, sharpness_max = tuple(aug_cfg["sharpness"])
+    sigma_min, sigma_max = tuple(aug_cfg["gblur"]["sigma"])
+    sigma_min = max(float(sigma_min), 1.0e-6)
+    sigma_max = max(float(sigma_max), sigma_min)
+    transforms = [
+        RandomResizedCrop(
+            size=img_res,
+            scale=tuple(aug_cfg["rrcrop"]["scale"]),
+            ratio=tuple(aug_cfg["rrcrop"]["ratio"]),
+            interpolation=InterpolationMode.BICUBIC,
+        )
+    ]
+    if aug_cfg.get("hflip", False):
+        transforms.append(RandomHorizontalFlip())
+
+    transforms.extend([
+        RandomApply([
+            ColorJitter(
+                brightness=aug_cfg["cjit"]["brightness"],
+                contrast=aug_cfg["cjit"]["contrast"],
+                saturation=aug_cfg["cjit"]["saturation"],
+                hue=aug_cfg["cjit"]["hue"],
+            )
+        ], p=aug_cfg["cjit_prob"]),
+        RandomApply([
+            Lambda(
+                lambda img: F.adjust_sharpness(
+                    img,
+                    sharpness_factor=random.uniform(sharpness_min, sharpness_max),
+                )
+            )
+        ], p=aug_cfg["sharpness_prob"]),
+        RandomApply([
+            GaussianBlur(kernel_size_gb, sigma=(sigma_min, sigma_max))
+        ], p=aug_cfg["gblur_prob"]),
+    ])
+    return Compose(transforms)
 
 def make_image_preprocessor_inference(
     img_res: int, 
@@ -54,6 +118,7 @@ def make_image_preprocessor_train(
     img_res: int, 
     norm_mean: Tuple[float],
     norm_std: Tuple[float],
+    aug_cfg: Mapping[str, Any] | None = None,
 ):
     """
     Create a preprocessing pipeline for training.
@@ -66,20 +131,17 @@ def make_image_preprocessor_train(
     Returns:
         Compose: A torchvision Compose object with the preprocessing steps
     """
-    pp_train = Compose([
-        RandomResizedCrop(
-            size=img_res,
-            scale=(0.9, 1.0),
-            ratio=(1.0, 1.0),
-            interpolation=InterpolationMode.BICUBIC,
-        ),
-        MaybeConvertMode(),
-        MaybeToTensor(),
-        Normalize(
-            mean=norm_mean,
-            std=norm_std,
-        ),
-    ])
+    pp_train = Compose(
+        list(build_train_augmentation_transforms(img_res, aug_cfg=aug_cfg).transforms)
+        + [
+            MaybeConvertMode(),
+            MaybeToTensor(),
+            Normalize(
+                mean=norm_mean,
+                std=norm_std,
+            ),
+        ]
+    )
     return pp_train
 
 # helper for make_image_preprocessor_inference() and make_image_preprocessor_train()

@@ -229,7 +229,12 @@ class VLMWrapper(abc.ABC):
 
     def set_image_preprocessors(self) -> None:
         self.img_pp_inf = make_image_preprocessor_inference(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
-        self.img_pp_train = make_image_preprocessor_train(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
+        self.img_pp_train = make_image_preprocessor_train(
+            self.img_res,
+            norm_mean=self.norm_mean,
+            norm_std=self.norm_std,
+            aug_cfg=self.cfg.aug,
+        )
 
     def save(self, dpath: Path) -> None:
         fpath = dpath / "model.pt"

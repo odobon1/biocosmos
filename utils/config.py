@@ -10,6 +10,30 @@ from utils.hardware import compute_dataloader_workers_prefetch
 import pdb
 
 
+# equivalent to OpenCLIP default train preprocessor
+def _default_train_aug_cfg() -> dict:
+    return {
+        "rrcrop": {
+            "scale": [0.9, 1.0],
+            "ratio": [0.75, 1.3333],
+        },
+        "hflip": False,
+        "cjit": {
+            "brightness": 0.0,
+            "contrast": 0.0,
+            "saturation": 0.0,
+            "hue": 0.0,
+        },
+        "cjit_prob": 0.0,
+        "sharpness": [1.0, 1.0],
+        "sharpness_prob": 0.0,
+        "gblur": {
+            "kernel_size": 3,
+            "sigma": [0.0, 0.0],
+        },
+        "gblur_prob": 0.0,
+    }
+
 @dataclass
 class TrainConfig:
 
@@ -35,6 +59,7 @@ class TrainConfig:
     text_template: dict
 
     logging: bool
+    aug: dict = field(default_factory=_default_train_aug_cfg)
     metrics_plot_every_batches: int = 100
     
     eval_type: str = "validation"

@@ -1,7 +1,7 @@
 campaign_name: dev
-setting_name: dev_dataset
+setting_name: dev
 seed: 42
-dataset: nymph  # {bryo, cub, lepid, nymph}
+dataset: lepid  # {bryo, cub, lepid, nymph}
 split_name: D10
 
 sample_volume: 1_000_000
@@ -14,14 +14,30 @@ dev:
   allow_overwrite_trial: true
   allow_diff_campaign: true
   allow_diff_setting: true
-  view_imgs: 100  # if set > 0, will save the first <view_imgs> number of images during training (post-augmentation) to a directory: <campaign_name>/<setting_name>/<dataset>/<seed>/train_imgs/
   debug_mode: false
 
 arch:  # architecture
   model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
 
-img_norm: dataset  # {default, dataset}
+aug:  # image augmentation
+  rrcrop:
+    scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
+    ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
+  hflip: true
+  cjit:
+    brightness: 0.1
+    contrast: 0.2
+    saturation: 0.1
+    hue: 0.01
+  cjit_prob: 0.5
+  sharpness: [0.5, 2.0]
+  sharpness_prob: 0.5
+  gblur:
+    kernel_size: 3  # must be odd int
+    sigma: [0.0, 1.0]
+  gblur_prob: 0.5
+img_norm: default  # {default, dataset}
 
 loss:
   type: bce  # {infonce1, infonce2, bce}

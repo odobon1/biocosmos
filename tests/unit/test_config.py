@@ -19,6 +19,7 @@ def make_train_config(**overrides):
         "dv_batching": False,
         "dev": {},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
+        "img_norm": "dataset",
         "loss": {"type": "bce", "sim": "cos", "targ": "aligned"},
         "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0},
         "opt": {

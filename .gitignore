@@ -23,6 +23,8 @@ metadata/*/splits/*/figures/
 tools/bryo_transfer.ipynb
 tools/readable_tree.txt
 tools/src.txt
+tools/image_aug/*
+!tools/image_aug/.gitkeep
 
 __pycache__/
 preprocessing/nymph/__pycache__/

@@ -19,6 +19,7 @@ class ArtifactManager:
     dpath_campaign = None
     dpath_setting = None
     dpath_trial = None
+    dpath_model_base = None
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
     dpath_model_checkpoint = None
@@ -38,13 +39,14 @@ class ArtifactManager:
             else:
                 raise ValueError(f"Trial directory '{cfg_train.campaign_name}/{cfg_train.setting_name}/{cfg_train.dataset}/{cfg_train.seed}' already exists!")
 
-        ArtifactManager.dpath_model_best_comp    = ArtifactManager.dpath_trial / "models/best_comp"
+        ArtifactManager.dpath_model_base = ArtifactManager.dpath_trial / "models/base"
+        ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "models/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
-        ArtifactManager.dpath_model_checkpoint   = ArtifactManager.dpath_trial / "models/checkpoint"
+        ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "models/checkpoint"
 
     @staticmethod
     def create_trial_dirs():
-        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
+        for subdir in ("logs", "models", "models/base", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
@@ -108,30 +110,31 @@ class ArtifactManager:
             save_json(metadata, fpath_meta)
 
     @staticmethod
-    def save_metadata_trial(time_train_mean=None, time_val_mean=None):
+    def save_metadata_trial(time_train_mean=None, time_eval_mean=None):
         fpath_meta = ArtifactManager.dpath_trial / "metadata_trial.json"
         if time_train_mean is not None:
             time_train_mean = f"{time_train_mean:.2f}"
-            time_val_mean   = f"{time_val_mean:.2f}"
+            time_eval_mean = f"{time_eval_mean:.2f}"
         metadata = {
             "runtime_perf": {
                 "train_mean": time_train_mean, 
-                "val_mean": time_val_mean,
+                "val_mean": time_eval_mean,
             },
         }
         save_json(metadata, fpath_meta)
 
     @staticmethod
-    def save_metadata_model(dpath_model, scores_val, samps_seen_chkpt, samps_seen):
+    def save_eval_data(dpath_model, scores_eval, samps_seen_chkpt, samps_seen):
         def format_scores(scores):
+            if scores is None:
+                return None
             if isinstance(scores, dict):
                 return {k: format_scores(v) for k, v in scores.items()}
             return f"{float(scores):.4f}"
 
-        fpath_meta = dpath_model / "metadata_model.json"
-        scores_val = format_scores(scores_val)
+        fpath_meta = dpath_model / "eval.json"
         metadata = {
-            "scores_val": scores_val,
+            **format_scores(scores_eval),
             "samps_seen": f"{samps_seen_chkpt:,}/{samps_seen:,}",
         }
         save_json(metadata, fpath_meta)
@@ -154,14 +157,8 @@ def plot_metrics(
     data_epoch = data["epoch"]
     data_eval = data["eval"]
 
-    partition_names = [
-        partition_name
-        for partition_name, partition_scores in data_eval.items()
-        if isinstance(partition_scores, dict)
-        and "standard" in partition_scores
-        and "per_class" in partition_scores
-    ]
-    if not partition_names or "comp" not in data_eval:
+    partition_names = [k for k in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).keys() if k != "comp"]
+    if not partition_names or "comp" not in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}):
         return
 
     x_eval = data_eval["samps_seen"]
@@ -169,11 +166,11 @@ def plot_metrics(
 
     bucket_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     bucket_comp_keys_standard = [
-        key for key in data_eval.get(bucket_partition_name, {}).get("standard", {}).get("map", {}).get("n-shot", {}).keys()
+        key for key in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("map", {}).get("n-shot", {}).keys()
     ]
     bucket_comp_keys_full_set = [
         key
-        for key in data_eval.get(bucket_partition_name, {}).get("standard", {}).get("full_set", {}).get("map", {}).get("n-shot", {}).keys()
+        for key in data_eval.get("scores", {}).get("full_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("map", {}).get("n-shot", {}).keys()
     ]
 
     plot_composite_metrics(
@@ -307,6 +304,7 @@ def plot_composite_metrics(
         ("i2i", "I2I", "red"),
         ("t2i", "T2I", "green"),
     )
+    set_key = "full_set" if full_set else "closed_set"
     style_specs = (
         (id_partition_name, "ID", "-"),
         (ood_partition_name, "OOD", "--"),
@@ -314,9 +312,7 @@ def plot_composite_metrics(
     for partition_name, partition_label, linestyle in style_specs:
         if partition_name is None:
             continue
-        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {})
-        if full_set:
-            partition_group_scores = partition_group_scores.get("full_set", {})
+        partition_group_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(partition_name, {})
         partition_group_scores = partition_group_scores.get("map", {})
         for metric_name, metric_label, color in retrieval_specs:
             if metric_name in partition_group_scores:
@@ -336,9 +332,7 @@ def plot_composite_metrics(
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
     is_macro_plot = partition_metric_group == "per_class"
-    id_mode_scores = data_eval.get(bucket_partition_name, {}).get(partition_metric_group, {})
-    if full_set:
-        id_mode_scores = id_mode_scores.get("full_set", {})
+    id_mode_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(bucket_partition_name, {})
     nshot_key = "n-shot"
     if is_macro_plot:
         nshot_ylabel = "Full-Set n-shot Macro mAP (ID)" if full_set else "n-shot Macro mAP (ID)"
@@ -358,9 +352,7 @@ def plot_composite_metrics(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
     for partition_name in partition_names:
-        partition_group_scores = data_eval.get(partition_name, {}).get(partition_metric_group, {})
-        if full_set:
-            partition_group_scores = partition_group_scores.get("full_set", {})
+        partition_group_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(partition_name, {})
         partition_group_scores = partition_group_scores.get("acc", {})
         if "i2t" in partition_group_scores:
             ax2.plot(
@@ -392,10 +384,10 @@ def plot_composite_metrics(
     if len(data_epoch.get("loss_raw_train", [])) == len(x_train):
         ax4.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition_name in partition_names:
-        if len(data_eval.get(partition_name, {}).get("loss", [])) == len(x_eval):
+        if len(data_eval.get("loss", {}).get(partition_name, [])) == len(x_eval):
             ax4.plot(
                 x_eval,
-                data_eval[partition_name]["loss"],
+                data_eval["loss"][partition_name],
                 label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition_name.split("_"))])} Val Loss',
             )
     ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")

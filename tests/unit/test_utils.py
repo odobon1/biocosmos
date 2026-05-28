@@ -25,7 +25,7 @@ def test_shuffle_list_is_seeded_and_non_mutating() -> None:
 def test_get_text_template_returns_known_templates() -> None:
     train_template = get_text_template("train")
     lepid_template = get_text_template("train", dataset="lepid")
-    bioclip_template = get_text_template("bioclip_sci", dataset="cub")
+    bioclip_template = get_text_template("sci", dataset="cub")
 
     assert isinstance(train_template, list)
     assert train_template[0] == ["", "a photo of "]

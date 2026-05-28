@@ -31,7 +31,7 @@ COMMON_TEXT_TEMPLATES: dict[str, TextTemplate] = {
             "$COM$",
         ],
     ],
-    "bioclip_sci": [["a photo of $SCI$"]],
+    "sci": [["a photo of $SCI$"]],  # following BioCLIP eval protocol
 }
 
 DATASET_TEXT_SPECS: dict[str, TextGeneratorSpec] = {

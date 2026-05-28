@@ -95,7 +95,7 @@ def gather_object_list(items: List[Any]) -> List[Any]:
         merged.extend(part)
     return merged
 
-class SplitPartitionEvalPipeline:
+class PartitionEvaluationPipeline:
 
     def __init__(
             self, 
@@ -103,7 +103,6 @@ class SplitPartitionEvalPipeline:
             config: Any, 
             text_template: List[List[str]],
             img_pp: Callable,
-            compute_loss: bool = True,
         ) -> None:
 
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
@@ -140,7 +139,6 @@ class SplitPartitionEvalPipeline:
         self.partition_name = partition_name
         self.batch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
-        self.compute_loss = compute_loss
 
         if self.partition_name == "id":
             split = load_split(config.split_name, dataset_name=config.dataset)
@@ -158,6 +156,7 @@ class SplitPartitionEvalPipeline:
     def collect_eval_artifacts(
         self, 
         modelw: Any,
+        loss_flag: bool,
     ) -> Tuple[Dict[str, Any], Optional[float]]:
         
         modelw.model.eval()
@@ -193,7 +192,7 @@ class SplitPartitionEvalPipeline:
                         texts_sb,
                         class_encs_img_sb,
                         targ_data_sb,
-                        loss_flag=self.compute_loss,
+                        loss_flag,
                     )
             else:
                 loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
@@ -201,14 +200,14 @@ class SplitPartitionEvalPipeline:
                     texts_sb,
                     class_encs_img_sb,
                     targ_data_sb,
-                    loss_flag=self.compute_loss,
+                    loss_flag,
                 )
 
             embs_imgs.append(embs_img_b.cpu())
             class_encs_img.append(class_encs_img_b.cpu())
             cids_img.extend(targ_data["cid"] for targ_data in targ_data_sb)
 
-            if self.compute_loss:
+            if loss_flag:
                 batch_loss = loss.detach().item() * B
                 loss_total += batch_loss
                 n_samps_loss += B
@@ -225,7 +224,7 @@ class SplitPartitionEvalPipeline:
         cids_img = gather_object_list(cids_img)
 
         loss_avg = None
-        if self.compute_loss:
+        if loss_flag:
             stats = torch.tensor([
                 loss_total,
                 n_samps_loss,
@@ -626,7 +625,7 @@ def compute_map_cross_modal(
     return scores_cross_modal
 
 
-class ValidationPipeline:
+class EvaluationPipeline:
 
     def __init__(
         self,
@@ -634,11 +633,9 @@ class ValidationPipeline:
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
-        compute_loss: bool = True,
     ):
 
         self.header_tag = header_tag
-        self.compute_loss = compute_loss
 
         self.best_comp_map = None
         self.best_i2i_map = None
@@ -648,12 +645,11 @@ class ValidationPipeline:
         self.split = load_split(config.split_name, dataset_name=config.dataset)
         self.partition_names = list_eval_partition_names(self.split, config.eval_type)
         self.partition_pipes = {
-            partition_name: SplitPartitionEvalPipeline(
+            partition_name: PartitionEvaluationPipeline(
                 partition_name=partition_name,
                 config=config,
                 text_template=text_template,
                 img_pp=img_pp,
-                compute_loss=compute_loss,
             )
             for partition_name in self.partition_names
         }
@@ -675,21 +671,25 @@ class ValidationPipeline:
             for partition_name in self.partition_names
         }
 
-    def run_validation(
+    def evaluate(
         self, 
-        modelw: Any, 
+        modelw: Any,
+        loss_flag: bool = True,
     ) -> Tuple[Dict[str, Any], bool, bool, float]:
 
         time_start = time.time()
-        scores_val: Dict[str, Any] = {}
-        partition_maps = []
-        partition_macro_maps = []
-        partition_i2i_maps = []
-        partition_i2i_macro_maps = []
-        partition_full_set_maps = []
-        partition_full_set_macro_maps = []
-        partition_full_set_i2i_maps = []
-        partition_full_set_i2i_macro_maps = []
+        scores_eval: Dict[str, Any] = {
+            "scores": {
+                "closed_set": {"standard": {}, "per_class": {}},
+                "full_set": {"standard": {}, "per_class": {}},
+            },
+            "loss": {},
+        }
+        accum = {
+            (set_key, grp): {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
+            for set_key in ("closed_set", "full_set")
+            for grp in ("standard", "per_class")
+        }
         partition_artifacts: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
 
@@ -708,7 +708,7 @@ class ValidationPipeline:
 
         for partition_name in self.partition_names:
             pipe = self.partition_pipes[partition_name]
-            artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw)
+            artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw, loss_flag)
             partition_artifacts[partition_name] = artifacts_partition
             partition_losses[partition_name] = loss_avg_partition
 
@@ -718,7 +718,7 @@ class ValidationPipeline:
         )
         full_set_class_encs_img = torch.cat(
             [
-                SplitPartitionEvalPipeline._encode_cids(
+                PartitionEvaluationPipeline._encode_cids(
                     partition_artifacts[partition_name]["cids_img"],
                     full_set_cid2enc,
                     full_set_embs_img.device,
@@ -733,7 +733,7 @@ class ValidationPipeline:
         )
         full_set_class_encs_text = torch.cat(
             [
-                SplitPartitionEvalPipeline._encode_cids(
+                PartitionEvaluationPipeline._encode_cids(
                     partition_artifacts[partition_name]["cids_text"],
                     full_set_cid2enc,
                     full_set_embs_img.device,
@@ -749,7 +749,7 @@ class ValidationPipeline:
             artifacts_partition = partition_artifacts[partition_name]
             loss_avg_partition = partition_losses[partition_name]
 
-            standard_scores = pipe.compute_map_scores(
+            closed_set_scores = pipe.compute_map_scores(
                 embs_img_q=artifacts_partition["embs_img"],
                 class_encs_img_q=artifacts_partition["class_encs_img"],
                 embs_text_q=artifacts_partition["embs_text"],
@@ -762,12 +762,12 @@ class ValidationPipeline:
                 nshot_bucket_names=pipe.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
             )
 
-            full_set_class_encs_img_q = SplitPartitionEvalPipeline._encode_cids(
+            full_set_class_encs_img_q = PartitionEvaluationPipeline._encode_cids(
                 artifacts_partition["cids_img"],
                 full_set_cid2enc,
                 artifacts_partition["embs_img"].device,
             )
-            full_set_class_encs_text_q = SplitPartitionEvalPipeline._encode_cids(
+            full_set_class_encs_text_q = PartitionEvaluationPipeline._encode_cids(
                 artifacts_partition["cids_text"],
                 full_set_cid2enc,
                 artifacts_partition["embs_img"].device,
@@ -794,82 +794,41 @@ class ValidationPipeline:
                 nshot_bucket_names=self.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
             )
 
-            scores_partition = {
-                "standard": {
-                    **standard_scores["standard"],
-                    "full_set": full_set_scores["standard"],
-                },
-                "per_class": {
-                    **standard_scores["per_class"],
-                    "full_set": full_set_scores["per_class"],
+            for set_key, scores in (("closed_set", closed_set_scores), ("full_set", full_set_scores)):
+                for grp in ("standard", "per_class"):
+                    a = accum[(set_key, grp)]
+                    a["all"].append(harmonic_mean([scores[grp]["map"][m] for m in RETRIEVAL_MODALITIES]))
+                    a["i2t"].append(scores[grp]["map"]["i2t"])
+                    a["i2i"].append(scores[grp]["map"]["i2i"])
+                    a["t2i"].append(scores[grp]["map"]["t2i"])
+                    a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
+
+            scores_eval["scores"]["closed_set"]["standard"][partition_name] = closed_set_scores["standard"]
+            scores_eval["scores"]["closed_set"]["per_class"][partition_name] = closed_set_scores["per_class"]
+            scores_eval["scores"]["full_set"]["standard"][partition_name] = full_set_scores["standard"]
+            scores_eval["scores"]["full_set"]["per_class"][partition_name] = full_set_scores["per_class"]
+            if loss_flag and loss_avg_partition is not None:
+                scores_eval["loss"][partition_name] = loss_avg_partition
+
+        for (set_key, grp), a in accum.items():
+            scores_eval["scores"][set_key][grp]["comp"] = {
+                "acc": {"i2t": harmonic_mean(a["acc_i2t"])},
+                "map": {
+                    "all": harmonic_mean(a["all"]),
+                    **dict(zip(self.partition_names, a["all"])),
+                    "i2t": harmonic_mean(a["i2t"]),
+                    "i2i": harmonic_mean(a["i2i"]),
+                    "t2i": harmonic_mean(a["t2i"]),
                 },
             }
 
-            partition_map = harmonic_mean([scores_partition["standard"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
-            partition_macro_map = harmonic_mean([scores_partition["per_class"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
-            partition_maps.append(partition_map)
-            partition_macro_maps.append(partition_macro_map)
-            partition_i2i_maps.append(scores_partition["standard"]["map"]["i2i"])
-            partition_i2i_macro_maps.append(scores_partition["per_class"]["map"]["i2i"])
-            partition_full_set_map = harmonic_mean([scores_partition["standard"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
-            partition_full_set_macro_map = harmonic_mean([scores_partition["per_class"]["full_set"]["map"][metric] for metric in RETRIEVAL_MODALITIES])
-            partition_full_set_maps.append(partition_full_set_map)
-            partition_full_set_macro_maps.append(partition_full_set_macro_map)
-            partition_full_set_i2i_maps.append(scores_partition["standard"]["full_set"]["map"]["i2i"])
-            partition_full_set_i2i_macro_maps.append(scores_partition["per_class"]["full_set"]["map"]["i2i"])
+        is_best_comp, is_best_i2i = self.check_bests(
+            harmonic_mean(accum[("closed_set", "standard")]["all"]),
+            harmonic_mean(accum[("closed_set", "standard")]["i2i"]),
+        )
+        time_elapsed_eval = time.time() - time_start
 
-            scores_val[partition_name] = {
-                **scores_partition,
-            }
-            if self.compute_loss and loss_avg_partition is not None:
-                scores_val[partition_name]["loss"] = loss_avg_partition
-
-        comp_map = harmonic_mean(partition_maps)
-        comp_macro_map = harmonic_mean(partition_macro_maps)
-        i2i_map = harmonic_mean(partition_i2i_maps)
-        i2i_macro_map = harmonic_mean(partition_i2i_macro_maps)
-        full_set_comp_map = harmonic_mean(partition_full_set_maps)
-        full_set_comp_macro_map = harmonic_mean(partition_full_set_macro_maps)
-        full_set_i2i_map = harmonic_mean(partition_full_set_i2i_maps)
-        full_set_i2i_macro_map = harmonic_mean(partition_full_set_i2i_macro_maps)
-
-        scores_val["comp"] = {
-            "standard": {
-                "map": {
-                    "all": comp_map,
-                    "i2i": i2i_map,
-                },
-                "full_set": {
-                    "map": {
-                        "all": full_set_comp_map,
-                        "i2i": full_set_i2i_map,
-                    },
-                },
-            },
-            "per_class": {
-                "map": {
-                    "all": comp_macro_map,
-                    "i2i": i2i_macro_map,
-                },
-                "full_set": {
-                    "map": {
-                        "all": full_set_comp_macro_map,
-                        "i2i": full_set_i2i_macro_map,
-                    },
-                },
-            },
-        }
-        for p_name, p_map, p_macro_map in zip(self.partition_names, partition_maps, partition_macro_maps):
-            scores_val["comp"]["standard"]["map"][p_name] = p_map
-            scores_val["comp"]["per_class"]["map"][p_name] = p_macro_map
-        for p_name, p_map, p_macro_map in zip(self.partition_names, partition_full_set_maps, partition_full_set_macro_maps):
-            scores_val["comp"]["standard"]["full_set"]["map"][p_name] = p_map
-            scores_val["comp"]["per_class"]["full_set"]["map"][p_name] = p_macro_map
-
-        is_best_comp, is_best_i2i = self.check_bests(comp_map, i2i_map)
-        time_elapsed_val = time.time() - time_start
-
-        return scores_val, is_best_comp, is_best_i2i, time_elapsed_val
+        return scores_eval, is_best_comp, is_best_i2i, time_elapsed_eval
 
     def check_bests(self, comp_map: float, i2i_map: float) -> Tuple[bool, bool]:
         is_best_comp, is_best_i2i = False, False

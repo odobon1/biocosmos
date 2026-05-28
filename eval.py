@@ -1,5 +1,5 @@
 from models import VLMWrapper
-from utils.eval import ValidationPipeline
+from utils.eval import EvaluationPipeline
 from utils.utils import get_text_template, PrintLog
 from utils.config import get_config_eval
 from utils.ddp import setup_ddp, cleanup_ddp
@@ -19,17 +19,16 @@ def main():
         modelw.set_class_wts(config_eval, secondary=True)
 
     text_template = get_text_template(config_eval.text_template, dataset=config_eval.dataset)
-    val_pipe = ValidationPipeline(
+    eval_pipe = EvaluationPipeline(
         config_eval,
         text_template,
         modelw.img_pp_inf,
-        compute_loss=False,
     )
 
-    scores_val, _, _, _ = val_pipe.run_validation(modelw)
+    scores_eval, _, _, _ = eval_pipe.evaluate(modelw, loss_flag=False)
 
     if gpu_rank == 0:
-        PrintLog.eval(scores_val, val_pipe)
+        PrintLog.eval(scores_eval, eval_pipe)
 
     cleanup_ddp()
 

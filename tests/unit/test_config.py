@@ -30,7 +30,7 @@ def make_train_config(**overrides):
             "eps": 1.0e-6,
         },
         "freeze": {"text": False, "image": True},
-        "text_template": {"train": "train", "valid": "bioclip_sci"},
+        "text_template": {"train": "train", "eval": "sci"},
         "logging": False,
     }
     config.update(overrides)

@@ -542,7 +542,7 @@ class VLMWrapper(abc.ABC):
         txts_sb: Tuple[str],
         class_encs_sb: torch.Tensor,
         targ_data_sb: Tuple[Any],
-        loss_flag: bool = True,
+        loss_flag: bool,
     ) -> Tuple[Any]:
         """
         Eval-oriented forward pass that keeps the batch local to the current rank.

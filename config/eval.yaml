@@ -27,4 +27,4 @@ loss2:  # secondary loss
   wting: true
   focal: true
 
-text_template: bioclip_sci
+text_template: sci  # following BioCLIP eval protocol

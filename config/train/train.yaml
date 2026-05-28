@@ -1,11 +1,11 @@
 campaign_name: dev
-setting_name: dev
+setting_name: dev3
 seed: 42
-dataset: lepid  # {bryo, cub, lepid, nymph}
+dataset: bryo  # {bryo, cub, lepid, nymph}
 split_name: D10
 
 sample_volume: 1_000_000
-eval_every: 50_000
+eval_every: 20_000
 chkpt_every: 1
 batch_size: 1024  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching
@@ -21,19 +21,19 @@ arch:  # architecture
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
 
 aug:  # image augmentation
-  rrcrop:
+  rrcrop:  # random resized crop
     scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
     ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
-  hflip: true
-  cjit:
+  hflip: true  # horizontal flip w/ 50% probability
+  cjit:  # color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
   cjit_prob: 0.5
-  sharpness: [0.5, 2.0]
+  sharpness: [0.5, 2.0]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
   sharpness_prob: 0.5
-  gblur:
+  gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
     sigma: [0.0, 1.0]
   gblur_prob: 0.5
@@ -73,7 +73,7 @@ freeze:
 
 text_template:
   train: train
-  valid: bioclip_sci
+  eval: sci  # following BioCLIP eval protocol
 
 logging: true
 metrics_plot_every_batches: 100

@@ -322,7 +322,7 @@ class PrintLog:
         header: Optional[str] = None,
         samps_seen: Optional[int] = None,
         idx_epoch: Optional[int] = None,
-        time_val: Optional[float] = None,
+        time_eval: Optional[float] = None,
         log_to: str = "epoch",
     ) -> None:
         
@@ -382,14 +382,9 @@ class PrintLog:
         def _collect_accuracy_rows(score_key: Optional[str], label_suffix: str) -> List[tuple[str, float]]:
             rows = []
             for partition_name in partition_names:
-                partition_scores = scores_eval[partition_name]
-                standard_acc_scores = partition_scores.get("standard", {})
-                per_class_acc_scores = partition_scores.get("per_class", {})
-                if score_key is not None:
-                    standard_acc_scores = standard_acc_scores.get(score_key, {})
-                    per_class_acc_scores = per_class_acc_scores.get(score_key, {})
-                standard_acc_scores = standard_acc_scores.get("acc", {})
-                per_class_acc_scores = per_class_acc_scores.get("acc", {})
+                set_key = score_key if score_key is not None else "closed_set"
+                standard_acc_scores = scores_eval.get("scores", {}).get(set_key, {}).get("standard", {}).get(partition_name, {}).get("acc", {})
+                per_class_acc_scores = scores_eval.get("scores", {}).get(set_key, {}).get("per_class", {}).get(partition_name, {}).get("acc", {})
 
                 partition_label = partition_name.upper()
                 if "i2t" in standard_acc_scores:
@@ -420,83 +415,80 @@ class PrintLog:
                 lines += _metric_line(partition_name.upper(), f"{map_scores[partition_name]:.4f}")
             return lines
 
+        scores_section = scores_eval.get("scores", {})
         map_lines = ""
         for partition_name in partition_names:
-            partition_scores = scores_eval[partition_name]
-            standard_map_scores = partition_scores.get("standard", {}).get("map", {})
-            per_class_map_scores = partition_scores.get("per_class", {}).get("map", {})
             map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
             map_lines += _partition_variant_lines(
                 variant_title=" Standard ",
-                map_scores=standard_map_scores,
-                per_class_map_scores=per_class_map_scores,
+                map_scores=scores_section.get("closed_set", {}).get("standard", {}).get(partition_name, {}).get("map", {}),
+                per_class_map_scores=scores_section.get("closed_set", {}).get("per_class", {}).get(partition_name, {}).get("map", {}),
                 partition_name=partition_name,
             )
 
-            standard_full_set = partition_scores.get("standard", {}).get("full_set", {})
-            per_class_full_set = partition_scores.get("per_class", {}).get("full_set", {})
-            if standard_full_set and per_class_full_set:
+            full_set_standard = scores_section.get("full_set", {}).get("standard", {}).get(partition_name, {})
+            if full_set_standard:
                 map_lines += _partition_variant_lines(
                     variant_title=" Full-Set ",
-                    map_scores=standard_full_set.get("map", {}),
-                    per_class_map_scores=per_class_full_set.get("map", {}),
+                    map_scores=full_set_standard.get("map", {}),
+                    per_class_map_scores=scores_section.get("full_set", {}).get("per_class", {}).get(partition_name, {}).get("map", {}),
                     partition_name=partition_name,
                 )
 
         accuracy_lines = _format_accuracy_block(" I2T Accuracy ", _collect_accuracy_rows(score_key=None, label_suffix=""))
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get(bucket_partition_name, {}).get("standard", {}).get("acc", {}),
+            scores_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("acc", {}),
             " N-Shot Composite Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get(bucket_partition_name, {}).get("per_class", {}).get("acc", {}),
+            scores_eval.get("scores", {}).get("closed_set", {}).get("per_class", {}).get(bucket_partition_name, {}).get("acc", {}),
             " N-Shot Composite Per-Class Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _format_accuracy_block(" Full-Set I2T Accuracy ", _collect_accuracy_rows(score_key="full_set", label_suffix="Full-Set "))
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get(bucket_partition_name, {}).get("standard", {}).get("full_set", {}).get("acc", {}),
+            scores_eval.get("scores", {}).get("full_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("acc", {}),
             " Full-Set N-Shot Composite Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get(bucket_partition_name, {}).get("per_class", {}).get("full_set", {}).get("acc", {}),
+            scores_eval.get("scores", {}).get("full_set", {}).get("per_class", {}).get(bucket_partition_name, {}).get("acc", {}),
             " Full-Set N-Shot Composite Per-Class Accuracy ",
         ) if bucket_partition_name is not None else ""
 
         composite_lines = _format_composite_block(
             " Composite mAP ",
-            scores_eval["comp"]["standard"]["map"],
+            scores_eval["scores"]["closed_set"]["standard"]["comp"]["map"],
             eval_pipe.best_comp_map,
             eval_pipe.best_i2i_map,
         )
-        if "full_set" in scores_eval["comp"]["standard"]:
+        if "comp" in scores_eval["scores"].get("full_set", {}).get("standard", {}):
             composite_lines += _format_composite_block(
                 " Composite Full-Set mAP ",
-                scores_eval["comp"]["standard"]["full_set"]["map"],
+                scores_eval["scores"]["full_set"]["standard"]["comp"]["map"],
                 getattr(eval_pipe, "best_full_set_comp_map", None),
                 getattr(eval_pipe, "best_full_set_i2i_map", None),
             )
 
         composite_macro_lines = _format_composite_block(
             " Composite macro mAP ",
-            scores_eval["comp"]["per_class"]["map"],
+            scores_eval["scores"]["closed_set"]["per_class"]["comp"]["map"],
             None,
             None,
         )
-        if "full_set" in scores_eval["comp"]["per_class"]:
+        if "comp" in scores_eval["scores"].get("full_set", {}).get("per_class", {}):
             composite_macro_lines += _format_composite_block(
                 " Composite macro Full-Set mAP ",
-                scores_eval["comp"]["per_class"]["full_set"]["map"],
+                scores_eval["scores"]["full_set"]["per_class"]["comp"]["map"],
                 None,
                 None,
             )
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         has_loss = False
+        loss_section = scores_eval.get("loss", {})
         for partition_name in partition_names:
-            partition_scores = scores_eval.get(partition_name, {})
-            if "loss" in partition_scores:
+            if partition_name in loss_section:
                 has_loss = True
-                loss_lines += _metric_line(partition_name.upper(), f"{partition_scores['loss']:.3e}")
+                loss_lines += _metric_line(partition_name.upper(), f"{loss_section[partition_name]:.3e}")
         if not has_loss:
             loss_lines += "(disabled)\n"
 
@@ -505,8 +497,8 @@ class PrintLog:
             context_lines += f"Epoch ---------- {idx_epoch}\n"
         if samps_seen is not None:
             context_lines += f"Samples Seen --- {samps_seen:,}\n"
-        if time_val is not None:
-            context_lines += f"Validation ----- {time_val:.2f} s\n"
+        if time_eval is not None:
+            context_lines += f"Validation ----- {time_eval:.2f} s\n"
         if context_lines:
             context_lines += "\n"
 

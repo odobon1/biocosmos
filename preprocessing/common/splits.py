@@ -336,7 +336,6 @@ def build_ood_partitions(
             seed=cfg.seed + i,
         )
 
-        n_samps_ood_val = sum(n_samps_dict[cid] for cid in cids_ood_val_i)
         n_samps_ood_test = sum(n_samps_dict[cid] for cid in cids_ood_test_i)
 
         skeys_ood_val_i = set()

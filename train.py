@@ -11,9 +11,9 @@ import time
 import math
 
 from utils.utils import (
-    save_pickle, 
+    save_pickle,
     seed_libs,
-    get_text_template, 
+    get_text_template,
     RunningMean,
     PrintLog,
     model_grad_l2_norm,
@@ -255,6 +255,9 @@ class TrainPipeline:
                     samps_seen_chkpt=0,
                     samps_seen=0,
                 )
+                self.modelw.save(ArtifactManager.dpath_model_best_comp)
+                self.modelw.save(ArtifactManager.dpath_model_best_i2i)
+                self.modelw.save(ArtifactManager.dpath_model_checkpoint)
 
                 time_train_mean = RunningMean()
                 time_eval_mean = RunningMean()

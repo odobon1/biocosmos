@@ -1,5 +1,5 @@
 """
-python -m pytest tests/unit/test_eval_metrics.py
+python -m pytest tests/unit/test_retrieval_metrics.py
 """
 
 import pytest

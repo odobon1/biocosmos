@@ -1,5 +1,5 @@
 """
-torchrun --standalone --nproc-per-node=auto -m campaign_runner
+python -m campaign_runner
 """
 
 from pathlib import Path
@@ -14,18 +14,17 @@ from utils.config import apply_overrides, load_train_config_dict
 from utils.utils import paths
 
 
-CAMPAIGN_NAME = "loss_ablation"
+CAMPAIGN_NAME = "dev"
 
 SEED0 = 42
-NUM_SEEDS = 2
+NUM_SEEDS = 3
 
-DATASETS = ("lepid", "bryo", "cub")
+DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
     {"loss": {"targ": "aligned"}, "name": "iw"},
     {"loss": {"targ": "multipos"}, "name": "sw"},
     {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
-    {"batch_size": 32_000, "name": "way-too-big-bs"},
 ]
 
 
@@ -139,20 +138,20 @@ def _run_trial_subprocess(cfg_fpath: Path) -> None:
 
     proc = subprocess.Popen(
         cmd,
-        text=True,
         stdout=None,
         stderr=subprocess.PIPE,
     )
 
-    stderr_lines = []
+    stderr_data = b""
     assert proc.stderr is not None
-    for line in proc.stderr:
-        sys.stderr.write(line)
-        stderr_lines.append(line.rstrip("\n"))
+    while chunk := proc.stderr.read1(4096):
+        sys.stderr.buffer.write(chunk)
+        sys.stderr.buffer.flush()
+        stderr_data += chunk
 
     return_code = proc.wait()
     if return_code != 0:
-        stderr_tail = "\n".join(stderr_lines[-200:])
+        stderr_tail = "\n".join(stderr_data.decode(errors="replace").splitlines()[-200:])
         raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_tail)
 
 

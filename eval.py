@@ -1,3 +1,5 @@
+from torch import dist
+
 from models import VLMWrapper
 from utils.eval import EvaluationPipeline
 from utils.utils import get_text_template, PrintLog
@@ -8,12 +10,12 @@ import pdb
 
 
 def main():
-    gpu_rank, _, _, device = setup_ddp()
+    _, device = setup_ddp()
 
-    config_eval = get_config_eval(verbose=(gpu_rank==0))
+    config_eval = get_config_eval(verbose=(dist.get_rank() == 0))
     config_eval.device = device  # set local device
 
-    modelw = VLMWrapper.build(config_eval, verbose=(gpu_rank==0))
+    modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
     modelw.set_class_wts(config_eval)
     if config_eval.loss2["mix"] != 0.0:
         modelw.set_class_wts(config_eval, secondary=True)
@@ -25,10 +27,9 @@ def main():
         modelw.img_pp_inf,
     )
 
-    scores_eval, _, _, _ = eval_pipe.evaluate(modelw, loss_flag=False)
+    eval_metrics, _, _, _ = eval_pipe.evaluate(modelw, loss_flag=False)
 
-    if gpu_rank == 0:
-        PrintLog.eval(scores_eval, eval_pipe)
+    PrintLog.eval(eval_metrics, eval_pipe)
 
     cleanup_ddp()
 

@@ -1,13 +1,12 @@
 campaign_name: dev
-setting_name: dev3
+setting_name: dev
 seed: 42
-dataset: bryo  # {bryo, cub, lepid, nymph}
+dataset: lepid  # {bryo, cub, lepid, nymph}
 split_name: D10
 
 sample_volume: 1_000_000
-eval_every: 20_000
-chkpt_every: 1
-batch_size: 1024  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
+eval_every: 50_000
+batch_size: 4096  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching
 
 dev:
@@ -32,11 +31,11 @@ aug:  # image augmentation
     hue: 0.01
   cjit_prob: 0.5
   sharpness: [0.5, 2.0]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
-  sharpness_prob: 0.5
+  sharpness_prob: 0.2
   gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
     sigma: [0.0, 1.0]
-  gblur_prob: 0.5
+  gblur_prob: 0.3
 img_norm: default  # {default, dataset}
 
 loss:
@@ -76,4 +75,3 @@ text_template:
   eval: sci  # following BioCLIP eval protocol
 
 logging: true
-metrics_plot_every_batches: 100

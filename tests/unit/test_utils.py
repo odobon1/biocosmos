@@ -43,39 +43,30 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
         best_full_set_comp_map = None
         best_full_set_i2i_map = None
 
-    scores_eval = {
-        "id": {
-            "standard": {
-                "map": {"i2t": 0.1, "i2i": 0.2, "t2i": 0.3},
-                "acc": {"i2t": 0.4},
-                "full_set": {
-                    "map": {"i2t": 0.11, "i2i": 0.21, "t2i": 0.31},
-                    "acc": {"i2t": 0.41},
+    eval_metrics = {
+        "scores": {
+            "closed_set": {
+                "standard": {
+                    "id": {"map": {"i2t": 0.1, "i2i": 0.2, "t2i": 0.3}, "acc": {"i2t": 0.4}},
+                    "comp": {"map": {"all": 0.2, "i2i": 0.2, "id": 0.2}},
+                },
+                "per_class": {
+                    "id": {"map": {"i2t": 0.12, "i2i": 0.22, "t2i": 0.32}, "acc": {"i2t": 0.42}},
+                    "comp": {"map": {"all": 0.22, "i2i": 0.22, "id": 0.22}},
                 },
             },
-            "per_class": {
-                "map": {"i2t": 0.12, "i2i": 0.22, "t2i": 0.32},
-                "acc": {"i2t": 0.42},
-                "full_set": {
-                    "map": {"i2t": 0.13, "i2i": 0.23, "t2i": 0.33},
-                    "acc": {"i2t": 0.43},
+            "full_set": {
+                "standard": {
+                    "id": {"map": {"i2t": 0.11, "i2i": 0.21, "t2i": 0.31}, "acc": {"i2t": 0.41}},
+                    "comp": {"map": {"all": 0.21, "i2i": 0.21, "id": 0.21}},
                 },
-            },
-        },
-        "comp": {
-            "standard": {
-                "map": {"all": 0.2, "i2i": 0.2, "id": 0.2},
-                "full_set": {
-                    "map": {"all": 0.21, "i2i": 0.21, "id": 0.21},
-                },
-            },
-            "per_class": {
-                "map": {"all": 0.22, "i2i": 0.22, "id": 0.22},
-                "full_set": {
-                    "map": {"all": 0.23, "i2i": 0.23, "id": 0.23},
+                "per_class": {
+                    "id": {"map": {"i2t": 0.13, "i2i": 0.23, "t2i": 0.33}, "acc": {"i2t": 0.43}},
+                    "comp": {"map": {"all": 0.23, "i2i": 0.23, "id": 0.23}},
                 },
             },
         },
+        "loss": {"id": None},
     }
 
-    PrintLog.eval(scores_eval, _EvalPipe())
+    PrintLog.eval(eval_metrics, _EvalPipe())

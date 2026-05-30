@@ -7,8 +7,10 @@ import torch
 import json
 from typing import List, Any, Dict, Optional
 import math
+import time
 
 from utils.text import get_text_template as get_dataset_text_template
+from utils.ddp import rank0
 
 import pdb
 
@@ -178,6 +180,7 @@ class PrintLog:
     wrote_text_eval = False
 
     @staticmethod
+    @rank0
     def create_logs(dpath_logs):
         PrintLog.logging = True
         PrintLog.wrote_text_eval = False
@@ -188,17 +191,19 @@ class PrintLog:
         PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
-        PrintLog.log_init  = open(dpath_logs / "init.log",  "a", buffering=1)
-        PrintLog.log_text  = open(dpath_logs / "text.log",  "a", buffering=1)
-        PrintLog.log_text_eval = open(dpath_logs / "text_eval.log",  "a", buffering=1)
+        PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
+        PrintLog.log_text = open(dpath_logs / "text.log", "a", buffering=1)
+        PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
 
     @staticmethod
+    @rank0
     def texts(texts_sb):
         text_printout = "\n".join(texts_sb)
         if PrintLog.logging:
             PrintLog.log_text.write(text_printout)
 
     @staticmethod
+    @rank0
     def texts_eval(texts_by_partition):
         if not PrintLog.logging or PrintLog.wrote_text_eval:
             return
@@ -213,6 +218,7 @@ class PrintLog:
         PrintLog.wrote_text_eval = True
 
     @staticmethod
+    @rank0
     def epoch_header(idx_epoch, n_epochs):
         header_epoch = f" Epoch {idx_epoch}/{n_epochs} "
         header_epoch = (
@@ -227,6 +233,7 @@ class PrintLog:
             PrintLog.log_epoch.write(header_epoch)
 
     @staticmethod
+    @rank0
     def train_header(lr):
         header_train = (
             f"{' Train ':=^{75}}\n"
@@ -238,10 +245,11 @@ class PrintLog:
             PrintLog.log_epoch.write(header_train)
 
     @staticmethod
-    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, samps_seen):
+    @rank0
+    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, n_samps_seen):
 
         epoch_info = (
-            f"Samples Seen -------- {samps_seen:,}\n"
+            f"Samples Seen ------- {n_samps_seen:,}\n"
             f"Train Loss --------- {loss_train_avg:.3e}\n"
             f"Train Loss (raw) --- {loss_train_raw_avg:.3e}\n"
             f"\n"
@@ -254,6 +262,7 @@ class PrintLog:
             PrintLog.log_epoch.write(epoch_info)
 
     @staticmethod
+    @rank0
     def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model):
 
         def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
@@ -316,11 +325,12 @@ class PrintLog:
             )
 
     @staticmethod
+    @rank0
     def eval(
-        scores_eval: Dict[str, Any],
+        eval_metrics: Dict[str, Any],
         eval_pipe,
         header: Optional[str] = None,
-        samps_seen: Optional[int] = None,
+        n_samps_seen: Optional[int] = None,
         idx_epoch: Optional[int] = None,
         time_eval: Optional[float] = None,
         log_to: str = "epoch",
@@ -341,7 +351,7 @@ class PrintLog:
             return "" if value is None else f" (best: {value:.4f})"
 
         def _build_nshot_lines(metric_group_scores: Dict[str, Any], title: str) -> str:
-            bucket_scores = metric_group_scores.get("n-shot", {})
+            bucket_scores = metric_group_scores["n-shot"]
             bucket_keys = [bucket_name for bucket_name in nshot_bucket_names if bucket_name in bucket_scores]
             if not bucket_keys:
                 return ""
@@ -383,8 +393,8 @@ class PrintLog:
             rows = []
             for partition_name in partition_names:
                 set_key = score_key if score_key is not None else "closed_set"
-                standard_acc_scores = scores_eval.get("scores", {}).get(set_key, {}).get("standard", {}).get(partition_name, {}).get("acc", {})
-                per_class_acc_scores = scores_eval.get("scores", {}).get(set_key, {}).get("per_class", {}).get(partition_name, {}).get("acc", {})
+                standard_acc_scores = eval_metrics["scores"][set_key]["standard"][partition_name]["acc"]
+                per_class_acc_scores = eval_metrics["scores"][set_key]["per_class"][partition_name]["acc"]
 
                 partition_label = partition_name.upper()
                 if "i2t" in standard_acc_scores:
@@ -415,90 +425,86 @@ class PrintLog:
                 lines += _metric_line(partition_name.upper(), f"{map_scores[partition_name]:.4f}")
             return lines
 
-        scores_section = scores_eval.get("scores", {})
+        scores_section = eval_metrics["scores"]
         map_lines = ""
         for partition_name in partition_names:
             map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
             map_lines += _partition_variant_lines(
                 variant_title=" Standard ",
-                map_scores=scores_section.get("closed_set", {}).get("standard", {}).get(partition_name, {}).get("map", {}),
-                per_class_map_scores=scores_section.get("closed_set", {}).get("per_class", {}).get(partition_name, {}).get("map", {}),
+                map_scores=scores_section["closed_set"]["standard"][partition_name]["map"],
+                per_class_map_scores=scores_section["closed_set"]["per_class"][partition_name]["map"],
+                partition_name=partition_name,
+            )
+            map_lines += _partition_variant_lines(
+                variant_title=" Full-Set ",
+                map_scores=scores_section["full_set"]["standard"][partition_name]["map"],
+                per_class_map_scores=scores_section["full_set"]["per_class"][partition_name]["map"],
                 partition_name=partition_name,
             )
 
-            full_set_standard = scores_section.get("full_set", {}).get("standard", {}).get(partition_name, {})
-            if full_set_standard:
-                map_lines += _partition_variant_lines(
-                    variant_title=" Full-Set ",
-                    map_scores=full_set_standard.get("map", {}),
-                    per_class_map_scores=scores_section.get("full_set", {}).get("per_class", {}).get(partition_name, {}).get("map", {}),
-                    partition_name=partition_name,
-                )
-
         accuracy_lines = _format_accuracy_block(" I2T Accuracy ", _collect_accuracy_rows(score_key=None, label_suffix=""))
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("acc", {}),
+            eval_metrics["scores"]["closed_set"]["standard"][bucket_partition_name]["acc"],
             " N-Shot Composite Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get("scores", {}).get("closed_set", {}).get("per_class", {}).get(bucket_partition_name, {}).get("acc", {}),
+            eval_metrics["scores"]["closed_set"]["per_class"][bucket_partition_name]["acc"],
             " N-Shot Composite Per-Class Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _format_accuracy_block(" Full-Set I2T Accuracy ", _collect_accuracy_rows(score_key="full_set", label_suffix="Full-Set "))
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get("scores", {}).get("full_set", {}).get("standard", {}).get(bucket_partition_name, {}).get("acc", {}),
+            eval_metrics["scores"]["full_set"]["standard"][bucket_partition_name]["acc"],
             " Full-Set N-Shot Composite Accuracy ",
         ) if bucket_partition_name is not None else ""
         accuracy_lines += _build_nshot_lines(
-            scores_eval.get("scores", {}).get("full_set", {}).get("per_class", {}).get(bucket_partition_name, {}).get("acc", {}),
+            eval_metrics["scores"]["full_set"]["per_class"][bucket_partition_name]["acc"],
             " Full-Set N-Shot Composite Per-Class Accuracy ",
         ) if bucket_partition_name is not None else ""
 
         composite_lines = _format_composite_block(
             " Composite mAP ",
-            scores_eval["scores"]["closed_set"]["standard"]["comp"]["map"],
+            eval_metrics["scores"]["closed_set"]["standard"]["comp"]["map"],
             eval_pipe.best_comp_map,
             eval_pipe.best_i2i_map,
         )
-        if "comp" in scores_eval["scores"].get("full_set", {}).get("standard", {}):
+        if "comp" in eval_metrics["scores"]["full_set"]["standard"]:
             composite_lines += _format_composite_block(
                 " Composite Full-Set mAP ",
-                scores_eval["scores"]["full_set"]["standard"]["comp"]["map"],
+                eval_metrics["scores"]["full_set"]["standard"]["comp"]["map"],
                 getattr(eval_pipe, "best_full_set_comp_map", None),
                 getattr(eval_pipe, "best_full_set_i2i_map", None),
             )
 
         composite_macro_lines = _format_composite_block(
             " Composite macro mAP ",
-            scores_eval["scores"]["closed_set"]["per_class"]["comp"]["map"],
+            eval_metrics["scores"]["closed_set"]["per_class"]["comp"]["map"],
             None,
             None,
         )
-        if "comp" in scores_eval["scores"].get("full_set", {}).get("per_class", {}):
+        if "comp" in eval_metrics["scores"]["full_set"]["per_class"]:
             composite_macro_lines += _format_composite_block(
                 " Composite macro Full-Set mAP ",
-                scores_eval["scores"]["full_set"]["per_class"]["comp"]["map"],
+                eval_metrics["scores"]["full_set"]["per_class"]["comp"]["map"],
                 None,
                 None,
             )
 
         loss_lines = f"{' Loss ':-^{75}}\n"
         has_loss = False
-        loss_section = scores_eval.get("loss", {})
         for partition_name in partition_names:
-            if partition_name in loss_section:
+            if eval_metrics["loss"][partition_name] is not None:
                 has_loss = True
-                loss_lines += _metric_line(partition_name.upper(), f"{loss_section[partition_name]:.3e}")
+                loss_lines += _metric_line(partition_name.upper(), f"{eval_metrics['loss'][partition_name]:.3e}")
         if not has_loss:
             loss_lines += "(disabled)\n"
 
         context_lines = ""
         if idx_epoch is not None:
             context_lines += f"Epoch ---------- {idx_epoch}\n"
-        if samps_seen is not None:
-            context_lines += f"Samples Seen --- {samps_seen:,}\n"
+        if n_samps_seen is not None:
+            context_lines += f"Samples Seen --- {n_samps_seen:,}\n"
         if time_eval is not None:
-            context_lines += f"Validation ----- {time_eval:.2f} s\n"
+            context_lines += f"Time ----------- {time_eval:.2f} s\n"
         if context_lines:
             context_lines += "\n"
 
@@ -519,6 +525,7 @@ class PrintLog:
             target_log.write(eval_printout)
 
     @staticmethod
+    @rank0
     def init_train(cfg_train):
         lines: list[str] = [
             "",
@@ -582,7 +589,7 @@ class PrintLog:
 
         lines.extend(PrintLog._format_loss_block(cfg_eval.loss))
 
-        mix = cfg_eval.loss2.get("mix", 0.0)
+        mix = cfg_eval.loss2["mix"]
         if mix != 0.0:
             lines.extend(PrintLog._format_loss_block(cfg_eval.loss2, secondary=True))
 
@@ -621,7 +628,7 @@ class PrintLog:
         lines.append(f"Similarity Type --- {loss['sim']}")
         lines.append(f"Target Type ------- {loss['targ']}")
 
-        wting = loss.get("wting", False)
+        wting = loss["wting"]
         if wting and "class_weighting" in loss['cfg']:
             cw = loss["cfg"]["class_weighting"]
             lines.append(f"Class Weighting --- {cw['type']}")
@@ -634,7 +641,7 @@ class PrintLog:
         else:
             lines.append("Class Weighting ---- disabled")
 
-        focal = loss.get("focal", False)
+        focal = loss["focal"]
         if focal and "focal" in loss['cfg']:
             cfg_focal = loss['cfg']["focal"]
             lines.append("Focal ------------- enabled")
@@ -662,6 +669,7 @@ class PrintLog:
         return lines
 
     @staticmethod
+    @rank0
     def close_logs():
         for handle in (
             PrintLog.log_batch_general,
@@ -678,3 +686,40 @@ class PrintLog:
 
 def get_subdirectory_names(dir_path):
     return [p.name for p in Path(dir_path).iterdir() if p.is_dir()]
+
+
+class Timer:
+    def __init__(self):
+        self._start_time = None
+        self._elapsed_time = 0.0
+        self._active = False
+
+    def start(self):
+        if self._active:
+            raise RuntimeError("Timer is already active.")
+        self._start_time = time.time()
+        self._active = True
+
+    def stop(self):
+        if not self._active:
+            raise RuntimeError("Timer is not active.")
+        self._elapsed_time += time.time() - self._start_time
+        self._start_time = None
+        self._active = False
+
+    def get_elapsed_time(self):
+        if self._active:
+            elapsed_time = time.time() - self._start_time
+        else:
+            elapsed_time = self._elapsed_time
+        return elapsed_time
+
+    def set_elapsed_time(self, elapsed_time):
+        if self._active:
+            raise RuntimeError("Timer is active. Stop it before setting elapsed time.")
+        self._elapsed_time = elapsed_time
+
+    def reset(self):
+        self._start_time = None
+        self._elapsed_time = 0.0
+        self._active = False

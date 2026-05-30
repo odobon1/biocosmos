@@ -16,6 +16,7 @@ from utils.loss import compute_loss
 from utils.head import compute_sim
 from utils.imb import compute_class_wts
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
+from utils.ddp import rank0
 
 import pdb
 
@@ -236,7 +237,9 @@ class VLMWrapper(abc.ABC):
             aug_cfg=self.cfg.aug,
         )
 
+    @rank0
     def save(self, dpath: Path) -> None:
+        dpath.mkdir(parents=True, exist_ok=True)
         fpath = dpath / "model.pt"
         state_dict_model = self._unwrapped_model.state_dict()
         torch.save(

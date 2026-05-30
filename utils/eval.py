@@ -1,16 +1,14 @@
 import torch
 from torch.amp import autocast
 import torch.distributed as dist
-import time
 from tqdm import tqdm
 from typing import Tuple, Any, List, Callable, Dict, Union, Optional
 from collections import defaultdict
 import math
-import sys
 
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
-from utils.utils import load_split
+from utils.utils import load_split, Timer
 
 import pdb
 
@@ -677,8 +675,10 @@ class EvaluationPipeline:
         loss_flag: bool = True,
     ) -> Tuple[Dict[str, Any], bool, bool, float]:
 
-        time_start = time.time()
-        scores_eval: Dict[str, Any] = {
+        timer = Timer()
+        timer.start()
+
+        eval_metrics: Dict[str, Any] = {
             "scores": {
                 "closed_set": {"standard": {}, "per_class": {}},
                 "full_set": {"standard": {}, "per_class": {}},
@@ -803,15 +803,17 @@ class EvaluationPipeline:
                     a["t2i"].append(scores[grp]["map"]["t2i"])
                     a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
 
-            scores_eval["scores"]["closed_set"]["standard"][partition_name] = closed_set_scores["standard"]
-            scores_eval["scores"]["closed_set"]["per_class"][partition_name] = closed_set_scores["per_class"]
-            scores_eval["scores"]["full_set"]["standard"][partition_name] = full_set_scores["standard"]
-            scores_eval["scores"]["full_set"]["per_class"][partition_name] = full_set_scores["per_class"]
+            eval_metrics["scores"]["closed_set"]["standard"][partition_name] = closed_set_scores["standard"]
+            eval_metrics["scores"]["closed_set"]["per_class"][partition_name] = closed_set_scores["per_class"]
+            eval_metrics["scores"]["full_set"]["standard"][partition_name] = full_set_scores["standard"]
+            eval_metrics["scores"]["full_set"]["per_class"][partition_name] = full_set_scores["per_class"]
             if loss_flag and loss_avg_partition is not None:
-                scores_eval["loss"][partition_name] = loss_avg_partition
+                eval_metrics["loss"][partition_name] = loss_avg_partition
+            else:
+                eval_metrics["loss"][partition_name] = None
 
         for (set_key, grp), a in accum.items():
-            scores_eval["scores"][set_key][grp]["comp"] = {
+            eval_metrics["scores"][set_key][grp]["comp"] = {
                 "acc": {"i2t": harmonic_mean(a["acc_i2t"])},
                 "map": {
                     "all": harmonic_mean(a["all"]),
@@ -826,9 +828,10 @@ class EvaluationPipeline:
             harmonic_mean(accum[("closed_set", "standard")]["all"]),
             harmonic_mean(accum[("closed_set", "standard")]["i2i"]),
         )
-        time_elapsed_eval = time.time() - time_start
+        
+        timer.stop()
 
-        return scores_eval, is_best_comp, is_best_i2i, time_elapsed_eval
+        return eval_metrics, is_best_comp, is_best_i2i, timer.get_elapsed_time()
 
     def check_bests(self, comp_map: float, i2i_map: float) -> Tuple[bool, bool]:
         is_best_comp, is_best_i2i = False, False

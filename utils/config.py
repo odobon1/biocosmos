@@ -45,7 +45,6 @@ class TrainConfig:
 
     sample_volume: int
     eval_every: int
-    chkpt_every: int
     batch_size: int
     dv_batching: bool
 
@@ -60,7 +59,6 @@ class TrainConfig:
 
     logging: bool
     aug: dict = field(default_factory=_default_train_aug_cfg)
-    metrics_plot_every_batches: int = 100
     
     eval_type: str = "validation"
 
@@ -105,9 +103,6 @@ class TrainConfig:
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
-
-        if self.metrics_plot_every_batches <= 0:
-            raise ValueError(f"metrics_plot_every_batches must be greater than 0, got {self.metrics_plot_every_batches}")
 
         if self.eval_type not in ("validation", "test"):
             raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")

@@ -8,10 +8,92 @@ from dataclasses import asdict
 
 from utils.utils import (
     paths, 
+    save_pickle,
     save_json, 
     load_json, 
     get_text_template, 
+    RunningMean,
+    Timer,
 )
+from utils.ddp import rank0
+
+import pdb
+
+
+class TrialData:
+
+    def __init__(self, dpath_trial):
+
+        self.fpath_data = dpath_trial / "data_trial.pkl"  #!
+
+        self.data_epoch = {
+            "n_samps_seen": [],
+            "lr": [],
+            "loss_train": [],
+            "loss_raw_train": [],
+            "grad_norm_model": [],
+        }
+        self.data_eval = {
+            "n_samps_seen": [],
+        }
+        self.data = {
+            "epoch": self.data_epoch,
+            "eval": self.data_eval,
+        }
+
+        self.rmean_time_eval = RunningMean()
+        self.n_evals = 0
+
+        self.eval_metrics = None  # most recent eval metrics
+        self.time_eval = None  # most recent eval time
+        self.eval_metrics_best_comp = None
+        self.eval_metrics_best_i2i = None
+
+        self.n_samps_seen_best_comp = 0
+        self.n_samps_seen_best_i2i = 0
+
+        self.timer_trial = Timer()
+        self.timer_trial.start()
+
+    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None):
+
+        self.data_epoch["n_samps_seen"].append(n_samps_seen)
+
+        if lr is not None:
+            self.data_epoch["lr"].append(lr)
+        if loss_train is not None:
+            self.data_epoch["loss_train"].append(loss_train)
+        if loss_raw_train is not None:
+            self.data_epoch["loss_raw_train"].append(loss_raw_train)
+        if grad_norm_model is not None:
+            self.data_epoch["grad_norm_model"].append(grad_norm_model)
+
+    def update_eval(self, n_samps_seen):
+
+        def append_nested(dst, src):
+            for score_name, score_value in src.items():
+                if isinstance(score_value, dict):
+                    if score_name not in dst:
+                        dst[score_name] = {}
+                    append_nested(dst[score_name], score_value)
+                else:
+                    if score_name not in dst:
+                        dst[score_name] = []
+                    dst[score_name].append(score_value)
+
+        self.n_evals += 1
+        self.rmean_time_eval.update(self.time_eval)
+
+        self.data_eval["n_samps_seen"].append(n_samps_seen)
+
+        for k, v in self.eval_metrics.items():
+            if k not in self.data_eval:
+                self.data_eval[k] = {}
+            append_nested(self.data_eval[k], v)
+
+    @rank0
+    def save(self):
+        save_pickle(self.data, self.fpath_data)
 
 
 class ArtifactManager:
@@ -19,7 +101,7 @@ class ArtifactManager:
     dpath_campaign = None
     dpath_setting = None
     dpath_trial = None
-    dpath_model_base = None
+    fpath_runtime_data = None
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
     dpath_model_checkpoint = None
@@ -32,6 +114,7 @@ class ArtifactManager:
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
+        ArtifactManager.fpath_runtime_data = ArtifactManager.dpath_trial / "runtime.json"
 
         if ArtifactManager.dpath_trial.exists():
             if cfg_train.dev['allow_overwrite_trial']:
@@ -39,26 +122,27 @@ class ArtifactManager:
             else:
                 raise ValueError(f"Trial directory '{cfg_train.campaign_name}/{cfg_train.setting_name}/{cfg_train.dataset}/{cfg_train.seed}' already exists!")
 
-        ArtifactManager.dpath_model_base = ArtifactManager.dpath_trial / "models/base"
         ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "models/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "models/checkpoint"
 
     @staticmethod
+    @rank0
     def create_trial_dirs():
-        for subdir in ("logs", "models", "models/base", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
+        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
+    @rank0
     def save_metadata_campaign(cfg_train):
         fpath_meta = ArtifactManager.dpath_campaign / "metadata_campaign.json"
-        metadata   = {
-            "dataset":         cfg_train.dataset,
-            "split_name":      cfg_train.split_name,
-            "n_gpus":          cfg_train.n_gpus,
-            "n_cpus":          cfg_train.n_cpus,
-            "ram":             f"{cfg_train.ram} GB",
-            "n_workers":       cfg_train.n_workers,
+        metadata = {
+            "dataset": cfg_train.dataset,
+            "split_name": cfg_train.split_name,
+            "n_gpus": cfg_train.n_gpus,
+            "n_cpus": cfg_train.n_cpus,
+            "ram": f"{cfg_train.ram} GB",
+            "n_workers": cfg_train.n_workers,
             "prefetch_factor": cfg_train.prefetch_factor,
         }
         if fpath_meta.exists() and not cfg_train.dev['allow_diff_campaign']:
@@ -68,6 +152,7 @@ class ArtifactManager:
             save_json(metadata, fpath_meta)
 
     @staticmethod
+    @rank0
     def save_metadata_setting(cfg_train):
         
         def clean_metadata(metadata):
@@ -78,8 +163,6 @@ class ArtifactManager:
             del metadata["split_name"]
 
             del metadata["dev"]
-
-            del metadata["chkpt_every"]
             
             metadata["loss"].pop("wting", None)
             metadata["loss"].pop("focal", None)
@@ -94,7 +177,7 @@ class ArtifactManager:
                 del metadata["loss2"]
         
         fpath_meta = ArtifactManager.dpath_setting / "metadata_setting.json"
-        metadata   = asdict(cfg_train)
+        metadata = asdict(cfg_train)
 
         # save full text combo-templates themselves and not just the names
         text_template_full = {}
@@ -110,21 +193,34 @@ class ArtifactManager:
             save_json(metadata, fpath_meta)
 
     @staticmethod
-    def save_metadata_trial(time_train_mean=None, time_eval_mean=None):
-        fpath_meta = ArtifactManager.dpath_trial / "metadata_trial.json"
-        if time_train_mean is not None:
-            time_train_mean = f"{time_train_mean:.2f}"
-            time_eval_mean = f"{time_eval_mean:.2f}"
-        metadata = {
-            "runtime_perf": {
-                "train_mean": time_train_mean, 
-                "val_mean": time_eval_mean,
+    @rank0
+    def save_runtime_data(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean):
+
+        if data.n_evals > 0:
+            mean_time_eval = f"{data.rmean_time_eval.value():.2f}"
+        else:
+            mean_time_eval = None
+        if idx_epoch > 0:
+            mean_time_train = f"{rmean_time_train.value():.2f}"
+        else:
+            mean_time_train = None
+
+        time_elapsed_trial = f"{data.timer_trial.get_elapsed_time():.2f}"
+        runtime_data = {
+            "train": {
+                "mean": mean_time_train,
+                "n": idx_epoch,
             },
+            "eval": {
+                "mean": mean_time_eval,
+                "n": data.n_evals,
+            },
+            "trial": time_elapsed_trial,
         }
-        save_json(metadata, fpath_meta)
+        save_json(runtime_data, ArtifactManager.fpath_runtime_data)
 
     @staticmethod
-    def save_eval_data(dpath_model, scores_eval, samps_seen_chkpt, samps_seen):
+    def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
         def format_scores(scores):
             if scores is None:
                 return None
@@ -134,8 +230,8 @@ class ArtifactManager:
 
         fpath_meta = dpath_model / "eval.json"
         metadata = {
-            **format_scores(scores_eval),
-            "samps_seen": f"{samps_seen_chkpt:,}/{samps_seen:,}",
+            **format_scores(eval_metrics),
+            "n_samps_seen": f"{n_samps_seen_chkpt:,}/{n_samps_seen:,}",
         }
         save_json(metadata, fpath_meta)
 
@@ -143,6 +239,7 @@ class ArtifactManager:
 def _samples_seen_tick_formatter(value, _pos):
     return f"{value / 1_000_000:g}"
 
+@rank0
 def plot_metrics(
         data_tracker, 
         dpath_trial,
@@ -161,8 +258,8 @@ def plot_metrics(
     if not partition_names or "comp" not in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}):
         return
 
-    x_eval = data_eval["samps_seen"]
-    x_train = data_epoch["samps_seen"]
+    x_eval = data_eval["n_samps_seen"]
+    x_train = data_epoch["n_samps_seen"]
 
     bucket_partition_name = next((name for name in partition_names if name.startswith("id")), None)
     bucket_comp_keys_standard = [
@@ -436,7 +533,9 @@ def plot_composite_metrics(
     fig.suptitle(plot_title, fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    fig.savefig(dpath_trial / f"plots/{output_filename}")
+    plots_dir = dpath_trial / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / output_filename)
     plt.close(fig)
 
 def maybe_plot(ax, x, data, key, label, **kwargs):

@@ -30,10 +30,10 @@ partition += ["ood"] * len(split_p.data_indexes["validation"]["ood"]["sids"])
 sids += split_p.data_indexes["validation"]["ood"]["sids"]
 rfpaths += split_p.data_indexes["validation"]["ood"]["rfpaths"]
 
-gpu_rank, _, _, device = setup_ddp()
-config_eval = get_config_eval(verbose=(gpu_rank==0))
+_, device = setup_ddp()
+config_eval = get_config_eval(verbose=(dist.get_rank() == 0))
 
-modelw = VLMWrapper.build(config_eval, verbose=(gpu_rank==0))
+modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
 modelw.model = modelw.model.to(device).eval()
 
 fpath_imgs = paths["imgs"]["nymph"]

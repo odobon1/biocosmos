@@ -132,7 +132,8 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     if dev_cfg.get("debug_mode", False):
         cfg_dict["split_name"] = "dev"
         cfg_dict["sample_volume"] = 20_000
-        cfg_dict["eval_every"] = 5_000
+        cfg_dict["eval_every"] = 10_000
+        cfg_dict["batch_size"] = 1_024
     return cfg_dict
 
 def _deep_merge_dict(base: dict, updates: dict) -> dict:

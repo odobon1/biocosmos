@@ -7,13 +7,12 @@ def setup_ddp():
     assert torch.cuda.is_available(), "CUDA is not available!"
     assert dist.is_available(), "torch.distributed is not available!"
 
-    dist.init_process_group("nccl")
-    assert dist.is_initialized(), "torch.distributed failed to initialize!"
-
     local_gpu_rank = int(os.environ.get("LOCAL_RANK", 0))
-
     torch.cuda.set_device(local_gpu_rank)
     device = torch.device("cuda", local_gpu_rank)
+
+    dist.init_process_group("nccl", device_id=device)
+    assert dist.is_initialized(), "torch.distributed failed to initialize!"
 
     return local_gpu_rank, device
 

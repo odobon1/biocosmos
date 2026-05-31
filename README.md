@@ -94,6 +94,8 @@ Note: The full similarity matrix is computed for all model types, including SigL
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
 4. If a trial fails, campaign execution continues and details are appended to `artifacts/<CAMPAIGN_NAME>/campaign_errors.log`.
 
+**Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN_NAME>/metadata_campaign.json` on first launch; a mismatch on resume raises an error before any trials execute.
+
 <br>
 
 # Supported Architectures

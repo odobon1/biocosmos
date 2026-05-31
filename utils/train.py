@@ -3,9 +3,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter
-import shutil
 from dataclasses import asdict
 import time
+import random
+import numpy as np
+import torch
+import shutil
 
 from utils.utils import (
     paths,
@@ -93,6 +96,24 @@ class TrialData:
                 self.data_eval[k] = {}
             append_nested(self.data_eval[k], v)
 
+    @classmethod
+    def resume(cls, dpath_trial, trial_state):
+        obj = cls(dpath_trial)
+        obj.data = load_pickle(obj.fpath_data)
+        obj.data_epoch = obj.data["epoch"]
+        obj.data_eval = obj.data["eval"]
+        obj.n_evals = trial_state["n_evals"]
+        obj.rmean_time_eval.n = trial_state["rmean_time_eval_n"]
+        obj.rmean_time_eval.mean = trial_state["rmean_time_eval_mean"]
+        obj.timer_trial = Timer()
+        obj.timer_trial.set_elapsed_time(trial_state["timer_trial_elapsed"])
+        obj.timer_trial.start()
+        obj.n_samps_seen_best_comp = trial_state["n_samps_seen_best_comp"]
+        obj.n_samps_seen_best_i2i = trial_state["n_samps_seen_best_i2i"]
+        obj.eval_metrics_best_comp = trial_state["eval_metrics_best_comp"]
+        obj.eval_metrics_best_i2i = trial_state["eval_metrics_best_i2i"]
+        return obj
+
     @rank0
     def save(self):
         save_pickle(self.data, self.fpath_data)
@@ -107,6 +128,7 @@ class ArtifactManager:
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
     dpath_model_checkpoint = None
+    resuming = False
 
     @staticmethod
     def set_paths(cfg_train):
@@ -118,19 +140,24 @@ class ArtifactManager:
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
         ArtifactManager.fpath_runtime_data = ArtifactManager.dpath_trial / "runtime.json"
 
-        if ArtifactManager.dpath_trial.exists():
-            if cfg_train.dev['allow_overwrite_trial']:
-                shutil.rmtree(ArtifactManager.dpath_trial)
-            else:
-                raise ValueError(f"Trial directory '{cfg_train.campaign_name}/{cfg_train.setting_name}/{cfg_train.dataset}/{cfg_train.seed}' already exists!")
-
         ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "models/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "models/checkpoint"
 
+        if ArtifactManager.dpath_trial.exists():
+            if (ArtifactManager.dpath_model_checkpoint / "train_state.pt").exists():
+                ArtifactManager.resuming = True
+            else:
+                shutil.rmtree(ArtifactManager.dpath_trial, ignore_errors=True)
+                ArtifactManager.resuming = False
+        else:
+            ArtifactManager.resuming = False
+
     @staticmethod
     @rank0
     def create_trial_dirs():
+        if ArtifactManager.resuming:
+            return
         for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
@@ -143,7 +170,7 @@ class ArtifactManager:
             days, seconds = divmod(seconds, 86400)
             hours, seconds = divmod(seconds, 3600)
             minutes, seconds = divmod(seconds, 60)
-            return f"{days}d-{hours:02}:{minutes:02}:{seconds:02}"
+            return f"{days}-{hours:02}:{minutes:02}:{seconds:02}"
         
         fpath_pkl = ArtifactManager.dpath_campaign / "time.pkl"
         fpath_json = ArtifactManager.dpath_campaign / "metadata_campaign.json"
@@ -200,7 +227,7 @@ class ArtifactManager:
         metadata["text_template"] = text_template_full
 
         clean_metadata(metadata)
-        if fpath_meta.exists() and not cfg_train.dev['allow_diff_setting']:
+        if fpath_meta.exists():
             metadata_loaded = load_json(fpath_meta)
             assert metadata == metadata_loaded, "Setting params changed!"
         else:
@@ -248,6 +275,73 @@ class ArtifactManager:
             "n_samps_seen": f"{n_samps_seen_chkpt:,}/{n_samps_seen:,}",
         }
         save_json(metadata, fpath_meta)
+
+    @staticmethod
+    @rank0
+    def save_train_state(train_pipe, idx_batch_chkpt):
+        state = {
+            "optimizer": train_pipe.optimizer.state_dict(),
+            "lr_sched": train_pipe.lr_schedw.sched.state_dict(),
+            "n_samps_seen": train_pipe.n_samps_seen,
+            "n_batches_seen": train_pipe.n_batches_seen,
+            "idx_epoch": train_pipe.idx_epoch,
+            "idx_batch_chkpt": idx_batch_chkpt,
+            "eval_threshold": train_pipe.eval_threshold,
+            "rmean_time_train_n": train_pipe.rmean_time_train.n,
+            "rmean_time_train_mean": train_pipe.rmean_time_train.mean,
+            "rng_cpu": torch.get_rng_state(),
+            "rng_cuda": torch.cuda.get_rng_state_all(),
+            "rng_numpy": np.random.get_state(),
+            "rng_random": random.getstate(),
+        }
+        if train_pipe.cfg.hw.mixed_prec:
+            state["scaler"] = train_pipe.scaler.state_dict()
+        torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
+
+    @staticmethod
+    def save_rng_state(rank):
+        state = {
+            "rng_cpu": torch.get_rng_state(),
+            "rng_cuda": torch.cuda.get_rng_state_all(),
+            "rng_numpy": np.random.get_state(),
+            "rng_random": random.getstate(),
+        }
+        torch.save(state, ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt")
+
+    @staticmethod
+    @rank0
+    def save_trial_state(data):
+        state = {
+            "n_evals": data.n_evals,
+            "rmean_time_eval_n": data.rmean_time_eval.n,
+            "rmean_time_eval_mean": data.rmean_time_eval.mean,
+            "timer_trial_elapsed": data.timer_trial.get_elapsed_time(),
+            "n_samps_seen_best_comp": data.n_samps_seen_best_comp,
+            "n_samps_seen_best_i2i": data.n_samps_seen_best_i2i,
+            "eval_metrics_best_comp": data.eval_metrics_best_comp,
+            "eval_metrics_best_i2i": data.eval_metrics_best_i2i,
+        }
+        save_pickle(state, ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
+
+    @staticmethod
+    def load_train_state():
+        return torch.load(
+            ArtifactManager.dpath_model_checkpoint / "train_state.pt",
+            map_location="cpu",
+            weights_only=False,
+        )
+
+    @staticmethod
+    def load_rng_state(rank):
+        return torch.load(
+            ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt",
+            map_location="cpu",
+            weights_only=False,
+        )
+
+    @staticmethod
+    def load_trial_state():
+        return load_pickle(ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
 
 
 def _samples_seen_tick_formatter(value, _pos):

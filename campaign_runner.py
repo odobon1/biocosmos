@@ -10,17 +10,18 @@ import sys
 import yaml
 import traceback
 import time
+import torch
 
 from utils.config import apply_overrides, load_train_config_dict
-from utils.utils import paths, save_pickle, save_json
+from utils.utils import paths, save_pickle, save_json, load_json
 
 
 CAMPAIGN_NAME = "dev"
 
 SEED0 = 42
-NUM_SEEDS = 3
+NUM_SEEDS = 1
 
-DATASETS = ("cub", "lepid")
+DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
     {"loss": {"targ": "aligned"}, "name": "iw"},
@@ -163,10 +164,21 @@ def run_campaign() -> None:
     dpath_campaign.mkdir(parents=True, exist_ok=True)
     save_pickle(time_data, dpath_campaign / "time.pkl")
 
-    metadata_camp = {
-        "duration": "0-00:00:00",
-    }
-    save_json(metadata_camp, dpath_campaign / "metadata_campaign.json")
+    n_gpus = torch.cuda.device_count()
+    fpath_meta = dpath_campaign / "metadata_campaign.json"
+    if fpath_meta.exists():
+        existing_meta = load_json(fpath_meta)
+        if existing_meta["n_gpus"] != n_gpus:
+            raise RuntimeError(
+                f"GPU count mismatch: campaign '{CAMPAIGN_NAME}' was run with "
+                f"{existing_meta['n_gpus']} GPUs but current environment has {n_gpus}."
+            )
+    else:
+        metadata_camp = {
+            "duration": "0-00:00:00",
+            "n_gpus": n_gpus,
+        }
+        save_json(metadata_camp, dpath_campaign / "metadata_campaign.json")
 
     baseline = _load_or_create_baseline()
     settings = _expand_settings(BASELINE_OVERRIDES)
@@ -184,6 +196,11 @@ def run_campaign() -> None:
             for setting_name, setting_payload_raw, _setting_payload_norm in settings:
                 idx += 1
 
+                dpath_trial = _dpath_campaign() / setting_name / dataset / str(seed)
+                if (dpath_trial / "completed").exists():
+                    print(f"[{idx}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting_name}")
+                    continue
+
                 cfg_dict = apply_overrides(baseline, setting_payload_raw)
                 cfg_dict["campaign_name"] = CAMPAIGN_NAME
                 cfg_dict["setting_name"] = setting_name
@@ -191,9 +208,11 @@ def run_campaign() -> None:
                 cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
 
-                print(
-                    f"[{idx}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}"
-                )
+                if dpath_trial.exists():
+                    print(f"[{idx}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting_name}")
+                else:
+                    print(f"[{idx}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}")
+
                 try:
                     cfg_fpath = _write_trial_cfg(_dpath_campaign(), idx, cfg_dict)
                     _run_trial_subprocess(cfg_fpath)

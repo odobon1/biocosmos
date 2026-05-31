@@ -2,10 +2,12 @@
 torchrun --standalone --nproc-per-node=auto -m train
 """
 
+import random
+import numpy as np
 import torch
 from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import (
-    CosineAnnealingLR, 
+    CosineAnnealingLR,
 )
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -65,13 +67,18 @@ class LRSchedulerWrapper:
 class TrainPipeline:
 
     def __init__(
-        self, 
-        modelw, 
+        self,
+        modelw,
         config,
+        resume_state=None,
+        trial_state=None,
+        local_rank=0,
     ):
 
         self.modelw = modelw
         self.cfg = config
+        self._resume_state = resume_state
+        self._local_rank = local_rank
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
@@ -101,7 +108,30 @@ class TrainPipeline:
         self.idx_epoch = 0
         self.timer_train = Timer()
         self.rmean_time_train = RunningMean()
-        self.data = TrialData(ArtifactManager.dpath_trial) if dist.get_rank() == 0 else None
+
+        if dist.get_rank() == 0:
+            if resume_state is not None and trial_state is not None:
+                self.data = TrialData.resume(ArtifactManager.dpath_trial, trial_state)
+            else:
+                self.data = TrialData(ArtifactManager.dpath_trial)
+        else:
+            self.data = None
+
+        if resume_state is not None:
+            self.n_samps_seen = resume_state["n_samps_seen"]
+            self.n_batches_seen = resume_state["n_batches_seen"]
+            self.idx_epoch = max(0, resume_state["idx_epoch"] - 1)
+            self.eval_threshold = resume_state["eval_threshold"]
+            self.rmean_time_train.n = resume_state["rmean_time_train_n"]
+            self.rmean_time_train.mean = resume_state["rmean_time_train_mean"]
+            self.optimizer.load_state_dict(resume_state["optimizer"])
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(self.cfg.device)
+            self.lr_schedw.sched.load_state_dict(resume_state["lr_sched"])
+            if self.cfg.hw.mixed_prec:
+                self.scaler.load_state_dict(resume_state["scaler"])
 
     def init_opt_and_lr_sched(self):
 
@@ -181,7 +211,7 @@ class TrainPipeline:
         )
 
     @rank0
-    def _checkpoint(self, header, checkpoint_best_comp, checkpoint_best_i2i):
+    def _checkpoint(self, header, checkpoint_best_comp, checkpoint_best_i2i, idx_batch_chkpt):
         self.data.update_eval(self.n_samps_seen)
         self._print_log_eval(header)
         if checkpoint_best_comp:
@@ -200,6 +230,8 @@ class TrainPipeline:
             ArtifactManager.update_campaign_time()
 
         self.data.save()
+        ArtifactManager.save_train_state(self, idx_batch_chkpt)
+        ArtifactManager.save_trial_state(self.data)
         plot_metrics(self.data, ArtifactManager.dpath_trial)
 
     def train(self):
@@ -209,13 +241,28 @@ class TrainPipeline:
 
             # BASE EVAL
 
-            eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
-            if self.data is not None:
-                self.data.eval_metrics = eval_metrics
-                self.data.time_eval = time_eval
-            self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True)
+            if self._resume_state is None:
+                eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                if self.data is not None:
+                    self.data.eval_metrics = eval_metrics
+                    self.data.time_eval = time_eval
+                self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch_chkpt=-1)
+                dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
+                ArtifactManager.save_rng_state(self._local_rank)
+                dist.barrier()
+            else:
+                # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
+                if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch_chkpt"] == -1:
+                    fpath_rng = ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{self._local_rank}.pt"
+                    if fpath_rng.exists():
+                        rng = ArtifactManager.load_rng_state(self._local_rank)
+                        torch.set_rng_state(rng["rng_cpu"])
+                        torch.cuda.set_rng_state_all(rng["rng_cuda"])
+                        np.random.set_state(rng["rng_numpy"])
+                        random.setstate(rng["rng_random"])
+                    self._resume_state = None
 
-            for _ in range(self.cfg.n_epochs):
+            for _ in range(self.cfg.n_epochs - self.idx_epoch):
                 self.timer_train.start()
                 self.idx_epoch += 1
 
@@ -238,6 +285,23 @@ class TrainPipeline:
                 loss_raw_mean = RunningMean()
 
                 for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(dist.get_rank() != 0))):
+
+                    # Skip already-processed batches when resuming the interrupted epoch;
+                    # on the last skipped batch restore RNG to match original run state.
+                    if (
+                        self._resume_state is not None
+                        and self.idx_epoch == self._resume_state["idx_epoch"]
+                        and idx_batch <= self._resume_state["idx_batch_chkpt"]
+                    ):
+                        if idx_batch == self._resume_state["idx_batch_chkpt"]:
+                            rng = ArtifactManager.load_rng_state(self._local_rank)
+                            torch.set_rng_state(rng["rng_cpu"])
+                            torch.cuda.set_rng_state_all(rng["rng_cuda"])
+                            np.random.set_state(rng["rng_numpy"])
+                            random.setstate(rng["rng_random"])
+                            self._resume_state = None
+                        continue
+
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = data_sb
 
                     if self.idx_epoch == 1 and idx_batch == 0:
@@ -310,7 +374,9 @@ class TrainPipeline:
                         if self.data is not None:
                             self.data.eval_metrics = eval_metrics
                             self.data.time_eval = time_eval
-                        self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i)
+                        self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch_chkpt=idx_batch)
+                        ArtifactManager.save_rng_state(self._local_rank)
+                        dist.barrier()
 
                         self.timer_train.start()
 
@@ -341,7 +407,9 @@ class TrainPipeline:
             if self.data is not None:
                 self.data.eval_metrics = eval_metrics
                 self.data.time_eval = time_eval
-            self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i)
+            self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch_chkpt=-1)
+            ArtifactManager.save_rng_state(self._local_rank)
+            dist.barrier()
 
         finally:
             PrintLog.close_logs()
@@ -356,6 +424,7 @@ def run_training(cfg=None):
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()
+    dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_setting(cfg)
     if cfg.logging:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
@@ -365,10 +434,29 @@ def run_training(cfg=None):
     modelw.set_class_wts(cfg)
     if cfg.loss2["mix"] != 0.0:
         modelw.set_class_wts(cfg, secondary=True)
+
+    resume_state = None
+    trial_state = None
+    if ArtifactManager.resuming:
+        chkpt = torch.load(
+            ArtifactManager.dpath_model_checkpoint / "model.pt",
+            map_location="cpu",
+            weights_only=False,
+        )
+        modelw._unwrapped_model.load_state_dict(chkpt["model"])
+        modelw.norm_mean = chkpt["norm_mean"]
+        modelw.norm_std = chkpt["norm_std"]
+        modelw.set_image_preprocessors()
+        resume_state = ArtifactManager.load_train_state()
+        trial_state = ArtifactManager.load_trial_state()
+
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
-    train_pipe = TrainPipeline(modelw, cfg)
+    train_pipe = TrainPipeline(modelw, cfg, resume_state=resume_state, trial_state=trial_state, local_rank=local_gpu_rank)
     train_pipe.train()
+
+    if dist.get_rank() == 0:
+        (ArtifactManager.dpath_trial / "completed").touch()
 
     cleanup_ddp()
 

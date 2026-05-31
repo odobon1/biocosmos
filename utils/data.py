@@ -170,6 +170,16 @@ class Split:
     norm_mean: Tuple[float]
     norm_std: Tuple[float]
 
+class EpochEncodingDistributedSampler(DistributedSampler):
+    """DistributedSampler that encodes the epoch into each yielded index.
+
+    Yields ``epoch * len(dataset) + raw_idx`` so that ImageTextDataset can derive
+    a per-(epoch, item) augmentation seed without needing to know the epoch itself.
+    """
+    def __iter__(self):
+        epoch_offset = self.epoch * len(self.dataset)
+        return (idx + epoch_offset for idx in super().__iter__())
+
 class ExactDistributedSampler(Sampler[int]):
     """
     Distributed sampler that assigns each dataset index to exactly one rank.
@@ -223,11 +233,12 @@ class DorsalVentralBatchSampler:
         seed:       int,
     ) -> None:
 
-        self.n_replicas    = dist.get_world_size()
+        self.n_replicas = dist.get_world_size()
         self.subbatch_size = int(batch_size / self.n_replicas)
-        self.rank          = dist.get_rank()
-        self.seed          = seed
-        self.epoch         = 0
+        self.rank = dist.get_rank()
+        self.seed = seed
+        self.epoch = 0
+        self.n_samples = len(index_pos)
 
         self.idxs_d = [i for i, p in enumerate(index_pos) if p == "dorsal"]
         self.idxs_v = [i for i, p in enumerate(index_pos) if p == "ventral"]
@@ -265,14 +276,16 @@ class DorsalVentralBatchSampler:
         pool_tags: list[str] = (["dorsal"] * self.n_batches_d) + (["ventral"] * self.n_batches_v)
         pool_tags = shuffle_list(pool_tags, self.seed + self.epoch + 2)  # shuffle pool tags
 
+        epoch_offset = self.epoch * self.n_samples
+
         idx_d = 0
         idx_v = 0
         for tag in pool_tags:
             if tag == "dorsal":
-                subbatch = idxs_d_local[idx_d:idx_d+self.subbatch_size]
+                subbatch = [i + epoch_offset for i in idxs_d_local[idx_d:idx_d+self.subbatch_size]]
                 idx_d += self.subbatch_size
             else:
-                subbatch = idxs_v_local[idx_v:idx_v+self.subbatch_size]
+                subbatch = [i + epoch_offset for i in idxs_v_local[idx_v:idx_v+self.subbatch_size]]
                 idx_v += self.subbatch_size
 
             yield subbatch
@@ -291,6 +304,7 @@ class ImageTextDataset(Dataset):
         self.img_pp = img_pp
         self.dataset = config.dataset
         self.text_generator = get_text_generator(self.dataset)
+        self._aug_seed = config.seed
 
         self.n_samples = len(self.index_data)
 
@@ -310,22 +324,28 @@ class ImageTextDataset(Dataset):
     def __len__(self):
         return self.n_samples
     
-    def __getitem__(self, idx):
+    def __getitem__(self, encoded_idx):
         """
         Get processed image tensor, class encoding, and generated text.
-        idx --> sample (preprocessed image, class encoding, text)
+        encoded_idx --> sample (preprocessed image, class encoding, text)
 
-        This method gets called in a background thread/process to prepare batch N+1 while GPU and main process are 
+        encoded_idx encodes both the epoch and the item: encoded_idx = epoch * n_samples + raw_idx.
+        This allows augmentation to be seeded per (epoch, item) without passing epoch explicitly
+        to workers, which is needed for cross-session reproducibility with persistent workers.
+
+        This method gets called in a background thread/process to prepare batch N+1 while GPU and main process are
         processing batch N.
 
         Args:
-        - idx --- [int] --- Sample index
+        - encoded_idx --- [int] --- Epoch-encoded sample index
 
         Returns:
         - [torch.Tensor]
         - [int]
         - [str]
         """
+        idx = encoded_idx % self.n_samples
+
         class_enc = self.index_data[idx]["class_enc"]
         cid = self.index_data[idx]["cid"]
         meta = self.index_data[idx]["meta"]
@@ -344,6 +364,11 @@ class ImageTextDataset(Dataset):
             rank_encs.append(rank_map.get(rank_value, -1))
 
         text = self.text_generator.generate(class_data_cid, self.text_template, meta)
+
+        # Seed augmentation RNG per (epoch, item) for cross-session reproducibility.
+        # encoded_idx = epoch * n_samples + idx, so this seed varies each epoch.
+        random.seed(self._aug_seed + encoded_idx)
+        torch.manual_seed(self._aug_seed + encoded_idx)
 
         # load + preprocess image
         img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
@@ -503,22 +528,22 @@ def spawn_dataloader(
                 seed=getattr(config, "seed", 0),
             )
         else:
-            sampler = DistributedSampler(
+            sampler = EpochEncodingDistributedSampler(
                 dataset,
-                shuffle  =shuffle,
+                shuffle=shuffle,
                 drop_last=drop_last,
             )
         dataloader = DataLoader(
             dataset,
-            batch_size        =bs_local,
-            shuffle           =False,
-            num_workers       =config.n_workers,
-            pin_memory        =True,  # (True) speeds up host --> GPU copies, higher RAM cost
-            prefetch_factor   =config.prefetch_factor,
-            collate_fn        =collate_fn,
-            drop_last         =drop_last,
+            batch_size=bs_local,
+            shuffle=False,
+            num_workers=config.n_workers,
+            pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
+            prefetch_factor=config.prefetch_factor,
+            collate_fn=collate_fn,
+            drop_last=drop_last,
             persistent_workers=persistent_workers,
-            sampler           =sampler,
+            sampler=sampler,
         )
 
     return dataloader

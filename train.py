@@ -1,3 +1,7 @@
+"""
+torchrun --standalone --nproc-per-node=auto -m train
+"""
+
 import torch
 from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import (
@@ -192,6 +196,8 @@ class TrainPipeline:
         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
         self._save_eval_data()
         ArtifactManager.save_runtime_data(self.data, self.idx_epoch, self.rmean_time_train)
+        if not self.cfg.standalone:
+            ArtifactManager.update_campaign_time()
 
         self.data.save()
         plot_metrics(self.data, ArtifactManager.dpath_trial)
@@ -350,7 +356,6 @@ def run_training(cfg=None):
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()
-    ArtifactManager.save_metadata_campaign(cfg)
     ArtifactManager.save_metadata_setting(cfg)
     if cfg.logging:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")

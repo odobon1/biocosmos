@@ -5,13 +5,15 @@ import matplotlib.gridspec as gridspec
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter
 import shutil
 from dataclasses import asdict
+import time
 
 from utils.utils import (
-    paths, 
+    paths,
     save_pickle,
-    save_json, 
-    load_json, 
-    get_text_template, 
+    load_pickle,
+    save_json,
+    load_json,
+    get_text_template,
     RunningMean,
     Timer,
 )
@@ -134,22 +136,33 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_campaign(cfg_train):
-        fpath_meta = ArtifactManager.dpath_campaign / "metadata_campaign.json"
-        metadata = {
-            "dataset": cfg_train.dataset,
-            "split_name": cfg_train.split_name,
-            "n_gpus": cfg_train.n_gpus,
-            "n_cpus": cfg_train.n_cpus,
-            "ram": f"{cfg_train.ram} GB",
-            "n_workers": cfg_train.n_workers,
-            "prefetch_factor": cfg_train.prefetch_factor,
-        }
-        if fpath_meta.exists() and not cfg_train.dev['allow_diff_campaign']:
-            metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Campaign params changed!"
-        else:
-            save_json(metadata, fpath_meta)
+    def update_campaign_time():
+
+        def format_duration(seconds: float) -> str:
+            seconds = int(seconds)
+            days, seconds = divmod(seconds, 86400)
+            hours, seconds = divmod(seconds, 3600)
+            minutes, seconds = divmod(seconds, 60)
+            return f"{days}d-{hours:02}:{minutes:02}:{seconds:02}"
+        
+        fpath_pkl = ArtifactManager.dpath_campaign / "time.pkl"
+        fpath_json = ArtifactManager.dpath_campaign / "metadata_campaign.json"
+
+        time_data = load_pickle(fpath_pkl)
+
+        time_last_updated = time_data["last_updated"]
+        time_curr = time.time()
+
+        time_elapsed = time_data["elapsed"]
+        time_elapsed = time_elapsed + (time_curr - time_last_updated)
+
+        time_data["last_updated"] = time_curr
+        time_data["elapsed"] = time_elapsed
+        save_pickle(time_data, fpath_pkl)
+        
+        metadata_camp = load_json(ArtifactManager.dpath_campaign / "metadata_campaign.json")
+        metadata_camp["duration"] = format_duration(time_elapsed)
+        save_json(metadata_camp, fpath_json)
 
     @staticmethod
     @rank0
@@ -161,6 +174,7 @@ class ArtifactManager:
             del metadata["setting_name"]
             del metadata["seed"]
             del metadata["split_name"]
+            del metadata["standalone"]
 
             del metadata["dev"]
             

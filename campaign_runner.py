@@ -9,9 +9,10 @@ import subprocess
 import sys
 import yaml
 import traceback
+import time
 
 from utils.config import apply_overrides, load_train_config_dict
-from utils.utils import paths
+from utils.utils import paths, save_pickle, save_json
 
 
 CAMPAIGN_NAME = "dev"
@@ -19,7 +20,7 @@ CAMPAIGN_NAME = "dev"
 SEED0 = 42
 NUM_SEEDS = 3
 
-DATASETS = ("lepid",)
+DATASETS = ("cub", "lepid")
 
 BASELINE_OVERRIDES = [
     {"loss": {"targ": "aligned"}, "name": "iw"},
@@ -37,15 +38,15 @@ def _load_yaml(fpath: Path) -> dict:
     with open(fpath) as f:
         return yaml.safe_load(f)
 
-def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
+def _log_trial_error(dpath_campaign: Path, idx: int, n_trials: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
-    error_log_path = campaign_dir / "campaign_errors.log"
-    campaign_dir.mkdir(parents=True, exist_ok=True)
-    trial_cfg_fpath = campaign_dir / "trial_cfgs" / f"trial_{idx:05d}.json"
+    error_log_path = dpath_campaign / "campaign_errors.log"
+    dpath_campaign.mkdir(parents=True, exist_ok=True)
+    trial_cfg_fpath = dpath_campaign / "trial_cfgs" / f"trial_{idx:05d}.json"
     
     # Format error message with context
     error_msg = (
-        f"\n[{idx}/{total}] TRIAL FAILED\n"
+        f"\n[{idx}/{n_trials}] TRIAL FAILED\n"
         f"  seed={seed}, dataset={dataset}, setting={setting_name}\n"
         f"  cfg={trial_cfg_fpath}\n"
         f"  {type(exc).__name__}: {str(exc)}"
@@ -71,11 +72,11 @@ def _log_trial_error(campaign_dir: Path, idx: int, total: int, seed: int, datase
             f.write(traceback.format_exc())
         f.write("\n" + "="*80 + "\n")
 
-def _campaign_dir() -> Path:
+def _dpath_campaign() -> Path:
     return paths["artifacts"] / CAMPAIGN_NAME
 
 def _baseline_path() -> Path:
-    return _campaign_dir() / "baseline.yaml"
+    return _dpath_campaign() / "baseline.yaml"
 
 def _load_or_create_baseline() -> dict:
     fpath = _baseline_path()
@@ -107,7 +108,7 @@ def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict, dict]]:
     return settings
 
 def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> None:
-    fpath = _campaign_dir() / setting_name / "overrides.json"
+    fpath = _dpath_campaign() / setting_name / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w") as f:
         json.dump(normalized_overrides, f, indent=2, sort_keys=True)
@@ -115,15 +116,13 @@ def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> N
 def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
-
-def _write_trial_cfg(campaign_dir: Path, idx: int, cfg_dict: dict) -> Path:
-    cfg_dir = campaign_dir / "trial_cfgs"
+def _write_trial_cfg(dpath_campaign: Path, idx: int, cfg_dict: dict) -> Path:
+    cfg_dir = dpath_campaign / "trial_cfgs"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_fpath = cfg_dir / f"trial_{idx:05d}.json"
     with open(cfg_fpath, "w") as f:
         json.dump(cfg_dict, f, indent=2, sort_keys=True)
     return cfg_fpath
-
 
 def _run_trial_subprocess(cfg_fpath: Path) -> None:
     cmd = [
@@ -156,6 +155,19 @@ def _run_trial_subprocess(cfg_fpath: Path) -> None:
 
 
 def run_campaign() -> None:
+    time_data = {
+        "last_updated": time.time(),
+        "elapsed": 0.0,
+    }
+    dpath_campaign = _dpath_campaign()
+    dpath_campaign.mkdir(parents=True, exist_ok=True)
+    save_pickle(time_data, dpath_campaign / "time.pkl")
+
+    metadata_camp = {
+        "duration": "0-00:00:00",
+    }
+    save_json(metadata_camp, dpath_campaign / "metadata_campaign.json")
+
     baseline = _load_or_create_baseline()
     settings = _expand_settings(BASELINE_OVERRIDES)
     seeds = _iter_seeds()
@@ -163,8 +175,8 @@ def run_campaign() -> None:
     for setting_name, _setting_payload_raw, setting_payload_norm in settings:
         _write_setting_overrides(setting_name, setting_payload_norm)
 
-    total = len(seeds) * len(DATASETS) * len(settings)
-    print(f"Campaign '{CAMPAIGN_NAME}' -> {total} total trials")
+    n_trials = len(seeds) * len(DATASETS) * len(settings)
+    print(f"Campaign: '{CAMPAIGN_NAME}' ({n_trials} trials)")
 
     idx = 0
     for dataset in DATASETS:
@@ -177,18 +189,19 @@ def run_campaign() -> None:
                 cfg_dict["setting_name"] = setting_name
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
+                cfg_dict["standalone"] = False
 
                 print(
-                    f"[{idx}/{total}] seed={seed} dataset={dataset} setting={setting_name}"
+                    f"[{idx}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}"
                 )
                 try:
-                    cfg_fpath = _write_trial_cfg(_campaign_dir(), idx, cfg_dict)
+                    cfg_fpath = _write_trial_cfg(_dpath_campaign(), idx, cfg_dict)
                     _run_trial_subprocess(cfg_fpath)
                 except Exception as e:
                     _log_trial_error(
-                        campaign_dir=_campaign_dir(),
+                        dpath_campaign=_dpath_campaign(),
                         idx=idx,
-                        total=total,
+                        n_trials=n_trials,
                         seed=seed,
                         dataset=dataset,
                         setting_name=setting_name,

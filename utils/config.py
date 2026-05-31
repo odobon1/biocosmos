@@ -58,6 +58,7 @@ class TrainConfig:
     text_template: dict
 
     logging: bool
+    standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
     
     eval_type: str = "validation"

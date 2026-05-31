@@ -187,7 +187,7 @@ def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) 
     )
 
     cr._log_trial_error(
-        campaign_dir=cr._campaign_dir(),
+        dpath_campaign=cr._dpath_campaign(),
         idx=3,
         total=10,
         seed=42,

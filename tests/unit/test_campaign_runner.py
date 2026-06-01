@@ -203,5 +203,5 @@ def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) 
         text = f.read()
 
     assert "TRIAL FAILED" in text
-    assert "stderr (tail)" in text
+    assert "stderr" in text
     assert "line3" in text

@@ -1,8 +1,5 @@
 """
 Internal module used by campaign_runner to execute a single trial config.
-
-Usage:
-    torchrun --standalone --nproc-per-node=auto -m campaign_trial_runner --cfg-path <path>
 """
 
 from argparse import ArgumentParser
@@ -15,7 +12,7 @@ from utils.config import get_config_train
 
 def _parse_args() -> ArgumentParser:
     parser = ArgumentParser()
-    parser.add_argument("--cfg-path", required=True, help="Path to serialized trial config JSON")
+    parser.add_argument("--fpath-cfg", required=True, help="Path to serialized trial config JSON")
     return parser
 
 
@@ -23,9 +20,10 @@ def main() -> None:
     parser = _parse_args()
     args = parser.parse_args()
 
-    cfg_path = Path(args.cfg_path)
-    with open(cfg_path) as f:
+    fpath_cfg = Path(args.fpath_cfg)
+    with open(fpath_cfg) as f:
         cfg_dict = json.load(f)
+    fpath_cfg.unlink(missing_ok=True)
 
     cfg = get_config_train(cfg_dict=cfg_dict)
     run_training(cfg)

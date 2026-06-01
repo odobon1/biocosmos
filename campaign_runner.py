@@ -24,10 +24,10 @@ NUM_SEEDS = 3
 DATASETS = ("lepid", "cub")
 
 BASELINE_OVERRIDES = [
-    {"batch_size": 2_048, "name": "way-too-big-bs"},
+    {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss": {"targ": "aligned"}, "name": "iw"},
-    {"loss": {"targ": "multipos"}, "name": "sw"},
-    {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
+    # {"loss": {"targ": "multipos"}, "name": "sw"},
+    # {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
 ]
 
 
@@ -42,37 +42,33 @@ def _load_yaml(fpath: Path) -> dict:
 
 def _log_trial_error(dpath_campaign: Path, idx: int, n_trials: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
-    error_log_path = dpath_campaign / "campaign_errors.log"
-    dpath_campaign.mkdir(parents=True, exist_ok=True)
-    trial_cfg_fpath = dpath_campaign / "trial_cfgs" / f"trial_{idx:05d}.json"
+    fpath_errors = dpath_campaign / "errors.log"
     
     # Format error message with context
     error_msg = (
         f"\n[{idx}/{n_trials}] TRIAL FAILED\n"
-        f"  seed={seed}, dataset={dataset}, setting={setting_name}\n"
-        f"  cfg={trial_cfg_fpath}\n"
-        f"  {type(exc).__name__}: {str(exc)}"
+        f"  seed={seed}, dataset={dataset}, setting={setting_name}"
     )
 
-    stderr_tail = None
+    stderr_body = None
     if isinstance(exc, subprocess.CalledProcessError):
         stderr = getattr(exc, "stderr", None)
         if stderr:
             stderr_lines = stderr.splitlines()
-            stderr_tail = "\n".join(stderr_lines[-200:])
+            stderr_body = "\n".join(stderr_lines)
     
     # Print to stdout
     print(error_msg, flush=True)
     
     # Write to error log file
-    with open(error_log_path, "a") as f:
+    with open(fpath_errors, "a") as f:
         f.write(error_msg + "\n")
-        if stderr_tail is not None:
-            f.write("--- stderr (tail) ---\n")
-            f.write(stderr_tail + "\n")
+        if stderr_body is not None:
+            f.write("--- stderr ---\n")
+            f.write(stderr_body + "\n")
         else:
             f.write(traceback.format_exc())
-        f.write("\n" + "="*80 + "\n")
+        f.write("\n" + "#"*80 + "\n")
 
 def _dpath_campaign() -> Path:
     return paths["artifacts"] / CAMPAIGN_NAME
@@ -118,23 +114,21 @@ def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> N
 def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
-def _write_trial_cfg(dpath_campaign: Path, idx: int, cfg_dict: dict) -> Path:
-    cfg_dir = dpath_campaign / "trial_cfgs"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    cfg_fpath = cfg_dir / f"trial_{idx:05d}.json"
-    with open(cfg_fpath, "w") as f:
+def _write_trial_cfg(dpath_campaign: Path, cfg_dict: dict) -> Path:
+    fpath_cfg = dpath_campaign / "trial_curr.json"
+    with open(fpath_cfg, "w") as f:
         json.dump(cfg_dict, f, indent=2, sort_keys=True)
-    return cfg_fpath
+    return fpath_cfg
 
-def _run_trial_subprocess(cfg_fpath: Path) -> None:
+def _run_trial_subprocess(fpath_cfg: Path) -> None:
     cmd = [
         "torchrun",
         "--standalone",
         "--nproc-per-node=auto",
         "-m",
         "campaign_trial_runner",
-        "--cfg-path",
-        str(cfg_fpath),
+        "--fpath-cfg",
+        str(fpath_cfg),
     ]
 
     proc = subprocess.Popen(
@@ -152,9 +146,8 @@ def _run_trial_subprocess(cfg_fpath: Path) -> None:
 
     return_code = proc.wait()
     if return_code != 0:
-        stderr_tail = "\n".join(stderr_data.decode(errors="replace").splitlines()[-200:])
-        raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_tail)
-
+        stderr_body = "\n".join(stderr_data.decode(errors="replace").splitlines())
+        raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_body)
 
 def run_campaign() -> None:
     time_data = {
@@ -216,8 +209,8 @@ def run_campaign() -> None:
                     print(f"[{idx}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}")
 
                 try:
-                    cfg_fpath = _write_trial_cfg(_dpath_campaign(), idx, cfg_dict)
-                    _run_trial_subprocess(cfg_fpath)
+                    fpath_cfg = _write_trial_cfg(_dpath_campaign(), cfg_dict)
+                    _run_trial_subprocess(fpath_cfg)
                 except Exception as e:
                     _log_trial_error(
                         dpath_campaign=_dpath_campaign(),

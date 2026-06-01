@@ -251,8 +251,11 @@ def apply_model_specific_opt_defaults(cfg_dict: dict) -> dict:
     return cfg_out
 
 def build_train_config(cfg_dict: dict) -> TrainConfig:
+    setting_overrides = cfg_dict.pop("_setting_overrides", None)
     cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg_dict = apply_model_specific_opt_defaults(cfg_dict)
+    if setting_overrides is not None:
+        cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg = TrainConfig(**cfg_dict)
     cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
     cfg.loss["cfg"] = get_config_loss(cfg)

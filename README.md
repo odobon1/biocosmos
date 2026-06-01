@@ -96,6 +96,20 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN_NAME>/metadata_campaign.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
+## Config Override Layers
+
+Training config is assembled from multiple sources. Layers are listed in increasing priority order — each layer overwrites anything set by earlier layers.
+
+| Priority | Source | Applied by | Description |
+|----------|--------|-----------|-------------|
+| 1 (lowest) | `config/train/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
+| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign_name`, `setting_name`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
+| 3 | `config/train/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train/train.yaml`. |
+| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split_name → "dev"`, `sample_volume → 20_000`, `eval_every → 10_000`, `batch_size → 1_024`. |
+| 5 (highest) | `BASELINE_OVERRIDES` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined at the top of `campaign_runner.py`. |
+
+In standalone training (`python -m train`), only layers 1, 3, and 4 apply.
+
 <br>
 
 # Supported Architectures

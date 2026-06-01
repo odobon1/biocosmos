@@ -19,11 +19,12 @@ from utils.utils import paths, save_pickle, save_json, load_json
 CAMPAIGN_NAME = "dev"
 
 SEED0 = 42
-NUM_SEEDS = 1
+NUM_SEEDS = 3
 
-DATASETS = ("lepid",)
+DATASETS = ("lepid", "cub")
 
 BASELINE_OVERRIDES = [
+    {"batch_size": 2_048, "name": "way-too-big-bs"},
     {"loss": {"targ": "aligned"}, "name": "iw"},
     {"loss": {"targ": "multipos"}, "name": "sw"},
     {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
@@ -201,12 +202,13 @@ def run_campaign() -> None:
                     print(f"[{idx}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting_name}")
                     continue
 
-                cfg_dict = apply_overrides(baseline, setting_payload_raw)
+                cfg_dict = deepcopy(baseline)
                 cfg_dict["campaign_name"] = CAMPAIGN_NAME
                 cfg_dict["setting_name"] = setting_name
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
+                cfg_dict["_setting_overrides"] = setting_payload_raw
 
                 if dpath_trial.exists():
                     print(f"[{idx}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting_name}")

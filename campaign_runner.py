@@ -16,18 +16,18 @@ from utils.config import apply_overrides, load_train_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN_NAME = "dev"
+CAMPAIGN_NAME = "dev2"
 
 SEED0 = 42
-NUM_SEEDS = 3
+NUM_SEEDS = 1
 
-DATASETS = ("lepid", "cub")
+DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
-    {"batch_size": 32_000, "name": "way-too-big-bs"},
+    # {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss": {"targ": "aligned"}, "name": "iw"},
-    # {"loss": {"targ": "multipos"}, "name": "sw"},
-    # {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
+    {"loss": {"targ": "multipos"}, "name": "sw"},
+    {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
 ]
 
 
@@ -40,13 +40,13 @@ def _load_yaml(fpath: Path) -> dict:
     with open(fpath) as f:
         return yaml.safe_load(f)
 
-def _log_trial_error(dpath_campaign: Path, idx: int, n_trials: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
+def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
     fpath_errors = dpath_campaign / "errors.log"
     
     # Format error message with context
     error_msg = (
-        f"\n[{idx}/{n_trials}] TRIAL FAILED\n"
+        f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
         f"  seed={seed}, dataset={dataset}, setting={setting_name}"
     )
 
@@ -149,6 +149,15 @@ def _run_trial_subprocess(fpath_cfg: Path) -> None:
         stderr_body = "\n".join(stderr_data.decode(errors="replace").splitlines())
         raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_body)
 
+def _check_trial_completion(dpath_trial: Path) -> bool:
+    fpath_metadata_trial = dpath_trial / "metadata_trial.json"
+    if not fpath_metadata_trial.exists():
+        complete = False
+    else:
+        metadata_trial = load_json(fpath_metadata_trial)
+        complete = metadata_trial["complete"]
+    return complete
+
 def run_campaign() -> None:
     time_data = {
         "last_updated": time.time(),
@@ -184,15 +193,15 @@ def run_campaign() -> None:
     n_trials = len(seeds) * len(DATASETS) * len(settings)
     print(f"Campaign: '{CAMPAIGN_NAME}' ({n_trials} trials)")
 
-    idx = 0
+    idx_trial = 0
     for dataset in DATASETS:
         for seed in seeds:
             for setting_name, setting_payload_raw, _setting_payload_norm in settings:
-                idx += 1
+                idx_trial += 1
 
                 dpath_trial = _dpath_campaign() / setting_name / dataset / str(seed)
-                if (dpath_trial / "completed").exists():
-                    print(f"[{idx}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting_name}")
+                if _check_trial_completion(dpath_trial):
+                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting_name}")
                     continue
 
                 cfg_dict = deepcopy(baseline)
@@ -204,9 +213,9 @@ def run_campaign() -> None:
                 cfg_dict["_setting_overrides"] = setting_payload_raw
 
                 if dpath_trial.exists():
-                    print(f"[{idx}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting_name}")
                 else:
-                    print(f"[{idx}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}")
 
                 try:
                     fpath_cfg = _write_trial_cfg(_dpath_campaign(), cfg_dict)
@@ -214,7 +223,7 @@ def run_campaign() -> None:
                 except Exception as e:
                     _log_trial_error(
                         dpath_campaign=_dpath_campaign(),
-                        idx=idx,
+                        idx_trial=idx_trial,
                         n_trials=n_trials,
                         seed=seed,
                         dataset=dataset,

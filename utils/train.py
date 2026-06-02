@@ -124,7 +124,7 @@ class ArtifactManager:
     dpath_campaign = None
     dpath_setting = None
     dpath_trial = None
-    fpath_runtime_data = None
+    fpath_metadata_trial = None
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
     dpath_model_checkpoint = None
@@ -138,7 +138,7 @@ class ArtifactManager:
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
-        ArtifactManager.fpath_runtime_data = ArtifactManager.dpath_trial / "runtime.json"
+        ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "metadata_trial.json"
 
         ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "models/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
@@ -234,8 +234,7 @@ class ArtifactManager:
             save_json(metadata, fpath_meta)
 
     @staticmethod
-    @rank0
-    def save_runtime_data(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean):
+    def _get_trial_runtime_data(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean):
 
         if data.n_evals > 0:
             mean_time_eval = f"{data.rmean_time_eval.value():.2f}"
@@ -258,9 +257,25 @@ class ArtifactManager:
             },
             "trial": time_elapsed_trial,
         }
-        save_json(runtime_data, ArtifactManager.fpath_runtime_data)
+
+        return runtime_data
 
     @staticmethod
+    @rank0
+    def save_metadata_trial(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean, init_flag=False):
+        runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, rmean_time_train)
+        if init_flag:
+            metadata_trial = {
+                "runtime": runtime_data,
+                "complete": False,
+            }
+        else:
+            metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
+            metadata_trial["runtime"] = runtime_data
+        save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
+
+    @staticmethod
+    @rank0
     def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
         def format_scores(scores):
             if scores is None:
@@ -278,14 +293,14 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_train_state(train_pipe, idx_batch_chkpt):
+    def save_train_state(train_pipe, idx_batch):
         state = {
             "optimizer": train_pipe.optimizer.state_dict(),
             "lr_sched": train_pipe.lr_schedw.sched.state_dict(),
             "n_samps_seen": train_pipe.n_samps_seen,
             "n_batches_seen": train_pipe.n_batches_seen,
             "idx_epoch": train_pipe.idx_epoch,
-            "idx_batch_chkpt": idx_batch_chkpt,
+            "idx_batch": idx_batch,
             "eval_threshold": train_pipe.eval_threshold,
             "rmean_time_train_n": train_pipe.rmean_time_train.n,
             "rmean_time_train_mean": train_pipe.rmean_time_train.mean,

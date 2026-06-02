@@ -22,6 +22,8 @@ from utils.utils import (
     Timer,
     PrintLog,
     model_grad_l2_norm,
+    load_json,
+    save_json,
 )
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
@@ -211,7 +213,7 @@ class TrainPipeline:
         )
 
     @rank0
-    def _checkpoint(self, header, checkpoint_best_comp, checkpoint_best_i2i, idx_batch_chkpt):
+    def _checkpoint(self, header, checkpoint_best_comp, checkpoint_best_i2i, idx_batch):
         self.data.update_eval(self.n_samps_seen)
         self._print_log_eval(header)
         if checkpoint_best_comp:
@@ -225,18 +227,26 @@ class TrainPipeline:
 
         self.modelw.save(ArtifactManager.dpath_model_checkpoint)
         self._save_eval_data()
-        ArtifactManager.save_runtime_data(self.data, self.idx_epoch, self.rmean_time_train)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train)
         if not self.cfg.standalone:
             ArtifactManager.update_campaign_time()
 
         self.data.save()
-        ArtifactManager.save_train_state(self, idx_batch_chkpt)
+        ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
         plot_metrics(self.data, ArtifactManager.dpath_trial)
+
+    @rank0
+    def mark_complete(self):
+        metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
+        metadata_trial["complete"] = True
+        save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
     def train(self):
         try:
 
+            if self._resume_state is None:
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train, init_flag=True)
             PrintLog.texts_eval(self.eval_pipe.get_eval_texts())
 
             # BASE EVAL
@@ -246,13 +256,13 @@ class TrainPipeline:
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
-                self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch_chkpt=-1)
+                self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
                 ArtifactManager.save_rng_state(self._local_rank)
                 dist.barrier()
             else:
                 # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
-                if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch_chkpt"] == -1:
+                if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch"] == -1:
                     fpath_rng = ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{self._local_rank}.pt"
                     if fpath_rng.exists():
                         rng = ArtifactManager.load_rng_state(self._local_rank)
@@ -291,9 +301,9 @@ class TrainPipeline:
                     if (
                         self._resume_state is not None
                         and self.idx_epoch == self._resume_state["idx_epoch"]
-                        and idx_batch <= self._resume_state["idx_batch_chkpt"]
+                        and idx_batch <= self._resume_state["idx_batch"]
                     ):
-                        if idx_batch == self._resume_state["idx_batch_chkpt"]:
+                        if idx_batch == self._resume_state["idx_batch"]:
                             rng = ArtifactManager.load_rng_state(self._local_rank)
                             torch.set_rng_state(rng["rng_cpu"])
                             torch.cuda.set_rng_state_all(rng["rng_cuda"])
@@ -374,7 +384,7 @@ class TrainPipeline:
                         if self.data is not None:
                             self.data.eval_metrics = eval_metrics
                             self.data.time_eval = time_eval
-                        self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch_chkpt=idx_batch)
+                        self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=idx_batch)
                         ArtifactManager.save_rng_state(self._local_rank)
                         dist.barrier()
 
@@ -407,7 +417,7 @@ class TrainPipeline:
             if self.data is not None:
                 self.data.eval_metrics = eval_metrics
                 self.data.time_eval = time_eval
-            self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch_chkpt=-1)
+            self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=-1)
             ArtifactManager.save_rng_state(self._local_rank)
             dist.barrier()
 
@@ -454,9 +464,7 @@ def run_training(cfg=None):
 
     train_pipe = TrainPipeline(modelw, cfg, resume_state=resume_state, trial_state=trial_state, local_rank=local_gpu_rank)
     train_pipe.train()
-
-    if dist.get_rank() == 0:
-        (ArtifactManager.dpath_trial / "completed").touch()
+    train_pipe.mark_complete()
 
     cleanup_ddp()
 

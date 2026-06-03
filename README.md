@@ -22,17 +22,12 @@ cd biocosmos
 
 ## Environment
 
-Place environment_b200.yaml in your home directory `/home/<user>`.
-Navigate to home directory and create env:
+Create and activate environment:
 ```
 conda env create -f environment_b200.yaml
-```
-Note: `environment.yaml` can be used for non-B200 jobs.
-
-Navigate back to repo directory and activate env:
-```
 conda activate biocosmos_b200
 ```
+Note: `environment.yaml` can be used for non-B200 jobs.
 
 ## Data
 

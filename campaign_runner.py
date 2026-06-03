@@ -5,6 +5,7 @@ python -m campaign_runner
 from pathlib import Path
 from copy import deepcopy
 import json
+import shutil
 import subprocess
 import sys
 import traceback
@@ -15,7 +16,7 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN_NAME = "dev3"
+CAMPAIGN_NAME = "dev"
 
 SEED0 = 42
 NUM_SEEDS = 1
@@ -209,6 +210,7 @@ def run_campaign() -> None:
                 try:
                     fpath_cfg = _write_trial_cfg(_dpath_campaign(), cfg_dict)
                     _run_trial_subprocess(fpath_cfg)
+                    shutil.rmtree(dpath_trial / "chkpts/in_progress")
                 except Exception as e:
                     _log_trial_error(
                         dpath_campaign=_dpath_campaign(),

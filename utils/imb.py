@@ -4,10 +4,10 @@ import numpy as np
 from utils.utils import load_split
 
 
-def compute_class_wts(split_name, cfg_loss, dataset):
+def compute_class_wts(dataset_name, split_name, cfg_loss):
 
     # note: needs to be untangled....
-    split       = load_split(split_name, dataset_name=dataset)
+    split       = load_split(dataset_name, split_name)
     counts      = split.class_counts_train
     pair_counts = np.outer(counts, counts)
     n_classes   = len(counts)

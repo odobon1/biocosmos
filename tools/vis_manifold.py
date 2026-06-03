@@ -1,5 +1,7 @@
 """
-python -m tools.vis_manifold
+`rfpath_model` must be specified in eval.yaml
+
+torchrun --standalone --nproc-per-node=auto -m tools.vis_manifold
 """
 
 import torch
@@ -16,6 +18,7 @@ from models import VLMWrapper
 from utils.config import get_config_eval
 from utils.data import spawn_dataloader, spawn_partition_data, species_to_genus
 from utils.utils import paths, get_text_template
+from utils.ddp import setup_ddp, cleanup_ddp
 
 def get_embs_and_labels(modelw, dataloader, device, mixed_prec):
     """
@@ -110,7 +113,7 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.close()
 
 def get_dataloader(cfg, partition_name, modelw):
-    text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
+    text_template = get_text_template(cfg.text_template, dataset_name=cfg.dataset_name)
     index_data, _ = spawn_partition_data(config=cfg, partition_name=partition_name)
     dataloader = spawn_dataloader(
         index_data=index_data,
@@ -124,6 +127,8 @@ def get_dataloader(cfg, partition_name, modelw):
     return dataloader
 
 def main():
+
+    setup_ddp()
 
     # component of plot title that appears in parentheses, set to None for no tag
     # TAG = "base"
@@ -148,15 +153,15 @@ def main():
     proj_pca_id  = compute_pca(embs_id)
     proj_pca_ood = compute_pca(embs_ood)
     
-    dpath_plots            = paths["root"] / cfg.rdpath_trial / "plots"
-    fpath_tsne_id_genera   = dpath_plots / f"tsne_id_genera.png"
-    fpath_tsne_id_species  = dpath_plots / f"tsne_id_species.png"
-    fpath_tsne_ood_genera  = dpath_plots / f"tsne_ood_genera.png"
-    fpath_tsne_ood_species = dpath_plots / f"tsne_ood_species.png"
-    fpath_pca_id_genera    = dpath_plots / f"pca_id_genera.png"
-    fpath_pca_id_species   = dpath_plots / f"pca_id_species.png"
-    fpath_pca_ood_genera   = dpath_plots / f"pca_ood_genera.png"
-    fpath_pca_ood_species  = dpath_plots / f"pca_ood_species.png"
+    dpath_plots            = (paths["root"] / cfg.rfpath_model).parent / "../../plots"
+    fpath_tsne_id_genera   = dpath_plots / "tsne_id_genera.png"
+    fpath_tsne_id_species  = dpath_plots / "tsne_id_species.png"
+    fpath_tsne_ood_genera  = dpath_plots / "tsne_ood_genera.png"
+    fpath_tsne_ood_species = dpath_plots / "tsne_ood_species.png"
+    fpath_pca_id_genera    = dpath_plots / "pca_id_genera.png"
+    fpath_pca_id_species   = dpath_plots / "pca_id_species.png"
+    fpath_pca_ood_genera   = dpath_plots / "pca_ood_genera.png"
+    fpath_pca_ood_species  = dpath_plots / "pca_ood_species.png"
     
     if TAG is not None:
         tag = f" ({TAG})"
@@ -182,6 +187,8 @@ def main():
     plot_projection(proj_pca_id,  sids_id,    title_pca_id_species,  fpath_pca_id_species,  "PCA")
     plot_projection(proj_pca_ood, genera_ood, title_pca_ood_genera,  fpath_pca_ood_genera,  "PCA")
     plot_projection(proj_pca_ood, sids_ood,   title_pca_ood_species, fpath_pca_ood_species, "PCA")
+
+    cleanup_ddp()
 
 if __name__ == "__main__":
     main()

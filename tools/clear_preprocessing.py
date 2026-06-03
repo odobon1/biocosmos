@@ -8,7 +8,7 @@ from pathlib import Path
 from utils.utils import paths
 
 
-DATASET_NAMES = ("bryo", "cub", "lepid", "nymph")
+DATASETS = ("bryo", "cub", "lepid", "nymph")
 
 
 def remove_path(path: Path) -> None:
@@ -17,25 +17,25 @@ def remove_path(path: Path) -> None:
         return
     path.unlink()
 
-def clear_dataset_metadata(dataset_dir: Path) -> None:
-    splits_dir = dataset_dir / "splits"
-    gitkeep_path = splits_dir / ".gitkeep"
+def clear_dataset_metadata(dpath_dataset: Path) -> None:
+    dpath_splits = dpath_dataset / "splits"
+    fpath_gitkeep = dpath_splits / ".gitkeep"
 
-    if not gitkeep_path.is_file():
-        raise FileNotFoundError(f"Refusing to clear {dataset_dir}: missing {gitkeep_path}")
+    if not fpath_gitkeep.is_file():
+        raise FileNotFoundError(f"Refusing to clear {dpath_dataset}: missing {fpath_gitkeep}")
 
-    for child in dataset_dir.iterdir():
-        if child == splits_dir:
+    for child in dpath_dataset.iterdir():
+        if child == dpath_splits:
             continue
         remove_path(child)
 
-    for child in splits_dir.iterdir():
-        if child == gitkeep_path:
+    for child in dpath_splits.iterdir():
+        if child == fpath_gitkeep:
             continue
         remove_path(child)
 
 def clear_all_preprocessing() -> None:
-    for ds_name in DATASET_NAMES:
+    for ds_name in DATASETS:
         clear_dataset_metadata(paths["metadata"][ds_name])
 
 def main() -> None:

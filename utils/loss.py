@@ -10,10 +10,10 @@ import pdb
 _phylo_vcv_cache: dict[str, PhyloVCV] = {}
 
 
-def get_phylo_vcv(dataset: str) -> PhyloVCV:
-    if dataset not in _phylo_vcv_cache:
-        _phylo_vcv_cache[dataset] = PhyloVCV(dataset=dataset)
-    return _phylo_vcv_cache[dataset]
+def get_phylo_vcv(dataset_name: str) -> PhyloVCV:
+    if dataset_name not in _phylo_vcv_cache:
+        _phylo_vcv_cache[dataset_name] = PhyloVCV(dataset_name=dataset_name)
+    return _phylo_vcv_cache[dataset_name]
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
     if targ_type == "aligned":
@@ -42,8 +42,8 @@ def compute_targs_tax(targ_data_b):
     return targs
 
 def compute_targs_phylo(targ_data_b):
-    dataset = targ_data_b[0].get("dataset")
-    targs = get_phylo_vcv(dataset).get_targs_batch(targ_data_b)
+    dataset_name = targ_data_b[0]["dataset_name"]
+    targs = get_phylo_vcv(dataset_name).get_targs_batch(targ_data_b)
     return targs
 
 def compute_loss(config_loss, logits, class_encs_b, targ_data_b, class_wts, class_pair_wts, device, train):

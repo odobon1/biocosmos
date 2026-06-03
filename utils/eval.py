@@ -9,6 +9,7 @@ import math
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
 from utils.utils import load_split, Timer
+from utils.config import TrainConfig, EvalConfig
 
 import pdb
 
@@ -17,6 +18,8 @@ RETRIEVAL_MODALITIES = ("i2t", "i2i", "t2i")
 
 
 def harmonic_mean(values):
+    if any(v == 0 for v in values):
+        return 0.0
     n = len(values)
     reciprocal_sum = sum(1 / v for v in values)
     return n / reciprocal_sum
@@ -98,7 +101,7 @@ class PartitionEvaluationPipeline:
     def __init__(
             self, 
             partition_name: str, 
-            config: Any, 
+            config: Union[TrainConfig, EvalConfig], 
             text_template: List[List[str]],
             img_pp: Callable,
         ) -> None:
@@ -107,8 +110,8 @@ class PartitionEvaluationPipeline:
                "text_template: each inner list must contain exactly one element for eval"
 
         index_data, cid2enc = spawn_partition_data(
-            config=config,
-            partition_name=partition_name,
+            config,
+            partition_name,
         )
 
         self.index_data = index_data
@@ -116,9 +119,9 @@ class PartitionEvaluationPipeline:
         self.index_text_cids = list(cid2enc.keys())
 
         self.index_text, self.index_text_class_encs = spawn_partition_indexes_txts(
-            cid2enc=cid2enc,
-            text_template=text_template,
-            dataset=config.dataset,
+            cid2enc,
+            text_template,
+            config.dataset_name,
         )
 
         self.dataloader = spawn_dataloader(
@@ -139,12 +142,12 @@ class PartitionEvaluationPipeline:
         self.mixed_prec = config.hw.mixed_prec
 
         if self.partition_name == "id":
-            split = load_split(config.split_name, dataset_name=config.dataset)
+            split = load_split(config.dataset_name, config.split_name)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
-                split_name=config.split_name,
-                dataset=config.dataset,
-                cid2enc=self.cid2enc,
+                config.dataset_name,
+                config.split_name,
+                self.cid2enc,
             )
         else:
             self.nshot_bucket_names = []
@@ -627,7 +630,7 @@ class EvaluationPipeline:
 
     def __init__(
         self,
-        config: Any,
+        config: Union[TrainConfig, EvalConfig],
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
@@ -640,7 +643,7 @@ class EvaluationPipeline:
         self.best_full_set_comp_map = None
         self.best_full_set_i2i_map = None
 
-        self.split = load_split(config.split_name, dataset_name=config.dataset)
+        self.split = load_split(config.dataset_name, config.split_name)
         self.partition_names = list_eval_partition_names(self.split, config.eval_type)
         self.partition_pipes = {
             partition_name: PartitionEvaluationPipeline(
@@ -701,8 +704,8 @@ class EvaluationPipeline:
             for class_enc, cid in enumerate(dict.fromkeys(datum["cid"] for datum in full_set_index_data))
         }
         full_set_bucket_map = build_class_enc_to_train_nshot_bucket(
+            dataset_name=self.partition_pipes[self.bucket_partition_name].cfg.dataset_name,
             split_name=self.partition_pipes[self.bucket_partition_name].cfg.split_name,
-            dataset=self.partition_pipes[self.bucket_partition_name].cfg.dataset,
             cid2enc=full_set_cid2enc,
         ) if self.bucket_partition_name is not None else {}
 
@@ -848,15 +851,15 @@ class EvaluationPipeline:
         return is_best_comp, is_best_i2i
 
 def build_class_enc_to_train_nshot_bucket(
+    dataset_name: str,
     split_name: str,
-    dataset: str,
     cid2enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
     Build class_enc -> bucket_name using ID-val bucket memberships.
     """
 
-    split = load_split(split_name, dataset_name=dataset)
+    split = load_split(dataset_name, split_name)
     class_enc_to_bucket = {}
 
     for bucket_name in split.id_eval_nshot["names"]:

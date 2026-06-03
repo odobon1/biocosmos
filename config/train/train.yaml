@@ -1,7 +1,7 @@
 campaign_name: dev
-setting_name: dev2
+setting_name: dev
 seed: 42
-dataset: lepid  # {bryo, cub, lepid, nymph}
+dataset_name: bryo  # {bryo, cub, lepid, nymph}
 split_name: D10
 
 sample_volume: 1_000_000
@@ -33,9 +33,9 @@ aug:  # image augmentation
     kernel_size: 3  # must be odd int
     sigma: [0.0, 1.0]
   gblur_prob: 0.3
-img_norm: default  # {default, dataset}
+img_norm: dataset  # {default, dataset}
 
-loss:
+loss:  # primary loss
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: multipos  # {aligned, multipos, tax, phylo}
@@ -43,7 +43,6 @@ loss:
   focal: true
   dyn_smr: true  # dynamic similarity mass rebalancing (multi-pos, aligned, hierarchical?); only relevant for BCE
 
-# same settings should be equivalent
 loss2:  # secondary loss
   mix: 0.0  # set to 0.0 to disable computation
   type: bce  # {infonce1, infonce2, bce}

@@ -12,24 +12,18 @@ def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> 
 
     baseline_a = {
         "campaign_name": "dev",
-        "setting_name": "dev_setting",
-        "seed": 1,
-        "dataset": "cub",
         "split_name": "D10",
     }
     baseline_b = {
         "campaign_name": "changed",
-        "setting_name": "changed",
-        "seed": 2,
-        "dataset": "lepid",
         "split_name": "dev",
     }
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: baseline_a)
-    out_first = cr._load_or_create_baseline()
+    out_first = cr._load_or_create_baseline_config()
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: baseline_b)
-    out_second = cr._load_or_create_baseline()
+    out_second = cr._load_or_create_baseline_config()
 
     assert out_first == baseline_a
     assert out_second == baseline_a
@@ -55,18 +49,18 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
         "campaign_name": "base_campaign",
         "setting_name": "base_setting",
         "seed": 0,
-        "dataset": "cub",
+        "dataset_name": "cub",
         "split_name": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_fpath: Path):
         with open(cfg_fpath) as f:
             cfg = json.load(f)
-        scheduled.append((cfg["seed"], cfg["dataset"], cfg["setting_name"], cfg["loss"]["targ"]))
+        scheduled.append((cfg["seed"], cfg["dataset_name"], cfg["setting_name"], cfg["loss"]["targ"]))
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -100,11 +94,11 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "campaign_name": "base_campaign",
         "setting_name": "base_setting",
         "seed": 0,
-        "dataset": "cub",
+        "dataset_name": "cub",
         "split_name": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_fpath: None)
 
     cr.run_campaign()
@@ -146,7 +140,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "campaign_name": "base_campaign",
         "setting_name": "base_setting",
         "seed": 0,
-        "dataset": "cub",
+        "dataset_name": "cub",
         "split_name": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
@@ -158,7 +152,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
             "eps": 1.0e-6,
         },
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
 
     scheduled = []
 
@@ -176,7 +170,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     assert scheduled[0]["opt"]["beta2"] == 0.88
 
 
-def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) -> None:
+def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_d")
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
@@ -188,15 +182,15 @@ def test_log_trial_error_includes_subprocess_stderr_tail(tmp_path, monkeypatch) 
 
     cr._log_trial_error(
         dpath_campaign=cr._dpath_campaign(),
-        idx=3,
-        total=10,
+        idx_trial=3,
+        n_trials=10,
         seed=42,
-        dataset="cub",
+        dataset_name="cub",
         setting_name="iw",
         exc=err,
     )
 
-    log_fpath = Path(tmp_path) / "cmp_d" / "campaign_errors.log"
+    log_fpath = Path(tmp_path) / "cmp_d" / "errors.log"
     assert log_fpath.exists()
 
     with open(log_fpath) as f:

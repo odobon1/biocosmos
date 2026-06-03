@@ -1,8 +1,6 @@
-# *** split_name, model_type, loss_type, non_causal are overridden if rdpath_trial is specified ***
-rdpath_trial: null  # which trial to load from (set null for original model)
-# rdpath_trial: artifacts/dev/dev_dataset/nymph/42
-save_crit: comp  # {comp, img2img}; model save criterion (only applicable if rdpath_trial != null)
-dataset: cub  # {bryo, cub, lepid, nymph}
+rfpath_model: null  # relative filepath to checkpointed model weights (set null for base model)
+# rfpath_model: artifacts/dev/dev/lepid/42/chkpts/best_comp/model.pt  # dataset_name, split_name, model_type, non_causal are overridden if rfpath_model is specified
+dataset_name: cub  # {bryo, cub, lepid, nymph}
 split_name: D10  # {D10, dev}
 eval_type: validation  # {validation, test}
 
@@ -13,18 +11,5 @@ arch:
   non_causal: false
 
 img_norm: default  # {default, dataset}
-
-loss:
-  type: bce  # {infonce1, infonce2, bce}
-  sim: cos  # {cos, geo1, geo2}
-  targ: multipos  # {aligned, multipos, tax, phylo}
-
-loss2:  # secondary loss
-  mix: 0.1  # set to 0.0 to disable computation
-  type: bce  # {infonce1, infonce2, bce}
-  sim: geo1
-  targ: phylo
-  wting: true
-  focal: true
 
 text_template: sci  # following BioCLIP eval protocol

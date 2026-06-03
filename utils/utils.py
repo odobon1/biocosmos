@@ -129,12 +129,13 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
-def load_split(split_name, dataset_name):
-    split = load_pickle(paths["metadata"][dataset_name] / f"splits/{split_name}/split.pkl")
+def load_split(dataset_name, split_name):
+    fpath_split = paths["metadata"][dataset_name] / f"splits/{split_name}/split.pkl"
+    split = load_pickle(fpath_split)
     return split
 
-def get_text_template(text_template_type, dataset=None):
-    return get_dataset_text_template(text_template_type, dataset=dataset)
+def get_text_template(text_template_type, dataset_name=None):
+    return get_dataset_text_template(text_template_type, dataset_name=dataset_name)
     
 class RunningMean:
     """
@@ -531,9 +532,8 @@ class PrintLog:
             "",
             f"Campaign ---------- {cfg_train.campaign_name}",
             f"Setting ----------- {cfg_train.setting_name}",
+            f"Dataset ----------- {cfg_train.dataset_name}",
             f"Seed -------------- {cfg_train.seed}",
-            f"Trial File Path --- {cfg_train.rdpath_trial}",
-            f"Dataset ----------- {cfg_train.dataset}",
             f"Split ------------- {cfg_train.split_name}",
             "",
             f"Batch Size ---- {cfg_train.batch_size}",
@@ -576,22 +576,15 @@ class PrintLog:
     def init_eval(cfg_eval):
         lines: list[str] = [
             "",
-            f"Trial (Loaded) --- {cfg_eval.rdpath_trial}{'' if cfg_eval.rdpath_trial is None else ' (' + cfg_eval.save_crit + ')'}",
+            f"Checkpoint --- {cfg_eval.rfpath_model}",
             "",
-            f"Model Type ------- {cfg_eval.arch['model_type']}",
-            f"Loss Type -------- {cfg_eval.loss['type']}",
-            f"Dataset ---------- {cfg_eval.dataset}",
-            f"Split ------------ {cfg_eval.split_name}",
+            f"Model Type --- {cfg_eval.arch['model_type']}",
+            f"Dataset ------ {cfg_eval.dataset_name}",
+            f"Split -------- {cfg_eval.split_name}",
             "",
-            f"Batch Size ------- {cfg_eval.batch_size}",
+            f"Batch Size --- {cfg_eval.batch_size}",
             "",
         ]
-
-        lines.extend(PrintLog._format_loss_block(cfg_eval.loss))
-
-        mix = cfg_eval.loss2["mix"]
-        if mix != 0.0:
-            lines.extend(PrintLog._format_loss_block(cfg_eval.loss2, secondary=True))
 
         lines.extend(PrintLog._format_hw_block(cfg_eval))
 
@@ -628,7 +621,7 @@ class PrintLog:
         lines.append(f"Similarity Type --- {loss['sim']}")
         lines.append(f"Target Type ------- {loss['targ']}")
 
-        wting = loss["wting"]
+        wting = loss.get("wting", False)
         if wting and "class_weighting" in loss['cfg']:
             cw = loss["cfg"]["class_weighting"]
             lines.append(f"Class Weighting --- {cw['type']}")
@@ -641,7 +634,7 @@ class PrintLog:
         else:
             lines.append("Class Weighting ---- disabled")
 
-        focal = loss["focal"]
+        focal = loss.get("focal", False)
         if focal and "focal" in loss['cfg']:
             cfg_focal = loss['cfg']["focal"]
             lines.append("Focal ------------- enabled")

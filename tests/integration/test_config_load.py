@@ -54,6 +54,5 @@ def test_get_config_eval_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) -> 
 
     cfg = get_config_eval(verbose=False)
 
-    assert cfg.loss["cfg"]
     assert cfg.hw
     assert str(cfg.device) == "cuda"

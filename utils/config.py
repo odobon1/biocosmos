@@ -40,7 +40,7 @@ class TrainConfig:
     campaign_name: str
     setting_name: str
     seed: int | None
-    dataset: str
+    dataset_name: str
     split_name: str
 
     sample_volume: int
@@ -67,15 +67,15 @@ class TrainConfig:
 
     def __post_init__(self):
 
-        split = load_split(self.split_name, dataset_name=self.dataset)
+        split = load_split(self.dataset_name, self.split_name)
         size_train = len(split.data_indexes["train"])
         if self.batch_size > size_train:
             raise ValueError(f"batch_size {self.batch_size} exceeds training set size {size_train}")
         samps_per_epoch = size_train - size_train % self.batch_size
         self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
 
-        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
+        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
         
         if self.eval_every <= 0:
             raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
@@ -118,8 +118,6 @@ class TrainConfig:
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
-
-        self.rdpath_trial = f"artifacts/{self.campaign_name}/{self.setting_name}/{self.dataset}/{self.seed}"
 
         self.device = torch.device("cuda")
 
@@ -326,18 +324,15 @@ def get_config_hardware():
 @dataclass
 class EvalConfig:
 
-    rdpath_trial: str | None
-    save_crit: str  # model save criterion (only applicable if rdpath_trial != None)
-    dataset: str
-    split_name: str  # overridden if rdpath_trial is specified
-    eval_type: str  # validation or test
+    rfpath_model: str | None
+    dataset_name: str
+    split_name: str
+    eval_type: str
 
     batch_size: int
 
     arch: dict
     img_norm: str
-    loss: dict
-    loss2: dict
 
     text_template: str
 
@@ -345,8 +340,8 @@ class EvalConfig:
     
     def __post_init__(self):
 
-        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
+        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
 
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
@@ -358,21 +353,22 @@ class EvalConfig:
         )
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
-        self.ram    = slurm_alloc["ram"]
+        self.ram = slurm_alloc["ram"]
 
-        if self.rdpath_trial is not None:
-            metadata_setting = load_json(paths["root"] / self.rdpath_trial / "../../metadata_setting.json")
-            self.arch['model_type'] = metadata_setting["arch"]["model_type"]  # override model_type
-            self.arch['non_causal'] = metadata_setting["arch"]["non_causal"]  # override non_causal
-            self.loss['type']       = metadata_setting["loss"]["type"]  # override loss_type
+        if self.rfpath_model is not None:
+            fpath_model = paths["root"] / self.rfpath_model
+            if not fpath_model.exists():
+                raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
+            
+            fpath_metadata_trial = fpath_model.parent / "../../metadata_trial.json"
+            fpath_metadata_setting = fpath_model.parent / "../../../../metadata_setting.json"
+            metadata_setting = load_json(fpath_metadata_setting)
+            metadata_trial = load_json(fpath_metadata_trial)
 
-            if "loss2" in metadata_setting:
-                self.loss2.update(metadata_setting["loss2"])
-            else:
-                self.loss2["mix"] = 0.0
-
-            metadata_campaign  = load_json(paths["root"] / self.rdpath_trial / "../../../metadata_campaign.json")
-            self.split_name = metadata_campaign["split_name"]
+            self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
+            self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
+            self.dataset_name = metadata_trial["dataset_name"]  # override dataset_name
+            self.split_name = metadata_trial["split_name"]  # override split_name
 
         self.device = torch.device("cuda")
 
@@ -384,9 +380,6 @@ def get_config_eval(verbose=True):
     with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = EvalConfig(**cfg_dict)
-    cfg.loss["cfg"] = get_config_loss(cfg)
-    if cfg.loss2["mix"] != 0.0:
-        cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
     cfg.hw = get_config_hardware()
     if verbose:
         PrintLog.init_eval(cfg)

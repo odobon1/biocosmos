@@ -67,15 +67,15 @@ Note: The full similarity matrix is computed for all model types, including SigL
     Tip: Cosine LR scheduler parameters are in `config/train/lr_sched.yaml` and selected by `opt.lr.sched` in `train.yaml`.
 
 ## Evaluate a trained model
-1. In `config/eval.yaml`, set `rdpath_trial` to the trial directory (e.g. `artifacts/dev/dev/42`).
+1. In `config/eval.yaml`, set `rfpath_model` to checkpointed model weights (e.g. `artifacts/dev/iw/lepid/42/chkpts/best_comp/model.pt`).
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
-    When `rdpath_trial` is set, eval overrides `model_type`, `loss_type`, and `split_name` from the trial's saved metadata.
+    When `rfpath_model` is set, eval overrides `dataset_name`, `split_name`, `model_type`, and `non_causal` from setting + trial saved metadata.
 
 ## Evaluate a base model
-1. In `config/eval.yaml`, set `rdpath_trial: null`, then set `model_type`, `loss_type`, `split_name`, etc. as desired.
+1. In `config/eval.yaml`, set `rfpath_model: null` and set `dataset_name`, `split_name`, `model_type`, and `non_causal` as desired.
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
@@ -103,7 +103,7 @@ Training config is assembled from multiple sources. Layers are listed in increas
 | Priority | Source | Applied by | Description |
 |----------|--------|-----------|-------------|
 | 1 (lowest) | `config/train/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
-| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign_name`, `setting_name`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
+| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign_name`, `setting_name`, `seed`, `dataset_name`, `standalone` from the campaign matrix. Not applicable in standalone training. |
 | 3 | `config/train/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train/train.yaml`. |
 | 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split_name → "dev"`, `sample_volume → 20_000`, `eval_every → 10_000`, `batch_size → 1_024`. |
 | 5 (highest) | `BASELINE_OVERRIDES` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined at the top of `campaign_runner.py`. |

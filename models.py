@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import open_clip
 import abc
-from typing import List, Tuple, Any, Dict
+from typing import List, Tuple, Any, Dict, Union
 from pathlib import Path
 
 from utils.utils import paths, load_split
@@ -17,6 +17,7 @@ from utils.head import compute_sim
 from utils.imb import compute_class_wts
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
 from utils.ddp import rank0
+from utils.config import TrainConfig, EvalConfig
 
 import pdb
 
@@ -75,7 +76,7 @@ class VLMWrapper(abc.ABC):
     """
     def __init__(
         self, 
-        config: Any, 
+        config: Union[TrainConfig, EvalConfig], 
         model_name: str, 
         pretrained: str, 
         quick_gelu: bool
@@ -111,28 +112,29 @@ class VLMWrapper(abc.ABC):
         if config.hw.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        cfg_logits = config.loss["cfg"]["logits"]
-        if cfg_logits["scale_init"] is not None:  # scale_init set in config
-            if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
-                with torch.no_grad():
-                    self.model.logit_scale.fill_(cfg_logits["scale_init"])
-        if cfg_logits["bias_init"] is None:  # (bias_init: null) in config
-            if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
-                delattr(self.model, "logit_bias")
-                self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
-        else:  # bias_init set in config
-            if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
-                with torch.no_grad():
-                    self.model.logit_bias.fill_(cfg_logits["bias_init"])
-            else:  # logit_bias attribute is not a nn.Parameter
-                delattr(self.model, "logit_bias")
-                self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
-        if cfg_logits["freeze_scale"] and isinstance(self.model.logit_scale, nn.Parameter):
-            self.model.logit_scale.requires_grad_(False)
-        if cfg_logits["freeze_bias"] and isinstance(self.model.logit_bias, nn.Parameter):
-            self.model.logit_bias.requires_grad_(False)
+        if hasattr(config, 'loss'):
+            cfg_logits = config.loss["cfg"]["logits"]
+            if cfg_logits["scale_init"] is not None:  # scale_init set in config
+                if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
+                    with torch.no_grad():
+                        self.model.logit_scale.fill_(cfg_logits["scale_init"])
+            if cfg_logits["bias_init"] is None:  # (bias_init: null) in config
+                if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
+                    delattr(self.model, "logit_bias")
+                    self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
+            else:  # bias_init set in config
+                if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
+                    with torch.no_grad():
+                        self.model.logit_bias.fill_(cfg_logits["bias_init"])
+                else:  # logit_bias attribute is not a nn.Parameter
+                    delattr(self.model, "logit_bias")
+                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias_init"], device=self.device)))
+            if cfg_logits["freeze_scale"] and isinstance(self.model.logit_scale, nn.Parameter):
+                self.model.logit_scale.requires_grad_(False)
+            if cfg_logits["freeze_bias"] and isinstance(self.model.logit_bias, nn.Parameter):
+                self.model.logit_bias.requires_grad_(False)
 
-        if config.loss2["mix"] != 0.0:
+        if hasattr(config, 'loss2') and config.loss2["mix"] != 0.0:
             cfg_logits2 = config.loss2["cfg"]["logits"]
             if cfg_logits2["scale_init"] is None:  # (scale_init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
@@ -147,13 +149,11 @@ class VLMWrapper(abc.ABC):
             if cfg_logits2["freeze_bias"]:
                 self.model.logit_bias2.requires_grad_(False)
 
-        self.sim_type = config.loss["sim"]
-
     @classmethod
-    def build(cls, config: Any, verbose: bool) -> Any:
+    def build(cls, config: Union[TrainConfig, EvalConfig], verbose: bool) -> Any:
         """
         Factory method to construct the appropriate VLM wrapper based on configuration.
-        Handles loading from checkpoints if `rdpath_trial` is specified.
+        Handles loading from checkpoint if `rfpath_model` is specified.
 
         Args:
         - config ---- Configuration object containing architecture and loss settings
@@ -163,12 +163,12 @@ class VLMWrapper(abc.ABC):
         - Initialized VLMWrapper subclass instance
         """
         checkpoint = None
-        if config.has_field("rdpath_trial") and config.rdpath_trial is not None:
+        if isinstance(config, EvalConfig) and config.rfpath_model is not None:
             if verbose:
-                print(f"Loading '{config.rdpath_trial}' ({config.save_crit})...")
-            fpath_state_dict_model = paths["root"] / config.rdpath_trial / f"models/best_{config.save_crit}/model.pt"
+                print(f"Loading '{config.rfpath_model}'...")
+            fpath_model = paths["root"] / config.rfpath_model
             checkpoint = torch.load(
-                fpath_state_dict_model, 
+                fpath_model, 
                 map_location="cpu",  # map_location="cpu" avoids loading two copies of the entire state dict into VRAM at once
             )
         else:
@@ -182,7 +182,8 @@ class VLMWrapper(abc.ABC):
         else:
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
-        modelw.loss_type = config.loss['type']
+        if hasattr(config, 'loss'):
+            modelw.loss_type = config.loss['type']
         if checkpoint is not None:
             modelw._unwrapped_model.load_state_dict(checkpoint["model"])
             modelw.norm_mean = checkpoint["norm_mean"]
@@ -216,7 +217,7 @@ class VLMWrapper(abc.ABC):
             return model.text.text_projection.weight.shape[0]
         raise TypeError(f"Unsupported wrapper type: {type(self).__name__}")
 
-    def set_image_norms(self, config: Any) -> None:
+    def set_image_norms(self, config: Union[TrainConfig, EvalConfig]) -> None:
         """
         Sets normalization mean and std for image preprocessors based on config (dataset-specific or default).
         """
@@ -224,18 +225,19 @@ class VLMWrapper(abc.ABC):
             self.norm_mean = self.img_pp_inf.transforms[-1].mean
             self.norm_std = self.img_pp_inf.transforms[-1].std
         elif config.img_norm == "dataset":
-            split = load_split(config.split_name, config.dataset)
+            split = load_split(config.dataset_name, config.split_name)
             self.norm_mean = split.norm_mean
             self.norm_std = split.norm_std
 
     def set_image_preprocessors(self) -> None:
         self.img_pp_inf = make_image_preprocessor_inference(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
-        self.img_pp_train = make_image_preprocessor_train(
-            self.img_res,
-            norm_mean=self.norm_mean,
-            norm_std=self.norm_std,
-            aug_cfg=self.cfg.aug,
-        )
+        if hasattr(self.cfg, "aug"):
+            self.img_pp_train = make_image_preprocessor_train(
+                self.img_res,
+                norm_mean=self.norm_mean,
+                norm_std=self.norm_std,
+                aug_cfg=self.cfg.aug,
+            )
 
     @rank0
     def save(self, dpath: Path) -> None:
@@ -251,9 +253,9 @@ class VLMWrapper(abc.ABC):
             fpath
         )
 
-    def set_class_wts(self, config: Any, secondary: bool = False) -> None:
+    def set_class_wts(self, config: TrainConfig, secondary: bool = False) -> None:
         cfg_loss = config.loss if not secondary else config.loss2
-        cw, cpw  = compute_class_wts(config.split_name, cfg_loss, config.dataset)
+        cw, cpw  = compute_class_wts(config.dataset_name, config.split_name, cfg_loss)
         if not secondary:
             self.class_wts      = cw.to(self.device)
             self.class_pair_wts = cpw.to(self.device)
@@ -586,7 +588,7 @@ class VLMWrapper(abc.ABC):
         return loss1, loss1_raw, embs_img_sb, embs_txt_sb, (logits1, None), class_encs_sb
 
 class CLIPWrapper(VLMWrapper):
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
         model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
@@ -613,7 +615,7 @@ class CLIPWrapper(VLMWrapper):
         self._unwrapped_model.attn_mask.zero_()  # convert causal attention mask to non-causal
 
 class SigLIPWrapper(VLMWrapper):
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
         model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch['model_type']]
         super().__init__(config, model_name, pretrained, quick_gelu)
 

@@ -85,7 +85,7 @@ class TrainPipeline:
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
         index_data, _ = spawn_partition_data(config=self.cfg, partition_name="train")
-        text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
+        text_template_train = get_text_template(self.cfg.text_template["train"], dataset_name=self.cfg.dataset_name)
         self.dataloader = spawn_dataloader(
             index_data=index_data,
             text_template=text_template_train,
@@ -97,7 +97,7 @@ class TrainPipeline:
             persistent_workers=self.cfg.hw.persistent_workers_train,
         )
 
-        text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
+        text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset_name=self.cfg.dataset_name)
         self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]
@@ -225,7 +225,6 @@ class TrainPipeline:
             self.data.n_samps_seen_best_i2i = self.n_samps_seen
             self.data.eval_metrics_best_i2i = self.data.eval_metrics
 
-        self.modelw.save(ArtifactManager.dpath_model_checkpoint)
         self._save_eval_data()
         ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train)
         if not self.cfg.standalone:
@@ -258,13 +257,12 @@ class TrainPipeline:
                     self.data.time_eval = time_eval
                 self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
-                ArtifactManager.save_rng_state(self._local_rank)
+                ArtifactManager.save_rng_states(self._local_rank)
                 dist.barrier()
             else:
                 # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
                 if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch"] == -1:
-                    fpath_rng = ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{self._local_rank}.pt"
-                    if fpath_rng.exists():
+                    if "rng_states" in self._resume_state and self._local_rank in self._resume_state["rng_states"]:
                         rng = ArtifactManager.load_rng_state(self._local_rank)
                         torch.set_rng_state(rng["rng_cpu"])
                         torch.cuda.set_rng_state_all(rng["rng_cuda"])
@@ -385,7 +383,7 @@ class TrainPipeline:
                             self.data.eval_metrics = eval_metrics
                             self.data.time_eval = time_eval
                         self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=idx_batch)
-                        ArtifactManager.save_rng_state(self._local_rank)
+                        ArtifactManager.save_rng_states(self._local_rank)
                         dist.barrier()
 
                         self.timer_train.start()
@@ -418,7 +416,7 @@ class TrainPipeline:
                 self.data.eval_metrics = eval_metrics
                 self.data.time_eval = time_eval
             self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=-1)
-            ArtifactManager.save_rng_state(self._local_rank)
+            ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 
         finally:
@@ -448,16 +446,11 @@ def run_training(cfg=None):
     resume_state = None
     trial_state = None
     if ArtifactManager.resuming:
-        chkpt = torch.load(
-            ArtifactManager.dpath_model_checkpoint / "model.pt",
-            map_location="cpu",
-            weights_only=False,
-        )
-        modelw._unwrapped_model.load_state_dict(chkpt["model"])
-        modelw.norm_mean = chkpt["norm_mean"]
-        modelw.norm_std = chkpt["norm_std"]
-        modelw.set_image_preprocessors()
         resume_state = ArtifactManager.load_train_state()
+        modelw._unwrapped_model.load_state_dict(resume_state["model"])
+        modelw.norm_mean = resume_state["norm_mean"]
+        modelw.norm_std = resume_state["norm_std"]
+        modelw.set_image_preprocessors()
         trial_state = ArtifactManager.load_trial_state()
 
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)

@@ -52,7 +52,7 @@ def main() -> None:
 
     cfg = get_config_train()
 
-    split = load_split(cfg.split_name, dataset_name=cfg.dataset)
+    split = load_split(cfg.dataset_name, cfg.split_name)
     train_rows = list(split.data_indexes["train"])
     random.shuffle(train_rows)
 
@@ -66,7 +66,7 @@ def main() -> None:
     img_res = resolve_img_res_from_model(cfg.arch["model_type"])
     augmenter = build_train_augmentation_transforms(img_res, aug_cfg=cfg.aug)
     convert_mode = MaybeConvertMode()
-    imgs_root = paths["imgs"][cfg.dataset]
+    imgs_root = paths["imgs"][cfg.dataset_name]
 
     for img_idx, row in enumerate(train_rows[:n_imgs], start=1):
         source_path = imgs_root / row["rfpath"]

@@ -22,7 +22,7 @@ from utils.config import get_config_splits
 from utils.utils import load_pickle, paths, seed_libs
 
 
-DATASET = "cub"
+DATASET_NAME = "cub"
 
 
 def _normalize_cub_rfpath(raw_path: str) -> str:
@@ -234,23 +234,23 @@ def build_splits() -> None:
     cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
 
-    dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
-    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_split_dev = paths["metadata"][DATASET_NAME] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
 
     print(f"Generating split: '{cfg.split_name}'")
 
-    class_data = load_pickle(paths["metadata"][DATASET] / "class_data.pkl")
+    class_data = load_pickle(paths["metadata"][DATASET_NAME] / "class_data.pkl")
 
-    fpath_att_splits = paths["data"][DATASET] / "xlsa17/data/CUB/att_splits.mat"
+    fpath_att_splits = paths["data"][DATASET_NAME] / "xlsa17/data/CUB/att_splits.mat"
     split_sets = loadmat(fpath_att_splits)
 
     idxs_train = (split_sets["trainval_loc"] - 1).squeeze()
     idxs_test_id = (split_sets["test_seen_loc"] - 1).squeeze()
     idxs_test_ood = (split_sets["test_unseen_loc"] - 1).squeeze()
 
-    fpath_res = paths["data"][DATASET] / "xlsa17/data/CUB/res101.mat"
+    fpath_res = paths["data"][DATASET_NAME] / "xlsa17/data/CUB/res101.mat"
     data = loadmat(fpath_res)
     index_rfpaths_all = np.array(
         [_normalize_cub_rfpath(item[0][0]) for item in data["image_files"]],
@@ -335,7 +335,7 @@ def build_splits() -> None:
     class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
-    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET)
+    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET_NAME)
 
     print("Saving split...")
     save_split(

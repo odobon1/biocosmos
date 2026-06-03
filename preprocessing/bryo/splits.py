@@ -27,19 +27,19 @@ from preprocessing.bryo.splits_utils import (
 from utils.phylo import PhyloVCV
 
 
-DATASET = "bryo"
+DATASET_NAME = "bryo"
 
 
 def build_splits() -> None:
     cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
-    dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
-    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_split_dev = paths["metadata"][DATASET_NAME] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
-    pvcv = PhyloVCV(dataset=DATASET)
+    pvcv = PhyloVCV(dataset_name=DATASET_NAME)
     cids = pvcv.get_cids()  # genera for bryo
 
     img_ptrs_all = build_img_ptrs_bryo(cids)
@@ -129,7 +129,7 @@ def build_splits() -> None:
 
     # COMPUTE TRAIN NORMALIZATION STATS
 
-    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET)
+    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET_NAME)
 
     # SAVE SPLIT
 

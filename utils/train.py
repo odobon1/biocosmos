@@ -8,6 +8,7 @@ import time
 import random
 import numpy as np
 import torch
+import torch.distributed as dist
 import shutil
 
 from utils.utils import (
@@ -129,20 +130,24 @@ class ArtifactManager:
     dpath_model_best_i2i = None
     dpath_model_checkpoint = None
     resuming = False
+    dataset_name = None
+    split_name = None
 
     @staticmethod
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign_name
         ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / cfg_train.setting_name
+        ArtifactManager.dataset_name = cfg_train.dataset_name
+        ArtifactManager.split_name = cfg_train.split_name
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset_name / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "metadata_trial.json"
 
-        ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "models/best_comp"
-        ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "models/best_img2img"
-        ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "models/checkpoint"
+        ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "chkpts/best_comp"
+        ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "chkpts/best_img2img"
+        ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
         if ArtifactManager.dpath_trial.exists():
             if (ArtifactManager.dpath_model_checkpoint / "train_state.pt").exists():
@@ -158,7 +163,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "models", "models/checkpoint", "models/best_comp", "models/best_img2img", "plots"):
+        for subdir in ("logs", "chkpts", "chkpts/in_progress", "chkpts/best_comp", "chkpts/best_img2img", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
@@ -200,6 +205,7 @@ class ArtifactManager:
             del metadata["campaign_name"]
             del metadata["setting_name"]
             del metadata["seed"]
+            del metadata["dataset_name"]
             del metadata["split_name"]
             del metadata["standalone"]
 
@@ -223,7 +229,7 @@ class ArtifactManager:
         # save full text combo-templates themselves and not just the names
         text_template_full = {}
         for split_name, text_template in metadata["text_template"].items():
-            text_template_full[split_name] = get_text_template(text_template, dataset=metadata["dataset"])
+            text_template_full[split_name] = get_text_template(text_template, dataset_name=metadata["dataset_name"])
         metadata["text_template"] = text_template_full
 
         clean_metadata(metadata)
@@ -266,6 +272,8 @@ class ArtifactManager:
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, rmean_time_train)
         if init_flag:
             metadata_trial = {
+                "dataset_name": ArtifactManager.dataset_name,
+                "split_name": ArtifactManager.split_name,
                 "runtime": runtime_data,
                 "complete": False,
             }
@@ -295,6 +303,9 @@ class ArtifactManager:
     @rank0
     def save_train_state(train_pipe, idx_batch):
         state = {
+            "model": train_pipe.modelw._unwrapped_model.state_dict(),
+            "norm_mean": train_pipe.modelw.norm_mean,
+            "norm_std": train_pipe.modelw.norm_std,
             "optimizer": train_pipe.optimizer.state_dict(),
             "lr_sched": train_pipe.lr_schedw.sched.state_dict(),
             "n_samps_seen": train_pipe.n_samps_seen,
@@ -304,24 +315,30 @@ class ArtifactManager:
             "eval_threshold": train_pipe.eval_threshold,
             "rmean_time_train_n": train_pipe.rmean_time_train.n,
             "rmean_time_train_mean": train_pipe.rmean_time_train.mean,
-            "rng_cpu": torch.get_rng_state(),
-            "rng_cuda": torch.cuda.get_rng_state_all(),
-            "rng_numpy": np.random.get_state(),
-            "rng_random": random.getstate(),
         }
         if train_pipe.cfg.hw.mixed_prec:
             state["scaler"] = train_pipe.scaler.state_dict()
         torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
 
     @staticmethod
-    def save_rng_state(rank):
-        state = {
+    def save_rng_states(rank):
+        rng_state = {
             "rng_cpu": torch.get_rng_state(),
             "rng_cuda": torch.cuda.get_rng_state_all(),
             "rng_numpy": np.random.get_state(),
             "rng_random": random.getstate(),
         }
-        torch.save(state, ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt")
+        world_size = dist.get_world_size()
+        gather_list = [None] * world_size if rank == 0 else None
+        dist.gather_object(rng_state, gather_list, dst=0)
+        if rank == 0:
+            state = torch.load(
+                ArtifactManager.dpath_model_checkpoint / "train_state.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            state["rng_states"] = {i: gather_list[i] for i in range(world_size)}
+            torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
 
     @staticmethod
     @rank0
@@ -348,11 +365,12 @@ class ArtifactManager:
 
     @staticmethod
     def load_rng_state(rank):
-        return torch.load(
-            ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt",
+        state = torch.load(
+            ArtifactManager.dpath_model_checkpoint / "train_state.pt",
             map_location="cpu",
             weights_only=False,
         )
+        return state["rng_states"][rank]
 
     @staticmethod
     def load_trial_state():

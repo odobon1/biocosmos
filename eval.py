@@ -1,4 +1,8 @@
-from torch import dist
+"""
+torchrun --standalone --nproc-per-node=auto -m eval
+"""
+
+import torch.distributed as dist
 
 from models import VLMWrapper
 from utils.eval import EvaluationPipeline
@@ -16,11 +20,8 @@ def main():
     config_eval.device = device  # set local device
 
     modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
-    modelw.set_class_wts(config_eval)
-    if config_eval.loss2["mix"] != 0.0:
-        modelw.set_class_wts(config_eval, secondary=True)
 
-    text_template = get_text_template(config_eval.text_template, dataset=config_eval.dataset)
+    text_template = get_text_template(config_eval.text_template, dataset_name=config_eval.dataset_name)
     eval_pipe = EvaluationPipeline(
         config_eval,
         text_template,

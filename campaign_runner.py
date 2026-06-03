@@ -7,16 +7,15 @@ from copy import deepcopy
 import json
 import subprocess
 import sys
-import yaml
 import traceback
 import time
 import torch
 
-from utils.config import apply_overrides, load_train_config_dict
+from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN_NAME = "dev2"
+CAMPAIGN_NAME = "dev3"
 
 SEED0 = 42
 NUM_SEEDS = 1
@@ -31,35 +30,23 @@ BASELINE_OVERRIDES = [
 ]
 
 
-def _save_yaml(data: dict, fpath: Path) -> None:
-    fpath.parent.mkdir(parents=True, exist_ok=True)
-    with open(fpath, "w") as f:
-        yaml.safe_dump(data, f, sort_keys=True)
-
-def _load_yaml(fpath: Path) -> dict:
-    with open(fpath) as f:
-        return yaml.safe_load(f)
-
-def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting_name: str, exc: Exception) -> None:
+def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset_name: str, setting_name: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
+    dpath_campaign.mkdir(parents=True, exist_ok=True)
     fpath_errors = dpath_campaign / "errors.log"
-    
     # Format error message with context
     error_msg = (
         f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
-        f"  seed={seed}, dataset={dataset}, setting={setting_name}"
+        f"  seed={seed}, dataset={dataset_name}, setting={setting_name}"
     )
-
     stderr_body = None
     if isinstance(exc, subprocess.CalledProcessError):
         stderr = getattr(exc, "stderr", None)
         if stderr:
             stderr_lines = stderr.splitlines()
             stderr_body = "\n".join(stderr_lines)
-    
     # Print to stdout
     print(error_msg, flush=True)
-    
     # Write to error log file
     with open(fpath_errors, "a") as f:
         f.write(error_msg + "\n")
@@ -73,17 +60,18 @@ def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: 
 def _dpath_campaign() -> Path:
     return paths["artifacts"] / CAMPAIGN_NAME
 
-def _baseline_path() -> Path:
-    return _dpath_campaign() / "baseline.yaml"
-
-def _load_or_create_baseline() -> dict:
-    fpath = _baseline_path()
+def _load_or_create_baseline_config() -> dict:
+    fpath = _dpath_campaign() / "cfg_baseline.json"
     if fpath.exists():
-        return _load_yaml(fpath)
+        return load_json(fpath)
 
-    baseline = load_train_config_dict()
-    _save_yaml(baseline, fpath)
-    return baseline
+    cfg_baseline = load_train_config_dict()
+    cfg_baseline = apply_train_debug_overrides(cfg_baseline)
+    for key in ("setting_name", "seed", "dataset_name"):
+        cfg_baseline.pop(key, None)
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    save_json(cfg_baseline, fpath)
+    return cfg_baseline
 
 def _normalize_setting_overrides(overrides: dict) -> dict:
     # Keep nested keys as primary representation and only consume slash keys as fallback.
@@ -115,9 +103,9 @@ def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
 def _write_trial_cfg(dpath_campaign: Path, cfg_dict: dict) -> Path:
-    fpath_cfg = dpath_campaign / "trial_curr.json"
+    fpath_cfg = dpath_campaign / "cfg_trial_curr.json"
     with open(fpath_cfg, "w") as f:
-        json.dump(cfg_dict, f, indent=2, sort_keys=True)
+        json.dump(cfg_dict, f)
     return fpath_cfg
 
 def _run_trial_subprocess(fpath_cfg: Path) -> None:
@@ -183,7 +171,7 @@ def run_campaign() -> None:
         }
         save_json(metadata_camp, dpath_campaign / "metadata_campaign.json")
 
-    baseline = _load_or_create_baseline()
+    cfg_baseline = _load_or_create_baseline_config()
     settings = _expand_settings(BASELINE_OVERRIDES)
     seeds = _iter_seeds()
 
@@ -194,28 +182,29 @@ def run_campaign() -> None:
     print(f"Campaign: '{CAMPAIGN_NAME}' ({n_trials} trials)")
 
     idx_trial = 0
-    for dataset in DATASETS:
+    for dataset_name in DATASETS:
         for seed in seeds:
-            for setting_name, setting_payload_raw, _setting_payload_norm in settings:
+            for setting_name, _setting_payload_raw, setting_payload_norm in settings:
                 idx_trial += 1
 
-                dpath_trial = _dpath_campaign() / setting_name / dataset / str(seed)
+                dpath_trial = _dpath_campaign() / setting_name / dataset_name / str(seed)
                 if _check_trial_completion(dpath_trial):
-                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset_name} setting={setting_name}")
                     continue
 
-                cfg_dict = deepcopy(baseline)
+                cfg_dict = deepcopy(cfg_baseline)
                 cfg_dict["campaign_name"] = CAMPAIGN_NAME
                 cfg_dict["setting_name"] = setting_name
                 cfg_dict["seed"] = seed
-                cfg_dict["dataset"] = dataset
+                cfg_dict["dataset_name"] = dataset_name
                 cfg_dict["standalone"] = False
-                cfg_dict["_setting_overrides"] = setting_payload_raw
+                cfg_dict["_setting_overrides"] = setting_payload_norm
+                cfg_dict = apply_overrides(cfg_dict, setting_payload_norm)
 
                 if dpath_trial.exists():
-                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset_name} setting={setting_name}")
                 else:
-                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset_name} setting={setting_name}")
 
                 try:
                     fpath_cfg = _write_trial_cfg(_dpath_campaign(), cfg_dict)
@@ -226,7 +215,7 @@ def run_campaign() -> None:
                         idx_trial=idx_trial,
                         n_trials=n_trials,
                         seed=seed,
-                        dataset=dataset,
+                        dataset_name=dataset_name,
                         setting_name=setting_name,
                         exc=e,
                     )

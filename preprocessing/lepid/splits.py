@@ -28,25 +28,25 @@ from preprocessing.lepid.splits_utils import (
 from utils.phylo import PhyloVCV
 
 
-DATASET = "lepid"
+DATASET_NAME = "lepid"
 
 
 def build_splits():
     cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
-    dpath_split = paths["metadata"][DATASET] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split_name}"
     dpath_figs = dpath_split / "figures"
-    dpath_split_dev = paths["metadata"][DATASET] / "splits/dev"
+    dpath_split_dev = paths["metadata"][DATASET_NAME] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split_name}'")
 
     print("Loading phylogenetic covariance structure...")
-    pvcv = PhyloVCV(dataset=DATASET)
+    pvcv = PhyloVCV(dataset_name=DATASET_NAME)
     cids = pvcv.get_cids()
     print(f"Loaded phylogeny with {len(cids):,} species.")
 
     print("Loading class data...")
-    class_data = load_pickle(paths["metadata"][DATASET] / "class_data.pkl")
+    class_data = load_pickle(paths["metadata"][DATASET_NAME] / "class_data.pkl")
     cid_2_family = {
         cid: class_data[cid]["family"]
         for cid in cids
@@ -146,7 +146,7 @@ def build_splits():
     class_counts_train_dev = build_class_counts_train(data_indexes_dev)
     print("Class counts complete!")
 
-    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET)
+    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET_NAME)
 
     print("Saving split...")
     save_split(

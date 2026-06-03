@@ -10,7 +10,7 @@ def make_train_config(**overrides):
         "campaign_name": "campaign",
         "setting_name": "exp",
         "seed": 7,
-        "dataset": "cub",
+        "dataset_name": "cub",
         "split_name": "D10",
         "sample_volume": 1_000,
         "eval_every": 100,
@@ -72,7 +72,6 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert cfg.n_workers == 2
     assert cfg.prefetch_factor == 2
     assert cfg.n_gpus == 1
-    assert cfg.rdpath_trial == "artifacts/campaign/exp/cub/7"
     assert str(cfg.device) == "cuda"
 
 

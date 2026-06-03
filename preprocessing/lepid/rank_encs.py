@@ -7,7 +7,7 @@ from preprocessing.common.rank_encs import build_rank_encs
 
 def generate_rank_encs():
     build_rank_encs(
-        dataset="lepid",
+        dataset_name="lepid",
         ranks=["family", "genus", "species"],
     )
 

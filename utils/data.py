@@ -302,14 +302,14 @@ class ImageTextDataset(Dataset):
         self.index_data = index_data
         self.text_template = text_template
         self.img_pp = img_pp
-        self.dataset = config.dataset
-        self.text_generator = get_text_generator(self.dataset)
-        self._aug_seed = config.seed
+        self.dataset_name = config.dataset_name
+        self.text_generator = get_text_generator(self.dataset_name)
+        self._aug_seed = getattr(config, "seed", None)
 
         self.n_samples = len(self.index_data)
 
-        self.class_data = load_pickle(paths["metadata"][self.dataset] / "class_data.pkl")
-        self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
+        self.class_data = load_pickle(paths["metadata"][self.dataset_name] / "class_data.pkl")
+        self.rank_encs = load_pickle(paths["metadata"][self.dataset_name] / "rank_encs.pkl")
 
         self.missing_class_data_cids = {
             datum["cid"] for datum in self.index_data if datum["cid"] not in self.class_data
@@ -365,13 +365,12 @@ class ImageTextDataset(Dataset):
 
         text = self.text_generator.generate(class_data_cid, self.text_template, meta)
 
-        # Seed augmentation RNG per (epoch, item) for cross-session reproducibility.
-        # encoded_idx = epoch * n_samples + idx, so this seed varies each epoch.
-        random.seed(self._aug_seed + encoded_idx)
-        torch.manual_seed(self._aug_seed + encoded_idx)
+        if self._aug_seed is not None:
+            random.seed(self._aug_seed + encoded_idx)
+            torch.manual_seed(self._aug_seed + encoded_idx)
 
         # load + preprocess image
-        img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
+        img = Image.open(paths["imgs"][self.dataset_name] / self.index_data[idx]["rfpath"]).convert("RGB")
         img_t = self.img_pp(img)
 
         targ_data = {
@@ -379,7 +378,7 @@ class ImageTextDataset(Dataset):
             "rank_encs": rank_encs,
             "cid": cid,
             "meta": meta,
-            "dataset": self.dataset,
+            "dataset_name": self.dataset_name,
         }
 
         return img_t, text, class_enc, targ_data
@@ -413,7 +412,7 @@ def spawn_partition_data(config: EvalConfig, partition_name: str):
     - split_type --- [str] --- "train" / "id" / "ood"
     - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
-    split = load_split(config.split_name, dataset_name=config.dataset)
+    split = load_split(config.dataset_name, config.split_name)
     if partition_name == "train":
         index_data = split.data_indexes["train"]
     else:
@@ -421,7 +420,7 @@ def spawn_partition_data(config: EvalConfig, partition_name: str):
     cid2enc = build_cid2enc(index_data)
     return index_data, cid2enc
 
-def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
+def spawn_partition_indexes_txts(cid2enc, text_template, dataset_name):
     """
     
     Args:
@@ -430,8 +429,8 @@ def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
 
     index_text_cids = list(cid2enc.keys())
     index_text_class_encs = list(cid2enc.values())
-    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
-    text_generator = get_text_generator(dataset)
+    class_data = load_pickle(paths["metadata"][dataset_name] / "class_data.pkl")
+    text_generator = get_text_generator(dataset_name)
 
     index_text = []
     missing_cids = []
@@ -551,10 +550,10 @@ def spawn_dataloader(
 def gen_text(
     class_data_cid: Mapping[str, Any],
     combo_temp,
-    dataset: str,
+    dataset_name: str,
     meta: Mapping[str, Any] | None = None,
 ):
-    return get_text_generator(dataset).generate(class_data_cid, combo_temp, meta)
+    return get_text_generator(dataset_name).generate(class_data_cid, combo_temp, meta)
 
 def species_to_genus(species: str) -> str:
     return species.split("_")[0]

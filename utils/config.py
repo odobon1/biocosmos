@@ -48,16 +48,16 @@ class TrainConfig:
     batch_size: int
     dv_batching: bool
 
-    dev: dict
     arch: dict
-    img_norm: str
     loss: dict
     loss2: dict
+    text_template: dict
+    img_norm: str
     opt: dict
     freeze: dict
-    text_template: dict
 
-    logging: bool
+    dev: dict
+
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
     
@@ -67,21 +67,18 @@ class TrainConfig:
 
     def __post_init__(self):
 
+        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
+
         split = load_split(self.dataset_name, self.split_name)
         size_train = len(split.data_indexes["train"])
         if self.batch_size > size_train:
             raise ValueError(f"batch_size {self.batch_size} exceeds training set size {size_train}")
         samps_per_epoch = size_train - size_train % self.batch_size
         self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
-
-        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
         
         if self.eval_every <= 0:
             raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
-
-        if self.img_norm not in ("default", "dataset"):
-            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
         if self.loss["type"] not in ("infonce1", "infonce2", "bce"):
             raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce}}")
@@ -101,14 +98,21 @@ class TrainConfig:
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
 
-        if self.opt["lr"]["sched"] not in ("cos",):
-            raise ValueError(f"Unknown LR scheduler type: '{self.opt['lr']['sched']}', must be one of {{cos}}")
+        if self.img_norm not in ("default", "dataset"):
+            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
-        if self.eval_type not in ("validation", "test"):
-            raise ValueError(f"Unknown eval_type: '{self.eval_type}', must be one of {{validation, test}}")
+        if self.aug.get("cjit_prob", 0.0) == 0.0:
+            self.aug.pop("cjit", None)
+            self.aug.pop("cjit_prob", None)
+        if self.aug.get("sharpness_prob", 0.0) == 0.0:
+            self.aug.pop("sharpness", None)
+            self.aug.pop("sharpness_prob", None)
+        if self.aug.get("gblur_prob", 0.0) == 0.0:
+            self.aug.pop("gblur", None)
+            self.aug.pop("gblur_prob", None)
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
@@ -195,11 +199,11 @@ def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
     return merged
 
 def load_train_config_dict() -> dict:
-    with open(paths["config"] / "train/train.yaml") as f:
+    with open(paths["config"] / "train.yaml") as f:
         return yaml.safe_load(f)
 
 def load_model_specific_config_dict() -> dict:
-    with open(paths["config"] / "train/model_specific.yaml") as f:
+    with open(paths["config"] / "model_specific.yaml") as f:
         return yaml.safe_load(f)
 
 def _resolve_model_family(model_type: str) -> str:
@@ -257,7 +261,6 @@ def build_train_config(cfg_dict: dict) -> TrainConfig:
     if setting_overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg = TrainConfig(**cfg_dict)
-    cfg.lr_sched_params = get_config_lr_sched(cfg.opt['lr']['sched'])
     cfg.loss["cfg"] = get_config_loss(cfg)
     if cfg.loss2["mix"] != 0.0:
         cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
@@ -269,41 +272,44 @@ def get_config_train(cfg_dict: dict | None = None):
         cfg_dict = load_train_config_dict()
     return build_train_config(cfg_dict)
 
-def get_config_lr_sched(lr_sched_type):
-    with open(paths["config"] / "train/lr_sched.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    return cfg_dict[lr_sched_type]
-
 # helper for get_config_train()
 def get_config_loss(cfg_train, secondary=False):
-    if not secondary:
-        fpath = "loss.yaml"
-        cfg_train_loss = cfg_train.loss
-    else:
-        fpath = "loss2.yaml"
-        cfg_train_loss = cfg_train.loss2
+    cfg_train_loss = cfg_train.loss if not secondary else cfg_train.loss2
 
-    with open(paths["config"] / fpath) as f:
-        cfg_loss = yaml.safe_load(f)
+    wting_cfg = cfg_train_loss["wting"]
+    focal_cfg = cfg_train_loss["focal"]
+    logits_cfg = cfg_train_loss["logits"]
+    dsmr = cfg_train_loss.get("dsmr", False)
 
-    if not (cfg_loss["logits"]["scale_init"] is None and cfg_loss["logits"]["bias_init"] is None):
+    wting = isinstance(wting_cfg, dict) and wting_cfg.get("type") is not None
+    focal = isinstance(focal_cfg, dict) and focal_cfg.get("gamma", 0.0) != 0.0
+
+    if not (logits_cfg["scale_init"] is None and logits_cfg["bias_init"] is None):
         print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias overridden!\n")
 
-    wting = cfg_train_loss.get("wting", False)
-    focal = cfg_train_loss.get("focal", False)
-    dyn_smr = cfg_train_loss.get("dyn_smr", False)
+    cfg = {"logits": logits_cfg}
 
-    if not wting and "class_weighting" in cfg_loss:
-        del cfg_loss["class_weighting"]
-    if not focal and "focal" in cfg_loss:
-        del cfg_loss["focal"]
+    if wting:
+        cfg["class_weighting"] = {
+            "type":     wting_cfg["type"],
+            "if_gamma": wting_cfg["if"]["gamma"],
+            "cb_beta":  wting_cfg["cb"]["beta"],
+            "cp_type":  wting_cfg["cp_type"],
+        }
+
+    if focal:
+        cfg["focal"] = {
+            "gamma":     focal_cfg["gamma"],
+            "comp_type": focal_cfg["comp_type"],
+        }
 
     if cfg_train_loss["type"] == "bce":
-        cfg_loss["dyn_smr"] = dyn_smr
-    elif "dyn_smr" in cfg_loss:
-        del cfg_loss["dyn_smr"]
+        cfg["dsmr"] = dsmr
 
-    return cfg_loss
+    cfg_train_loss["wting"] = wting
+    cfg_train_loss["focal"] = focal
+
+    return cfg
 
 @dataclass
 class HardwareConfig:
@@ -367,6 +373,7 @@ class EvalConfig:
 
             self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
             self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
+            self.img_norm = metadata_setting["img_norm"]  # override img_norm
             self.dataset_name = metadata_trial["dataset_name"]  # override dataset_name
             self.split_name = metadata_trial["split_name"]  # override split_name
 

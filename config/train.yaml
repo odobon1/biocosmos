@@ -1,0 +1,98 @@
+campaign_name: dev
+setting_name: dev
+dataset_name: bryo  # {bryo, cub, lepid, nymph}
+split_name: D10
+seed: 42
+
+sample_volume: 1_000_000
+eval_every: 50_000
+batch_size: 4096  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
+dv_batching: false  # (true) dorsal/ventral-homogeneous batching
+
+arch:  # architecture
+  model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
+  non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
+
+loss:  # primary loss
+  type: bce  # {infonce1, infonce2, bce}
+  sim: cos  # {cos, geo1, geo2}
+  targ: multipos  # {aligned, multipos, tax, phylo}
+  wting:
+    cp_type: 1  # {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
+    type: inv_freq  # {inv_freq, class_balanced, null}; null to disable
+    if:  # inverse-frequency weighting; only relevant if type: inv_freq
+      gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
+    cb:
+      beta: 0.9999  # [0.0, 1.0); only used for type: class_balanced; controls aggressiveness
+  focal:
+    gamma: 0.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
+    comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
+  dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
+  logits:
+    scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
+    bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
+    freeze_scale: false  # (true) non-learnable temp
+    freeze_bias: false  # (true) non-learnable bias
+
+loss2:  # secondary loss
+  mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
+  type: bce  # {infonce1, infonce2, bce}
+  sim: cos  # {cos, geo1, geo2}
+  targ: phylo  # {aligned, multipos, tax, phylo}
+  wting:
+    cp_type: 1
+    type: null  # {inv_freq, class_balanced, null}
+    if:
+      gamma: 0.5
+    cb:
+      beta: 0.9999
+  focal:
+    gamma: 0.0
+    comp_type: 1
+  dsmr: true
+  logits:
+    scale_init: null
+    bias_init: null
+    freeze_scale: false
+    freeze_bias: false
+
+aug:  # image augmentation
+  rrcrop:  # random resized crop
+    scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
+    ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
+  hflip: false  # horizontal flip w/ 50% probability
+  cjit:  # color jitter
+    brightness: 0.1
+    contrast: 0.2
+    saturation: 0.1
+    hue: 0.01
+  cjit_prob: 0.5
+  sharpness: [0.5, 2.0]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
+  sharpness_prob: 0.2
+  gblur:  # gaussian blur
+    kernel_size: 3  # must be odd int
+    sigma: [0.0, 1.0]
+  gblur_prob: 0.3
+img_norm: default  # {default, dataset}
+
+text_template:
+  train: train
+  eval: sci  # following BioCLIP eval protocol
+
+opt:  # optimization
+  lr:  # learning rate
+    init: 1.0e-5
+    decay_factor: 1.0e-3  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
+    warmup: 100_000  # sample volume for linear LR warmup
+  l2reg: null  # if `null`, resolved from model-specific default hyperparam config
+  beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
+  beta2: null  # if `null`, resolved from model-specific default hyperparam config
+  eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
+
+freeze:
+  image: false
+  text: false
+
+dev:
+  debug_mode: true
+  logging: true

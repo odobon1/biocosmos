@@ -145,7 +145,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "opt": {
-            "lr": {"sched": "cos"},
+            "lr": {"decay_factor": 1.0e-3},
             "l2reg": None,
             "beta1": 0.9,
             "beta2": None,

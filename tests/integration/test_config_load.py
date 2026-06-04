@@ -21,7 +21,6 @@ def test_get_config_train_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) ->
     cfg = get_config_train()
 
     assert cfg.loss["cfg"]
-    assert cfg.lr_sched_params
     assert cfg.hw
     assert cfg.opt["l2reg"] == 0.0
     assert cfg.opt["beta2"] == 0.95

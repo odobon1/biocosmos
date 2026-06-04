@@ -183,8 +183,8 @@ def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_
         else:
             W_foc = torch.ones_like(targs)
 
-        dyn_smr = config_loss["cfg"].get("dyn_smr", False)
-        if dyn_smr:
+        dsmr = config_loss["cfg"].get("dsmr", False)
+        if dsmr:
             num_pos = torch.sum(targs).item()
             num_neg = B**2 - num_pos
             # scaling (numerical stability measure)

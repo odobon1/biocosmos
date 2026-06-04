@@ -40,8 +40,6 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
         bucket_partition_name = None
         best_comp_map = None
         best_i2i_map = None
-        best_full_set_comp_map = None
-        best_full_set_i2i_map = None
 
     eval_metrics = {
         "scores": {

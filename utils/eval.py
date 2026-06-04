@@ -640,8 +640,6 @@ class EvaluationPipeline:
 
         self.best_comp_map = None
         self.best_i2i_map = None
-        self.best_full_set_comp_map = None
-        self.best_full_set_i2i_map = None
 
         self.split = load_split(config.dataset_name, config.split_name)
         self.partition_names = list_eval_partition_names(self.split, config.eval_type)

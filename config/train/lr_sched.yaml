@@ -1,4 +1,0 @@
-# Cosine LR Scheduler
-cos:
-  args:
-    eta_min_factor: 1.0e-3  # eta_min = opt.lr.init * eta_min_factor

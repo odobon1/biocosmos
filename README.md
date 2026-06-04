@@ -67,10 +67,10 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
-    When `rfpath_model` is set, eval overrides `dataset_name`, `split_name`, `model_type`, and `non_causal` from setting + trial saved metadata.
+    When `rfpath_model` is set, eval overrides `dataset_name`, `split_name`, `model_type`, `non_causal`, and `img_norm` from setting + trial saved metadata.
 
 ## Evaluate a base model
-1. In `config/eval.yaml`, set `rfpath_model: null` and set `dataset_name`, `split_name`, `model_type`, and `non_causal` as desired.
+1. In `config/eval.yaml`, set `rfpath_model: null`.
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval

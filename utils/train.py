@@ -213,12 +213,12 @@ class ArtifactManager:
             
             metadata["loss"].pop("wting", None)
             metadata["loss"].pop("focal", None)
-            metadata["loss"].pop("dyn_smr", None)
+            metadata["loss"].pop("dsmr", None)
 
             if "loss2" in metadata:
                 metadata["loss2"].pop("wting", None)
                 metadata["loss2"].pop("focal", None)
-                metadata["loss2"].pop("dyn_smr", None)
+                metadata["loss2"].pop("dsmr", None)
 
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]
@@ -306,8 +306,8 @@ class ArtifactManager:
             "model": train_pipe.modelw._unwrapped_model.state_dict(),
             "norm_mean": train_pipe.modelw.norm_mean,
             "norm_std": train_pipe.modelw.norm_std,
-            "optimizer": train_pipe.optimizer.state_dict(),
-            "lr_sched": train_pipe.lr_schedw.sched.state_dict(),
+            "optimizer": train_pipe.opt.state_dict(),
+            "lr_sched": train_pipe.lr_sched.state_dict(),
             "n_samps_seen": train_pipe.n_samps_seen,
             "n_batches_seen": train_pipe.n_batches_seen,
             "idx_epoch": train_pipe.idx_epoch,
@@ -315,6 +315,8 @@ class ArtifactManager:
             "eval_threshold": train_pipe.eval_threshold,
             "rmean_time_train_n": train_pipe.rmean_time_train.n,
             "rmean_time_train_mean": train_pipe.rmean_time_train.mean,
+            "rmean_time_eval_n": train_pipe.rmean_time_eval.n,
+            "rmean_time_eval_mean": train_pipe.rmean_time_eval.mean,
         }
         if train_pipe.cfg.hw.mixed_prec:
             state["scaler"] = train_pipe.scaler.state_dict()

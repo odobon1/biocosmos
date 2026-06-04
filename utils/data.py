@@ -47,11 +47,6 @@ def build_train_augmentation_transforms(
     aug_cfg: Mapping[str, Any] | None = None,
 ) -> Compose:
     aug_cfg = _merge_aug_cfg(aug_cfg)
-    kernel_size_gb = int(aug_cfg["gblur"]["kernel_size"])
-    sharpness_min, sharpness_max = tuple(aug_cfg["sharpness"])
-    sigma_min, sigma_max = tuple(aug_cfg["gblur"]["sigma"])
-    sigma_min = max(float(sigma_min), 1.0e-6)
-    sigma_max = max(float(sigma_max), sigma_min)
     transforms = [
         RandomResizedCrop(
             size=img_res,
@@ -63,27 +58,36 @@ def build_train_augmentation_transforms(
     if aug_cfg.get("hflip", False):
         transforms.append(RandomHorizontalFlip())
 
-    transforms.extend([
-        RandomApply([
+    if aug_cfg["cjit_prob"] != 0.0:
+        transforms.append(RandomApply([
             ColorJitter(
                 brightness=aug_cfg["cjit"]["brightness"],
                 contrast=aug_cfg["cjit"]["contrast"],
                 saturation=aug_cfg["cjit"]["saturation"],
                 hue=aug_cfg["cjit"]["hue"],
             )
-        ], p=aug_cfg["cjit_prob"]),
-        RandomApply([
+        ], p=aug_cfg["cjit_prob"]))
+
+    if aug_cfg["sharpness_prob"] != 0.0:
+        sharpness_min, sharpness_max = tuple(aug_cfg["sharpness"])
+        transforms.append(RandomApply([
             Lambda(
                 lambda img: F.adjust_sharpness(
                     img,
                     sharpness_factor=random.uniform(sharpness_min, sharpness_max),
                 )
             )
-        ], p=aug_cfg["sharpness_prob"]),
-        RandomApply([
+        ], p=aug_cfg["sharpness_prob"]))
+
+    if aug_cfg["gblur_prob"] != 0.0:
+        kernel_size_gb = int(aug_cfg["gblur"]["kernel_size"])
+        sigma_min, sigma_max = tuple(aug_cfg["gblur"]["sigma"])
+        sigma_min = max(float(sigma_min), 1.0e-6)
+        sigma_max = max(float(sigma_max), sigma_min)
+        transforms.append(RandomApply([
             GaussianBlur(kernel_size_gb, sigma=(sigma_min, sigma_max))
-        ], p=aug_cfg["gblur_prob"]),
-    ])
+        ], p=aug_cfg["gblur_prob"]))
+
     return Compose(transforms)
 
 def make_image_preprocessor_inference(

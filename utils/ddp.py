@@ -18,7 +18,7 @@ def setup_ddp():
 
 def cleanup_ddp():
     if dist.get_rank() == 0:
-        print("Cleaning up DDP...")
+        print("Cleaning up DDP...\n")
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()
 

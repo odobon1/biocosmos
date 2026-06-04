@@ -137,6 +137,7 @@ def load_split(dataset_name, split_name):
 def get_text_template(text_template_type, dataset_name=None):
     return get_dataset_text_template(text_template_type, dataset_name=dataset_name)
     
+
 class RunningMean:
     """
     Track running mean via Welford's algorithm
@@ -162,10 +163,11 @@ def model_grad_l2_norm(model: torch.nn.Module) -> float:
     return math.sqrt(total)
     
 def shuffle_list(input: List[Any], seed: int) -> List[int]:
-    rng        = random.Random(seed)
+    rng = random.Random(seed)
     input_shuf = input.copy()
     rng.shuffle(input_shuf)
     return input_shuf
+
 
 class PrintLog:
 
@@ -175,16 +177,14 @@ class PrintLog:
     log_batch_temp_bias = None
     log_epoch = None
     log_eval = None
-    log_init  = None
-    log_text  = None
+    log_init = None
+    log_text_train = None
     log_text_eval = None
-    wrote_text_eval = False
 
     @staticmethod
     @rank0
     def create_logs(dpath_logs):
         PrintLog.logging = True
-        PrintLog.wrote_text_eval = False
         dpath_batch_logs = dpath_logs / "batch"
         dpath_batch_logs.mkdir(parents=True, exist_ok=True)
         PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
@@ -193,74 +193,62 @@ class PrintLog:
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
-        PrintLog.log_text = open(dpath_logs / "text.log", "a", buffering=1)
+        PrintLog.log_text_train = open(dpath_logs / "text_train.log", "a", buffering=1)
         PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
 
     @staticmethod
     @rank0
     def texts(texts_sb):
-        text_printout = "\n".join(texts_sb)
         if PrintLog.logging:
-            PrintLog.log_text.write(text_printout)
+            text_printout = "\n".join(texts_sb)
+            PrintLog.log_text_train.write(text_printout)
 
     @staticmethod
     @rank0
-    def texts_eval(texts_by_partition):
-        if not PrintLog.logging or PrintLog.wrote_text_eval:
-            return
+    def texts_eval(eval_pipe):
+        if PrintLog.logging:
+            texts_by_partition = eval_pipe.get_eval_texts()
+            lines = []
+            for partition_name, texts in texts_by_partition.items():
+                lines.append(f"[{partition_name}]")
+                lines.extend(texts)
+                lines.append("")
+            PrintLog.log_text_eval.write("\n".join(lines))
+            PrintLog.wrote_text_eval = True
 
-        lines = []
-        for partition_name, texts in texts_by_partition.items():
-            lines.append(f"[{partition_name}]")
-            lines.extend(texts)
-            lines.append("")
-
-        PrintLog.log_text_eval.write("\n".join(lines))
-        PrintLog.wrote_text_eval = True
+    @staticmethod
+    def _make_epoch_header(idx_epoch, n_epochs, width=75):
+        return f"{f' Epoch {idx_epoch}/{n_epochs} ':#^{width}}"
 
     @staticmethod
     @rank0
-    def epoch_header(idx_epoch, n_epochs):
-        header_epoch = f" Epoch {idx_epoch}/{n_epochs} "
-        header_epoch = (
-            f"{header_epoch:#^{75}}"
-            f"\n"
-        )
-        print(header_epoch)
+    def batch_logs_epoch_header(idx_epoch, n_epochs):
         if PrintLog.logging:
+            header_epoch = PrintLog._make_epoch_header(idx_epoch, n_epochs) + "\n"
             PrintLog.log_batch_general.write(header_epoch)
             PrintLog.log_batch_grad_norm.write(header_epoch)
             PrintLog.log_batch_temp_bias.write(header_epoch)
-            PrintLog.log_epoch.write(header_epoch)
 
     @staticmethod
     @rank0
-    def train_header(lr):
-        header_train = (
-            f"{' Train ':=^{75}}\n"
-            f"LR --- {lr:.2e}\n"
-            f"\n"
-        )
-        print(header_train)
-        if PrintLog.logging:
-            PrintLog.log_epoch.write(header_train)
+    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, n_samps_seen, idx_epoch, n_epochs):
 
-    @staticmethod
-    @rank0
-    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, n_samps_seen):
+        SECTION_WIDTH = 66
 
-        epoch_info = (
-            f"Samples Seen ------- {n_samps_seen:,}\n"
-            f"Train Loss --------- {loss_train_avg:.3e}\n"
-            f"Train Loss (raw) --- {loss_train_raw_avg:.3e}\n"
-            f"\n"
-            f"{' Elapsed Time ':=^{75}}\n"
-            f"Train -------- {time_train:.2f} s (avg: {time_train_avg:.2f} s)\n"
-            f"\n"
-        )
-        print(epoch_info)
+        lines_epoch = [
+            PrintLog._make_epoch_header(idx_epoch, n_epochs, width=SECTION_WIDTH),
+            PrintLog._block_metric_lines((
+                ("Loss", f"{loss_train_avg:.3e}"),
+                ("Raw Loss", f"{loss_train_raw_avg:.3e}"),
+                ("Samples Seen", f"{n_samps_seen:,}"),
+                ("Time", f"{time_train:.2f} s (avg: {time_train_avg:.2f} s)"),
+            )),
+            f"{'':#^{SECTION_WIDTH}}",
+            "",
+        ]
+        print("\n".join(lines_epoch))
         if PrintLog.logging:
-            PrintLog.log_epoch.write(epoch_info)
+            PrintLog.log_epoch.write("\n".join(lines_epoch))
 
     @staticmethod
     @rank0
@@ -283,28 +271,28 @@ class PrintLog:
         logits1 = logits[0]
         logits2 = logits[1]
         if logits2 is None:
-            logits_line = f"log={tensor_grad_l2_norm(logits1):.2e}, "
+            line_logits = f"log={tensor_grad_l2_norm(logits1):.2e}, "
         else:
-            logits_line = f"log1={tensor_grad_l2_norm(logits1):.2e}, "
-            logits_line += f"log2={tensor_grad_l2_norm(logits2):.2e}, "
+            line_logits = f"log1={tensor_grad_l2_norm(logits1):.2e}, "
+            line_logits += f"log2={tensor_grad_l2_norm(logits2):.2e}, "
 
-        grad_norm_line = (
+        line_grad_norm = (
             f"img={tensor_grad_l2_norm(embs_img_b):.2e}, "
             f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}, "
-            f"{logits_line}"
+            f"{line_logits}"
             f"model={model_grad_l2_norm(model):.2e}"
         )
 
-        logits_param_line = ""
+        line_logits_param = ""
         if hasattr(model.module, "logit_scale") and model.module.logit_scale is not None:
-            logits_param_line += f"s1={model.module.logit_scale.detach().exp().item():.2e}, "
+            line_logits_param += f"s1={model.module.logit_scale.detach().exp().item():.2e}, "
         if hasattr(model.module, "logit_scale2") and model.module.logit_scale2 is not None:
-            logits_param_line += f"s2={model.module.logit_scale2.detach().exp().item():.2e}, "
+            line_logits_param += f"s2={model.module.logit_scale2.detach().exp().item():.2e}, "
         if hasattr(model.module, "logit_bias") and model.module.logit_bias is not None:
-            logits_param_line += f"b1={tensor_scalar_item(model.module.logit_bias):.2e}, "
+            line_logits_param += f"b1={tensor_scalar_item(model.module.logit_bias):.2e}, "
         if hasattr(model.module, "logit_bias2") and model.module.logit_bias2 is not None:
-            logits_param_line += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e}, "
-        logits_param_line = logits_param_line.rstrip(", ")
+            line_logits_param += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e}, "
+        line_logits_param = line_logits_param.rstrip(", ")
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
@@ -316,12 +304,12 @@ class PrintLog:
             )
             PrintLog.log_batch_grad_norm.write(
                 f"{batch_str:<10} "
-                f"{grad_norm_line}"
+                f"{line_grad_norm}"
                 f"\n"
             )
             PrintLog.log_batch_temp_bias.write(
                 f"{batch_str:<10} "
-                f"{logits_param_line}"
+                f"{line_logits_param}"
                 f"\n"
             )
 
@@ -332,257 +320,193 @@ class PrintLog:
         eval_pipe,
         header: Optional[str] = None,
         n_samps_seen: Optional[int] = None,
-        idx_epoch: Optional[int] = None,
         time_eval: Optional[float] = None,
-        log_to: str = "epoch",
+        time_eval_avg: Optional[float] = None,
     ) -> None:
         
+        SECTION_WIDTH = 77
+
+        def _format_composite_block(title: str, map_scores: Dict[str, Any]) -> str:
+            pairs = [
+                ("All", f"{map_scores['all']:.4f}"),
+                ("I2I", f"{map_scores['i2i']:.4f}"),
+                *((p.upper(), f"{map_scores[p]:.4f}") for p in partition_names),
+            ]
+            return f"{title:-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(pairs) + "\n"
+        
         partition_names = eval_pipe.partition_names
-        nshot_bucket_names = eval_pipe.nshot_bucket_names
-        bucket_partition_name = eval_pipe.bucket_partition_name
 
-        if log_to == "eval":
-            target_log = PrintLog.log_eval
-        elif log_to == "epoch":
-            target_log = PrintLog.log_epoch
-        else:
-            target_log = None
+        lines_comp = f"{' ID/OOD Eval ':=^{SECTION_WIDTH}}\n"
 
-        def _best_metric_str(value: Optional[float]) -> str:
-            return "" if value is None else f" (best: {value:.4f})"
-
-        def _build_nshot_lines(metric_group_scores: Dict[str, Any], title: str) -> str:
-            bucket_scores = metric_group_scores["n-shot"]
-            bucket_keys = [bucket_name for bucket_name in nshot_bucket_names if bucket_name in bucket_scores]
-            if not bucket_keys:
-                return ""
-
-            lines = f"{title:-^{75}}\n"
-            len_max = max(len(label) for label in bucket_keys)
-            for bucket_name in bucket_keys:
-                n_dashes = len_max - len(bucket_name) + 3
-                lines += f"{bucket_name} {'-' * n_dashes} {bucket_scores[bucket_name]:.4f}\n"
-            return lines
-
-        def _partition_variant_lines(
-            variant_title: str,
-            map_scores: Dict[str, Any],
-            per_class_map_scores: Dict[str, Any],
-            partition_name: str,
-        ) -> str:
-            lines = f"{variant_title:=^{75}}\n"
-            lines += (
-                f"{' mAP ':-^{75}}\n"
-                f"I2T --- {map_scores['i2t']:.4f}\n"
-                f"I2I --- {map_scores['i2i']:.4f}\n"
-                f"T2I --- {map_scores['t2i']:.4f}\n"
-            )
-            if partition_name == bucket_partition_name:
-                lines += _build_nshot_lines(map_scores, " N-Shot Composite mAP ")
-
-            lines += (
-                f"{' Macro mAP ':-^{75}}\n"
-                f"I2T --- {per_class_map_scores['i2t']:.4f}\n"
-                f"I2I --- {per_class_map_scores['i2i']:.4f}\n"
-                f"T2I --- {per_class_map_scores['t2i']:.4f}\n"
-            )
-            if partition_name == bucket_partition_name:
-                lines += _build_nshot_lines(per_class_map_scores, " N-Shot Composite Macro mAP ")
-            return lines
-
-        def _collect_accuracy_rows(score_key: Optional[str], label_suffix: str) -> List[tuple[str, float]]:
-            rows = []
-            for partition_name in partition_names:
-                set_key = score_key if score_key is not None else "closed_set"
-                standard_acc_scores = eval_metrics["scores"][set_key]["standard"][partition_name]["acc"]
-                per_class_acc_scores = eval_metrics["scores"][set_key]["per_class"][partition_name]["acc"]
-
-                partition_label = partition_name.upper()
-                if "i2t" in standard_acc_scores:
-                    rows.append((f"{partition_label} {label_suffix}Accuracy".strip(), standard_acc_scores["i2t"]))
-                if "i2t" in per_class_acc_scores:
-                    rows.append((f"{partition_label} {label_suffix}Per-Class Accuracy".strip(), per_class_acc_scores["i2t"]))
-            return rows
-
-        def _format_accuracy_block(title: str, rows: List[tuple[str, float]]) -> str:
-            if not rows:
-                return ""
-            lines = f"{title:-^{75}}\n"
-            len_max = max(len(label) for label, _ in rows)
-            for label, value in rows:
-                n_dashes = len_max - len(label) + 3
-                lines += f"{label} {'-' * n_dashes} {value:.4f}\n"
-            return lines
-
-        def _metric_line(label: str, value_str: str) -> str:
-            n_dashes = max(3, 6 - len(label))
-            return f"{label} {'-' * n_dashes} {value_str}\n"
-
-        def _format_composite_block(title: str, map_scores: Dict[str, Any], best_all: Optional[float], best_i2i: Optional[float]) -> str:
-            lines = f"{title:-^{75}}\n"
-            lines += _metric_line("All", f"{map_scores['all']:.4f}{_best_metric_str(best_all)}")
-            lines += _metric_line("I2I", f"{map_scores['i2i']:.4f}{_best_metric_str(best_i2i)}")
-            for partition_name in partition_names:
-                lines += _metric_line(partition_name.upper(), f"{map_scores[partition_name]:.4f}")
-            return lines
-
-        scores_section = eval_metrics["scores"]
-        map_lines = ""
-        for partition_name in partition_names:
-            map_lines += f"{f' {partition_name.upper()} ':=^{75}}\n"
-            map_lines += _partition_variant_lines(
-                variant_title=" Standard ",
-                map_scores=scores_section["closed_set"]["standard"][partition_name]["map"],
-                per_class_map_scores=scores_section["closed_set"]["per_class"][partition_name]["map"],
-                partition_name=partition_name,
-            )
-            map_lines += _partition_variant_lines(
-                variant_title=" Full-Set ",
-                map_scores=scores_section["full_set"]["standard"][partition_name]["map"],
-                per_class_map_scores=scores_section["full_set"]["per_class"][partition_name]["map"],
-                partition_name=partition_name,
-            )
-
-        accuracy_lines = _format_accuracy_block(" I2T Accuracy ", _collect_accuracy_rows(score_key=None, label_suffix=""))
-        accuracy_lines += _build_nshot_lines(
-            eval_metrics["scores"]["closed_set"]["standard"][bucket_partition_name]["acc"],
-            " N-Shot Composite Accuracy ",
-        ) if bucket_partition_name is not None else ""
-        accuracy_lines += _build_nshot_lines(
-            eval_metrics["scores"]["closed_set"]["per_class"][bucket_partition_name]["acc"],
-            " N-Shot Composite Per-Class Accuracy ",
-        ) if bucket_partition_name is not None else ""
-        accuracy_lines += _format_accuracy_block(" Full-Set I2T Accuracy ", _collect_accuracy_rows(score_key="full_set", label_suffix="Full-Set "))
-        accuracy_lines += _build_nshot_lines(
-            eval_metrics["scores"]["full_set"]["standard"][bucket_partition_name]["acc"],
-            " Full-Set N-Shot Composite Accuracy ",
-        ) if bucket_partition_name is not None else ""
-        accuracy_lines += _build_nshot_lines(
-            eval_metrics["scores"]["full_set"]["per_class"][bucket_partition_name]["acc"],
-            " Full-Set N-Shot Composite Per-Class Accuracy ",
-        ) if bucket_partition_name is not None else ""
-
-        composite_lines = _format_composite_block(
+        lines_comp += _format_composite_block(
             " Composite mAP ",
             eval_metrics["scores"]["closed_set"]["standard"]["comp"]["map"],
-            eval_pipe.best_comp_map,
-            eval_pipe.best_i2i_map,
         )
         if "comp" in eval_metrics["scores"]["full_set"]["standard"]:
-            composite_lines += _format_composite_block(
+            lines_comp += _format_composite_block(
                 " Composite Full-Set mAP ",
                 eval_metrics["scores"]["full_set"]["standard"]["comp"]["map"],
-                getattr(eval_pipe, "best_full_set_comp_map", None),
-                getattr(eval_pipe, "best_full_set_i2i_map", None),
             )
 
-        composite_macro_lines = _format_composite_block(
+        lines_comp_macro = _format_composite_block(
             " Composite macro mAP ",
             eval_metrics["scores"]["closed_set"]["per_class"]["comp"]["map"],
-            None,
-            None,
         )
         if "comp" in eval_metrics["scores"]["full_set"]["per_class"]:
-            composite_macro_lines += _format_composite_block(
+            lines_comp_macro += _format_composite_block(
                 " Composite macro Full-Set mAP ",
                 eval_metrics["scores"]["full_set"]["per_class"]["comp"]["map"],
-                None,
-                None,
             )
+        
+        loss_pairs = [
+            (partition_name.upper(), f"{eval_metrics['loss'][partition_name]:.3e}")
+            for partition_name in partition_names
+            if eval_metrics["loss"][partition_name] is not None
+        ]
+        lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(loss_pairs) + "\n") if loss_pairs else ""
 
-        loss_lines = f"{' Loss ':-^{75}}\n"
-        has_loss = False
-        for partition_name in partition_names:
-            if eval_metrics["loss"][partition_name] is not None:
-                has_loss = True
-                loss_lines += _metric_line(partition_name.upper(), f"{eval_metrics['loss'][partition_name]:.3e}")
-        if not has_loss:
-            loss_lines += "(disabled)\n"
-
-        context_lines = ""
-        if idx_epoch is not None:
-            context_lines += f"Epoch ---------- {idx_epoch}\n"
+        lines_info = ""
+        info = []
         if n_samps_seen is not None:
-            context_lines += f"Samples Seen --- {n_samps_seen:,}\n"
+            info.append(("Samples Seen", f"{n_samps_seen:,}"))
         if time_eval is not None:
-            context_lines += f"Time ----------- {time_eval:.2f} s\n"
-        if context_lines:
-            context_lines += "\n"
+            time_str = f"{time_eval:.2f} s"
+            if time_eval_avg is not None:
+                time_str += f" (avg: {time_eval_avg:.2f} s)"
+            info.append(("Time", time_str))
+        if len(info) > 0:
+            lines_info += f"{' Info ':=^{SECTION_WIDTH}}\n"
+            lines_info += PrintLog._block_metric_lines(info) + "\n"
 
         eval_header = f" Eval ({header}) " if header is not None else " Eval "
         eval_printout = (
-            f"{eval_header:#^{75}}\n"
-            f"{context_lines}"
-            f"{map_lines}"
-            f"{accuracy_lines}"
-            f"{composite_lines}"
-            f"{composite_macro_lines}"
-            f"{loss_lines}"
-            f"\n"
+            f"{eval_header:#^{SECTION_WIDTH}}\n"
+            f"{lines_comp}"
+            f"{lines_comp_macro}"
+            f"{lines_loss}"
+            f"{lines_info}"
+            f"{'':#^{SECTION_WIDTH}}\n"
         )
         print(eval_printout)
-
-        if PrintLog.logging and target_log is not None:
-            target_log.write(eval_printout)
+        if PrintLog.logging:
+            PrintLog.log_eval.write(eval_printout)
 
     @staticmethod
     @rank0
     def init_train(cfg_train):
-        lines: list[str] = [
+
+        lines = [
             "",
-            f"Campaign ---------- {cfg_train.campaign_name}",
-            f"Setting ----------- {cfg_train.setting_name}",
-            f"Dataset ----------- {cfg_train.dataset_name}",
-            f"Seed -------------- {cfg_train.seed}",
-            f"Split ------------- {cfg_train.split_name}",
+            PrintLog._block_metric_lines((
+                ("Campaign", cfg_train.campaign_name),
+                ("Setting", cfg_train.setting_name),
+                ("Dataset", cfg_train.dataset_name),
+                ("Split", cfg_train.split_name),
+                ("Seed", cfg_train.seed),
+            )),
             "",
-            f"Batch Size ---- {cfg_train.batch_size}",
-            f"DV Batching --- {cfg_train.dv_batching}",
-            f"Eval Every ---- {cfg_train.eval_every:,} samples",
+            PrintLog._block_metric_lines((
+                ("Sample Volume", f"{cfg_train.sample_volume:,}"),
+                ("Eval Every", f"{cfg_train.eval_every:,} samples"),
+                ("Batch Size", f"{cfg_train.batch_size}"),
+                ("DV Batching", f"{cfg_train.dv_batching}"),
+            )),
             "",
-            f"=== Architecture ===",
-            f"Model Type --- {cfg_train.arch['model_type']}",
-            f"Non-Causal --- {cfg_train.arch['non_causal']}",
+            "=== Architecture ===",
+            PrintLog._block_metric_lines((
+                ("Model Type", cfg_train.arch['model_type']),
+                ("Non-Causal", cfg_train.arch['non_causal']),
+            )),
             "",
         ]
 
-        # primary loss block
-        lines.extend(PrintLog._format_loss_block(cfg_train.loss))
+        lines.extend(PrintLog._format_loss_block(cfg_train.loss))  # primary loss block
 
-        # secondary loss block (if enabled)
         if cfg_train.loss2["mix"] != 0.0:
-            lines.extend(PrintLog._format_loss_block(cfg_train.loss2, secondary=True))
+            lines.extend(PrintLog._format_loss_block(cfg_train.loss2, secondary=True))  # secondary loss block (if enabled)
 
-        # optimization block
-        lines.extend([
-            f"=== Optimization ===",
-            f"LR Init ---- {cfg_train.opt['lr']['init']}",
-            f"LR Sched --- {cfg_train.opt['lr']['sched']}",
-            f"L2 Reg ----- {cfg_train.opt['l2reg']}",
-            f"β1 --------- {cfg_train.opt['beta1']}",
-            f"β2 --------- {cfg_train.opt['beta2']}",
-            f"ε ---------- {cfg_train.opt['eps']}",
+        lines.extend(PrintLog._format_aug_block(cfg_train.aug))  # image augmentation block
+
+        lines.extend([  # text templates block
+            "=== Text Templates ===",
+            PrintLog._block_metric_lines((
+                ("Train", cfg_train.text_template["train"]),
+                ("Eval", cfg_train.text_template["eval"]),
+            )),
             "",
         ])
 
-        # hardware block
-        lines.extend(PrintLog._format_hw_block(cfg_train))
+        lines.extend([  # optimization block
+            "=== Optimization ===",
+            "LR",
+            PrintLog._block_metric_lines([
+                ("- Init",         cfg_train.opt["lr"]["init"]),
+                ("- Decay Factor", cfg_train.opt["lr"]["decay_factor"]),
+                ("- Warmup",       f"{cfg_train.opt['lr']['warmup']:,}"),
+            ]),
+            PrintLog._block_metric_lines([
+                ("L2 Reg", cfg_train.opt['l2reg']),
+                ("β1",     cfg_train.opt['beta1']),
+                ("β2",     cfg_train.opt['beta2']),
+                ("ε",      cfg_train.opt['eps']),
+            ]),
+            "",
+        ])
+
+        lines.extend([  # freeze block
+            "=== Freeze ===",
+            PrintLog._block_metric_lines((
+                ("Image", cfg_train.freeze["image"]),
+                ("Text", cfg_train.freeze["text"]),
+            )),
+            "",
+        ])
+
+        lines.extend(PrintLog._format_hw_block(cfg_train))  # hardware block
 
         print(*lines, sep="\n")
         if PrintLog.logging:
             PrintLog.log_init.write("\n".join(lines) + "\n")
 
     @staticmethod
+    def _format_hw_block(cfg_train):
+        lines_hw = [
+            "=== Hardware ===",
+            PrintLog._block_metric_lines((
+                ("Num. GPUs", cfg_train.n_gpus),
+                ("Num. CPUs", cfg_train.n_cpus),
+                ("RAM", f"{cfg_train.ram} GB"),
+                ("Num. Workers", cfg_train.n_workers),
+                ("Prefetch Factor", cfg_train.prefetch_factor),
+                ("Device", cfg_train.device),
+            )),
+            "",
+        ]
+        return lines_hw
+
+    @staticmethod
     def init_eval(cfg_eval):
         lines: list[str] = [
             "",
-            f"Checkpoint --- {cfg_eval.rfpath_model}",
+            f"Checkpoint: {cfg_eval.rfpath_model}",
             "",
-            f"Model Type --- {cfg_eval.arch['model_type']}",
-            f"Dataset ------ {cfg_eval.dataset_name}",
-            f"Split -------- {cfg_eval.split_name}",
+            PrintLog._block_metric_lines((
+                ("Dataset", cfg_eval.dataset_name),
+                ("Split", cfg_eval.split_name),
+                ("Eval Type", cfg_eval.eval_type),
+            )),
             "",
             f"Batch Size --- {cfg_eval.batch_size}",
+            "",
+            "=== Architecture ===",
+            PrintLog._block_metric_lines((
+                ("Model Type", cfg_eval.arch['model_type']),
+                ("Non-Causal", cfg_eval.arch['non_causal']),
+            )),
+            "",
+            f"Image Norm --- {cfg_eval.img_norm}",
+            "",
+            f"Text Template --- {cfg_eval.text_template}",
             "",
         ]
 
@@ -591,75 +515,112 @@ class PrintLog:
         print(*lines, sep="\n")
 
     @staticmethod
-    def _format_hw_block(cfg) -> list[str]:
-        return [
-            f"=== Hardware ===",
-            f"Num. GPUs --------- {cfg.n_gpus}",
-            f"Num. CPUs --------- {cfg.n_cpus}",
-            f"RAM --------------- {cfg.ram} GB",
-            f"Num. Workers ------ {cfg.n_workers}",
-            f"Prefetch Factor --- {cfg.prefetch_factor}",
-            f"Device ------------ {cfg.device}",
-            "",
-        ]
-
-    @staticmethod
     def _format_loss_block(
-        loss:      dict, 
+        loss: dict, 
         secondary: bool = False
     ) -> list[str]:
 
-        lines: list[str] = []
-
+        lines = []
+        info = []
         if not secondary:
             lines.append("=== Loss (Primary) ===")
         else:
             lines.append("=== Loss (Secondary) ===")
-            lines.append(f"Mix --------------- {loss['mix']}")
-
-        lines.append(f"Type -------------- {loss['type']}")
-        lines.append(f"Similarity Type --- {loss['sim']}")
-        lines.append(f"Target Type ------- {loss['targ']}")
+            info.append(("Mix", str(loss["mix"])))
+        
+        info.append(("Type", loss["type"]))
+        info.append(("Sim", loss["sim"]))
+        info.append(("Targs", loss["targ"]))
+        lines.append(PrintLog._block_metric_lines(info))
 
         wting = loss.get("wting", False)
-        if wting and "class_weighting" in loss['cfg']:
-            cw = loss["cfg"]["class_weighting"]
-            lines.append(f"Class Weighting --- {cw['type']}")
-            if "if_gamma" in cw:
-                lines.append(f"  if_gamma ---------- {cw['if_gamma']}")
-            if "cb_beta" in cw:
-                lines.append(f"  cb_beta ----------- {cw['cb_beta']}")
-            if "cp_type" in cw:
-                lines.append(f"  cp_type ----------- {cw['cp_type']}")
-        else:
-            lines.append("Class Weighting ---- disabled")
+        if wting and "class_weighting" in loss["cfg"]:
+            loss_type = loss["cfg"]["class_weighting"]["type"]
+            lines_cw = [
+                "Class Weighting",
+                PrintLog._block_metric_lines((
+                    ("- Type", loss_type),
+                    *((("- gamma", loss["cfg"]["class_weighting"]["if_gamma"]),) if loss_type == "inv_freq" else ()),
+                    *((("- beta", loss["cfg"]["class_weighting"]["cb_beta"]),) if loss_type == "class_balanced" else ()),
+                    ("- cp_type", loss["cfg"]["class_weighting"]["cp_type"]),
+                )),
+            ]
+            lines.extend(lines_cw)
 
         focal = loss.get("focal", False)
-        if focal and "focal" in loss['cfg']:
-            cfg_focal = loss['cfg']["focal"]
-            lines.append("Focal ------------- enabled")
-            if "gamma" in cfg_focal:
-                lines.append(f"  gamma ------------- {cfg_focal['gamma']}")
-            if "comp_type" in cfg_focal:
-                lines.append(f"  comp_type --------- {cfg_focal['comp_type']}")
-        else:
-            lines.append("Focal ------------- disabled")
+        if focal and "focal" in loss["cfg"]:
+            lines_focal = [
+                "Focal",
+                PrintLog._block_metric_lines((
+                    ("- gamma", loss["cfg"]["focal"]["gamma"]),
+                    ("- comp_type", loss["cfg"]["focal"]["comp_type"]),
+                )),
+            ]
+            lines.extend(lines_focal)
 
-        if "dyn_smr" in loss['cfg']:
-            lines.append(f"Dyn SMR ----------- {loss['cfg']['dyn_smr']}")
+        if "dsmr" in loss["cfg"]:
+            lines.append("DSMR Enabled")
 
-        cfg_logits = loss['cfg']['logits']
-        lines_logits: list[str] = [
+        cfg_logits = loss["cfg"]["logits"]
+        lines_logits = [
             "Logits",
-            f"  Scale Init -------- {cfg_logits['scale_init']}",
-            f"  Bias Init --------- {cfg_logits['bias_init']}",
-            f"  Freeze Scale ------ {cfg_logits['freeze_scale']}",
-            f"  Freeze Bias ------- {cfg_logits['freeze_bias']}",
-            "",
+            PrintLog._block_metric_lines((
+                ("- Scale Init", cfg_logits["scale_init"]),
+                ("- Bias Init", cfg_logits["bias_init"]),
+                ("- Freeze Scale", cfg_logits["freeze_scale"]),
+                ("- Freeze Bias", cfg_logits["freeze_bias"]),
+            )),
         ]
         lines.extend(lines_logits)
 
+        lines.append("")
+
         return lines
+
+    @staticmethod
+    def _format_aug_block(aug: dict) -> list[str]:
+        lines = ["=== Image Augmentation ==="]
+
+        lines.append("RRCrop")
+        lines.append(PrintLog._block_metric_lines([
+            ("- Scale", aug["rrcrop"]["scale"]),
+            ("- Ratio", aug["rrcrop"]["ratio"]),
+        ]))
+
+        if aug.get("hflip", False):
+            lines.append("Horizontal Flip Enabled")
+
+        if "cjit_prob" in aug:
+            lines.append(f"Color Jitter (p={aug['cjit_prob']})")
+            lines.append(PrintLog._block_metric_lines([
+                ("- Brightness", aug["cjit"]["brightness"]),
+                ("- Contrast",   aug["cjit"]["contrast"]),
+                ("- Saturation", aug["cjit"]["saturation"]),
+                ("- Hue",        aug["cjit"]["hue"]),
+            ]))
+
+        if "sharpness_prob" in aug:
+            lines.append(PrintLog._block_metric_lines([
+                (f"Sharpness (p={aug['sharpness_prob']})", aug["sharpness"]),
+            ]))
+
+        if "gblur_prob" in aug:
+            lines.append(f"Gaussian Blur (p={aug['gblur_prob']})")
+            lines.append(PrintLog._block_metric_lines([
+                ("- Kernel Size", aug["gblur"]["kernel_size"]),
+                ("- Sigma",       aug["gblur"]["sigma"]),
+            ]))
+
+        lines.append("")
+        return lines
+
+    @staticmethod
+    def _block_metric_lines(metric_pairs):
+        labels, values = zip(*metric_pairs)
+        max_len = max(len(label) for label in labels)
+        n_dashes = [3 + (max_len - len(label)) for label in labels]
+        lines = [f"{label} {'-' * nd} {value}" for label, nd, value in zip(labels, n_dashes, values)]
+        return "\n".join(lines)
 
     @staticmethod
     @rank0
@@ -671,7 +632,7 @@ class PrintLog:
             PrintLog.log_epoch,
             PrintLog.log_eval,
             PrintLog.log_init,
-            PrintLog.log_text,
+            PrintLog.log_text_train,
             PrintLog.log_text_eval,
         ):
             if handle is not None and not handle.closed:

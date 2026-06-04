@@ -185,7 +185,10 @@ class VLMWrapper(abc.ABC):
         if hasattr(config, 'loss'):
             modelw.loss_type = config.loss['type']
         if checkpoint is not None:
-            modelw._unwrapped_model.load_state_dict(checkpoint["model"])
+            modelw._unwrapped_model.load_state_dict(checkpoint["model"], strict=False)
+            for key in ("logit_scale2", "logit_bias2"):
+                if key in checkpoint["model"]:
+                    modelw._unwrapped_model.register_parameter(key, nn.Parameter(checkpoint["model"][key]))
             modelw.norm_mean = checkpoint["norm_mean"]
             modelw.norm_std = checkpoint["norm_std"]
         else:

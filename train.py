@@ -2,6 +2,7 @@
 torchrun --standalone --nproc-per-node=auto -m train
 """
 
+import sys
 import random
 import numpy as np
 import torch
@@ -43,28 +44,6 @@ torch.set_printoptions(
     linewidth=120
 )
 
-
-class LRSchedulerWrapper:
-
-    def __init__(self, optimizer, config, total_steps):
-
-        self.opt = optimizer
-        self.type = config.opt['lr']['sched']
-
-        args = config.lr_sched_params.get("args")
-        if self.type != "cos":
-            raise ValueError(f"Unsupported LR scheduler type: '{self.type}', expected 'cos'")
-
-        eta_min_factor = args.get("eta_min_factor")
-        lr_init = self.opt.param_groups[0]["lr"]
-        eta_min = lr_init * float(eta_min_factor)
-        self.sched = CosineAnnealingLR(self.opt, T_max=max(1, int(total_steps)), eta_min=eta_min)
-
-    def step(self):
-        self.sched.step()
-
-    def get_lr(self):
-        return self.opt.param_groups[0]["lr"]
 
 class TrainPipeline:
 
@@ -110,6 +89,7 @@ class TrainPipeline:
         self.idx_epoch = 0
         self.timer_train = Timer()
         self.rmean_time_train = RunningMean()
+        self.rmean_time_eval = RunningMean()
 
         if dist.get_rank() == 0:
             if resume_state is not None and trial_state is not None:
@@ -126,12 +106,14 @@ class TrainPipeline:
             self.eval_threshold = resume_state["eval_threshold"]
             self.rmean_time_train.n = resume_state["rmean_time_train_n"]
             self.rmean_time_train.mean = resume_state["rmean_time_train_mean"]
-            self.optimizer.load_state_dict(resume_state["optimizer"])
-            for state in self.optimizer.state.values():
+            self.rmean_time_eval.n = resume_state["rmean_time_eval_n"]
+            self.rmean_time_eval.mean = resume_state["rmean_time_eval_mean"]
+            self.opt.load_state_dict(resume_state["optimizer"])
+            for state in self.opt.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.cfg.device)
-            self.lr_schedw.sched.load_state_dict(resume_state["lr_sched"])
+            self.lr_sched.load_state_dict(resume_state["lr_sched"])
             if self.cfg.hw.mixed_prec:
                 self.scaler.load_state_dict(resume_state["scaler"])
 
@@ -153,29 +135,28 @@ class TrainPipeline:
             {"params": params_no_decay, "weight_decay": 0.0,                   "lr": lr_init_nom},
         ]
 
-        self.optimizer = torch.optim.AdamW(
+        self.opt = torch.optim.AdamW(
             param_groups, 
             lr=lr_init_nom,
             betas=(self.cfg.opt["beta1"], self.cfg.opt["beta2"]),
             eps=self.cfg.opt["eps"],
         )
 
-        self.lr_schedw = LRSchedulerWrapper(
-            self.optimizer, 
-            self.cfg,
-            total_steps=max(1, math.ceil(self.cfg.sample_volume / (self.cfg.batch_size)) - math.ceil(self.lr_warmup / (self.cfg.batch_size))),
-        )
+        lr_init = self.opt.param_groups[0]["lr"]
+        eta_min = lr_init * float(self.cfg.opt['lr']['decay_factor'])
+        total_steps = max(1, math.ceil(self.cfg.sample_volume / self.cfg.batch_size) - math.ceil(self.lr_warmup / self.cfg.batch_size))
+        self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
 
         if self.cfg.hw.mixed_prec:
             self.scaler = GradScaler()
 
     def _update_lr_warmup(self) -> float:
         if self.lr_warmup == 0 or self.n_samps_seen >= self.lr_warmup:
-            lr = self.optimizer.param_groups[0]["lr"]
+            lr = self.opt.param_groups[0]["lr"]
         else:
             frac = self.n_samps_seen / self.lr_warmup
             lr = self.lr_init_nom * frac
-            for pg in self.optimizer.param_groups:
+            for pg in self.opt.param_groups:
                 pg["lr"] = lr
         return lr
 
@@ -202,14 +183,15 @@ class TrainPipeline:
 
     @rank0
     def _print_log_eval(self, header):
+        sys.stdout.write('\r')
+        sys.stdout.flush()
         PrintLog.eval(
             self.data.eval_metrics,
             self.eval_pipe,
             header=header,
             n_samps_seen=self.n_samps_seen,
-            idx_epoch=self.idx_epoch,
             time_eval=self.data.time_eval,
-            log_to="eval",
+            time_eval_avg=self.rmean_time_eval.value() if self.rmean_time_eval.n > 0 else None,
         )
 
     @rank0
@@ -241,17 +223,40 @@ class TrainPipeline:
         metadata_trial["complete"] = True
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
+    def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
+        if self.cfg.hw.mixed_prec:
+            with autocast(device_type=self.cfg.device.type):
+                loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+                    imgs_sb, texts_sb, class_encs_sb, targ_data_sb
+                )
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.opt)
+        else:
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+                imgs_sb, texts_sb, class_encs_sb, targ_data_sb
+            )
+            loss.backward()
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits
+
+    def _step_optimizer(self):
+        if self.cfg.hw.mixed_prec:
+            self.scaler.step(self.opt)
+            self.scaler.update()
+        else:
+            self.opt.step()
+
     def train(self):
         try:
 
             if self._resume_state is None:
                 ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train, init_flag=True)
-            PrintLog.texts_eval(self.eval_pipe.get_eval_texts())
+                PrintLog.texts_eval(self.eval_pipe)
 
             # BASE EVAL
 
             if self._resume_state is None:
                 eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                self.rmean_time_eval.update(time_eval)
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
@@ -274,9 +279,7 @@ class TrainPipeline:
                 self.timer_train.start()
                 self.idx_epoch += 1
 
-                PrintLog.epoch_header(self.idx_epoch, self.cfg.n_epochs)
-                lr = self.lr_schedw.get_lr()
-                PrintLog.train_header(lr)
+                PrintLog.batch_logs_epoch_header(self.idx_epoch, self.cfg.n_epochs)
 
                 # Let samplers know current epoch (crucial for shuffling)
                 sampler = getattr(self.dataloader, "sampler", None)
@@ -288,12 +291,16 @@ class TrainPipeline:
 
                 self.modelw.model.train()
 
-                lr_mean = RunningMean()
                 loss_mean = RunningMean()
                 loss_raw_mean = RunningMean()
 
-                for idx_batch, data_sb in enumerate(tqdm(self.dataloader, desc="Train", leave=False, disable=(dist.get_rank() != 0))):
-
+                for idx_batch, data_sb in enumerate(pbar := tqdm(
+                    self.dataloader,
+                    desc=f"Train ({self.idx_epoch}/{self.cfg.n_epochs})",
+                    leave=False,
+                    disable=(dist.get_rank() != 0),
+                    file=sys.stdout,
+                )):
                     # Skip already-processed batches when resuming the interrupted epoch;
                     # on the last skipped batch restore RNG to match original run state.
                     if (
@@ -320,39 +327,22 @@ class TrainPipeline:
                     B = imgs_sb.size(0) * dist.get_world_size()
                     self.n_samps_seen += B
 
-                    if self.lr_warmup > 0:
-                        lr = self._update_lr_warmup()
-                    else:
-                        lr = self.optimizer.param_groups[0]["lr"]
-                    lr_mean.update(lr)
+                    lr = self._update_lr_warmup() if self.lr_warmup > 0 else self.opt.param_groups[0]["lr"]
 
-                    self.optimizer.zero_grad(set_to_none=True)
+                    self.opt.zero_grad(set_to_none=True)
+                    loss, loss_raw, embs_img_b, embs_txt_b, logits = self._step_train(
+                        imgs_sb, 
+                        texts_sb, 
+                        class_encs_sb, 
+                        targ_data_sb,
+                    )
+                    with torch.no_grad():
+                        grad_norm_model = model_grad_l2_norm(self.modelw.model)
+                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
+                    self._step_optimizer()
 
-                    if self.cfg.hw.mixed_prec:
-                        with autocast(device_type=self.cfg.device.type):
-                            loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
-                                imgs_sb, texts_sb, class_encs_sb, targ_data_sb
-                            )
-                        self.scaler.scale(loss).backward()
-                        self.scaler.unscale_(self.optimizer)
-                        with torch.no_grad():
-                            grad_norm_model = model_grad_l2_norm(self.modelw.model)
-                        PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                        if self.n_samps_seen >= self.lr_warmup:
-                            self.lr_schedw.step()
-                    else:
-                        loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
-                            imgs_sb, texts_sb, class_encs_sb, targ_data_sb
-                        )
-                        loss.backward()
-                        with torch.no_grad():
-                            grad_norm_model = model_grad_l2_norm(self.modelw.model)
-                        PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
-                        self.optimizer.step()
-                        if self.n_samps_seen >= self.lr_warmup:
-                            self.lr_schedw.step()
+                    if self.n_samps_seen >= self.lr_warmup:
+                        self.lr_sched.step()
 
                     with torch.no_grad():
                         loss = loss.detach().item()
@@ -371,51 +361,71 @@ class TrainPipeline:
                         )
 
                     if self.n_samps_seen >= self.eval_threshold:
+                        pbar.clear()
                         self.timer_train.stop()
+
                         while self.n_samps_seen >= self.eval_threshold:
                             threshold_hit = self.eval_threshold
                             self.eval_threshold += self.cfg.eval_every
 
                         # TRAIN-TIME EVAL
 
-                        eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=True)
+                        eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(
+                            self.modelw,
+                            loss_flag=True,
+                        )
+                        self.rmean_time_eval.update(time_eval)
                         if self.data is not None:
                             self.data.eval_metrics = eval_metrics
                             self.data.time_eval = time_eval
-                        self._checkpoint(header=f"{threshold_hit:,}", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=idx_batch)
+                        self._checkpoint(
+                            header=f"{threshold_hit:,}",
+                            checkpoint_best_comp=is_best_comp, 
+                            checkpoint_best_i2i=is_best_i2i, 
+                            idx_batch=idx_batch,
+                        )
                         ArtifactManager.save_rng_states(self._local_rank)
                         dist.barrier()
 
                         self.timer_train.start()
+                        pbar.refresh()
 
                     if self.n_samps_seen >= self.cfg.sample_volume:
                         break
 
                 # EPOCH DONE
 
-                loss_train_avg = loss_mean.value()
-
                 self.timer_train.stop()
                 time_train = self.timer_train.get_elapsed_time()
                 self.timer_train.reset()
-
                 self.rmean_time_train.update(time_train)
 
                 PrintLog.epoch(
                     time_train,
                     self.rmean_time_train.value(),
-                    loss_train_avg,
+                    loss_mean.value(),
                     loss_raw_mean.value(),
                     self.n_samps_seen,
+                    self.idx_epoch,
+                    self.cfg.n_epochs,
                 )
 
             # FINAL EVAL
 
-            eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=True)
+            eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(
+                self.modelw,
+                loss_flag=True,
+            )
+            self.rmean_time_eval.update(time_eval)
             if self.data is not None:
                 self.data.eval_metrics = eval_metrics
                 self.data.time_eval = time_eval
-            self._checkpoint(header="Final", checkpoint_best_comp=is_best_comp, checkpoint_best_i2i=is_best_i2i, idx_batch=-1)
+            self._checkpoint(
+                header="Final",
+                checkpoint_best_comp=is_best_comp, 
+                checkpoint_best_i2i=is_best_i2i, 
+                idx_batch=-1,
+            )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 
@@ -434,7 +444,7 @@ def run_training(cfg=None):
     ArtifactManager.create_trial_dirs()
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_setting(cfg)
-    if cfg.logging:
+    if cfg.dev["logging"]:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
     PrintLog.init_train(cfg)
 
@@ -455,7 +465,13 @@ def run_training(cfg=None):
 
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
-    train_pipe = TrainPipeline(modelw, cfg, resume_state=resume_state, trial_state=trial_state, local_rank=local_gpu_rank)
+    train_pipe = TrainPipeline(
+        modelw, 
+        cfg, 
+        resume_state=resume_state, 
+        trial_state=trial_state, 
+        local_rank=local_gpu_rank,
+    )
     train_pipe.train()
     train_pipe.mark_complete()
 

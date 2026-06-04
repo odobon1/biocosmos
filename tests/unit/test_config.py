@@ -5,7 +5,7 @@ from utils.config import apply_overrides
 from utils.config import apply_model_specific_opt_defaults
 
 
-def make_train_config(**overrides):
+def make_train_config_dummy(**overrides):
     config = {
         "campaign_name": "campaign",
         "setting_name": "exp",
@@ -16,21 +16,20 @@ def make_train_config(**overrides):
         "eval_every": 100,
         "batch_size": 8,
         "dv_batching": False,
-        "dev": {},
+        "dev": {"logging": False},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
         "loss": {"type": "bce", "sim": "cos", "targ": "aligned"},
         "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0},
         "opt": {
-            "lr": {"sched": "cos"},
+            "lr": {"decay_factor": 1.0e-3},
             "l2reg": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
             "eps": 1.0e-6,
         },
         "freeze": {"text": False, "image": True},
-        "text_template": {"train": "train", "eval": "sci"},
-        "logging": False,
+        "text_template": {"train": "train", "eval": "sci"}
     }
     config.update(overrides)
     return config
@@ -47,27 +46,20 @@ def test_train_config_rejects_freezing_both_encoders(monkeypatch: pytest.MonkeyP
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="both set to frozen"):
-        TrainConfig(**make_train_config(freeze={"text": True, "image": True}))
-
-
-def test_train_config_rejects_unknown_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
-
-    with pytest.raises(ValueError, match="Unknown LR scheduler type"):
-        TrainConfig(**make_train_config(opt={"lr": {"sched": "bad_sched"}}))
+        TrainConfig(**make_train_config_dummy(freeze={"text": True, "image": True}))
 
 
 def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
-        TrainConfig(**make_train_config(loss2={"type": "bce", "sim": "cos", "targ": "aligned", "mix": 1.5}))
+        TrainConfig(**make_train_config_dummy(loss2={"type": "bce", "sim": "cos", "targ": "aligned", "mix": 1.5}))
 
 
 def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    cfg = TrainConfig(**make_train_config())
+    cfg = TrainConfig(**make_train_config_dummy())
 
     assert cfg.n_workers == 2
     assert cfg.prefetch_factor == 2
@@ -175,7 +167,7 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
         "opt": {
             "lr": {
                 "init": 1.0e-5,
-                "sched": "cos",
+                "decay_factor": 1.0e-3,
                 "warmup": 100,
             }
         }
@@ -183,7 +175,7 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
     overrides = {
         "opt": {
             "lr": {
-                "sched": "cos",
+                "decay_factor": 1.0e-2,
             }
         }
     }
@@ -192,7 +184,7 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
 
     assert out["opt"]["lr"]["init"] == 1.0e-5
     assert out["opt"]["lr"]["warmup"] == 100
-    assert out["opt"]["lr"]["sched"] == "cos"
+    assert out["opt"]["lr"]["decay_factor"] == 1.0e-2
 
 
 def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,9 +196,9 @@ def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.Mo
         },
     )
 
-    cfg_in = make_train_config(
+    cfg_in = make_train_config_dummy(
         arch={"model_type": "siglip_vitb16", "non_causal": False},
-        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
@@ -224,9 +216,9 @@ def test_model_specific_opt_defaults_preserve_explicit_values(monkeypatch: pytes
         },
     )
 
-    cfg_in = make_train_config(
+    cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "non_causal": False},
-        opt={"lr": {"sched": "cos"}, "l2reg": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
@@ -244,9 +236,9 @@ def test_model_specific_opt_defaults_resolve_partial_null(monkeypatch: pytest.Mo
         },
     )
 
-    cfg_in = make_train_config(
+    cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "non_causal": False},
-        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
@@ -264,9 +256,9 @@ def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pyte
         },
     )
 
-    cfg_in = make_train_config(
+    cfg_in = make_train_config_dummy(
         arch={"model_type": "mystery_model", "non_causal": False},
-        opt={"lr": {"sched": "cos"}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
     with pytest.raises(ValueError, match="Could not resolve model family"):

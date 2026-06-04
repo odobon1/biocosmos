@@ -16,18 +16,18 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN_NAME = "dev"
+CAMPAIGN_NAME = "dev2"
 
 SEED0 = 42
-NUM_SEEDS = 1
+NUM_SEEDS = 3
 
-DATASETS = ("lepid",)
+DATASETS = ("nymph",)
 
 BASELINE_OVERRIDES = [
     # {"batch_size": 32_000, "name": "way-too-big-bs"},
+    {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
     {"loss": {"targ": "aligned"}, "name": "iw"},
     {"loss": {"targ": "multipos"}, "name": "sw"},
-    {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
 ]
 
 
@@ -103,21 +103,15 @@ def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> N
 def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
-def _write_trial_cfg(dpath_campaign: Path, cfg_dict: dict) -> Path:
-    fpath_cfg = dpath_campaign / "cfg_trial_curr.json"
-    with open(fpath_cfg, "w") as f:
-        json.dump(cfg_dict, f)
-    return fpath_cfg
-
-def _run_trial_subprocess(fpath_cfg: Path) -> None:
+def _run_trial_subprocess(cfg_dict: dict) -> None:
     cmd = [
         "torchrun",
         "--standalone",
         "--nproc-per-node=auto",
         "-m",
         "campaign_trial_runner",
-        "--fpath-cfg",
-        str(fpath_cfg),
+        "--cfg-json",
+        json.dumps(cfg_dict),
     ]
 
     proc = subprocess.Popen(
@@ -208,8 +202,7 @@ def run_campaign() -> None:
                     print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset_name} setting={setting_name}")
 
                 try:
-                    fpath_cfg = _write_trial_cfg(_dpath_campaign(), cfg_dict)
-                    _run_trial_subprocess(fpath_cfg)
+                    _run_trial_subprocess(cfg_dict)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
                 except Exception as e:
                     _log_trial_error(

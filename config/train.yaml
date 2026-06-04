@@ -22,7 +22,7 @@ loss:  # primary loss
     type: inv_freq  # {inv_freq, class_balanced, null}; null to disable
     if:  # inverse-frequency weighting; only relevant if type: inv_freq
       gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
-    cb:
+    cb:  # class-balanced weighting; only relevant if type: class_balanced
       beta: 0.9999  # [0.0, 1.0); only used for type: class_balanced; controls aggressiveness
   focal:
     gamma: 0.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
@@ -40,15 +40,15 @@ loss2:  # secondary loss
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {aligned, multipos, tax, phylo}
   wting:
-    cp_type: 1
+    cp_type: 1  # {1, 2}
     type: null  # {inv_freq, class_balanced, null}
     if:
-      gamma: 0.5
+      gamma: 0.5  # (0.0, 1.0]
     cb:
-      beta: 0.9999
+      beta: 0.9999  # [0.0, 1.0)
   focal:
-    gamma: 0.0
-    comp_type: 1
+    gamma: 0.0  # [0.0, inf)
+    comp_type: 1  # {1, 2}
   dsmr: true
   logits:
     scale_init: null

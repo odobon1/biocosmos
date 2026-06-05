@@ -19,15 +19,15 @@ from utils.utils import paths, save_pickle, save_json, load_json
 CAMPAIGN_NAME = "dev2"
 
 SEED0 = 42
-NUM_SEEDS = 3
+NUM_SEEDS = 1
 
 DATASETS = ("nymph",)
 
 BASELINE_OVERRIDES = [
     # {"batch_size": 32_000, "name": "way-too-big-bs"},
-    {"loss2": {"mix": 0.3, "targ": "phylo"}, "name": "hp"},
-    {"loss": {"targ": "aligned"}, "name": "iw"},
-    {"loss": {"targ": "multipos"}, "name": "sw"},
+    {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
+    {"loss.targ": "aligned", "name": "iw"},
+    {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -74,11 +74,7 @@ def _load_or_create_baseline_config() -> dict:
     save_json(cfg_baseline, fpath)
     return cfg_baseline
 
-def _normalize_setting_overrides(overrides: dict) -> dict:
-    # Keep nested keys as primary representation and only consume slash keys as fallback.
-    return apply_overrides({}, overrides)
-
-def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict, dict]]:
+def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict]]:
     settings = []
     seen_names: set[str] = set()
     for item in settings_raw:
@@ -90,8 +86,7 @@ def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict, dict]]:
             raise ValueError(f"Duplicate BASELINE_OVERRIDES name: {name}")
         seen_names.add(name)
         payload = {k: deepcopy(v) for k, v in item.items() if k != "name"}
-        normalized_payload = _normalize_setting_overrides(payload)
-        settings.append((name, payload, normalized_payload))
+        settings.append((name, payload))
     return settings
 
 def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> None:
@@ -170,8 +165,8 @@ def run_campaign() -> None:
     settings = _expand_settings(BASELINE_OVERRIDES)
     seeds = _iter_seeds()
 
-    for setting_name, _setting_payload_raw, setting_payload_norm in settings:
-        _write_setting_overrides(setting_name, setting_payload_norm)
+    for setting_name, setting_payload in settings:
+        _write_setting_overrides(setting_name, setting_payload)
 
     n_trials = len(seeds) * len(DATASETS) * len(settings)
     print(f"Campaign: '{CAMPAIGN_NAME}' ({n_trials} trials)")
@@ -179,7 +174,7 @@ def run_campaign() -> None:
     idx_trial = 0
     for dataset_name in DATASETS:
         for seed in seeds:
-            for setting_name, _setting_payload_raw, setting_payload_norm in settings:
+            for setting_name, setting_payload in settings:
                 idx_trial += 1
 
                 dpath_trial = _dpath_campaign() / setting_name / dataset_name / str(seed)
@@ -193,8 +188,8 @@ def run_campaign() -> None:
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset_name"] = dataset_name
                 cfg_dict["standalone"] = False
-                cfg_dict["_setting_overrides"] = setting_payload_norm
-                cfg_dict = apply_overrides(cfg_dict, setting_payload_norm)
+                cfg_dict["_setting_overrides"] = setting_payload
+                cfg_dict = apply_overrides(cfg_dict, setting_payload)
 
                 if dpath_trial.exists():
                     print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset_name} setting={setting_name}")

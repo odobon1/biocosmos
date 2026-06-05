@@ -140,19 +140,10 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
         cfg_dict["batch_size"] = 1_024
     return cfg_dict
 
-def _deep_merge_dict(base: dict, updates: dict) -> dict:
-    out = deepcopy(base)
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge_dict(out[key], value)
-        else:
-            out[key] = deepcopy(value)
-    return out
-
-def _set_by_slash_path(cfg_dict: dict, key_path: str, value) -> None:
-    keys = [key for key in key_path.split("/") if key]
+def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
+    keys = [key for key in key_path.split(".") if key]
     if not keys:
-        raise ValueError(f"Invalid slash-style override key: '{key_path}'")
+        raise ValueError(f"Invalid dot-style override key: '{key_path}'")
 
     cursor = cfg_dict
     for key in keys[:-1]:
@@ -161,40 +152,13 @@ def _set_by_slash_path(cfg_dict: dict, key_path: str, value) -> None:
         cursor = cursor[key]
     cursor[keys[-1]] = deepcopy(value)
 
-def _has_nested_path(cfg_dict: dict, key_path: str) -> bool:
-    keys = [key for key in key_path.split("/") if key]
-    if not keys:
-        return False
-
-    cursor = cfg_dict
-    for key in keys:
-        if not isinstance(cursor, dict) or key not in cursor:
-            return False
-        cursor = cursor[key]
-    return True
-
 def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
-    """
-    Apply overrides with deterministic precedence:
-    1) Nested dict keys are applied first and take precedence.
-    2) Slash-style keys are fallback only.
-    """
     if not overrides:
         return deepcopy(cfg_dict)
 
-    nested_updates = {}
-    slash_updates = {}
-    for key, value in overrides.items():
-        if isinstance(key, str) and "/" in key:
-            slash_updates[key] = value
-        else:
-            nested_updates[key] = value
-
-    merged = _deep_merge_dict(cfg_dict, nested_updates)
-    for key_path, value in slash_updates.items():
-        if _has_nested_path(nested_updates, key_path):
-            continue
-        _set_by_slash_path(merged, key_path, value)
+    merged = deepcopy(cfg_dict)
+    for key_path, value in overrides.items():
+        _set_by_dot_path(merged, key_path, value)
 
     return merged
 

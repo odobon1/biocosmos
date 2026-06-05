@@ -128,7 +128,7 @@ def generate_class_data(df_class_data: pd.DataFrame) -> None:
         species = f"{genus}_{row['species'].lower()}"
         common_name = row["common_name"].lower().replace(" ", "_")
 
-        cid = common_name
+        cid = species
 
         class_data[cid] = {
             "order": order,

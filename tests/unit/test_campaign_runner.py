@@ -39,8 +39,8 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
         cr,
         "BASELINE_OVERRIDES",
         [
-            {"loss": {"targ": "aligned"}, "name": "iw"},
-            {"loss": {"targ": "phylo"}, "name": "hp"},
+            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "phylo", "name": "hp"},
         ],
     )
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
@@ -57,10 +57,8 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
 
     scheduled = []
 
-    def _fake_run_trial_subprocess(cfg_fpath: Path):
-        with open(cfg_fpath) as f:
-            cfg = json.load(f)
-        scheduled.append((cfg["seed"], cfg["dataset_name"], cfg["setting_name"], cfg["loss"]["targ"]))
+    def _fake_run_trial_subprocess(cfg_dict: dict):
+        scheduled.append((cfg_dict["seed"], cfg_dict["dataset_name"], cfg_dict["setting_name"], cfg_dict["loss"]["targ"]))
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -85,7 +83,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         cr,
         "BASELINE_OVERRIDES",
         [
-            {"loss/targ": "aligned", "name": "iw"},
+            {"loss.targ": "aligned", "name": "iw"},
         ],
     )
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
@@ -109,7 +107,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     with open(fpath) as f:
         data = json.load(f)
 
-    assert data["loss"]["targ"] == "aligned"
+    assert data["loss.targ"] == "aligned"
 
 
 def test_expand_settings_raises_on_duplicate_names() -> None:
@@ -131,7 +129,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         cr,
         "BASELINE_OVERRIDES",
         [
-            {"opt": {"l2reg": 0.33}, "opt/beta2": 0.88, "name": "opt_tune"},
+            {"opt.l2reg": 0.33, "opt.beta2": 0.88, "name": "opt_tune"},
         ],
     )
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
@@ -156,10 +154,8 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
 
     scheduled = []
 
-    def _fake_run_trial_subprocess(cfg_fpath: Path):
-        with open(cfg_fpath) as f:
-            cfg = json.load(f)
-        scheduled.append(cfg)
+    def _fake_run_trial_subprocess(cfg_dict: dict):
+        scheduled.append(cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 

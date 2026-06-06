@@ -127,7 +127,7 @@ def test_splits_config_rejects_non_positive_size_dev() -> None:
         )
 
 
-def test_apply_overrides_prefers_nested_over_slash() -> None:
+def test_apply_overrides_dot_path_sets_single_nested_field() -> None:
     base = {
         "loss": {
             "targ": "aligned",
@@ -135,8 +135,7 @@ def test_apply_overrides_prefers_nested_over_slash() -> None:
         }
     }
     overrides = {
-        "loss": {"targ": "multipos"},
-        "loss/targ": "phylo",
+        "loss.targ": "multipos",
     }
 
     out = apply_overrides(base, overrides)
@@ -145,7 +144,7 @@ def test_apply_overrides_prefers_nested_over_slash() -> None:
     assert out["loss"]["sim"] == "cos"
 
 
-def test_apply_overrides_supports_slash_fallback() -> None:
+def test_apply_overrides_dot_path_navigates_nested_dict() -> None:
     base = {
         "loss": {
             "targ": "aligned",
@@ -153,7 +152,7 @@ def test_apply_overrides_supports_slash_fallback() -> None:
         }
     }
     overrides = {
-        "loss/targ": "phylo",
+        "loss.targ": "phylo",
     }
 
     out = apply_overrides(base, overrides)
@@ -162,7 +161,7 @@ def test_apply_overrides_supports_slash_fallback() -> None:
     assert out["loss"]["sim"] == "cos"
 
 
-def test_apply_overrides_deep_merges_nested_dicts() -> None:
+def test_apply_overrides_dot_path_preserves_sibling_keys() -> None:
     base = {
         "opt": {
             "lr": {
@@ -173,11 +172,7 @@ def test_apply_overrides_deep_merges_nested_dicts() -> None:
         }
     }
     overrides = {
-        "opt": {
-            "lr": {
-                "decay_factor": 1.0e-2,
-            }
-        }
+        "opt.lr.decay_factor": 1.0e-2,
     }
 
     out = apply_overrides(base, overrides)

@@ -36,6 +36,12 @@ When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
 
+When your changes alter an interface (function signature, data structure, key names, dict schema):
+- Update all tests that exercise the changed interface to reflect the new contract.
+- Don't leave tests asserting old behavior that no longer applies — stale tests are another kind of orphan.
+- Don't add shims or workarounds to make old tests pass against a changed contract; update the tests directly.
+- This applies even when the task description doesn't mention tests. If you changed it, you own the test update.
+
 The test: Every changed line should trace directly to the user's request.
 
 ## 4. Goal-Driven Execution

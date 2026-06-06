@@ -1,11 +1,11 @@
 import glob
-import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
+from utils.utils import paths
+
 
 def build_img_ptrs(cids):
-    from utils.utils import paths
 
     img_ptrs = {}
 
@@ -38,8 +38,6 @@ def build_cid_2_samp_idxs(
     if img_ptrs is None:
         img_ptrs = build_img_ptrs(cids)
     if df_metadata is None:
-        from utils.utils import paths
-
         df_metadata = pd.read_csv(paths["nymph_metadata"])
 
     pos_lookup = df_metadata.set_index("mask_name")["class_dv"]
@@ -55,12 +53,13 @@ def build_cid_2_samp_idxs(
 
     return cid_2_samp_idxs
 
-def build_data_indexes(cids, skeys_partitions):
-    from utils.utils import paths
+def build_data_indexes(cids, skeys_partitions, img_ptrs=None, df_metadata=None):
 
-    img_ptrs = build_img_ptrs(cids)
+    if img_ptrs is None:
+        img_ptrs = build_img_ptrs(cids)
 
-    df_metadata = pd.read_csv(paths["nymph_metadata"])
+    if df_metadata is None:
+        df_metadata = pd.read_csv(paths["nymph_metadata"])
     metadata_lookup = df_metadata.set_index("mask_name")[["class_dv", "sex"]]
 
     def build_partition_index(partition_name):
@@ -98,4 +97,5 @@ def build_data_indexes(cids, skeys_partitions):
             "id": build_partition_index("id_test"),
             "ood": build_partition_index("ood_test"),
         },
+        "whole": build_partition_index("whole"),
     }

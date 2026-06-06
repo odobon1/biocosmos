@@ -76,6 +76,13 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
         "ood_test": skeys_ood_test,
     }
     skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
+    skeys_partitions["whole"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["id_test"]
+        | skeys_partitions["ood_val"]
+        | skeys_partitions["ood_test"]
+    )
 
     data_indexes = build_data_indexes_bryo(
         sorted(genera_n_samps),
@@ -131,3 +138,21 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     assert abs(pct_id_test - cfg.pct_partition) < cfg.pct_ood_tol
     assert abs(pct_ood_val - cfg.pct_partition) < cfg.pct_ood_tol
     assert abs(pct_ood_test - cfg.pct_partition) < cfg.pct_ood_tol
+
+    whole_rfpaths = {datum["rfpath"] for datum in data_indexes["whole"]}
+    all_rfpaths = set()
+    for name in ("train", "id_val", "id_test", "ood_val", "ood_test"):
+        for cid, samp_idx in skeys_partitions[name]:
+            all_rfpaths.add(img_ptrs_all[cid][samp_idx])
+    assert whole_rfpaths == all_rfpaths, "whole partition must cover all samples"
+
+    assert len(data_indexes["trainval"]) == (
+        len(data_indexes["train"])
+        + len(data_indexes["validation"]["id"])
+        + len(data_indexes["validation"]["ood"])
+    )
+    assert len(data_indexes["whole"]) == (
+        len(data_indexes["trainval"])
+        + len(data_indexes["test"]["id"])
+        + len(data_indexes["test"]["ood"])
+    )

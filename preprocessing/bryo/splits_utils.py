@@ -56,4 +56,5 @@ def build_data_indexes_bryo(genera, skeys_partitions, img_ptrs=None):
             "id": build_partition_index("id_test"),
             "ood": build_partition_index("ood_test"),
         },
+        "whole": build_partition_index("whole"),
     }

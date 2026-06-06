@@ -85,6 +85,13 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
         ("genc_specc", 0),
         ("gend_specd", 0),
     }
+    skeys_partitions["whole"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["id_test"]
+        | skeys_partitions["ood_val"]
+        | skeys_partitions["ood_test"]
+    )
 
     data_indexes = build_data_indexes_lepid(
         cids=cids,
@@ -106,3 +113,17 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
     assert len(rfpaths_train & (rfpaths_id_test | rfpaths_ood_test | rfpaths_id_val | rfpaths_ood_val)) == 0
     assert len(rfpaths_id_val & rfpaths_ood_val) == 0
     assert len(rfpaths_id_test & rfpaths_ood_test) == 0
+
+    rfpaths_whole = {datum["rfpath"] for datum in data_indexes["whole"]}
+    assert rfpaths_whole == (rfpaths_train | rfpaths_id_val | rfpaths_id_test | rfpaths_ood_val | rfpaths_ood_test)
+
+    assert len(data_indexes["trainval"]) == (
+        len(data_indexes["train"])
+        + len(data_indexes["validation"]["id"])
+        + len(data_indexes["validation"]["ood"])
+    )
+    assert len(data_indexes["whole"]) == (
+        len(data_indexes["trainval"])
+        + len(data_indexes["test"]["id"])
+        + len(data_indexes["test"]["ood"])
+    )

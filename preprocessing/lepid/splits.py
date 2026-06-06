@@ -120,6 +120,13 @@ def build_splits():
         "ood_test": skeys_ood_test,
     }
     skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
+    skeys_partitions["whole"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["id_test"]
+        | skeys_partitions["ood_val"]
+        | skeys_partitions["ood_test"]
+    )
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
     print("Constructing n-shot tracking structures...")

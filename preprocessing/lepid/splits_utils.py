@@ -133,4 +133,5 @@ def build_data_indexes_lepid(
             "id": build_partition_index("id_test"),
             "ood": test_ood,
         },
+        "whole": build_partition_index("whole"),
     }

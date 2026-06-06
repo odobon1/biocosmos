@@ -15,6 +15,7 @@ from preprocessing.cub.splits import (
     _normalize_cub_rfpath,
     _split_train_into_train_idval_oodval,
 )
+from preprocessing.cub.splits_utils import build_data_indexes_cub
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -333,3 +334,52 @@ def test_split_train_raises_when_id_val_target_exceeds_multis_pool():
             n_samps_total_target=200,  # large target → id_val needs 20 multis, none exist
             cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
         )
+
+
+# ─── build_data_indexes_cub ──────────────────────────────────────────────────
+
+def _make_cub_fixtures():
+    cids = ["sp_a", "sp_b", "sp_c", "sp_d", "sp_e"]
+    img_ptrs = {
+        "sp_a": {0: "001.Sp_A/img0.jpg", 1: "001.Sp_A/img1.jpg"},
+        "sp_b": {0: "002.Sp_B/img0.jpg", 1: "002.Sp_B/img1.jpg"},
+        "sp_c": {0: "003.Sp_C/img0.jpg"},
+        "sp_d": {0: "004.Sp_D/img0.jpg"},
+        "sp_e": {0: "005.Sp_E/img0.jpg"},
+    }
+    skeys_partitions = {
+        "train":   {("sp_a", 0), ("sp_b", 0)},
+        "id_val":  {("sp_a", 1)},
+        "id_test": {("sp_b", 1)},
+        "ood_val": {("sp_c", 0), ("sp_d", 0)},
+        "ood_test":{("sp_e", 0)},
+    }
+    skeys_partitions["trainval"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["ood_val"]
+    )
+    skeys_partitions["whole"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["id_test"]
+        | skeys_partitions["ood_val"]
+        | skeys_partitions["ood_test"]
+    )
+    return cids, img_ptrs, skeys_partitions
+
+
+def test_cub_data_indexes_partition_size_composition():
+    cids, img_ptrs, skeys_partitions = _make_cub_fixtures()
+    data_indexes = build_data_indexes_cub(cids, skeys_partitions, img_ptrs)
+
+    assert len(data_indexes["trainval"]) == (
+        len(data_indexes["train"])
+        + len(data_indexes["validation"]["id"])
+        + len(data_indexes["validation"]["ood"])
+    )
+    assert len(data_indexes["whole"]) == (
+        len(data_indexes["trainval"])
+        + len(data_indexes["test"]["id"])
+        + len(data_indexes["test"]["ood"])
+    )

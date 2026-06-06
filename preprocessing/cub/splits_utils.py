@@ -37,4 +37,5 @@ def build_data_indexes_cub(
             "id": build_partition_index("id_test"),
             "ood": build_partition_index("ood_test"),
         },
+        "whole": build_partition_index("whole"),
     }

@@ -313,6 +313,13 @@ def build_splits() -> None:
         extra = len(all_skeys - skeys_expected)
         raise ValueError(f"Split skeys coverage mismatch: missing={missing}, extra={extra}")
 
+    skeys_partitions["whole"] = (
+        skeys_partitions["train"]
+        | skeys_partitions["id_val"]
+        | skeys_partitions["id_test"]
+        | skeys_partitions["ood_val"]
+        | skeys_partitions["ood_test"]
+    )
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
     cid_2_skeys_id = _build_cid_2_skeys_id(skeys_train, skeys_id_val, skeys_id_test)

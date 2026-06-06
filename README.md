@@ -45,12 +45,12 @@ Run setup script:
 The repo includes a `pytest` suite under `tests/` for fast unit tests and lightweight integration checks. See [tests/README.md](tests/README.md) for common test commands and usage details.
 
 # Train & Eval
-Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train/train.yaml` and the standalone eval config at `config/eval.yaml`. The loader merges `train.yaml` with `lr_sched.yaml` and `loss.yaml` under the hood.
+Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train.yaml` and the standalone eval config at `config/eval.yaml`.
 
 Note: The full similarity matrix is computed for all model types, including SigLIP (i.e. the chunked implementation described in the seminal SigLIP work is not currently utilized).
 
 ## Train
-1. Edit `config/train/train.yaml`:
+1. Edit `config/train.yaml`:
     * `model_type`, `loss_type`, `targ_type`, `lr_sched_type`, etc.
     * Mixed precision & activation checkpointing can be toggled: `mixed_prec`, `act_chkpt`
 2. Run:
@@ -59,7 +59,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
     This reads `config/train/train.yaml`, seeds, builds the model, applies class weighting (if enabled) and trains.
 
-    Tip: Cosine LR scheduler parameters are in `config/train/lr_sched.yaml` and selected by `opt.lr.sched` in `train.yaml`.
+    Tip: Cosine LR scheduler parameters are in `config/train.yaml` under `opt.lr`.
 
 ## Evaluate a trained model
 1. In `config/eval.yaml`, set `rfpath_model` to checkpointed model weights (e.g. `artifacts/dev/iw/lepid/42/chkpts/best_comp/model.pt`).
@@ -67,7 +67,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
-    When `rfpath_model` is set, eval overrides `dataset_name`, `split_name`, `model_type`, `non_causal`, and `img_norm` from setting + trial saved metadata.
+    When `rfpath_model` is set, eval overrides `dataset`, `split`, `model_type`, `non_causal`, `img_norm` from setting + trial saved metadata.
 
 ## Evaluate a base model
 1. In `config/eval.yaml`, set `rfpath_model: null`.
@@ -78,7 +78,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 ## Run a campaign
 1. Configure campaign matrix in `campaign_runner.py`:
-    * `CAMPAIGN_NAME`
+    * `CAMPAIGN`
     * `SEED0`, `NUM_SEEDS`
     * `DATASETS`
     * `BASELINE_OVERRIDES`
@@ -87,9 +87,9 @@ Note: The full similarity matrix is computed for all model types, including SigL
     torchrun --standalone --nproc-per-node=auto -m campaign_runner
     ```
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
-4. If a trial fails, campaign execution continues and details are appended to `artifacts/<CAMPAIGN_NAME>/campaign_errors.log`.
+4. If a trial fails, campaign execution continues and details are appended to `artifacts/<CAMPAIGN>/errors.log`.
 
-**Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN_NAME>/metadata_campaign.json` on first launch; a mismatch on resume raises an error before any trials execute.
+**Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN>/metadata_campaign.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
 ## Config Override Layers
 
@@ -97,10 +97,10 @@ Training config is assembled from multiple sources. Layers are listed in increas
 
 | Priority | Source | Applied by | Description |
 |----------|--------|-----------|-------------|
-| 1 (lowest) | `config/train/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
-| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign_name`, `setting_name`, `seed`, `dataset_name`, `standalone` from the campaign matrix. Not applicable in standalone training. |
-| 3 | `config/train/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train/train.yaml`. |
-| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split_name → "dev"`, `sample_volume → 20_000`, `eval_every → 10_000`, `batch_size → 1_024`. |
+| 1 (lowest) | `config/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
+| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
+| 3 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
+| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"`, `sample_volume → 20_000`, `eval_every → 10_000`, `batch_size → 1_024`. |
 | 5 (highest) | `BASELINE_OVERRIDES` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined at the top of `campaign_runner.py`. |
 
 In standalone training (`python -m train`), only layers 1, 3, and 4 apply.

@@ -111,7 +111,7 @@ class VLMWrapper(abc.ABC):
             self.model.set_grad_checkpointing(True)
 
         if hasattr(config, 'loss'):
-            cfg_logits = config.loss["cfg"]["logits"]
+            cfg_logits = config.loss["logits"]
             if cfg_logits["scale_init"] is not None:  # scale_init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
@@ -133,7 +133,7 @@ class VLMWrapper(abc.ABC):
                 self.model.logit_bias.requires_grad_(False)
 
         if hasattr(config, 'loss2') and config.loss2["mix"] != 0.0:
-            cfg_logits2 = config.loss2["cfg"]["logits"]
+            cfg_logits2 = config.loss2["logits"]
             if cfg_logits2["scale_init"] is None:  # (scale_init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
             else:  # scale_init set in config
@@ -256,12 +256,12 @@ class VLMWrapper(abc.ABC):
 
     def set_class_wts(self, config: TrainConfig, secondary: bool = False) -> None:
         cfg_loss = config.loss if not secondary else config.loss2
-        cw, cpw  = compute_class_wts(config.dataset, config.split, cfg_loss, train_pt=config.train_pt)
+        cw, cpw = compute_class_wts(config.dataset, config.split, cfg_loss, train_pt=config.train_pt)
         if not secondary:
-            self.class_wts      = cw.to(self.device)
+            self.class_wts = cw.to(self.device)
             self.class_pair_wts = cpw.to(self.device)
         else:
-            self.class_wts2      = cw.to(self.device)
+            self.class_wts2 = cw.to(self.device)
             self.class_pair_wts2 = cpw.to(self.device)
 
     def embed_images(self, imgs_b: torch.Tensor) -> torch.Tensor:
@@ -361,12 +361,12 @@ class VLMWrapper(abc.ABC):
 
     def _loss_for_cfg_full_batch(
         self,
-        embs_img_all:   torch.Tensor,
-        embs_txt_all:   torch.Tensor,
+        embs_img_all: torch.Tensor,
+        embs_txt_all: torch.Tensor,
         class_encs_all: torch.Tensor,
-        targ_data_all:  List[Any],
-        cfg_loss:       Dict[str, Any],
-        secondary:      bool = False,
+        targ_data_all: List[Any],
+        cfg_loss: Dict[str, Any],
+        secondary: bool = False,
     ) -> torch.Tensor:
         """
         Computes loss for the full global batch according to a given loss configuration (primary or secondary).
@@ -431,10 +431,10 @@ class VLMWrapper(abc.ABC):
 
     def _gather_batch(
         self,
-        embs_img_sb:   torch.Tensor,
-        embs_txt_sb:   torch.Tensor,
+        embs_img_sb: torch.Tensor,
+        embs_txt_sb: torch.Tensor,
         class_encs_sb: torch.Tensor,
-        targ_data_sb:  List[Any],
+        targ_data_sb: List[Any],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Any]]:
         """
         Turn the local batch on this rank into a global batch across all ranks.
@@ -465,8 +465,8 @@ class VLMWrapper(abc.ABC):
             return torch.cat([x, pad], dim=0)
 
         # pad tensors so all_gather can handle the last uneven batch
-        embs_img_pad   = pad_rows(embs_img_sb, B_max)
-        embs_txt_pad   = pad_rows(embs_txt_sb, B_max)
+        embs_img_pad = pad_rows(embs_img_sb, B_max)
+        embs_txt_pad = pad_rows(embs_txt_sb, B_max)
         class_encs_pad = pad_rows(class_encs_sb, B_max)
 
         # embeddings (need gradients)
@@ -482,12 +482,12 @@ class VLMWrapper(abc.ABC):
         dist.all_gather_object(targ_data_sb_list, list(targ_data_sb))
 
         # trim each gathered shard back to its true local size
-        img_parts   = [part[:sizes[r]] for r, part in enumerate(img_parts_pad)]
-        txt_parts   = [part[:sizes[r]] for r, part in enumerate(txt_parts_pad)]
+        img_parts = [part[:sizes[r]] for r, part in enumerate(img_parts_pad)]
+        txt_parts = [part[:sizes[r]] for r, part in enumerate(txt_parts_pad)]
         class_parts = [part[:sizes[r]] for r, part in enumerate(class_parts_pad)]
 
-        embs_img_b   = torch.cat(img_parts, dim=0)
-        embs_txt_b   = torch.cat(txt_parts, dim=0)
+        embs_img_b = torch.cat(img_parts, dim=0)
+        embs_txt_b = torch.cat(txt_parts, dim=0)
         class_encs_b = torch.cat(class_parts, dim=0)
 
         targ_data_b = []
@@ -601,11 +601,11 @@ class CLIPWrapper(VLMWrapper):
         """
         for name, param in self.model.named_parameters():
             if (
-                name.startswith("token_embedding.") or
-                name == "positional_embedding"      or
-                name.startswith("transformer.")     or
-                name.startswith("ln_final.")        or
-                name == "text_projection"
+                name.startswith("token_embedding.")
+                or name == "positional_embedding"
+                or name.startswith("transformer.")
+                or name.startswith("ln_final.")
+                or name == "text_projection"
             ):
                 param.requires_grad = False
 

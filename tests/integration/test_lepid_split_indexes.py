@@ -5,7 +5,7 @@ python -m pytest tests/integration/test_lepid_split_indexes.py
 import pandas as pd
 import pytest
 
-from preprocessing.lepid.splits_utils import build_data_indexes_lepid
+from preprocessing.lepid.split_gen_utils import build_data_indexes_lepid
 
 
 @pytest.mark.integration

@@ -6,11 +6,10 @@ import re
 from Bio import Phylo
 from Bio.Phylo.BaseTree import Tree
 from tqdm import tqdm
-from pathlib import Path
 import requests
 
 from utils.utils import paths, save_pickle, get_subdirectory_names
-from preprocessing.common.phylo import augment_class_data, prune_tree, augment_tree_with_polytomies
+from preprocessing.common.phylo import augment_tree_with_polytomies
 
 import pdb
 

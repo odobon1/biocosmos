@@ -4,7 +4,7 @@ conda run -n biocosmos_b200 python -m pytest tests/unit/test_nymph_split_indexes
 
 import pandas as pd
 
-from preprocessing.nymph.splits_utils import build_data_indexes
+from preprocessing.nymph.split_gen_utils import build_data_indexes
 
 
 def _make_nymph_fixtures():

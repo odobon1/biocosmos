@@ -559,8 +559,17 @@ def gen_text(
 ):
     return get_text_generator(dataset).generate(class_data_cid, combo_temp, meta)
 
-def species_to_genus(species: str) -> str:
-    return species.split("_")[0]
+_PENULT_KEY: dict[str, str] = {
+    "bryo": "family",
+    "cub": "genus",
+    "lepid": "genus",
+    "nymph": "genus",
+}
+
+def load_cid_2_penult(dataset: str) -> dict:
+    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
+    key = _PENULT_KEY[dataset]
+    return {cid: entry[key] for cid, entry in class_data.items()}
 
 def truncate_subspecies(s: str) -> str:
     parts = s.split("_", 2)

@@ -108,6 +108,11 @@ class TrainConfig:
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
+        for loss in [self.loss, self.loss2]:
+            logits = loss["logits"]
+            if logits["scale_init"] is not None or logits["bias_init"] is not None:
+                print(f"\nWARNING: logit scale/bias overridden!\n")
+
         if self.aug.get("cjit_prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
             self.aug.pop("cjit_prob", None)
@@ -229,9 +234,6 @@ def build_train_config(cfg_dict: dict) -> TrainConfig:
     if setting_overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg = TrainConfig(**cfg_dict)
-    cfg.loss["cfg"] = get_config_loss(cfg)
-    if cfg.loss2["mix"] != 0.0:
-        cfg.loss2["cfg"] = get_config_loss(cfg, secondary=True)
     cfg.hw = get_config_hardware()
     return cfg
 
@@ -240,44 +242,6 @@ def get_config_train(cfg_dict: dict | None = None):
         cfg_dict = load_train_config_dict()
     return build_train_config(cfg_dict)
 
-# helper for get_config_train()
-def get_config_loss(cfg_train, secondary=False):
-    cfg_train_loss = cfg_train.loss if not secondary else cfg_train.loss2
-
-    wting_cfg = cfg_train_loss["wting"]
-    focal_cfg = cfg_train_loss["focal"]
-    logits_cfg = cfg_train_loss["logits"]
-    dsmr = cfg_train_loss.get("dsmr", False)
-
-    wting = isinstance(wting_cfg, dict) and wting_cfg.get("type") is not None
-    focal = isinstance(focal_cfg, dict) and focal_cfg.get("gamma", 0.0) != 0.0
-
-    if not (logits_cfg["scale_init"] is None and logits_cfg["bias_init"] is None):
-        print(f"\nWARNING: loss_type = '{cfg_train_loss['type']}' and logit scale/bias overridden!\n")
-
-    cfg = {"logits": logits_cfg}
-
-    if wting:
-        cfg["class_weighting"] = {
-            "type":     wting_cfg["type"],
-            "if_gamma": wting_cfg["if"]["gamma"],
-            "cb_beta":  wting_cfg["cb"]["beta"],
-            "cp_type":  wting_cfg["cp_type"],
-        }
-
-    if focal:
-        cfg["focal"] = {
-            "gamma":     focal_cfg["gamma"],
-            "comp_type": focal_cfg["comp_type"],
-        }
-
-    if cfg_train_loss["type"] == "bce":
-        cfg["dsmr"] = dsmr
-
-    cfg_train_loss["wting"] = wting
-    cfg_train_loss["focal"] = focal
-
-    return cfg
 
 @dataclass
 class HardwareConfig:
@@ -289,11 +253,13 @@ class HardwareConfig:
     persistent_workers_train: bool
     persistent_workers_eval: bool
 
+
 def get_config_hardware():
     with open(paths["config"] / "hardware.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = HardwareConfig(**cfg_dict)
     return cfg
+
 
 @dataclass
 class EvalConfig:
@@ -354,6 +320,7 @@ class EvalConfig:
     def has_field(cls, name_field):
         return name_field in cls.__dataclass_fields__
 
+
 def get_config_eval(verbose=True):
     with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
@@ -362,6 +329,7 @@ def get_config_eval(verbose=True):
     if verbose:
         PrintLog.init_eval(cfg)
     return cfg
+
 
 @dataclass
 class GenSplitConfig:
@@ -377,8 +345,9 @@ class GenSplitConfig:
     nst_names: list
     nst_seps: list
 
-    pos_filter: str | None = None
-    ood_family_name: str | None = None
+    pos_filter: str | None
+
+    dev: dict
 
     def __post_init__(self):
 
@@ -398,8 +367,9 @@ class GenSplitConfig:
                 f"len(nst_seps) + 1 ({len(self.nst_seps)})"
             )
 
+
 def get_config_splits():
-    with open(paths["config"] / "splits.yaml") as f:
+    with open(paths["config"] / "split_gen.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = GenSplitConfig(**cfg_dict)
     return cfg

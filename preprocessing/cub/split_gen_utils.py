@@ -2,15 +2,7 @@ from typing import Iterable
 import matplotlib.pyplot as plt
 
 
-def build_data_indexes_cub(
-    cids: Iterable[str],
-    skeys_partitions,
-    img_ptrs,
-):
-    cid_set = set(cids)
-    missing = cid_set - set(img_ptrs.keys())
-    if missing:
-        raise KeyError(f"Image pointers missing for {len(missing)} cids")
+def build_data_indexes_cub(skeys_partitions, img_ptrs):
 
     def build_partition_index(partition):
         data_index = []

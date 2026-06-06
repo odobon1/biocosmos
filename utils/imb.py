@@ -7,16 +7,16 @@ from utils.utils import load_split
 def compute_class_wts(dataset, split, cfg_loss, train_pt: str = "train"):
 
     # note: needs to be untangled....
-    split       = load_split(dataset, split)
-    counts      = split.class_counts[train_pt]
+    split = load_split(dataset, split)
+    counts = split.class_counts[train_pt]
     pair_counts = np.outer(counts, counts)
-    n_classes   = len(counts)
+    n_classes = len(counts)
 
-    if not cfg_loss.get('wting', False):
-        class_wts      = np.ones_like(counts)
+    if cfg_loss.get('wting', {}).get('type') is None:
+        class_wts = np.ones_like(counts)
         class_pair_wts = np.ones_like(pair_counts)
     else:
-        cfg_cw = cfg_loss["cfg"]["class_weighting"]  # pretty brittle, need a better solution
+        cfg_cw = cfg_loss["wting"]
         
         if cfg_cw["cp_type"] == 2:
             neg_mult2 = np.full((n_classes, n_classes), 2)
@@ -24,20 +24,20 @@ def compute_class_wts(dataset, split, cfg_loss, train_pt: str = "train"):
             pair_counts = pair_counts * neg_mult2
 
         if cfg_cw["type"] == "inv_freq":
-            gamma          = cfg_cw.get("if_gamma", 0.0)
-            class_wts      = 1.0 / np.power(counts, gamma)
+            gamma = cfg_cw["inv_freq"].get("gamma", 0.0)
+            class_wts = 1.0 / np.power(counts, gamma)
             class_pair_wts = 1.0 / np.power(pair_counts, gamma)
-        elif cfg_cw["type"] == "class_balanced":
-            beta           = cfg_cw.get("cb_beta", 0.0)
-            eps            = 1e-8
-            class_wts      = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
+        elif cfg_cw["type"] == "class_bal":
+            beta = cfg_cw["class_bal"].get("beta", 0.0)
+            eps = 1e-8
+            class_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
 
     # normalize s.t. mean(wts) == 1.0
     # class_wts /= class_wts.mean()
     class_wts = class_wts / class_wts.mean()
 
-    if cfg_loss.get('wting', False):
+    if cfg_loss.get('wting', {}).get('type') is not None:
         if cfg_cw["cp_type"] == 1:
             class_pair_wts = class_pair_wts / class_pair_wts.mean()
         elif cfg_cw["cp_type"] == 2:
@@ -56,7 +56,7 @@ def compute_class_wts(dataset, split, cfg_loss, train_pt: str = "train"):
     #     class_wts      = class_wts / class_wts.mean()
     #     class_pair_wts = class_pair_wts / class_pair_wts.mean()
 
-    class_wts      = torch.tensor(class_wts)
+    class_wts = torch.tensor(class_wts)
     class_pair_wts = torch.tensor(class_pair_wts)
 
     return class_wts, class_pair_wts

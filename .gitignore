@@ -18,8 +18,6 @@ temp_phylo.ipynb
 temp_tax_dist.ipynb
 temp.ipynb
 
-metadata/*/splits/*/figures/
-
 tools/bryo_transfer.ipynb
 tools/readable_tree.txt
 tools/src.txt

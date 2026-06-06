@@ -4,9 +4,8 @@ from copy import deepcopy
 import heapq
 from typing import Dict, List, Optional, Tuple, Set
 from Bio.Phylo.BaseTree import Tree, Clade
-from tqdm import tqdm
 
-from utils.data import species_to_genus
+from utils.text import species_to_genus
 
 import pdb
 
@@ -578,18 +577,6 @@ def _worker_init(
 def _find_graft_node_path_for_class_worker(
     cid: str,
 ) -> Tuple[str, Tuple[int, ...]]:
-    if (
-        _WORKER_TREE is None
-        or _WORKER_CLASS_DATA is None
-        or _WORKER_REP_BY_RANK_TAXON is None
-        or _WORKER_TAXA_BY_PARENT is None
-        or _WORKER_PARENT_MAP is None
-        or _WORKER_DEPTH_MAP is None
-        or _WORKER_PATH_BY_CLADE is None
-        or _WORKER_GRAFT_CACHE is None
-        or _WORKER_RANK_ORDER is None
-    ):
-        raise RuntimeError("Worker context not initialized")
 
     graft_node = find_graft_node_for_class(
         tree=_WORKER_TREE,
@@ -660,8 +647,6 @@ def augment_tree_with_polytomies(
 
     if not cids_missing:
         return tree
-    if n_workers < 1:
-        raise ValueError("n_workers must be at least 1")
 
     # Precompute once: for each (rank, taxon) -> set of represented classes
     rep_by_rank_taxon: Dict[str, Dict[str, Set[str]]] = {
@@ -709,6 +694,7 @@ def prune_tree(tree, class_data):
             tree.prune(target=tip.name)
     return tree
 
+# only used by butterflies (lepid + nymph)
 def augment_class_data(class_data, tree):
     """
     Infer taxonomy for classes on the tree that are not in class_data,

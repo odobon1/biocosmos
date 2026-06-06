@@ -31,11 +31,11 @@ python -m preprocessing.nymph.class_data
 
 
 ## Generate Data Split
-**preprocessing/nymph/splits.py**
+**preprocessing/nymph/split_gen.py**
 
 To execute from root:
 ```
-python -m preprocessing.nymph.splits
+python -m preprocessing.nymph.split_gen
 ```
 **Requires:**
 - `metadata/nymph/class_data.pkl`
@@ -46,7 +46,7 @@ python -m preprocessing.nymph.splits
 - `metadata/nymph/splits/dev/split.pkl`
 - `metadata/nymph/splits/dev/figures/*`
 
-This is configured to generate split S29-42 by default, but can be adjusted in `config/splits.yaml`.
+This is configured to generate split S29-42 by default, but can be adjusted in `config/split_gen.yaml`.
 
 Conventions used for split naming, using S29-42 as an example:
 * **29** refers to 29% of the data being split out (equally distributed between ID/OOD val/test)
@@ -67,7 +67,7 @@ For the OOD splits, classes are genera and instances are species. For the ID spl
 Note: The ID split begins at 2-instance classes (2-sample species) because the singletons are first removed for reasons previously described.
 Note: The first stage of stratification (sparse) is done to ensure a well-distributed split among classes with fewer instances. By default, the sklearn stratified splitter (and all the other numerous stratified splitters I tried) will leave these unassigned, effectively leaving the tail end of the distribution completely unsampled from. In other words, the standard sklearn splitting process biases evaluation away from measuring few-shot learning.
 
-Datastructures are created for tracking n-shot subsets of ID splits for monitoring robustness to class imbalance and the assessing the effectiveness of class imbalance methods utilized. Stats regarding the variety (num. species) and volume (num. samples) of n-shot ID eval subsets are produced to get an idea of the statistical significance of the different n-shot subsets (subsets with lower volume are less significant) and are used to adjust the bounds of the n-shot buckets such that they are more statistically significant.
+Datastructures are created for tracking n-shot subsets of ID splits for monitoring robustness to class imbalance and assessing the effectiveness of class imbalance methods utilized. The variety (num. species) and volume (num. samples) of n-shot ID eval subsets are summarized to assess the reliability of each subset (subsets with lower volume yield less reliable estimates) and inform the bounds of the n-shot buckets.
 
 ## Generate Phylogenetic Tree
 **preprocessing/nymph/phylo.py**
@@ -149,11 +149,11 @@ The Lepid tree is used as the global backbone. The Nymphalidae subtree is merged
 
 
 ## Generate Data Split
-**preprocessing/lepid/splits.py**
+**preprocessing/lepid/split_gen.py**
 
 To execute from root:
 ```
-python -m preprocessing.lepid.splits
+python -m preprocessing.lepid.split_gen
 ```
 **Requires:**
 - `metadata/lepid/class_data.pkl`
@@ -165,7 +165,7 @@ python -m preprocessing.lepid.splits
 - `metadata/lepid/splits/dev/split.pkl`
 - `metadata/lepid/splits/dev/figures/*`
 
-This is configured via `config/splits.yaml`. Lepid now follows the same standard split setup as Nymph: ID plus OOD-species partitions for validation/test (no separate OOD-family or OOD-genus partitions).
+This is configured via `config/split_gen.yaml`. Lepid now follows the same standard split setup as Nymph: ID plus OOD-species partitions for validation/test (no separate OOD-family or OOD-genus partitions).
 
 
 ## Generate Rank Encodings
@@ -208,11 +208,11 @@ Class data and the phylogenetic tree are generated together because the tree is 
 
 
 ## Generate Data Split
-**preprocessing/bryo/splits.py**
+**preprocessing/bryo/split_gen.py**
 
 To execute from root:
 ```
-python -m preprocessing.bryo.splits
+python -m preprocessing.bryo.split_gen
 ```
 **Requires:**
 - `metadata/bryo/class_data.pkl`

@@ -359,9 +359,9 @@ class PrintLog:
             )
         
         loss_pairs = [
-            (partition.upper(), f"{eval_metrics['loss'][partition]:.3e}")
+            (partition.upper(), f"{eval_metrics['loss_raw'][partition]:.3e}")
             for partition in partitions
-            if eval_metrics["loss"][partition] is not None
+            if eval_metrics["loss_raw"][partition] is not None
         ]
         lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(loss_pairs) + "\n") if loss_pairs else ""
 
@@ -516,7 +516,7 @@ class PrintLog:
 
     @staticmethod
     def _format_loss_block(
-        loss: dict, 
+        cfg_loss: dict, 
         secondary: bool = False
     ) -> list[str]:
 
@@ -526,42 +526,42 @@ class PrintLog:
             lines.append("=== Loss (Primary) ===")
         else:
             lines.append("=== Loss (Secondary) ===")
-            info.append(("Mix", str(loss["mix"])))
+            info.append(("Mix", str(cfg_loss["mix"])))
         
-        info.append(("Type", loss["type"]))
-        info.append(("Sim", loss["sim"]))
-        info.append(("Targs", loss["targ"]))
+        info.append(("Type", cfg_loss["type"]))
+        info.append(("Sim", cfg_loss["sim"]))
+        info.append(("Targs", cfg_loss["targ"]))
         lines.append(PrintLog._block_metric_lines(info))
 
-        wting = loss.get("wting", False)
-        if wting and "class_weighting" in loss["cfg"]:
-            loss_type = loss["cfg"]["class_weighting"]["type"]
+        wting = cfg_loss.get("wting", {}).get("type") is not None
+        if wting:
+            cw_type = cfg_loss["wting"]["type"]
             lines_cw = [
                 "Class Weighting",
                 PrintLog._block_metric_lines((
-                    ("- Type", loss_type),
-                    *((("- gamma", loss["cfg"]["class_weighting"]["if_gamma"]),) if loss_type == "inv_freq" else ()),
-                    *((("- beta", loss["cfg"]["class_weighting"]["cb_beta"]),) if loss_type == "class_balanced" else ()),
-                    ("- cp_type", loss["cfg"]["class_weighting"]["cp_type"]),
+                    ("- Type", cw_type),
+                    *((("- gamma", cfg_loss["wting"]["inv_freq"]["gamma"]),) if cw_type == "inv_freq" else ()),
+                    *((("- beta", cfg_loss["wting"]["class_bal"]["beta"]),) if cw_type == "class_bal" else ()),
+                    ("- cp_type", cfg_loss["wting"]["cp_type"]),
                 )),
             ]
             lines.extend(lines_cw)
 
-        focal = loss.get("focal", False)
-        if focal and "focal" in loss["cfg"]:
+        focal = cfg_loss.get("focal", {}).get("gamma", 0.0) != 0.0
+        if focal:
             lines_focal = [
                 "Focal",
                 PrintLog._block_metric_lines((
-                    ("- gamma", loss["cfg"]["focal"]["gamma"]),
-                    ("- comp_type", loss["cfg"]["focal"]["comp_type"]),
+                    ("- gamma", cfg_loss["focal"]["gamma"]),
+                    ("- comp_type", cfg_loss["focal"]["comp_type"]),
                 )),
             ]
             lines.extend(lines_focal)
 
-        if "dsmr" in loss["cfg"]:
+        if cfg_loss.get("dsmr", False):
             lines.append("DSMR Enabled")
 
-        cfg_logits = loss["cfg"]["logits"]
+        cfg_logits = cfg_loss["logits"]
         lines_logits = [
             "Logits",
             PrintLog._block_metric_lines((

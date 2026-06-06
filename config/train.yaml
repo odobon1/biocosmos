@@ -2,7 +2,7 @@ campaign: dev
 setting: dev
 dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
-train_pt: train  # {train, trainval, whole}
+train_pt: whole  # {train, trainval, whole}
 seed: 42
 
 sample_volume: 1_000_000
@@ -11,7 +11,7 @@ batch_size: 4096  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 3
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching
 
 arch:  # architecture
-  model_type: siglip_vitb16  # commonly used: {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
 
 loss:  # primary loss
@@ -20,11 +20,11 @@ loss:  # primary loss
   targ: multipos  # {aligned, multipos, tax, phylo}
   wting:
     cp_type: 1  # {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
-    type: inv_freq  # {inv_freq, class_balanced, null}; null to disable
-    if:  # inverse-frequency weighting; only relevant if type: inv_freq
+    type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
+    inv_freq:  # inverse-frequency weighting; only relevant if `type: inv_freq`
       gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
-    cb:  # class-balanced weighting; only relevant if type: class_balanced
-      beta: 0.9999  # [0.0, 1.0); only used for type: class_balanced; controls aggressiveness
+    class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
+      beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
   focal:
     gamma: 0.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
@@ -42,10 +42,10 @@ loss2:  # secondary loss
   targ: phylo  # {aligned, multipos, tax, phylo}
   wting:
     cp_type: 1  # {1, 2}
-    type: null  # {inv_freq, class_balanced, null}
-    if:
+    type: inv_freq  # {inv_freq, class_bal, null}
+    inv_freq:
       gamma: 0.5  # (0.0, 1.0]
-    cb:
+    class_bal:
       beta: 0.9999  # [0.0, 1.0)
   focal:
     gamma: 0.0  # [0.0, inf)

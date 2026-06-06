@@ -7,60 +7,65 @@ from types import SimpleNamespace
 
 import pytest
 
-from preprocessing.bryo.splits_utils import build_data_indexes_bryo
-from preprocessing.common.splits import (
-    build_genus_2_cids,
+from preprocessing.bryo.split_gen_utils import build_data_indexes_bryo
+from preprocessing.common.split_gen import (
+    build_penult_2_cids,
     build_id_partitions,
-    build_n_insts_2_classes_g,
+    build_n_insts_2_classes_penult,
     build_ood_partitions,
     build_trainval_skeys_partition,
 )
 
 
-def _make_img_ptrs(genera_n_samps: dict[str, int]) -> dict:
+def _make_img_ptrs(cids_n_samps: dict[str, int]) -> dict:
     return {
-        genus: {idx: f"{genus}/img{idx:04d}.jpg" for idx in range(n)}
-        for genus, n in genera_n_samps.items()
+        cid: {idx: f"{cid}/img{idx:04d}.jpg" for idx in range(n)}
+        for cid, n in cids_n_samps.items()
     }
 
 
 @pytest.mark.integration
 def test_bryo_split_partitions_do_not_overlap() -> None:
-    genera_n_samps = {
+    cids_n_samps = {
         "genA": 20, "genB": 15, "genC": 10, "genD": 8, "genE": 5, "genF": 3,
         "genX": 12, "genY": 9, "genZ": 7, "genW": 4,
     }
 
-    img_ptrs_all = _make_img_ptrs(genera_n_samps)
+    img_ptrs_all = _make_img_ptrs(cids_n_samps)
 
-    cids = sorted(genera_n_samps)
+    cids = sorted(cids_n_samps)
     cid_2_samp_idxs = {
         cid: list(sorted(img_ptrs_all[cid].keys()))
         for cid in cids
     }
-    n_samps_dict = {cid: len(idxs) for cid, idxs in cid_2_samp_idxs.items()}
+    cid_2_n_samps = {cid: len(idxs) for cid, idxs in cid_2_samp_idxs.items()}
 
     cfg = SimpleNamespace(
         seed=42, pct_partition=0.1, pct_eval=0.2, pct_ood_tol=0.15,
         nst_names=["1-4", "5+"], nst_seps=[4], size_dev=5,
     )
 
-    genus_2_cids = build_genus_2_cids(cids)
-    n_insts_2_classes_g = build_n_insts_2_classes_g(cids)
+    cid_2_penult = {
+        "genA": "famABC", "genB": "famABC", "genC": "famABC",
+        "genD": "famDEF", "genE": "famDEF", "genF": "famDEF",
+        "genX": "famXYZW", "genY": "famXYZW", "genZ": "famXYZW", "genW": "famXYZW",
+    }
+    penult_2_cids = build_penult_2_cids(cids, cid_2_penult)
+    n_insts_2_classes_penult = build_n_insts_2_classes_penult(cids, cid_2_penult)
 
     cids_id, _, _, skeys_ood_val, skeys_ood_test = build_ood_partitions(
-        n_insts_2_classes_g,
-        genus_2_cids,
+        n_insts_2_classes_penult,
+        penult_2_cids,
         set(cids),
         cid_2_samp_idxs,
-        n_samps_dict,
+        cid_2_n_samps,
         cfg,
     )
 
     skeys_train, skeys_id_val, skeys_id_test, _, _, _, skeys_id_test_extra_taken = build_id_partitions(
         cids_id,
         cid_2_samp_idxs,
-        n_samps_dict,
+        cid_2_n_samps,
         cfg,
         skeys_id_test_extra=skeys_ood_val,
     )
@@ -85,7 +90,7 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     )
 
     data_indexes = build_data_indexes_bryo(
-        sorted(genera_n_samps),
+        sorted(cids_n_samps),
         skeys_partitions,
         img_ptrs=img_ptrs_all,
     )

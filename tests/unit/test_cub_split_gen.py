@@ -1,12 +1,12 @@
 """
-conda run -n biocosmos_b200 python -m pytest tests/unit/test_cub_splits.py
+conda run -n biocosmos_b200 python -m pytest tests/unit/test_cub_split_gen.py
 """
 
 from types import SimpleNamespace
 
 import pytest
 
-from preprocessing.cub.splits import (
+from preprocessing.cub.split_gen import (
     _build_classdir_to_cid,
     _build_img_ptrs,
     _build_skeys_from_rfpaths,
@@ -15,7 +15,7 @@ from preprocessing.cub.splits import (
     _normalize_cub_rfpath,
     _split_train_into_train_idval_oodval,
 )
-from preprocessing.cub.splits_utils import build_data_indexes_cub
+from preprocessing.cub.split_gen_utils import build_data_indexes_cub
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -97,18 +97,16 @@ def test_build_classdir_to_cid_raises_on_missing_species():
         _build_classdir_to_cid(class_data)
 
 
-# ─── _build_img_ptrs ─────────────────────────────────────────────────────────
-
 def test_build_img_ptrs_assigns_sequential_samp_idxs_per_species():
     class_data, rfpaths = _make_class_data_and_rfpaths([
         ("001.Albatross", "diomedea_nigripes", 3),
         ("002.Laysan", "phoebastria_immutabilis", 2),
     ])
-    _, cid_2_samp_idxs, _, _, n_samps_dict = _build_img_ptrs(rfpaths, class_data)
+    _, cid_2_samp_idxs, _, _, cid_2_n_samps = _build_img_ptrs(rfpaths, class_data)
 
     assert cid_2_samp_idxs["diomedea_nigripes"] == [0, 1, 2]
     assert cid_2_samp_idxs["phoebastria_immutabilis"] == [0, 1]
-    assert n_samps_dict == {"diomedea_nigripes": 3, "phoebastria_immutabilis": 2}
+    assert cid_2_n_samps == {"diomedea_nigripes": 3, "phoebastria_immutabilis": 2}
 
 
 def test_build_img_ptrs_rfpath_2_skey_covers_all_rfpaths():

@@ -2,6 +2,7 @@ import bisect
 import copy
 import os
 import random
+import shutil
 import sys
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
@@ -10,10 +11,14 @@ from sklearn.model_selection import train_test_split
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from PIL import Image
 from tqdm import tqdm
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set, Optional, Any
+from pathlib import Path
 
-from utils.data import species_to_genus, Split
+from utils.data import Split
 from utils.utils import paths, save_pickle
+from utils.config import GenSplitConfig
+
+import pdb
 
 
 def _process_rfpaths_parallel(rfpaths, dataset, desc):
@@ -52,19 +57,19 @@ def _snapshot_norm_stats(all_means, all_vars):
     return tuple(float(x) for x in mean_agg), tuple(float(x) for x in std_agg)
 
 
-def compute_rgb_norm_stats_by_partition(data_indexes, dataset: str) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
+def get_norm_stats(data_indexes, dataset: str, cfg) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
+    if cfg.dev.get("skip_norm_stats", False):
+        print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
+        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
+    return compute_rgb_norm_stats_by_partition(data_indexes, dataset)
+
+def compute_rgb_norm_stats_by_partition(
+    data_indexes: Dict[str, Any],
+    dataset: str,
+) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
     """
-    Compute RGB normalization stats for 'train', 'trainval', and 'whole' in a single
-    pass through the data. Stats are accumulated incrementally:
-
-      train images → snapshot → 'train'
-      + id_val + ood_val images → snapshot → 'trainval'
-      + id_test + ood_test images → snapshot → 'whole'
-
-    Each image contributes equally regardless of resolution.
-
-    Returns:
-        Dict mapping partition name to (norm_mean, norm_std), each a 3-tuple of floats.
+    Norm stats accumulated incrementally: train → snapshot, +val → snapshot, 
+    +test → snapshot; Each image contributes equally regardless of resolution.
     """
     groups = [
         ("train",    [d["rfpath"] for d in data_indexes["train"]]),
@@ -86,9 +91,6 @@ def compute_rgb_norm_stats_by_partition(data_indexes, dataset: str) -> Dict[str,
             all_means.extend(new_means)
             all_vars.extend(new_vars)
 
-        if not all_means:
-            raise ValueError(f"No images accumulated before '{pt_name}' norm stats snapshot")
-
         results[pt_name] = _snapshot_norm_stats(all_means, all_vars)
 
     return results
@@ -109,28 +111,71 @@ def truncate_subspecies(s: str) -> str:
         return s
     return parts[0] + "_" + parts[1]
 
-def build_genus_2_cids(cids):
-    genus_2_cids = defaultdict(list)
+def build_penult_2_cids(cids, cid_2_penult):
+    penult_2_cids = defaultdict(list)
     for cid in cids:
-        genus = species_to_genus(cid)
-        genus_2_cids[genus].append(cid)
-    return genus_2_cids
+        penult = cid_2_penult[cid]
+        penult_2_cids[penult].append(cid)
+    return penult_2_cids
 
-def build_n_insts_2_classes_g(cids):
-    genera = [species_to_genus(cid) for cid in cids]
-    count_g = Counter(genera)
-    n_insts_2_classes_g = defaultdict(list)
-    for genus, count in count_g.items():
-        n_insts_2_classes_g[count].append(genus)
-    return n_insts_2_classes_g
+def build_n_insts_2_classes_penult(cids, cid_2_penult):
+    penults = [cid_2_penult[cid] for cid in cids]
+    count_penult = Counter(penults)
+    n_insts_2_classes_penult = defaultdict(list)
+    for penult, count in count_penult.items():
+        n_insts_2_classes_penult[count].append(penult)
+    return n_insts_2_classes_penult
 
-def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, insts, seed=None):
-    rng = random.Random(seed)
+def strat_split(
+    n_classes: int,
+    n_draws: int,
+    pct_eval: float,
+    n_insts_2_classes: Dict[int, List[str]],
+    class_2_insts: Dict[str, List[str | Tuple[str, int]]],
+    insts: Set[str | Tuple[str, int]],
+    seed: int = None,
+) -> Tuple[
+    Set[str | Tuple[str, int]], 
+    Set[str | Tuple[str, int]], 
+    Set[str | Tuple[str, int]]
+]:
+    """
+    Stratified split of instances into remainder, val, and test sets.
 
-    if pct_eval <= 0:
-        raise ValueError(f"pct_eval must be > 0, got {pct_eval}")
-    if n_classes <= 0:
-        raise ValueError(f"n_classes must be > 0, got {n_classes}")
+    Draws `n_draws` instances for evaluation, stratified by class size so that
+    each size bucket contributes proportionally. The draw proceeds in two
+    phases:
+
+    Phase 1 — low-count buckets: iterates count buckets from 1 upward, drawing
+    `round(bucket_size * pct_eval)` instances per bucket. Stops once remaining
+    draws can be handled without per-bucket stratification (i.e. when
+    `n_draws_rem >= n_classes_rem`).
+
+    Phase 2 — high-count buckets: if draws remain after phase 1, uses
+    sklearn `train_test_split` with stratification on class to draw from the
+    remaining higher-count buckets.
+
+    Eval instances are interleaved into val/test by alternating index (even →
+    val, odd → test).
+
+    Args:
+        n_classes: Total number of classes across all buckets.
+        n_draws: Total number of instances to draw for evaluation
+            (val + test combined).
+        pct_eval: Fraction of instances to hold out; must be > 0.
+            Controls when phase 1 stops (`count >= 1/pct_eval - 1`).
+        n_insts_2_classes: Mapping from instance count to
+            the list of classes with that count.
+        class_2_insts: Mapping from class ID to its list of
+            instances.
+        insts: Full set of instances to split.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        insts_rem: Instances not drawn for evaluation (train pool).
+        insts_val: Instances drawn for validation.
+        insts_test: Instances drawn for test.
+    """
 
     def compute_class_hits(n_draws, n_classes):
         class_hits = [n_draws // n_classes] * n_classes
@@ -138,6 +183,8 @@ def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, 
         for i in range(plus_ones):
             class_hits[i] += 1
         return class_hits
+
+    rng = random.Random(seed)
 
     insts_rem = copy.deepcopy(insts)
     insts_eval = []
@@ -211,7 +258,7 @@ def strat_split(n_classes, n_draws, pct_eval, n_insts_2_classes, class_2_insts, 
 
     insts_rem -= insts_val
     insts_rem -= insts_test
-
+    
     return insts_rem, insts_val, insts_test
 
 def build_class_index_maps(skeys_pool):
@@ -225,21 +272,46 @@ def build_class_index_maps(skeys_pool):
 
     return cid_2_skeys_pool, n_insts_2_classes_pool
 
-def draw_single_partition_from_pool(skeys_pool, n_target, choose_partition, seed):
+def draw_single_partition_from_pool(
+    skeys_pool: Set[Tuple[str, int]],
+    n_target: int,
+    choose_partition: str,
+    seed: int,
+) -> Tuple[
+    Set[Tuple[str, int]], 
+    Set[Tuple[str, int]],
+]:
+    """
+    Draw one eval partition (val or test) from a pool of sample keys.
+
+    Calls `strat_split` with `n_draws = 2 * n_target` to produce a balanced
+    val/test split, then returns only the half named by `choose_partition` and
+    folds the other half back into the remainder.
+
+    Args:
+        skeys_pool: Pool of (cid, samp_idx) keys to draw from.
+        n_target: Desired number of keys in the returned partition.
+        choose_partition: Which half to return — `"val"` or `"test"`.
+        seed: Random seed passed to `strat_split`.
+
+    Returns:
+        skeys_chosen: The drawn partition of size ~n_target.
+        skeys_rem: Remaining keys (pool minus chosen partition).
+    """
     if choose_partition not in {"val", "test"}:
         raise ValueError(f"choose_partition must be one of {{'val', 'test'}}, got {choose_partition}")
 
     if n_target <= 0 or len(skeys_pool) == 0:
-        return set(), set(skeys_pool)
+        return set(), skeys_pool
 
     cid_2_skeys_pool, n_insts_2_classes_pool = build_class_index_maps(skeys_pool)
     n_classes_pool = len(cid_2_skeys_pool)
     if n_classes_pool == 0:
-        return set(), set(skeys_pool)
+        return set(), skeys_pool
 
     n_draws = min(len(skeys_pool), 2 * n_target)
     if n_draws <= 0:
-        return set(), set(skeys_pool)
+        return set(), skeys_pool
 
     pct_eval_pool = n_draws / len(skeys_pool)
     skeys_rem, skeys_val_tmp, skeys_test_tmp = strat_split(
@@ -259,203 +331,201 @@ def draw_single_partition_from_pool(skeys_pool, n_target, choose_partition, seed
         skeys_chosen = skeys_val_tmp
         skeys_restored = skeys_test_tmp
 
-    skeys_rem_for_next = set(skeys_rem).union(set(skeys_restored))
-    return set(skeys_chosen), skeys_rem_for_next
+    skeys_rem_for_next = skeys_rem | skeys_restored
+
+    return skeys_chosen, skeys_rem_for_next
 
 def sample_id_test_extra_taken(
     cids_id,
     cid_2_samp_idxs,
-    n_samps_dict,
+    cid_2_n_samps,
     cfg,
     skeys_id_test_extra,
-    n_samps_total_target=None,
 ):
     if skeys_id_test_extra is None:
         skeys_id_test_extra = set()
-    else:
-        skeys_id_test_extra = set(skeys_id_test_extra)
 
-    n_samps_total = sum(n_samps_dict.values())
-    n_samps_target = n_samps_total if n_samps_total_target is None else n_samps_total_target
-    n_samps_id_eval = round(n_samps_target * cfg.pct_eval)
+    n_samps_total = sum(cid_2_n_samps.values())
+    n_samps_id_eval = round(n_samps_total * cfg.pct_eval)
     n_samps_id_test_target = n_samps_id_eval // 2
 
-    cids_id_multis = {
-        cid for cid in sorted(cids_id)
-        if n_samps_dict[cid] > 1
-    }
-    skeys_id_multis = set()
-    for cid in cids_id_multis:
-        for samp_idx in cid_2_samp_idxs[cid]:
-            skeys_id_multis.add((cid, samp_idx))
+    cids_id_multis = {cid for cid in sorted(cids_id) if cid_2_n_samps[cid] > 1}
+    skeys_id_multis = {(cid, samp_idx) for cid in cids_id_multis for samp_idx in cid_2_samp_idxs[cid]}
 
-    if n_samps_total_target is not None:
-        n_samps_id_test_pool_total = len(skeys_id_multis.union(skeys_id_test_extra))
-        if n_samps_id_test_target > n_samps_id_test_pool_total:
-            raise ValueError(
-                f"Requested ID test samples ({n_samps_id_test_target}) exceed available ID test pool samples "
-                f"({n_samps_id_test_pool_total})."
-            )
-
-    skeys_id_test_pool = skeys_id_multis.union(skeys_id_test_extra)
+    skeys_id_test_pool = skeys_id_multis | skeys_id_test_extra
     skeys_id_test, _ = draw_single_partition_from_pool(
         skeys_pool=skeys_id_test_pool,
         n_target=n_samps_id_test_target,
         choose_partition="test",
         seed=cfg.seed,
     )
-    return skeys_id_test.intersection(skeys_id_test_extra)
+    return skeys_id_test & skeys_id_test_extra
 
 def build_ood_partitions(
-    n_insts_2_classes_g,
-    genus_2_cids,
-    cids,
-    cid_2_samp_idxs,
-    n_samps_dict,
-    cfg,
-    n_samps_total_target=None,
-):
+    n_insts_2_classes_penult: Dict[int, List[str]],
+    penult_2_cids: Dict[str, List[str]],
+    cids: Set[str],
+    cid_2_samp_idxs: Dict[str, List[int]],
+    cid_2_n_samps: Dict[str, int],
+    cfg: GenSplitConfig,
+) -> Tuple[
+    set[str], 
+    set[str], 
+    set[str], 
+    set[Tuple[str, int]], 
+    set[Tuple[str, int]],
+]:
+    """
+    Assign classes to ID, OOD-val, and OOD-test partitions.
+
+    Classes are split at the penultimate taxonomic level so that OOD partitions
+    contain entire unseen classes. Trials repeat (incrementing the seed each
+    time) until both OOD partitions are within `cfg.pct_ood_tol` of
+    `cfg.pct_partition` in sample-count fraction.
+
+    Args:
+        n_insts_2_classes_penult: Mapping from instance count to the list
+            of penultimate-level groups with that count; used by strat_split
+            for stratified sampling.
+        penult_2_cids: Mapping from each penultimate-level group to its
+            member class IDs.
+        cids: Full set of class IDs to partition.
+        cid_2_samp_idxs: Mapping from class ID to list of
+            sample indices in that class.
+        cid_2_n_samps: Mapping from class ID to number of
+            samples.
+        cfg: Config object with fields:
+            - pct_eval (float): fraction of classes to hold out for OOD eval.
+            - pct_partition (float): target fraction of total samples per eval
+              partition.
+            - pct_ood_tol (float): max acceptable absolute error between actual
+              and target sample fraction; loop exits when both partitions
+              satisfy this.
+            - seed (int): base random seed (incremented by trial index each
+              iteration).
+
+    Returns:
+        cids_id: Class IDs assigned to in-distribution.
+        cids_ood_val: Class IDs assigned to OOD validation.
+        cids_ood_test: Class IDs assigned to OOD test.
+        skeys_ood_val: (cid, samp_idx) sample keys in OOD val.
+        skeys_ood_test: (cid, samp_idx) sample keys in OOD test.
+    """
     n_cids = len(cids)
-    n_samps_total = sum(n_samps_dict.values())
-    n_samps_target = n_samps_total if n_samps_total_target is None else n_samps_total_target
-    pct_eval_eff = cfg.pct_eval * (n_samps_target / n_samps_total)
-    pct_eval_eff = min(max(pct_eval_eff, 0.0), 0.999)
+    n_samps_total = sum(cid_2_n_samps.values())
 
-    n_cids_ood_eval = round(n_cids * pct_eval_eff)
-    n_genera = len(genus_2_cids)
-
-    max_tries = getattr(cfg, "ood_max_tries", 10_000)
-    if max_tries <= 0:
-        raise ValueError(f"ood_max_tries must be > 0, got {max_tries}")
-
-    best_split = None
-    best_error_score = (float("inf"), float("inf"))
-    best_abs_error_val = None
-    best_abs_error_test = None
+    n_cids_ood_eval = round(n_cids * cfg.pct_eval)
+    n_penults = len(penult_2_cids)
 
     close_enough = False
     i = 0
-    while not close_enough and i < max_tries:
+    while not close_enough:
         i += 1
-        cids_id_i, cids_ood_val_i, cids_ood_test_i = strat_split(
-            n_classes=n_genera,
+        if i % 10_000 == 0 and i > 0:
+            print(f"Warning: {i / 1_000}k seeds searched and no OOD partition found satisfying pct_ood_tol={cfg.pct_ood_tol}.")
+
+        cids_id, cids_ood_val, cids_ood_test = strat_split(
+            n_classes=n_penults,
             n_draws=n_cids_ood_eval,
-            pct_eval=pct_eval_eff,
-            n_insts_2_classes=n_insts_2_classes_g,
-            class_2_insts=genus_2_cids,
+            pct_eval=cfg.pct_eval,
+            n_insts_2_classes=n_insts_2_classes_penult,
+            class_2_insts=penult_2_cids,
             insts=cids,
             seed=cfg.seed + i,
         )
 
-        n_samps_ood_test = sum(n_samps_dict[cid] for cid in cids_ood_test_i)
+        n_samps_ood_test = sum(cid_2_n_samps[cid] for cid in cids_ood_test)
 
-        skeys_ood_val_i = set()
-        for cid in cids_ood_val_i:
-            for samp_idx in cid_2_samp_idxs[cid]:
-                skeys_ood_val_i.add((cid, samp_idx))
+        skeys_ood_val = {(cid, samp_idx) for cid in cids_ood_val for samp_idx in cid_2_samp_idxs[cid]}
 
-        skeys_id_test_extra_taken_i = sample_id_test_extra_taken(
-            cids_id=cids_id_i,
+        skeys_id_test_extra_taken = sample_id_test_extra_taken(
+            cids_id=cids_id,
             cid_2_samp_idxs=cid_2_samp_idxs,
-            n_samps_dict=n_samps_dict,
+            cid_2_n_samps=cid_2_n_samps,
             cfg=cfg,
-            skeys_id_test_extra=skeys_ood_val_i,
-            n_samps_total_target=n_samps_total_target,
+            skeys_id_test_extra=skeys_ood_val,
         )
-        n_samps_ood_val_after_id_test = len(skeys_ood_val_i - skeys_id_test_extra_taken_i)
+        n_samps_ood_val_after_id_test = len(skeys_ood_val - skeys_id_test_extra_taken)
 
-        pct_samps_ood_val = n_samps_ood_val_after_id_test / n_samps_target
-        pct_samps_ood_test = n_samps_ood_test / n_samps_target
-
-        abs_error_val = abs((cfg.pct_partition) - pct_samps_ood_val)
-        abs_error_test = abs((cfg.pct_partition) - pct_samps_ood_test)
-
-        # Minimize the worst partition error first, then sum as tie-breaker.
-        error_score = (max(abs_error_val, abs_error_test), abs_error_val + abs_error_test)
-        if error_score < best_error_score:
-            best_error_score = error_score
-            best_split = (cids_id_i, cids_ood_val_i, cids_ood_test_i)
-            best_abs_error_val = abs_error_val
-            best_abs_error_test = abs_error_test
+        pct_samps_ood_val = n_samps_ood_val_after_id_test / n_samps_total
+        pct_samps_ood_test = n_samps_ood_test / n_samps_total
 
         close_enough = (
             abs((cfg.pct_partition) - pct_samps_ood_val) < cfg.pct_ood_tol
             and abs((cfg.pct_partition) - pct_samps_ood_test) < cfg.pct_ood_tol
         )
 
-    if best_split is None:
-        raise RuntimeError("Failed to construct any OOD split candidate.")
-
-    if not close_enough:
-        print(
-            "Warning: OOD split tolerance was not met after "
-            f"{max_tries} attempts. Using best candidate with "
-            f"abs_error_val={best_abs_error_val:.6f}, abs_error_test={best_abs_error_test:.6f}, "
-            f"target={cfg.pct_partition:.6f}, tol={cfg.pct_ood_tol:.6f}."
-        )
-
-    cids_id, cids_ood_val, cids_ood_test = best_split
-
-    skeys_ood_val = set()
-    for cid in cids_ood_val:
-        for samp_idx in cid_2_samp_idxs[cid]:
-            skeys_ood_val.add((cid, samp_idx))
-
-    skeys_ood_test = set()
-    for cid in cids_ood_test:
-        for samp_idx in cid_2_samp_idxs[cid]:
-            skeys_ood_test.add((cid, samp_idx))
+    skeys_ood_val = {(cid, samp_idx) for cid in cids_ood_val for samp_idx in cid_2_samp_idxs[cid]}
+    skeys_ood_test = {(cid, samp_idx) for cid in cids_ood_test for samp_idx in cid_2_samp_idxs[cid]}
 
     return cids_id, cids_ood_val, cids_ood_test, skeys_ood_val, skeys_ood_test
 
 def build_id_partitions(
-    cids_id,
-    cid_2_samp_idxs,
-    n_samps_dict,
-    cfg,
-    n_samps_total_target=None,
-    skeys_id_test_extra=None,
-):
-    n_samps_total = sum(n_samps_dict.values())
-    n_samps_target = n_samps_total if n_samps_total_target is None else n_samps_total_target
-    n_samps_id_eval = round(n_samps_target * cfg.pct_eval)
+    cids_id: Set[str],
+    cid_2_samp_idxs: Dict[str, List[int]],
+    cid_2_n_samps: Dict[str, int],
+    cfg: GenSplitConfig,
+    skeys_id_test_extra: Optional[Set[Tuple[str, int]]] = None,
+) -> Tuple[
+    Set[Tuple[str, int]], 
+    Set[Tuple[str, int]], 
+    Set[Tuple[str, int]], 
+    Dict[str, List[Tuple[str, int]]], 
+    Dict[str, List[Tuple[str, int]]], 
+    Set[str], 
+    Set[Tuple[str, int]],
+]:
+    """
+    Split in-distribution classes into train, ID-val, and ID-test sample sets.
+
+    Draws eval samples from multi-sample classes only (singles are always
+    assigned to train). Test is drawn first from the pool of multi-sample ID
+    keys plus any `skeys_id_test_extra` keys; val is drawn from what remains
+    after test. A fixup pass then ensures every multi-sample class has at least
+    one sample in train: if a class has no train samples, one sample is moved
+    back from whichever eval partition (val or test) is currently larger.
+
+    Args:
+        cids_id: Class IDs assigned to in-distribution.
+        cid_2_samp_idxs: Mapping from class ID to its list of sample indices.
+        cid_2_n_samps: Mapping from class ID to number of samples.
+        cfg: Config object with fields:
+            - pct_eval (float): fraction of total samples to allocate to ID
+              eval (split evenly between val and test).
+            - seed (int): random seed; test uses seed, val uses seed+1.
+        skeys_id_test_extra: Additional (cid, samp_idx) keys eligible for the
+            test draw (e.g. OOD-val keys shared with ID test); excluded from
+            the val pool.
+
+    Returns:
+        skeys_train: (cid, samp_idx) keys assigned to train.
+        skeys_id_val: (cid, samp_idx) keys assigned to ID val.
+        skeys_id_test: (cid, samp_idx) keys assigned to ID test.
+        cid_2_skeys_id: All (cid, samp_idx) keys per ID class.
+        cid_2_skeys_id_multis: Same, restricted to multi-sample ID classes.
+        cids_id_multis: ID class IDs that have more than one sample.
+        skeys_id_test_extra_taken: Subset of `skeys_id_test_extra` that was
+            actually drawn into ID test.
+    """
+    n_samps_total = sum(cid_2_n_samps.values())
+    n_samps_id_eval = round(n_samps_total * cfg.pct_eval)
     n_samps_id_test_target = n_samps_id_eval // 2
     n_samps_id_val_target = n_samps_id_eval - n_samps_id_test_target
 
     if skeys_id_test_extra is None:
         skeys_id_test_extra = set()
-    else:
-        skeys_id_test_extra = set(skeys_id_test_extra)
 
-    cids_id_singles = set()
-    for cid in sorted(cids_id):
-        if n_samps_dict[cid] == 1:
-            cids_id_singles.add(cid)
-
+    cids_id_singles = {cid for cid in cids_id if cid_2_n_samps[cid] == 1}
     cids_id_multis = cids_id - cids_id_singles
-    n_cids_id_multis = len(cids_id_multis)
 
-    cid_2_skeys_id_multis = defaultdict(list)
-    cid_2_skeys_id = defaultdict(list)
-    skeys_id_multis = set()
+    cid_2_skeys_id = {
+        cid: [(cid, samp_idx) for samp_idx in cid_2_samp_idxs[cid]]
+        for cid in sorted(cids_id)
+    }
+    cid_2_skeys_id_multis = {cid: cid_2_skeys_id[cid] for cid in cids_id_multis}
+    skeys_id_multis = {skey for skeys in cid_2_skeys_id_multis.values() for skey in skeys}  # flatten all skeys in cid_2_skeys_id_multis into one set
 
-    for cid in sorted(cids_id):
-        for samp_idx in cid_2_samp_idxs[cid]:
-            skey = (cid, samp_idx)
-            cid_2_skeys_id[cid].append(skey)
-            if cid in cids_id_multis:
-                cid_2_skeys_id_multis[cid].append(skey)
-                skeys_id_multis.add(skey)
-
-    if n_samps_total_target is not None:
-        n_samps_id_test_pool_total = len(skeys_id_multis.union(skeys_id_test_extra))
-        if n_samps_id_test_target > n_samps_id_test_pool_total:
-            raise ValueError(
-                f"Requested ID test samples ({n_samps_id_test_target}) exceed available ID test pool samples "
-                f"({n_samps_id_test_pool_total})."
-            )
-
-    skeys_id_test_pool = skeys_id_multis.union(skeys_id_test_extra)
+    skeys_id_test_pool = skeys_id_multis | skeys_id_test_extra
     skeys_id_test, skeys_id_test_pool_rem = draw_single_partition_from_pool(
         skeys_pool=skeys_id_test_pool,
         n_target=n_samps_id_test_target,
@@ -463,9 +533,9 @@ def build_id_partitions(
         seed=cfg.seed,
     )
 
-    skeys_id_test_extra_taken = skeys_id_test.intersection(skeys_id_test_extra)
+    skeys_id_test_extra_taken = skeys_id_test & skeys_id_test_extra
 
-    skeys_id_multis_rem = skeys_id_test_pool_rem.intersection(skeys_id_multis)
+    skeys_id_multis_rem = skeys_id_test_pool_rem & skeys_id_multis
     skeys_id_val, skeys_train_multis = draw_single_partition_from_pool(
         skeys_pool=skeys_id_multis_rem,
         n_target=n_samps_id_val_target,
@@ -475,11 +545,11 @@ def build_id_partitions(
 
     for cid in sorted(cids_id_multis):
         cid_skeys = set(cid_2_skeys_id_multis[cid])
-        if len(cid_skeys.intersection(skeys_train_multis)) > 0:
+        if len(cid_skeys & skeys_train_multis) > 0:
             continue
 
-        cid_skeys_val = sorted(cid_skeys.intersection(skeys_id_val))
-        cid_skeys_test = sorted(cid_skeys.intersection(skeys_id_test))
+        cid_skeys_val = sorted(cid_skeys & skeys_id_val)
+        cid_skeys_test = sorted(cid_skeys & skeys_id_test)
 
         donor_partition = "val"
         if len(skeys_id_test) > len(skeys_id_val):
@@ -503,7 +573,7 @@ def build_id_partitions(
             skeys_train_multis.add(skey_move)
 
     skeys_id_singles = set((cid, cid_2_samp_idxs[cid][0]) for cid in cids_id_singles)
-    skeys_train = skeys_train_multis.union(skeys_id_singles)
+    skeys_train = skeys_train_multis | skeys_id_singles
 
     return (
         skeys_train,
@@ -516,20 +586,12 @@ def build_id_partitions(
     )
 
 def build_trainval_skeys_partition(skeys_partitions):
-    skeys_trainval = set().union(
-        skeys_partitions["train"],
-        skeys_partitions["id_val"],
-        skeys_partitions["ood_val"],
-    )
-    skeys_id_test = set(skeys_partitions.get("id_test", set()))
+
+    skeys_trainval = skeys_partitions["train"] | skeys_partitions["id_val"] | skeys_partitions["ood_val"]
+    skeys_id_test = skeys_partitions.get("id_test", set())
     return skeys_trainval - skeys_id_test
 
 def build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id):
-    def find_range_index(nst_seps, n):
-        assert isinstance(n, int), f"n must be an int, got {type(n).__name__}"
-        if n <= 0:
-            raise ValueError(f"find_range_index(): n = {n}")
-        return bisect.bisect_left(nst_seps, n)
 
     n_shot_tracker = []
     for _ in range(len(cfg.nst_names)):
@@ -554,22 +616,20 @@ def build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id):
             elif skey in skeys_partitions["id_test"]:
                 cid_skeys_test.add(skey)
 
-        idx_id_val_bucket = find_range_index(cfg.nst_seps, n_skeys_train)
+        idx_id_val_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
         n_shot_tracker[idx_id_val_bucket]["id_val"].update(cid_skeys_val)
 
-        idx_trainval_bucket = find_range_index(cfg.nst_seps, n_skeys_trainval)
+        idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval)
         n_shot_tracker[idx_trainval_bucket]["trainval"].update(cid_skeys_trainval)
         n_shot_tracker[idx_trainval_bucket]["id_test"].update(cid_skeys_test)
 
-    # Second pass: OOD-val species whose samples were borrowed into id_test.
+    # Second pass: OOD-val classes whose samples were borrowed into id_test.
     # These species are not in cids_id, so they were missed above.
     # We bucket their id_test samples using their trainval cardinality.
-    cid_2_id_test_skeys_ood = {}
+    cid_2_id_test_skeys_ood = defaultdict(set)
     for skey in skeys_partitions["id_test"]:
         cid = skey[0]
         if cid not in cids_id:
-            if cid not in cid_2_id_test_skeys_ood:
-                cid_2_id_test_skeys_ood[cid] = set()
             cid_2_id_test_skeys_ood[cid].add(skey)
 
     if cid_2_id_test_skeys_ood:
@@ -583,7 +643,7 @@ def build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id):
             n_skeys_trainval_ood = cid_2_n_trainval_ood.get(cid, 0)
             if n_skeys_trainval_ood == 0:
                 continue
-            idx_bucket = find_range_index(cfg.nst_seps, n_skeys_trainval_ood)
+            idx_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval_ood)
             n_shot_tracker[idx_bucket]["id_test"].update(cid_2_id_test_skeys_ood[cid])
 
     id_eval_nshot = {
@@ -609,11 +669,6 @@ def build_class_counts_by_partition(data_indexes):
     return results
 
 def build_dev_skeys_partitions(skeys_partitions, size_dev):
-    if "train" not in skeys_partitions:
-        raise KeyError("skeys_partitions must contain a 'train' partition")
-    if size_dev <= 0:
-        raise ValueError(f"size_dev must be greater than 0, got {size_dev}")
-
     return {
         partition: set(sorted(skeys_partition)[:size_dev])
         for partition, skeys_partition in skeys_partitions.items()
@@ -624,24 +679,26 @@ def save_split(data_indexes, id_eval_nshot, class_counts, norm_stats, dpath_spli
     norm_std = {pt: norm_stats[pt][1] for pt in norm_stats}
     split = Split(data_indexes, id_eval_nshot, class_counts, norm_mean, norm_std)
     os.makedirs(dpath_split, exist_ok=True)
-    os.makedirs(dpath_figs, exist_ok=True)
+    if os.path.exists(dpath_figs):
+        shutil.rmtree(dpath_figs)
+    os.makedirs(dpath_figs)
     save_pickle(split, dpath_split / "split.pkl")
 
 def plot_split_distribution(
-    data,
-    labels_data,
-    colors,
-    title,
-    x_label,
-    y_label,
-    filepath,
-    ema=False,
-    scale=None,
-    marker="",
-    markersize=6,
-    markeredgewidth=0.5,
-    linestyle="-",
-    alpha=1.0,
+    data: List[Tuple[int]],
+    labels_data: List[str],
+    colors: List[str],
+    title: str,
+    x_label: str,
+    y_label: str,
+    fpath: Path,
+    ema: bool = False,
+    scale: Optional[str] = None,
+    markers: List[str] = ["", "", ""],
+    markersizes: List[int] = [6, 6, 6],
+    markeredgewidths: List[float] = [0.5, 0.5, 0.5],
+    linestyle: str = "-",
+    alpha: float = 1.0,
 ) -> None:
     def compute_ema(vals, alpha_ema=0.99):
         ema_vals = [vals[0]]
@@ -664,9 +721,9 @@ def plot_split_distribution(
             data[i],
             color=colors[i],
             label=labels_data[i],
-            marker=marker,
-            markersize=markersize,
-            markeredgewidth=markeredgewidth,
+            marker=markers[i],
+            markersize=markersizes[i],
+            markeredgewidth=markeredgewidths[i],
             linestyle=linestyle,
             alpha=alpha,
         )
@@ -683,56 +740,77 @@ def plot_split_distribution(
 
     plt.legend()
     plt.tight_layout()
-    plt.savefig(filepath, dpi=300, bbox_inches="tight")
+    plt.savefig(fpath, dpi=300, bbox_inches="tight")
 
-def generate_ood_distribution_plots(genus_2_cids, cids_id, cids_ood_val, cids_ood_test, dpath_figs) -> None:
-    genus_tups = []
-    for genus in genus_2_cids.keys():
-        n_cids_g = len(genus_2_cids[genus])
-        n_cids_g_id, n_cids_g_ood_val, n_cids_g_ood_test = 0, 0, 0
-        for cid in genus_2_cids[genus]:
-            if cid in cids_id:
-                n_cids_g_id += 1
-            elif cid in cids_ood_val:
-                n_cids_g_ood_val += 1
-            elif cid in cids_ood_test:
-                n_cids_g_ood_test += 1
+def gen_strat_sampling_dist_plots_ood(
+    penult_2_cids: Dict[str, List[str]],
+    cids_id: Set[str], 
+    cids_ood_val: Set[str], 
+    cids_ood_test: Set[str], 
+    dpath_figs: Path,
+) -> None:
+    """
+    Generate OOD class-distribution plots and save to disk.
 
-        genus_tups.append((genus, n_cids_g, n_cids_g_id, n_cids_g_ood_val, n_cids_g_ood_test))
+    For each penultimate taxonomic level, counts how many of its classes fall
+    into ID, OOD-val, and OOD-test. Penultimate levels are sorted by total
+    class count (descending). Three plots are saved:
 
-    genus_tups.sort(key=lambda t: (t[1], t[0]), reverse=True)
-    _, n_cids_pg, n_cids_pg_id, n_cids_pg_ood_val, n_cids_pg_ood_test = zip(*genus_tups)
-    n_cids_pg_ood_eval = [n_cids_pg_ood_val[i] + n_cids_pg_ood_test[i] for i in range(len(n_cids_pg))]
+    - `ood_strat_sampling_dist.png`: linear-scale line plot.
+    - `ood_strat_sampling_dist_log.png`: symlog-scale scatter (no smoothing).
+    - `ood_strat_sampling_dist_log_smooth.png`: log-scale line plot with EMA smoothing.
 
-    data = [n_cids_pg, n_cids_pg_id, n_cids_pg_ood_eval]
+    Args:
+        penult_2_cids: Mapping from penultimate-level group name to its
+            list of class IDs.
+        cids_id: Class IDs assigned to in-distribution.
+        cids_ood_val: Class IDs assigned to OOD validation.
+        cids_ood_test: Class IDs assigned to OOD test.
+        dpath_figs: Directory where plot files are written.
+    """
+
+    penult_tups = [
+        (
+            len(cids),
+            sum(cid in cids_id for cid in cids),
+            sum(cid in cids_ood_val for cid in cids),
+            sum(cid in cids_ood_test for cid in cids),
+        )
+        for cids in penult_2_cids.values()
+    ]
+    penult_tups.sort(key=lambda t: t[0], reverse=True)
+    n_cids_penult, n_cids_penult_id, n_cids_penult_ood_val, n_cids_penult_ood_test = zip(*penult_tups)
+    n_cids_penult_ood_eval = tuple(a + b for a, b in zip(n_cids_penult_ood_val, n_cids_penult_ood_test))
+
+    data = [n_cids_penult, n_cids_penult_id, n_cids_penult_ood_eval]
     colors = ["crimson", "darkorange", "teal"]
     labels_data = ["Total", "ID-Train/Eval", "OOD-Eval"]
-    x_label = "Sorted Genera"
-    y_label = "Num. Species"
+    x_label = "Sorted Penultimate Classes"
+    y_label = "Num. Classes"
 
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title="OOD Sets Distribution",
+        title="OOD Stratified Sampling Distribution",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_ood.png"),
+        fpath=dpath_figs / "ood_strat_sampling_dist.png",
     )
 
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title="OOD Sets Distribution (Log-Scale)",
+        title="OOD Stratified Sampling Distribution (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_ood_log.png"),
+        fpath=dpath_figs / "ood_strat_sampling_dist_log.png",
         ema=False,
         scale="symlog",
-        marker="|",
-        markersize=6,
-        markeredgewidth=1.0,
+        markers=["|", "|", "|"],
+        markersizes=[7, 5, 5],
+        markeredgewidths=[1.0, 1.0, 1.0],
         linestyle="",
         alpha=1.0,
     )
@@ -741,18 +819,44 @@ def generate_ood_distribution_plots(genus_2_cids, cids_id, cids_ood_val, cids_oo
         data,
         labels_data,
         colors,
-        title="OOD Sets Distribution (Log-Scale + Smoothed)",
+        title="OOD Stratified Sampling Distribution (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_ood_log_smooth.png"),
+        fpath=dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
         ema=True,
         scale="log",
     )
 
-def generate_id_distribution_plots(cids_id_multis, cid_2_skeys_id_multis, n_samps_dict, skeys_partitions, dpath_figs) -> None:
+def gen_strat_sampling_dist_plots_id(
+    cids_id_multis: Set[str], 
+    cid_2_skeys_id_multis: Dict[str, List[Tuple[str, int]]],
+    cid_2_n_samps: Dict[str, int],
+    skeys_partitions: Dict[str, Set[Tuple[str, int]]],
+    dpath_figs: Path,
+) -> None:
+    """
+    Generate ID class-distribution plots and save to disk.
+
+    For each ID class with multiple samples, counts how many of its samples fall
+    into train, ID-val, and ID-test. Classes are sorted by total sample count
+    (descending). Three plots are saved:
+
+    - `id_strat_sampling_dist.png`: linear-scale line plot.
+    - `id_strat_sampling_dist_log.png`: symlog-scale scatter (no smoothing).
+    - `id_strat_sampling_dist_log_smooth.png`: log-scale line plot with EMA smoothing.
+
+    Args:
+        cids_id_multis: Class IDs in the ID split that have multiple samples.
+        cid_2_skeys_id_multis: Mapping from class ID to its sample keys (for
+            multi-sample ID classes).
+        cid_2_n_samps: Mapping from class ID to total sample count.
+        skeys_partitions: Dict with partition keys mapping to sets of sample 
+            keys for each partition.
+        dpath_figs: Directory where plot files are written.
+    """
     cid_tups = []
     for cid in cids_id_multis:
-        n_skeys = n_samps_dict[cid]
+        n_skeys = cid_2_n_samps[cid]
         n_skeys_train, n_skeys_id_val, n_skeys_id_test = 0, 0, 0
         for skey in cid_2_skeys_id_multis[cid]:
             if skey in skeys_partitions["train"]:
@@ -766,37 +870,37 @@ def generate_id_distribution_plots(cids_id_multis, cid_2_skeys_id_multis, n_samp
 
     cid_tups.sort(key=lambda t: (t[1], t[0]), reverse=True)
     _, n_skeys_ps, n_skeys_ps_train, n_skeys_ps_id_val, n_skeys_ps_id_test = zip(*cid_tups)
-    n_skeys_ps_id_eval = [n_skeys_ps_id_val[i] + n_skeys_ps_id_test[i] for i in range(len(n_skeys_ps))]
+    n_skeys_ps_id_eval = tuple(a + b for a, b in zip(n_skeys_ps_id_val, n_skeys_ps_id_test))
 
     data = [n_skeys_ps, n_skeys_ps_train, n_skeys_ps_id_eval]
     colors = ["crimson", "darkorange", "teal"]
     labels_data = ["Total", "Train (ID)", "Eval (ID)"]
-    x_label = "Sorted Species"
+    x_label = "Sorted Classes"
     y_label = "Num. Samples"
 
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title="ID Sets Distribution",
+        title="ID Stratified Sampling Distribution",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_id.png"),
+        fpath=dpath_figs / "id_strat_sampling_dist.png",
     )
 
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title="ID Sets Distribution (Log-Scale)",
+        title="ID Stratified Sampling Distribution (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_id_log.png"),
+        fpath=dpath_figs / "id_strat_sampling_dist_log.png",
         ema=False,
         scale="symlog",
-        marker="|",
-        markersize=6,
-        markeredgewidth=0.5,
+        markers=["|", "|", "|"],
+        markersizes=[7, 5, 5],
+        markeredgewidths=[0.5, 0.5, 0.5],
         linestyle="",
         alpha=1.0,
     )
@@ -805,10 +909,10 @@ def generate_id_distribution_plots(cids_id_multis, cid_2_skeys_id_multis, n_samp
         data,
         labels_data,
         colors,
-        title="ID Sets Distribution (Log-Scale + Smoothed)",
+        title="ID Stratified Sampling Distribution (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
-        filepath=str(dpath_figs / "distribution_id_log_smooth.png"),
+        fpath=dpath_figs / "id_strat_sampling_dist_log_smooth.png",
         ema=True,
         scale="log",
     )
@@ -827,28 +931,28 @@ def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_ti
         num_samps_val = len(bucket_skeys_set_id_val)
         if num_samps_val > 0:
             cids, _ = zip(*bucket_skeys_set_id_val)
-            n_species_val = len(set(cids))
+            n_classes_val = len(set(cids))
         else:
-            n_species_val = 0
-        row_values_id_val.append(f"{num_samps_val:,} ({n_species_val})")
+            n_classes_val = 0
+        row_values_id_val.append(f"{num_samps_val:,} ({n_classes_val})")
 
         num_samps_trainval = len(bucket_skeys_set_trainval)
         if num_samps_trainval > 0:
             cids, _ = zip(*bucket_skeys_set_trainval)
-            n_species_trainval = len(set(cids))
+            n_classes_trainval = len(set(cids))
         else:
-            n_species_trainval = 0
-        row_values_trainval.append(f"{num_samps_trainval:,} ({n_species_trainval})")
+            n_classes_trainval = 0
+        row_values_trainval.append(f"{num_samps_trainval:,} ({n_classes_trainval})")
 
         num_samps_test = len(bucket_skeys_set_id_test)
         if num_samps_test > 0:
             cids, _ = zip(*bucket_skeys_set_id_test)
-            n_species_test = len(set(cids))
+            n_classes_test = len(set(cids))
         else:
-            n_species_test = 0
-        row_values_id_test.append(f"{num_samps_test:,} ({n_species_test:,})")
+            n_classes_test = 0
+        row_values_id_test.append(f"{num_samps_test:,} ({n_classes_test:,})")
 
-    labels_cols = ["Subset"] + n_shot_col_names
+    labels_cols = ["Partition"] + n_shot_col_names
     data = [row_values_id_val, row_values_trainval, row_values_id_test]
 
     _, ax = plt.subplots(figsize=(5, 2))
@@ -874,8 +978,8 @@ def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_ti
     for (_, _), cell in tbl.get_celld().items():
         cell.set_linewidth(0.5)
 
-    plt.title("n-shot Bucket Stats: [Num. Samples (Num. Classes)]", fontsize=fontsize_title, fontweight="bold", y=0.70)
-    plt.savefig(str(dpath_figs / "stats_nshot.png"), dpi=300, bbox_inches="tight")
+    plt.title("n-shot Bucket Sample (Class) Counts", fontsize=fontsize_title, fontweight="bold", y=0.70)
+    plt.savefig(str(dpath_figs / "summary_nshot.png"), dpi=300, bbox_inches="tight")
 
 def count_unique_cids_from_skeys(skeys) -> int:
     return len({cid for cid, _ in skeys})
@@ -889,11 +993,11 @@ def count_total_samples_disjoint_partitions(skeys_partitions) -> int:
         | skeys_partitions["ood_test"]
     )
 
-def render_stats_table(
+def render_partition_summary_table(
     labels_cols,
     data,
     title,
-    filepath,
+    fpath,
     figsize=(5, 2),
     pad=-5,
     dpi=150,
@@ -921,18 +1025,15 @@ def render_stats_table(
         tbl.scale(*scale)
 
     plt.title(title, fontweight="bold", pad=pad)
-    plt.savefig(filepath, dpi=dpi, bbox_inches="tight")
+    plt.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close()
 
-def generate_basic_split_stats_table(
+def generate_partition_summary_table(
     skeys_partitions,
     dpath_figs,
     n_cids_total,
     title,
     labels_cols=None,
-    first_col_name="Set",
-    ood_val_label="OOD Val",
-    ood_test_label="OOD Test",
     figsize=(5, 2),
     pad=-5,
     dpi=150,
@@ -940,16 +1041,17 @@ def generate_basic_split_stats_table(
     scale=None,
 ) -> None:
     if labels_cols is None:
-        labels_cols = [first_col_name, "Num. Classes", "Num. Samples"]
+        labels_cols = ["Partition", "Num. Classes", "Num. Samples"]
 
     n_samps_total = count_total_samples_disjoint_partitions(skeys_partitions)
     row_specs = [
+        ("OOD Test", "ood_test"),
+        ("ID Test", "id_test"),
+        ("OOD Val", "ood_val"),
+        ("ID Val", "id_val"),
         ("Train", "train"),
         ("TrainVal", "trainval"),
-        ("ID Val", "id_val"),
-        ("ID Test", "id_test"),
-        (ood_val_label, "ood_val"),
-        (ood_test_label, "ood_test"),
+        ("Whole", "whole"),
     ]
 
     data = []
@@ -963,17 +1065,11 @@ def generate_basic_split_stats_table(
             f"{n_samps_partition:,} ({n_samps_partition / n_samps_total:.2%})",
         ])
 
-    data.append([
-        "Whole Dataset",
-        f"{n_cids_total:,} (100.00%)",
-        f"{n_samps_total:,} (100.00%)",
-    ])
-
-    render_stats_table(
+    render_partition_summary_table(
         labels_cols=labels_cols,
         data=data,
         title=title,
-        filepath=str(dpath_figs / "stats_splits.png"),
+        fpath=dpath_figs / "summary_partition.png",
         figsize=figsize,
         pad=pad,
         dpi=dpi,

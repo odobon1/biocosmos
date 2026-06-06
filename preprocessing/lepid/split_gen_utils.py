@@ -1,9 +1,7 @@
-import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
-from preprocessing.common.splits import truncate_subspecies
-from utils.data import species_to_genus
+from preprocessing.common.split_gen import truncate_subspecies
 from utils.utils import paths
 
 

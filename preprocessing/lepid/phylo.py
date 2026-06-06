@@ -53,9 +53,6 @@ def combine_trees_lepid_nymph(
     shared = lepid_tips & nymph_tips
     retained_lepid_tips = lepid_tips - shared
 
-    if not shared:
-        raise ValueError("No shared taxa between Lepid and Nymph trees.")
-
     lepid_nymphalidae_tips = {
         sid
         for sid in lepid_tips
@@ -159,10 +156,8 @@ def subtree_height(clade: Clade) -> float:
 # combine_trees_lepid_nymph() helper
 def distance_from_clade(root: Clade, target_name: str) -> float:
     path = path_from_root(root, target_name)
-    if not path:
-        raise ValueError(f"Target {target_name!r} not found under clade.")
-
-    return sum(node.branch_length or 0.0 for node in path[1:])
+    dist = sum(node.branch_length or 0.0 for node in path[1:])
+    return dist
 
 # combine_trees_lepid_nymph() helper
 def path_from_root(root: Clade, target_name: str) -> List[Clade]:
@@ -230,7 +225,6 @@ def replace_child(parent: Clade, old_child: Clade, new_child: Clade) -> None:
         if child is old_child:
             parent.clades[idx] = new_child
             return
-    raise ValueError("old_child not found under parent")
 
 # combine_trees_lepid_nymph() helper
 def attach_subtree_at_anchor(tree: Tree, anchor: Clade, residual_root: Clade, target_height: float) -> None:

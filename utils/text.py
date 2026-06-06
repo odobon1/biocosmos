@@ -228,3 +228,6 @@ def get_text_template(template_name: str, dataset: str | None = None) -> TextTem
         return [list(segment_group) for segment_group in template]
 
     return get_text_generator(dataset).get_template(template_name)
+
+def species_to_genus(species: str) -> str:
+    return species.split("_")[0]

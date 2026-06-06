@@ -188,7 +188,7 @@ class PartitionEvaluationPipeline:
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
+                    _, loss_raw, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
                         imgs_sb,
                         texts_sb,
                         class_encs_img_sb,
@@ -196,7 +196,7 @@ class PartitionEvaluationPipeline:
                         loss_flag,
                     )
             else:
-                loss, _, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
+                _, loss_raw, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
                     imgs_sb,
                     texts_sb,
                     class_encs_img_sb,
@@ -209,7 +209,7 @@ class PartitionEvaluationPipeline:
             cids_img.extend(targ_data["cid"] for targ_data in targ_data_sb)
 
             if loss_flag:
-                batch_loss = loss.detach().item() * B
+                batch_loss = loss_raw.detach().item() * B
                 loss_total += batch_loss
                 n_samps_loss += B
 
@@ -684,7 +684,7 @@ class EvaluationPipeline:
                 "closed_set": {"standard": {}, "per_class": {}},
                 "full_set": {"standard": {}, "per_class": {}},
             },
-            "loss": {},
+            "loss_raw": {},
         }
         accum = {
             (set_key, grp): {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
@@ -809,9 +809,9 @@ class EvaluationPipeline:
             eval_metrics["scores"]["full_set"]["standard"][partition] = full_set_scores["standard"]
             eval_metrics["scores"]["full_set"]["per_class"][partition] = full_set_scores["per_class"]
             if loss_flag and loss_avg_partition is not None:
-                eval_metrics["loss"][partition] = loss_avg_partition
+                eval_metrics["loss_raw"][partition] = loss_avg_partition
             else:
-                eval_metrics["loss"][partition] = None
+                eval_metrics["loss_raw"][partition] = None
 
         for (set_key, grp), a in accum.items():
             eval_metrics["scores"][set_key][grp]["comp"] = {
@@ -864,8 +864,7 @@ def build_class_enc_to_train_nshot_bucket(
         skeys_id_val = split.id_eval_nshot["buckets"][bucket_name]["id_val"]
 
         for cid, _ in skeys_id_val:
-            # Some split variants (e.g., dev subsets) intentionally omit many classes
-            # from train; skip n-shot entries that are absent in current class encoding map.
+            # Some split variants (e.g., dev) intentionally omit many classes from train; skip n-shot entries that are absent in current class encoding map.
             if cid not in cid2enc:
                 continue
 

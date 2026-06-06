@@ -91,22 +91,6 @@ def test_splits_config_accepts_optional_pos_filter() -> None:
     assert cfg.size_dev == 128
 
 
-def test_splits_config_accepts_optional_ood_family_name() -> None:
-    cfg = GenSplitConfig(
-        seed=7,
-        split="split_a",
-        pct_partition=0.1,
-        pct_ood_tol=0.01,
-        size_dev=128,
-        pos_filter=None,
-        ood_family_name="nymphalidae",
-        nst_names=["1-2", "3+"],
-        nst_seps=[2],
-    )
-
-    assert cfg.ood_family_name == "nymphalidae"
-
-
 def test_splits_config_rejects_unknown_pos_filter() -> None:
     with pytest.raises(ValueError, match="Unknown pos_filter"):
         GenSplitConfig(

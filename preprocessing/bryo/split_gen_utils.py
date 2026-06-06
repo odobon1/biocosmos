@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 
 
 def build_img_ptrs_bryo(genera):

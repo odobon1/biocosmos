@@ -1,18 +1,18 @@
 """
-python -m pytest tests/unit/test_splits.py
+python -m pytest tests/unit/test_split_gen.py
 """
 
 from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from preprocessing.common.splits import (
+from preprocessing.common.split_gen import (
     build_dev_skeys_partitions,
     build_id_eval_nshot,
     build_id_partitions,
     build_trainval_skeys_partition,
 )
-from preprocessing.nymph.splits_utils import build_cid_2_samp_idxs
+from preprocessing.nymph.split_gen_utils import build_cid_2_samp_idxs
 
 
 def test_build_cid_2_samp_idxs_defaults_to_all_samples() -> None:
@@ -95,25 +95,25 @@ def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatc
         "cid_single": [4],
         "cid_multi": [0, 2],
     }
-    n_samps_dict = {
+    cid_2_n_samps = {
         "cid_single": 1,
         "cid_multi": 2,
     }
 
     # This test targets singleton index retention only; keep strat_split out of scope.
-    monkeypatch.setattr("preprocessing.common.splits.strat_split", lambda **kwargs: (set(), set(), set()))
+    monkeypatch.setattr("preprocessing.common.split_gen.strat_split", lambda **kwargs: (set(), set(), set()))
 
     skeys_train, skeys_id_val, skeys_id_test, cid_2_skeys_id, _, _, _ = build_id_partitions(
-        cids_id=cids_id,
-        cid_2_samp_idxs=cid_2_samp_idxs,
-        n_samps_dict=n_samps_dict,
-        cfg=cfg,
+        cids_id,
+        cid_2_samp_idxs,
+        cid_2_n_samps,
+        cfg,
     )
 
     assert ("cid_single", 4) in skeys_train
     assert ("cid_single", 0) not in skeys_train
     assert cid_2_skeys_id["cid_single"] == [("cid_single", 4)]
-    assert all(skey[0] != "cid_single" for skey in skeys_id_val.union(skeys_id_test))
+    assert all(skey[0] != "cid_single" for skey in skeys_id_val | skeys_id_test)
 
 
 def test_build_dev_skeys_partitions_uses_first_samples_per_partition() -> None:
@@ -277,7 +277,7 @@ def test_build_id_partitions_can_draw_id_test_from_extra_pool(monkeypatch: pytes
     cfg = SimpleNamespace(seed=5, pct_eval=0.5, pct_partition=0.1)
     cids_id = {"cid_a"}
     cid_2_samp_idxs = {"cid_a": [0, 1, 2, 3]}
-    n_samps_dict = {"cid_a": 4}
+    cid_2_n_samps = {"cid_a": 4}
     skeys_id_test_extra = {("cid_ood", 0), ("cid_ood", 1)}
 
     # First call (ID test from ID+extra, choose_partition="test"):
@@ -301,7 +301,7 @@ def test_build_id_partitions_can_draw_id_test_from_extra_pool(monkeypatch: pytes
     def strat_split_stub(**kwargs):
         return strat_calls.pop(0)
 
-    monkeypatch.setattr("preprocessing.common.splits.strat_split", strat_split_stub)
+    monkeypatch.setattr("preprocessing.common.split_gen.strat_split", strat_split_stub)
 
     (
         skeys_train,
@@ -314,7 +314,7 @@ def test_build_id_partitions_can_draw_id_test_from_extra_pool(monkeypatch: pytes
     ) = build_id_partitions(
         cids_id=cids_id,
         cid_2_samp_idxs=cid_2_samp_idxs,
-        n_samps_dict=n_samps_dict,
+        cid_2_n_samps=cid_2_n_samps,
         cfg=cfg,
         skeys_id_test_extra=skeys_id_test_extra,
     )

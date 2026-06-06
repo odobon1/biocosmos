@@ -1,12 +1,12 @@
 """
-python -m preprocessing.lepid.splits
+python -m preprocessing.nymph.split_gen
 """
 
 from utils.utils import paths, seed_libs, load_pickle
 from utils.config import get_config_splits
-from preprocessing.common.splits import (
-    build_genus_2_cids,
-    build_n_insts_2_classes_g,
+from preprocessing.common.split_gen import (
+    build_penult_2_cids,
+    build_n_insts_2_classes_penult,
     build_ood_partitions,
     build_id_partitions,
     build_trainval_skeys_partition,
@@ -14,21 +14,23 @@ from preprocessing.common.splits import (
     build_class_counts_by_partition,
     build_dev_skeys_partitions,
     save_split,
-    generate_id_distribution_plots,
+    gen_strat_sampling_dist_plots_ood,
+    gen_strat_sampling_dist_plots_id,
     generate_n_shot_table,
-    generate_basic_split_stats_table,
-    generate_ood_distribution_plots,
-    compute_rgb_norm_stats_by_partition,
+    generate_partition_summary_table,
+    get_norm_stats,
 )
-from preprocessing.lepid.splits_utils import (
-    build_data_indexes_lepid,
-    build_img_ptrs_lepid,
-    build_cid_2_samp_idxs_lepid,
+from preprocessing.nymph.split_gen_utils import (
+    build_data_indexes,
+    build_img_ptrs,
+    build_cid_2_samp_idxs,
 )
 from utils.phylo import PhyloVCV
 
+import pdb
 
-DATASET_NAME = "lepid"
+
+DATASET_NAME = "nymph"
 
 
 def build_splits():
@@ -40,58 +42,49 @@ def build_splits():
     dpath_figs_dev = dpath_split_dev / "figures"
     print(f"Generating split: '{cfg.split}'")
 
-    print("Loading phylogenetic covariance structure...")
     pvcv = PhyloVCV(dataset=DATASET_NAME)
-    cids = pvcv.get_cids()
-    print(f"Loaded phylogeny with {len(cids):,} species.")
+    cids = pvcv.get_cids()  # OOD partitions: insts
 
-    print("Loading class data...")
-    class_data = load_pickle(paths["metadata"][DATASET_NAME] / "class_data.pkl")
-    cid_2_family = {
-        cid: class_data[cid]["family"]
-        for cid in cids
-    }
-    print("Class data loaded.")
-
-    print("Indexing Lepid image paths...")
-    img_ptrs_all = build_img_ptrs_lepid(cids, cid_2_family)
-    print("Image path indexing complete.")
-
-    print("Applying sample-level position filter...")
-    cid_2_samp_idxs = build_cid_2_samp_idxs_lepid(
-        cids,
-        cid_2_family,
-        pos_filter=cfg.pos_filter,
-        img_ptrs=img_ptrs_all,
-    )
-    print("Position filtering complete.")
+    img_ptrs_all = build_img_ptrs(cids)
+    cid_2_samp_idxs = build_cid_2_samp_idxs(cids, pos_filter=cfg.pos_filter, img_ptrs=img_ptrs_all)
 
     cids_dropped = [cid for cid in sorted(cids) if len(cid_2_samp_idxs[cid]) == 0]
     if cids_dropped:
         print(f"Dropping {len(cids_dropped)} species with no samples matching pos_filter={cfg.pos_filter!r}.")
 
     cids = [cid for cid in sorted(cids) if len(cid_2_samp_idxs[cid]) > 0]
-    if not cids:
-        raise ValueError(f"No samples available after applying pos_filter={cfg.pos_filter!r}.")
+    n_cids = len(cids)
 
-    cid_2_family = {
-        cid: cid_2_family[cid]
-        for cid in cids
-    }
-    n_samps_dict = {cid: len(cid_2_samp_idxs[cid]) for cid in cids}
-    genus_2_cids = build_genus_2_cids(cids)
-    n_insts_2_classes_g = build_n_insts_2_classes_g(cids)
+    cid_2_n_samps = {cid: len(cid_2_samp_idxs[cid]) for cid in cids}
+    n_samps_total = sum(cid_2_n_samps.values())
 
-    print("Constructing OOD species partitions...")
+    if cfg.pos_filter is not None:
+        n_samps_total_raw = sum(len(v) for v in img_ptrs_all.values())
+        print(
+            f"Retained {n_cids:,}/{len(pvcv.get_cids()):,} species and {n_samps_total:,}/{n_samps_total_raw:,} samples "
+            f"after pos_filter={cfg.pos_filter!r}."
+        )
+
+    class_data = load_pickle(paths["metadata"][DATASET_NAME] / "class_data.pkl")
+    cid_2_penult = {cid: class_data[cid]["genus"] for cid in cids}
+
+    penult_2_cids = build_penult_2_cids(cids, cid_2_penult)  # OOD partitions: class_2_insts
+    n_insts_2_classes_penult = build_n_insts_2_classes_penult(cids, cid_2_penult)  # OOD partitions: n_insts_2_classes
+
+    # OOD PARTITIONS
+
+    print("Constructing OOD partitions...")
     cids_id, cids_ood_val, cids_ood_test, skeys_ood_val, skeys_ood_test = build_ood_partitions(
-        n_insts_2_classes_g,
-        genus_2_cids,
+        n_insts_2_classes_penult,
+        penult_2_cids,
         set(cids),
         cid_2_samp_idxs,
-        n_samps_dict,
+        cid_2_n_samps,
         cfg,
     )
-    print("OOD species partitions complete!")
+    print("OOD partitions complete!")
+
+    # ID PARTITIONS
 
     print("Constructing ID partitions...")
     (
@@ -105,12 +98,14 @@ def build_splits():
     ) = build_id_partitions(
         cids_id,
         cid_2_samp_idxs,
-        n_samps_dict,
+        cid_2_n_samps,
         cfg,
         skeys_id_test_extra=skeys_ood_val,
     )
     skeys_ood_val = skeys_ood_val - skeys_id_test_extra_taken
     print("ID partitions complete!")
+
+    # PARTITION SKEYS (SAMPLE-KEYS)
 
     skeys_partitions = {
         "train": skeys_train,
@@ -129,33 +124,31 @@ def build_splits():
     )
     skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, cfg.size_dev)
 
+    # N-SHOT TRACKING
+
     print("Constructing n-shot tracking structures...")
     id_eval_nshot = build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id)
     print("n-shot tracking complete!")
 
+    # GENERATE DATA INDEXES
+
     print("Generating data indexes...")
-    data_indexes = build_data_indexes_lepid(
-        cids,
-        skeys_partitions,
-        cid_2_family,
-        img_ptrs=img_ptrs_all,
-    )
-    data_indexes_dev = build_data_indexes_lepid(
-        cids,
-        skeys_partitions_dev,
-        cid_2_family,
-        img_ptrs=img_ptrs_all,
-    )
+    data_indexes = build_data_indexes(cids, skeys_partitions)
+    data_indexes_dev = build_data_indexes(cids, skeys_partitions_dev)
     print("Data indexes complete!")
+
+    # CLASS COUNTS (FOR CLASS IMBALANCE)
 
     print("Generating class counts by partition...")
     class_counts = build_class_counts_by_partition(data_indexes)
     class_counts_dev = build_class_counts_by_partition(data_indexes_dev)
     print("Class counts complete!")
 
-    norm_stats = compute_rgb_norm_stats_by_partition(data_indexes, dataset=DATASET_NAME)
+    norm_stats = get_norm_stats(data_indexes, dataset=DATASET_NAME, cfg=cfg)
 
-    print("Saving split...")
+    # SAVE SPLIT
+
+    print("Saving Split...")
     save_split(
         data_indexes,
         id_eval_nshot,
@@ -174,39 +167,46 @@ def build_splits():
     )
     print("Primary and dev splits saved!")
 
-    print("Generating OOD distribution plots...")
-    generate_ood_distribution_plots(
-        genus_2_cids,
+    # OOD STRATIFIED SAMPLING DISTRIBUTION PLOTTING
+
+    print("Generating OOD stratified sampling distribution plots...")
+    gen_strat_sampling_dist_plots_ood(
+        penult_2_cids,
         cids_id,
-        cids_ood_val,
-        cids_ood_test,
+        cids_ood_val, 
+        cids_ood_test, 
         dpath_figs,
     )
-    print("OOD distribution plots complete!")
+    print("OOD stratified sampling distribution plots complete!")
 
-    print("Generating ID distribution plots...")
-    generate_id_distribution_plots(
-        cids_id_multis,
-        cid_2_skeys_id_multis,
-        n_samps_dict,
-        skeys_partitions,
+    # ID STRATIFIED SAMPLING DISTRIBUTION PLOTTING (singletons omitted)
+
+    print("Generating ID stratified sampling distribution plots...")
+    gen_strat_sampling_dist_plots_id(
+        cids_id_multis, 
+        cid_2_skeys_id_multis, 
+        cid_2_n_samps, 
+        skeys_partitions, 
         dpath_figs,
     )
-    print("ID distribution plots complete!")
+    print("ID stratified sampling distribution plots complete!")
 
-    print("Generating split stats table...")
-    generate_basic_split_stats_table(
+    # PARTITION SUMMARY TABLE
+
+    print("Generating partition summary table...")
+    generate_partition_summary_table(
         skeys_partitions=skeys_partitions,
         dpath_figs=dpath_figs,
-        n_cids_total=len(cids),
-        title="Split Stats (Lepidoptera)",
+        n_cids_total=n_cids,
+        title="Nymphalidae Partition Summary",
     )
-    print("Split stats table complete!")
+    print("Partition summary table complete!")
 
-    print("Generating n-shot tracking stats table...")
+    # N-SHOT BUCKET SUMMARY TABLE
+
+    print("Generating n-shot bucket summary table...")
     generate_n_shot_table(id_eval_nshot, dpath_figs)
     print("n-shot tracking table complete!")
-
 
 def main():
     print("Generating split...")

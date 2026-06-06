@@ -38,7 +38,7 @@ def compute_targs_multipos(class_encs_b):
 
 def compute_targs_tax(targ_data_b):
     rank_dists = compute_rank_dists(targ_data_b)
-    targs      = 1 - 0.5 * rank_dists
+    targs = 1 - 0.5 * rank_dists
     return targs
 
 def compute_targs_phylo(targ_data_b):
@@ -83,11 +83,11 @@ def compute_loss_infonce(config_loss, logits, class_encs_b, targ_data_b, class_w
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
-    B     = logits.size(0)
+    B = logits.size(0)
     targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
     targs = targs / targs.sum(dim=1, keepdim=True)
 
-    loss_i2t_raw_b = F.cross_entropy(logits,   targs,   reduction="none")  # pt[B]
+    loss_i2t_raw_b = F.cross_entropy(logits, targs, reduction="none")  # pt[B]
     loss_t2i_raw_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # pt[B]
     loss_raw = 0.5 * (loss_i2t_raw_b.mean() + loss_t2i_raw_b.mean())
 
@@ -105,7 +105,7 @@ def compute_loss_infonce(config_loss, logits, class_encs_b, targ_data_b, class_w
 
         only supports 0/1 targets
         """
-        gamma = config_loss["cfg"]["focal"]["gamma"]
+        gamma = config_loss["focal"]["gamma"]
         W_foc_i2t = (-torch.expm1(-loss_i2t_raw_b)).clamp_min(1e-12).pow(gamma)
         W_foc_t2i = (-torch.expm1(-loss_t2i_raw_b)).clamp_min(1e-12).pow(gamma)
 
@@ -129,7 +129,7 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
-    B     = logits.size(0)
+    B = logits.size(0)
     targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
     targs = targs / targs.sum(dim=1, keepdim=True)
 
@@ -149,8 +149,8 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
     if config_loss['focal']:
         preds_i2t = log_p_i2t.exp()
         preds_t2i = log_p_t2i.exp()
-        W_foc_i2t = focal_2d(preds_i2t, targs,   config_loss["cfg"]["focal"])
-        W_foc_t2i = focal_2d(preds_t2i, targs.T, config_loss["cfg"]["focal"])
+        W_foc_i2t = focal_2d(preds_i2t, targs, config_loss["focal"])
+        W_foc_t2i = focal_2d(preds_t2i, targs.T, config_loss["focal"])
     else:
         W_foc_i2t = torch.ones_like(targs)
         W_foc_t2i = torch.ones_like(targs.T)
@@ -170,7 +170,7 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
 
 def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_wts, device, train):
 
-    B     = logits.size(0)
+    B = logits.size(0)
     targs = compute_targets(config_loss["targ"], B, class_encs_b, targ_data_b, device)
 
     if train:
@@ -179,17 +179,17 @@ def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_
 
         if config_loss['focal']:
             preds = torch.sigmoid(logits)
-            W_foc = focal_2d(preds, targs, config_loss["cfg"]["focal"])  # pt[B, B]
+            W_foc = focal_2d(preds, targs, config_loss["focal"])  # pt[B, B]
         else:
             W_foc = torch.ones_like(targs)
 
-        dsmr = config_loss["cfg"].get("dsmr", False)
+        dsmr = config_loss.get("dsmr", False)
         if dsmr:
             num_pos = torch.sum(targs).item()
             num_neg = B**2 - num_pos
             # scaling (numerical stability measure)
-            wt_neg  = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
-            wt_pos  = num_neg / (B**2 / 2)
+            wt_neg = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
+            wt_pos = num_neg / (B**2 / 2)
             smr_wts = targs * wt_pos + (1 - targs) * wt_neg
         else:
             smr_wts = torch.ones_like(targs)
@@ -214,7 +214,7 @@ def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_
 
 def focal_2d(preds, targs, cfg_focal):
 
-    gamma     = cfg_focal["gamma"]
+    gamma = cfg_focal["gamma"]
     comp_type = cfg_focal["comp_type"]
 
     if comp_type == 1:

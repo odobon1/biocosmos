@@ -14,3 +14,6 @@ nst_names: ["few-shot", "med-shot", "many-shot"]
 nst_seps: [20, 100]
 
 pos_filter: dorsal  # {null, dorsal} ~ only applies to nymph and lepid datasets
+
+dev:
+  skip_norm_stats: true

@@ -17,7 +17,7 @@ def test_gen_text_fills_known_tokens() -> None:
             "common_name": "monarch",
         },
         template,
-        dataset_name="lepid",
+        dataset="lepid",
         meta={"pos": "dorsal", "sex": "female"},
     )
 
@@ -34,7 +34,7 @@ def test_gen_text_falls_back_when_common_name_missing() -> None:
             "common_name": None,
         },
         template,
-        dataset_name="lepid",
+        dataset="lepid",
     )
 
     assert text in {
@@ -55,7 +55,7 @@ def test_gen_text_uses_dataset_specific_taxonomy() -> None:
             "common_name": "blue jay",
         },
         template,
-        dataset_name="cub",
+        dataset="cub",
     )
 
     assert cub_text == "animalia chordata aves Passeriformes Corvidae Cyanocitta cristata"
@@ -72,7 +72,7 @@ def test_gen_text_taxonomy_does_not_repeat_genus_for_species() -> None:
             "common_name": None,
         },
         template,
-        dataset_name="nymph",
+        dataset="nymph",
     )
 
     assert nymph_text == (
@@ -91,7 +91,7 @@ def test_gen_text_bryo_works_without_species_key() -> None:
             "common_name": None,
         },
         template,
-        dataset_name="bryo",
+        dataset="bryo",
     )
 
     assert text == "smittoidea"

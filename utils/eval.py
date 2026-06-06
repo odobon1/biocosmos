@@ -50,18 +50,18 @@ def compute_class_means_from_query_metric(
     class_values[active_classes] = class_value_sums[active_classes] / class_value_counts[active_classes]
     return class_values
 
-def list_eval_partition_names(split: Any, eval_type: str) -> List[str]:
-    partition_names = []
+def list_eval_partitions(split: Any, eval_type: str) -> List[str]:
+    partitions = []
     seen_partition_ids = set()
 
-    for partition_name, data_index in split.data_indexes[eval_type].items():
+    for partition, data_index in split.data_indexes[eval_type].items():
         data_index_id = id(data_index)
         if data_index_id in seen_partition_ids:
             continue
         seen_partition_ids.add(data_index_id)
-        partition_names.append(partition_name)
+        partitions.append(partition)
 
-    return partition_names
+    return partitions
 
 def gather_variable_rows(tensor: torch.Tensor) -> torch.Tensor:
     if dist.get_world_size() == 1:
@@ -100,7 +100,7 @@ class PartitionEvaluationPipeline:
 
     def __init__(
             self, 
-            partition_name: str, 
+            partition: str, 
             config: Union[TrainConfig, EvalConfig], 
             text_template: List[List[str]],
             img_pp: Callable,
@@ -111,7 +111,7 @@ class PartitionEvaluationPipeline:
 
         index_data, cid2enc = spawn_partition_data(
             config,
-            partition_name,
+            partition,
         )
 
         self.index_data = index_data
@@ -121,7 +121,7 @@ class PartitionEvaluationPipeline:
         self.index_text, self.index_text_class_encs = spawn_partition_indexes_txts(
             cid2enc,
             text_template,
-            config.dataset_name,
+            config.dataset,
         )
 
         self.dataloader = spawn_dataloader(
@@ -137,16 +137,16 @@ class PartitionEvaluationPipeline:
         )
 
         self.cfg = config
-        self.partition_name = partition_name
+        self.partition = partition
         self.batch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
 
-        if self.partition_name == "id":
-            split = load_split(config.dataset_name, config.split_name)
+        if self.partition == "id":
+            split = load_split(config.dataset, config.split)
             self.nshot_bucket_names = list(split.id_eval_nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
-                config.dataset_name,
-                config.split_name,
+                config.dataset,
+                config.split,
                 self.cid2enc,
             )
         else:
@@ -177,7 +177,7 @@ class PartitionEvaluationPipeline:
         n_samps_loss = 0
         for imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb in tqdm(
             self.dataloader,
-            desc=f"Eval ({self.partition_name})",
+            desc=f"Eval ({self.partition})",
             leave=False,
             disable=(dist.get_rank() != 0),
         ):
@@ -641,33 +641,33 @@ class EvaluationPipeline:
         self.best_comp_map = None
         self.best_i2i_map = None
 
-        self.split = load_split(config.dataset_name, config.split_name)
-        self.partition_names = list_eval_partition_names(self.split, config.eval_type)
+        self.split = load_split(config.dataset, config.split)
+        self.partitions = list_eval_partitions(self.split, config.eval_type)
         self.partition_pipes = {
-            partition_name: PartitionEvaluationPipeline(
-                partition_name=partition_name,
+            partition: PartitionEvaluationPipeline(
+                partition=partition,
                 config=config,
                 text_template=text_template,
                 img_pp=img_pp,
             )
-            for partition_name in self.partition_names
+            for partition in self.partitions
         }
-        self.bucket_partition_name = next(
+        self.bucket_partition = next(
             (
-                partition_name
-                for partition_name, pipe in self.partition_pipes.items()
+                partition
+                for partition, pipe in self.partition_pipes.items()
                 if pipe.nshot_bucket_names
             ),
             None,
         )
-        self.nshot_bucket_names = [] if self.bucket_partition_name is None else list(
-            self.partition_pipes[self.bucket_partition_name].nshot_bucket_names
+        self.nshot_bucket_names = [] if self.bucket_partition is None else list(
+            self.partition_pipes[self.bucket_partition].nshot_bucket_names
         )
 
     def get_eval_texts(self) -> Dict[str, List[str]]:
         return {
-            partition_name: list(self.partition_pipes[partition_name].index_text)
-            for partition_name in self.partition_names
+            partition: list(self.partition_pipes[partition].index_text)
+            for partition in self.partitions
         }
 
     def evaluate(
@@ -695,60 +695,60 @@ class EvaluationPipeline:
         partition_losses: Dict[str, Optional[float]] = {}
 
         full_set_index_data = []
-        for partition_name in self.partition_names:
-            full_set_index_data.extend(self.partition_pipes[partition_name].index_data)
+        for partition in self.partitions:
+            full_set_index_data.extend(self.partition_pipes[partition].index_data)
         full_set_cid2enc = {
             cid: class_enc
             for class_enc, cid in enumerate(dict.fromkeys(datum["cid"] for datum in full_set_index_data))
         }
         full_set_bucket_map = build_class_enc_to_train_nshot_bucket(
-            dataset_name=self.partition_pipes[self.bucket_partition_name].cfg.dataset_name,
-            split_name=self.partition_pipes[self.bucket_partition_name].cfg.split_name,
+            dataset=self.partition_pipes[self.bucket_partition].cfg.dataset,
+            split=self.partition_pipes[self.bucket_partition].cfg.split,
             cid2enc=full_set_cid2enc,
-        ) if self.bucket_partition_name is not None else {}
+        ) if self.bucket_partition is not None else {}
 
-        for partition_name in self.partition_names:
-            pipe = self.partition_pipes[partition_name]
+        for partition in self.partitions:
+            pipe = self.partition_pipes[partition]
             artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw, loss_flag)
-            partition_artifacts[partition_name] = artifacts_partition
-            partition_losses[partition_name] = loss_avg_partition
+            partition_artifacts[partition] = artifacts_partition
+            partition_losses[partition] = loss_avg_partition
 
         full_set_embs_img = torch.cat(
-            [partition_artifacts[partition_name]["embs_img"] for partition_name in self.partition_names],
+            [partition_artifacts[partition]["embs_img"] for partition in self.partitions],
             dim=0,
         )
         full_set_class_encs_img = torch.cat(
             [
                 PartitionEvaluationPipeline._encode_cids(
-                    partition_artifacts[partition_name]["cids_img"],
+                    partition_artifacts[partition]["cids_img"],
                     full_set_cid2enc,
                     full_set_embs_img.device,
                 )
-                for partition_name in self.partition_names
+                for partition in self.partitions
             ],
             dim=0,
         )
         full_set_embs_text = torch.cat(
-            [partition_artifacts[partition_name]["embs_text"] for partition_name in self.partition_names],
+            [partition_artifacts[partition]["embs_text"] for partition in self.partitions],
             dim=0,
         )
         full_set_class_encs_text = torch.cat(
             [
                 PartitionEvaluationPipeline._encode_cids(
-                    partition_artifacts[partition_name]["cids_text"],
+                    partition_artifacts[partition]["cids_text"],
                     full_set_cid2enc,
                     full_set_embs_img.device,
                 ).cpu()
-                for partition_name in self.partition_names
+                for partition in self.partitions
             ],
             dim=0,
         )
 
         img_offset = 0
-        for partition_name in self.partition_names:
-            pipe = self.partition_pipes[partition_name]
-            artifacts_partition = partition_artifacts[partition_name]
-            loss_avg_partition = partition_losses[partition_name]
+        for partition in self.partitions:
+            pipe = self.partition_pipes[partition]
+            artifacts_partition = partition_artifacts[partition]
+            loss_avg_partition = partition_losses[partition]
 
             closed_set_scores = pipe.compute_map_scores(
                 embs_img_q=artifacts_partition["embs_img"],
@@ -759,8 +759,8 @@ class EvaluationPipeline:
                 class_encs_img_g=artifacts_partition["class_encs_img"],
                 embs_text_g=artifacts_partition["embs_text"],
                 class_encs_text_g=artifacts_partition["class_encs_text"],
-                class_enc_to_bucket=pipe.class_enc_to_bucket if partition_name == self.bucket_partition_name else None,
-                nshot_bucket_names=pipe.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
+                class_enc_to_bucket=pipe.class_enc_to_bucket if partition == self.bucket_partition else None,
+                nshot_bucket_names=pipe.nshot_bucket_names if partition == self.bucket_partition else None,
             )
 
             full_set_class_encs_img_q = PartitionEvaluationPipeline._encode_cids(
@@ -791,8 +791,8 @@ class EvaluationPipeline:
                 embs_text_g=full_set_embs_text,
                 class_encs_text_g=full_set_class_encs_text,
                 self_match_idxs_g=self_match_idxs_g,
-                class_enc_to_bucket=full_set_bucket_map if partition_name == self.bucket_partition_name else None,
-                nshot_bucket_names=self.nshot_bucket_names if partition_name == self.bucket_partition_name else None,
+                class_enc_to_bucket=full_set_bucket_map if partition == self.bucket_partition else None,
+                nshot_bucket_names=self.nshot_bucket_names if partition == self.bucket_partition else None,
             )
 
             for set_key, scores in (("closed_set", closed_set_scores), ("full_set", full_set_scores)):
@@ -804,21 +804,21 @@ class EvaluationPipeline:
                     a["t2i"].append(scores[grp]["map"]["t2i"])
                     a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
 
-            eval_metrics["scores"]["closed_set"]["standard"][partition_name] = closed_set_scores["standard"]
-            eval_metrics["scores"]["closed_set"]["per_class"][partition_name] = closed_set_scores["per_class"]
-            eval_metrics["scores"]["full_set"]["standard"][partition_name] = full_set_scores["standard"]
-            eval_metrics["scores"]["full_set"]["per_class"][partition_name] = full_set_scores["per_class"]
+            eval_metrics["scores"]["closed_set"]["standard"][partition] = closed_set_scores["standard"]
+            eval_metrics["scores"]["closed_set"]["per_class"][partition] = closed_set_scores["per_class"]
+            eval_metrics["scores"]["full_set"]["standard"][partition] = full_set_scores["standard"]
+            eval_metrics["scores"]["full_set"]["per_class"][partition] = full_set_scores["per_class"]
             if loss_flag and loss_avg_partition is not None:
-                eval_metrics["loss"][partition_name] = loss_avg_partition
+                eval_metrics["loss"][partition] = loss_avg_partition
             else:
-                eval_metrics["loss"][partition_name] = None
+                eval_metrics["loss"][partition] = None
 
         for (set_key, grp), a in accum.items():
             eval_metrics["scores"][set_key][grp]["comp"] = {
                 "acc": {"i2t": harmonic_mean(a["acc_i2t"])},
                 "map": {
                     "all": harmonic_mean(a["all"]),
-                    **dict(zip(self.partition_names, a["all"])),
+                    **dict(zip(self.partitions, a["all"])),
                     "i2t": harmonic_mean(a["i2t"]),
                     "i2i": harmonic_mean(a["i2i"]),
                     "t2i": harmonic_mean(a["t2i"]),
@@ -849,15 +849,15 @@ class EvaluationPipeline:
         return is_best_comp, is_best_i2i
 
 def build_class_enc_to_train_nshot_bucket(
-    dataset_name: str,
-    split_name: str,
+    dataset: str,
+    split: str,
     cid2enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
     Build class_enc -> bucket_name using ID-val bucket memberships.
     """
 
-    split = load_split(dataset_name, split_name)
+    split = load_split(dataset, split)
     class_enc_to_bucket = {}
 
     for bucket_name in split.id_eval_nshot["names"]:

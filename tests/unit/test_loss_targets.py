@@ -9,8 +9,8 @@ def import_loss_module():
     fake_phylo = types.ModuleType("utils.phylo")
 
     class DummyPhyloVCV:
-        def __init__(self, dataset_name: str) -> None:
-            self.dataset_name = dataset_name
+        def __init__(self, dataset: str) -> None:
+            self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):
             size = len(targ_data_b)
@@ -68,6 +68,6 @@ def test_compute_targs_tax_uses_rank_distances() -> None:
 def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     loss_mod = import_loss_module()
 
-    targs = loss_mod.compute_targs_phylo([{"cid": "a", "dataset_name": "cub"}, {"cid": "b", "dataset_name": "cub"}])
+    targs = loss_mod.compute_targs_phylo([{"cid": "a", "dataset": "cub"}, {"cid": "b", "dataset": "cub"}])
 
     assert torch.equal(targs, torch.full((2, 2), 0.25))

@@ -16,7 +16,7 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN_NAME = "dev2"
+CAMPAIGN = "dev"
 
 SEED0 = 42
 NUM_SEEDS = 1
@@ -31,14 +31,14 @@ BASELINE_OVERRIDES = [
 ]
 
 
-def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset_name: str, setting_name: str, exc: Exception) -> None:
+def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception) -> None:
     """Log trial error to both stdout and campaign error log file."""
     dpath_campaign.mkdir(parents=True, exist_ok=True)
     fpath_errors = dpath_campaign / "errors.log"
     # Format error message with context
     error_msg = (
         f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
-        f"  seed={seed}, dataset={dataset_name}, setting={setting_name}"
+        f"  seed={seed}, dataset={dataset}, setting={setting}"
     )
     stderr_body = None
     if isinstance(exc, subprocess.CalledProcessError):
@@ -59,7 +59,7 @@ def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: 
         f.write("\n" + "#"*80 + "\n")
 
 def _dpath_campaign() -> Path:
-    return paths["artifacts"] / CAMPAIGN_NAME
+    return paths["artifacts"] / CAMPAIGN
 
 def _load_or_create_baseline_config() -> dict:
     fpath = _dpath_campaign() / "cfg_baseline.json"
@@ -68,7 +68,7 @@ def _load_or_create_baseline_config() -> dict:
 
     cfg_baseline = load_train_config_dict()
     cfg_baseline = apply_train_debug_overrides(cfg_baseline)
-    for key in ("setting_name", "seed", "dataset_name"):
+    for key in ("setting", "seed", "dataset"):
         cfg_baseline.pop(key, None)
     fpath.parent.mkdir(parents=True, exist_ok=True)
     save_json(cfg_baseline, fpath)
@@ -89,8 +89,8 @@ def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict]]:
         settings.append((name, payload))
     return settings
 
-def _write_setting_overrides(setting_name: str, normalized_overrides: dict) -> None:
-    fpath = _dpath_campaign() / setting_name / "overrides.json"
+def _write_setting_overrides(setting: str, normalized_overrides: dict) -> None:
+    fpath = _dpath_campaign() / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w") as f:
         json.dump(normalized_overrides, f, indent=2, sort_keys=True)
@@ -151,7 +151,7 @@ def run_campaign() -> None:
         existing_meta = load_json(fpath_meta)
         if existing_meta["n_gpus"] != n_gpus:
             raise RuntimeError(
-                f"GPU count mismatch: campaign '{CAMPAIGN_NAME}' was run with "
+                f"GPU count mismatch: campaign '{CAMPAIGN}' was run with "
                 f"{existing_meta['n_gpus']} GPUs but current environment has {n_gpus}."
             )
     else:
@@ -165,36 +165,36 @@ def run_campaign() -> None:
     settings = _expand_settings(BASELINE_OVERRIDES)
     seeds = _iter_seeds()
 
-    for setting_name, setting_payload in settings:
-        _write_setting_overrides(setting_name, setting_payload)
+    for setting, setting_payload in settings:
+        _write_setting_overrides(setting, setting_payload)
 
     n_trials = len(seeds) * len(DATASETS) * len(settings)
-    print(f"Campaign: '{CAMPAIGN_NAME}' ({n_trials} trials)")
+    print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
 
     idx_trial = 0
-    for dataset_name in DATASETS:
+    for dataset in DATASETS:
         for seed in seeds:
-            for setting_name, setting_payload in settings:
+            for setting, setting_payload in settings:
                 idx_trial += 1
 
-                dpath_trial = _dpath_campaign() / setting_name / dataset_name / str(seed)
+                dpath_trial = _dpath_campaign() / setting / dataset / str(seed)
                 if _check_trial_completion(dpath_trial):
-                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset_name} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting}")
                     continue
 
                 cfg_dict = deepcopy(cfg_baseline)
-                cfg_dict["campaign_name"] = CAMPAIGN_NAME
-                cfg_dict["setting_name"] = setting_name
+                cfg_dict["campaign"] = CAMPAIGN
+                cfg_dict["setting"] = setting
                 cfg_dict["seed"] = seed
-                cfg_dict["dataset_name"] = dataset_name
+                cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
                 cfg_dict["_setting_overrides"] = setting_payload
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 
                 if dpath_trial.exists():
-                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset_name} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting}")
                 else:
-                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset_name} setting={setting_name}")
+                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting}")
 
                 try:
                     _run_trial_subprocess(cfg_dict)
@@ -205,8 +205,8 @@ def run_campaign() -> None:
                         idx_trial=idx_trial,
                         n_trials=n_trials,
                         seed=seed,
-                        dataset_name=dataset_name,
-                        setting_name=setting_name,
+                        dataset=dataset,
+                        setting=setting,
                         exc=e,
                     )
 

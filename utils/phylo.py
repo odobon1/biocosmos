@@ -10,18 +10,18 @@ from utils.utils import paths, load_pickle
 import pdb
 
 
-def get_tree(dataset_name: str) -> Tree:
-    if dataset_name in ("bryo", "cub", "lepid", "nymph"):
-        tree = load_pickle(paths["metadata"][dataset_name] / "tree.pkl")
+def get_tree(dataset: str) -> Tree:
+    if dataset in ("bryo", "cub", "lepid", "nymph"):
+        tree = load_pickle(paths["metadata"][dataset] / "tree.pkl")
     else:
-        raise ValueError(f"Unknown dataset_name: {dataset_name}")
+        raise ValueError(f"Unknown dataset: {dataset}")
     return tree
 
 class PhyloVCV:
 
-    def __init__(self, dataset_name: str) -> None:
+    def __init__(self, dataset: str) -> None:
 
-        self.tree: Tree = get_tree(dataset_name)
+        self.tree: Tree = get_tree(dataset)
         root: Clade = self.tree.root
         self._depth: Dict[Clade, float] = {root: 0.0}
         self._cid_to_clade: Dict[str, Clade] = {}

@@ -63,8 +63,8 @@ class TrainPipeline:
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
-        index_data, _ = spawn_partition_data(config=self.cfg, partition_name="train")
-        text_template_train = get_text_template(self.cfg.text_template["train"], dataset_name=self.cfg.dataset_name)
+        index_data, _ = spawn_partition_data(config=self.cfg, partition=self.cfg.train_pt)
+        text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
         self.dataloader = spawn_dataloader(
             index_data=index_data,
             text_template=text_template_train,
@@ -76,7 +76,7 @@ class TrainPipeline:
             persistent_workers=self.cfg.hw.persistent_workers_train,
         )
 
-        text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset_name=self.cfg.dataset_name)
+        text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
         self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]

@@ -170,9 +170,9 @@ class MaybeToTensor:
 class Split:
     data_indexes: list
     id_eval_nshot: dict
-    class_counts_train: np.ndarray
-    norm_mean: Tuple[float]
-    norm_std: Tuple[float]
+    class_counts: Dict[str, np.ndarray]
+    norm_mean: Dict[str, Tuple[float]]
+    norm_std: Dict[str, Tuple[float]]
 
 class EpochEncodingDistributedSampler(DistributedSampler):
     """DistributedSampler that encodes the epoch into each yielded index.
@@ -306,14 +306,14 @@ class ImageTextDataset(Dataset):
         self.index_data = index_data
         self.text_template = text_template
         self.img_pp = img_pp
-        self.dataset_name = config.dataset_name
-        self.text_generator = get_text_generator(self.dataset_name)
+        self.dataset = config.dataset
+        self.text_generator = get_text_generator(self.dataset)
         self._aug_seed = getattr(config, "seed", None)
 
         self.n_samples = len(self.index_data)
 
-        self.class_data = load_pickle(paths["metadata"][self.dataset_name] / "class_data.pkl")
-        self.rank_encs = load_pickle(paths["metadata"][self.dataset_name] / "rank_encs.pkl")
+        self.class_data = load_pickle(paths["metadata"][self.dataset] / "class_data.pkl")
+        self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
 
         self.missing_class_data_cids = {
             datum["cid"] for datum in self.index_data if datum["cid"] not in self.class_data
@@ -374,7 +374,7 @@ class ImageTextDataset(Dataset):
             torch.manual_seed(self._aug_seed + encoded_idx)
 
         # load + preprocess image
-        img = Image.open(paths["imgs"][self.dataset_name] / self.index_data[idx]["rfpath"]).convert("RGB")
+        img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
         img_t = self.img_pp(img)
 
         targ_data = {
@@ -382,7 +382,7 @@ class ImageTextDataset(Dataset):
             "rank_encs": rank_encs,
             "cid": cid,
             "meta": meta,
-            "dataset_name": self.dataset_name,
+            "dataset": self.dataset,
         }
 
         return img_t, text, class_enc, targ_data
@@ -409,22 +409,22 @@ def build_cid2enc(index_data):
         cid2enc[cid] = class_enc
     return cid2enc
 
-def spawn_partition_data(config: EvalConfig, partition_name: str):
+def spawn_partition_data(config: EvalConfig, partition: str):
     """
 
     Args:
     - split_type --- [str] --- "train" / "id" / "ood"
-    - split_name --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
+    - split --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
-    split = load_split(config.dataset_name, config.split_name)
-    if partition_name == "train":
-        index_data = split.data_indexes["train"]
+    split = load_split(config.dataset, config.split)
+    if partition in ("train", "trainval", "whole"):
+        index_data = split.data_indexes[partition]
     else:
-        index_data = split.data_indexes[config.eval_type][partition_name]
+        index_data = split.data_indexes[config.eval_type][partition]
     cid2enc = build_cid2enc(index_data)
     return index_data, cid2enc
 
-def spawn_partition_indexes_txts(cid2enc, text_template, dataset_name):
+def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
     """
     
     Args:
@@ -433,8 +433,8 @@ def spawn_partition_indexes_txts(cid2enc, text_template, dataset_name):
 
     index_text_cids = list(cid2enc.keys())
     index_text_class_encs = list(cid2enc.values())
-    class_data = load_pickle(paths["metadata"][dataset_name] / "class_data.pkl")
-    text_generator = get_text_generator(dataset_name)
+    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
+    text_generator = get_text_generator(dataset)
 
     index_text = []
     missing_cids = []
@@ -554,10 +554,10 @@ def spawn_dataloader(
 def gen_text(
     class_data_cid: Mapping[str, Any],
     combo_temp,
-    dataset_name: str,
+    dataset: str,
     meta: Mapping[str, Any] | None = None,
 ):
-    return get_text_generator(dataset_name).generate(class_data_cid, combo_temp, meta)
+    return get_text_generator(dataset).generate(class_data_cid, combo_temp, meta)
 
 def species_to_genus(species: str) -> str:
     return species.split("_")[0]

@@ -19,8 +19,6 @@ from utils.data import make_image_preprocessor_inference, make_image_preprocesso
 from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
 
-import pdb
-
 
 #                            open_clip model name            pretrain      quick-gelu
 CLIP_MODELS = {
@@ -228,9 +226,9 @@ class VLMWrapper(abc.ABC):
             self.norm_mean = self.img_pp_inf.transforms[-1].mean
             self.norm_std = self.img_pp_inf.transforms[-1].std
         elif config.img_norm == "dataset":
-            split = load_split(config.dataset_name, config.split_name)
-            self.norm_mean = split.norm_mean
-            self.norm_std = split.norm_std
+            split = load_split(config.dataset, config.split)
+            self.norm_mean = split.norm_mean[config.train_pt]
+            self.norm_std = split.norm_std[config.train_pt]
 
     def set_image_preprocessors(self) -> None:
         self.img_pp_inf = make_image_preprocessor_inference(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
@@ -258,7 +256,7 @@ class VLMWrapper(abc.ABC):
 
     def set_class_wts(self, config: TrainConfig, secondary: bool = False) -> None:
         cfg_loss = config.loss if not secondary else config.loss2
-        cw, cpw  = compute_class_wts(config.dataset_name, config.split_name, cfg_loss)
+        cw, cpw  = compute_class_wts(config.dataset, config.split, cfg_loss, train_pt=config.train_pt)
         if not secondary:
             self.class_wts      = cw.to(self.device)
             self.class_pair_wts = cpw.to(self.device)

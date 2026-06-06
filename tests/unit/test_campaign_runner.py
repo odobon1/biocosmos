@@ -7,16 +7,16 @@ import campaign_runner as cr
 
 
 def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_a")
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_a")
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     baseline_a = {
-        "campaign_name": "dev",
-        "split_name": "D10",
+        "campaign": "dev",
+        "split": "D10",
     }
     baseline_b = {
-        "campaign_name": "changed",
-        "split_name": "dev",
+        "campaign": "changed",
+        "split": "dev",
     }
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: baseline_a)
@@ -31,7 +31,7 @@ def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> 
 
 
 def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_b")
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_b")
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "NUM_SEEDS", 2)
     monkeypatch.setattr(cr, "DATASETS", ("cub", "lepid"))
@@ -46,11 +46,11 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     baseline = {
-        "campaign_name": "base_campaign",
-        "setting_name": "base_setting",
+        "campaign": "base_campaign",
+        "setting": "base_setting",
         "seed": 0,
-        "dataset_name": "cub",
-        "split_name": "D10",
+        "dataset": "cub",
+        "split": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
@@ -58,7 +58,7 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict):
-        scheduled.append((cfg_dict["seed"], cfg_dict["dataset_name"], cfg_dict["setting_name"], cfg_dict["loss"]["targ"]))
+        scheduled.append((cfg_dict["seed"], cfg_dict["dataset"], cfg_dict["setting"], cfg_dict["loss"]["targ"]))
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -75,7 +75,7 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
 
 
 def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_c")
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_c")
     monkeypatch.setattr(cr, "SEED0", 7)
     monkeypatch.setattr(cr, "NUM_SEEDS", 1)
     monkeypatch.setattr(cr, "DATASETS", ("cub",))
@@ -89,11 +89,11 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     baseline = {
-        "campaign_name": "base_campaign",
-        "setting_name": "base_setting",
+        "campaign": "base_campaign",
+        "setting": "base_setting",
         "seed": 0,
-        "dataset_name": "cub",
-        "split_name": "D10",
+        "dataset": "cub",
+        "split": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
@@ -121,7 +121,7 @@ def test_expand_settings_raises_on_duplicate_names() -> None:
 
 
 def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_opt")
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_opt")
     monkeypatch.setattr(cr, "SEED0", 9)
     monkeypatch.setattr(cr, "NUM_SEEDS", 1)
     monkeypatch.setattr(cr, "DATASETS", ("cub",))
@@ -135,11 +135,11 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     baseline = {
-        "campaign_name": "base_campaign",
-        "setting_name": "base_setting",
+        "campaign": "base_campaign",
+        "setting": "base_setting",
         "seed": 0,
-        "dataset_name": "cub",
-        "split_name": "D10",
+        "dataset": "cub",
+        "split": "D10",
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "opt": {
@@ -167,7 +167,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
 
 
 def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "CAMPAIGN_NAME", "cmp_d")
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_d")
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     err = subprocess.CalledProcessError(
@@ -181,8 +181,8 @@ def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> No
         idx_trial=3,
         n_trials=10,
         seed=42,
-        dataset_name="cub",
-        setting_name="iw",
+        dataset="cub",
+        setting="iw",
         exc=err,
     )
 

@@ -37,11 +37,12 @@ def _default_train_aug_cfg() -> dict:
 @dataclass
 class TrainConfig:
 
-    campaign_name: str
-    setting_name: str
+    campaign: str
+    setting: str
     seed: int | None
-    dataset_name: str
-    split_name: str
+    dataset: str
+    split: str
+    train_pt: str
 
     sample_volume: int
     eval_every: int
@@ -61,17 +62,20 @@ class TrainConfig:
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
     
-    eval_type: str = "validation"
+    eval_type: str = "val"
 
     hw: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self):
 
-        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
+        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
-        split = load_split(self.dataset_name, self.split_name)
-        size_train = len(split.data_indexes["train"])
+        if self.train_pt not in ("train", "trainval", "whole"):
+            raise ValueError(f"Unknown train_pt: '{self.train_pt}', must be one of {{train, trainval, whole}}")
+
+        split = load_split(self.dataset, self.split)
+        size_train = len(split.data_indexes[self.train_pt])
         if self.batch_size > size_train:
             raise ValueError(f"batch_size {self.batch_size} exceeds training set size {size_train}")
         samps_per_epoch = size_train - size_train % self.batch_size
@@ -134,7 +138,7 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     cfg_dict = dict(cfg_dict)
     dev_cfg = cfg_dict.get("dev", {}) or {}
     if dev_cfg.get("debug_mode", False):
-        cfg_dict["split_name"] = "dev"
+        cfg_dict["split"] = "dev"
         cfg_dict["sample_volume"] = 20_000
         cfg_dict["eval_every"] = 10_000
         cfg_dict["batch_size"] = 1_024
@@ -295,8 +299,8 @@ def get_config_hardware():
 class EvalConfig:
 
     rfpath_model: str | None
-    dataset_name: str
-    split_name: str
+    dataset: str
+    split: str
     eval_type: str
 
     batch_size: int
@@ -310,11 +314,14 @@ class EvalConfig:
     
     def __post_init__(self):
 
-        if self.dataset_name not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset_name: '{self.dataset_name}', must be one of {{bryo, cub, lepid, nymph}}")
+        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
+            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
+
+        if self.rfpath_model is None and self.img_norm == "dataset":
+            raise ValueError("img_norm='dataset' requires a model checkpoint (rfpath_model) to infer which partition's norm stats were used during training")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
@@ -338,8 +345,8 @@ class EvalConfig:
             self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
             self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
             self.img_norm = metadata_setting["img_norm"]  # override img_norm
-            self.dataset_name = metadata_trial["dataset_name"]  # override dataset_name
-            self.split_name = metadata_trial["split_name"]  # override split_name
+            self.dataset = metadata_trial["dataset"]  # override dataset
+            self.split = metadata_trial["split"]  # override split
 
         self.device = torch.device("cuda")
 
@@ -360,7 +367,7 @@ def get_config_eval(verbose=True):
 class GenSplitConfig:
 
     seed: int
-    split_name: str
+    split: str
 
     pct_partition: float
     pct_eval: float = field(init=False)

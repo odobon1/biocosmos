@@ -12,10 +12,10 @@ def build_data_indexes_cub(
     if missing:
         raise KeyError(f"Image pointers missing for {len(missing)} cids")
 
-    def build_partition_index(partition_name):
+    def build_partition_index(partition):
         data_index = []
         cid2enc = {}
-        for cid, samp_idx in sorted(skeys_partitions[partition_name]):
+        for cid, samp_idx in sorted(skeys_partitions[partition]):
             if cid not in cid2enc:
                 cid2enc[cid] = len(cid2enc)
             data_index.append({
@@ -29,7 +29,7 @@ def build_data_indexes_cub(
     return {
         "train": build_partition_index("train"),
         "trainval": build_partition_index("trainval"),
-        "validation": {
+        "val": {
             "id": build_partition_index("id_val"),
             "ood": build_partition_index("ood_val"),
         },

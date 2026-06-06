@@ -5,20 +5,20 @@ from utils.utils import paths, load_pickle, save_pickle
 
 
 def build_rank_encs(
-    dataset_name: str,
+    dataset: str,
     ranks: Sequence[str],
 ) -> dict[str, bidict]:
     """
     Build rank key maps with deterministic ordering.
 
     Args:
-    - dataset_name: dataset name, e.g. "nymph"
+    - dataset: dataset name, e.g. "nymph"
     - ranks: ordered list of ranks to build, e.g. ["genus", "species"]
 
     Returns:
     - dict rank_name -> bidict(rank_value -> integer_key)
     """
-    class_data = load_pickle(paths["metadata"][dataset_name] / "class_data.pkl")
+    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
     sids_sorted = sorted(class_data.keys())
 
     rank_encs: dict[str, bidict] = {rank: bidict() for rank in ranks}
@@ -35,4 +35,4 @@ def build_rank_encs(
         for rkey, value in enumerate(rank_values):
             rank_encs[rank][value] = rkey
 
-    save_pickle(rank_encs, paths["metadata"][dataset_name] / "rank_encs.pkl")
+    save_pickle(rank_encs, paths["metadata"][dataset] / "rank_encs.pkl")

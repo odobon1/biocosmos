@@ -11,14 +11,14 @@ from preprocessing.common.splits import (
     build_id_partitions,
     build_trainval_skeys_partition,
     build_id_eval_nshot,
-    build_class_counts_train,
+    build_class_counts_by_partition,
     build_dev_skeys_partitions,
     save_split,
     generate_ood_distribution_plots,
     generate_id_distribution_plots,
     generate_n_shot_table,
     generate_basic_split_stats_table,
-    compute_train_rgb_norm_stats,
+    compute_rgb_norm_stats_by_partition,
 )
 from preprocessing.bryo.splits_utils import (
     build_data_indexes_bryo,
@@ -33,13 +33,13 @@ DATASET_NAME = "bryo"
 def build_splits() -> None:
     cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
-    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split}"
     dpath_figs = dpath_split / "figures"
     dpath_split_dev = paths["metadata"][DATASET_NAME] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
-    print(f"Generating split: '{cfg.split_name}'")
+    print(f"Generating split: '{cfg.split}'")
 
-    pvcv = PhyloVCV(dataset_name=DATASET_NAME)
+    pvcv = PhyloVCV(dataset=DATASET_NAME)
     cids = pvcv.get_cids()  # genera for bryo
 
     img_ptrs_all = build_img_ptrs_bryo(cids)
@@ -129,14 +129,14 @@ def build_splits() -> None:
 
     # CLASS COUNTS (FOR CLASS IMBALANCE)
 
-    print("Generating class counts for train partition...")
-    class_counts_train = build_class_counts_train(data_indexes)
-    class_counts_train_dev = build_class_counts_train(data_indexes_dev)
+    print("Generating class counts by partition...")
+    class_counts = build_class_counts_by_partition(data_indexes)
+    class_counts_dev = build_class_counts_by_partition(data_indexes_dev)
     print("Class counts complete!")
 
-    # COMPUTE TRAIN NORMALIZATION STATS
+    # COMPUTE NORMALIZATION STATS BY PARTITION
 
-    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET_NAME)
+    norm_stats = compute_rgb_norm_stats_by_partition(data_indexes, dataset=DATASET_NAME)
 
     # SAVE SPLIT
 
@@ -144,18 +144,16 @@ def build_splits() -> None:
     save_split(
         data_indexes,
         id_eval_nshot,
-        class_counts_train,
-        norm_mean,
-        norm_std,
+        class_counts,
+        norm_stats,
         dpath_split,
         dpath_figs,
     )
     save_split(
         data_indexes_dev,
         id_eval_nshot,
-        class_counts_train_dev,
-        norm_mean,
-        norm_std,
+        class_counts_dev,
+        norm_stats,
         dpath_split_dev,
         dpath_figs_dev,
     )

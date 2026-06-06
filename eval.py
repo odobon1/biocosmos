@@ -21,7 +21,7 @@ def main():
 
     modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
 
-    text_template = get_text_template(config_eval.text_template, dataset_name=config_eval.dataset_name)
+    text_template = get_text_template(config_eval.text_template, dataset=config_eval.dataset)
     eval_pipe = EvaluationPipeline(
         config_eval,
         text_template,

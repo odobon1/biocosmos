@@ -94,11 +94,11 @@ def build_data_indexes_lepid(
 
     metadata_lookup = df_metadata.set_index("mask_name")[["class_dv", "sex"]]
 
-    def build_partition_index(partition_name):
+    def build_partition_index(partition):
         data_index = []
         cid2enc = {}
 
-        for cid, samp_idx in sorted(skeys_partitions[partition_name]):
+        for cid, samp_idx in sorted(skeys_partitions[partition]):
             if cid not in cid2enc:
                 cid2enc[cid] = len(cid2enc)
 
@@ -125,7 +125,7 @@ def build_data_indexes_lepid(
     return {
         "train": build_partition_index("train"),
         "trainval": build_partition_index("trainval"),
-        "validation": {
+        "val": {
             "id": build_partition_index("id_val"),
             "ood": validation_ood,
         },

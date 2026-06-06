@@ -22,13 +22,13 @@ import pdb
 
 split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
 
-partition = ["id"] * len(split_p.data_indexes["validation"]["id"]["sids"])
-sids = split_p.data_indexes["validation"]["id"]["sids"]
-rfpaths = split_p.data_indexes["validation"]["id"]["rfpaths"]
+partition = ["id"] * len(split_p.data_indexes["val"]["id"]["sids"])
+sids = split_p.data_indexes["val"]["id"]["sids"]
+rfpaths = split_p.data_indexes["val"]["id"]["rfpaths"]
 
-partition += ["ood"] * len(split_p.data_indexes["validation"]["ood"]["sids"])
-sids += split_p.data_indexes["validation"]["ood"]["sids"]
-rfpaths += split_p.data_indexes["validation"]["ood"]["rfpaths"]
+partition += ["ood"] * len(split_p.data_indexes["val"]["ood"]["sids"])
+sids += split_p.data_indexes["val"]["ood"]["sids"]
+rfpaths += split_p.data_indexes["val"]["ood"]["rfpaths"]
 
 _, device = setup_ddp()
 config_eval = get_config_eval(verbose=(dist.get_rank() == 0))

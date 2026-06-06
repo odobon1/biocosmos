@@ -7,7 +7,7 @@ from preprocessing.common.rank_encs import build_rank_encs
 
 def generate_rank_encs():
     build_rank_encs(
-        dataset_name="nymph",
+        dataset="nymph",
         ranks=["genus", "species"],
     )
 

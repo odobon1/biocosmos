@@ -92,8 +92,8 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
 
     partitions = {
         "train": data_indexes["train"],
-        "validation/id": data_indexes["validation"]["id"],
-        "validation/ood": data_indexes["validation"]["ood"],
+        "val/id": data_indexes["val"]["id"],
+        "val/ood": data_indexes["val"]["ood"],
         "test/id": data_indexes["test"]["id"],
         "test/ood": data_indexes["test"]["ood"],
     }
@@ -105,11 +105,11 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     }
     expected_trainval_skeys |= {
         (datum["cid"], datum["rfpath"])
-        for datum in data_indexes["validation"]["id"]
+        for datum in data_indexes["val"]["id"]
     }
     expected_trainval_skeys |= {
         (datum["cid"], datum["rfpath"])
-        for datum in data_indexes["validation"]["ood"]
+        for datum in data_indexes["val"]["ood"]
     }
     assert trainval_skeys == expected_trainval_skeys
 
@@ -119,7 +119,7 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
     }
 
     for name_a, name_b in combinations(skeys_by_partition, 2):
-        if {name_a, name_b} == {"validation/ood", "test/id"}:
+        if {name_a, name_b} == {"val/ood", "test/id"}:
             # ID-test is intentionally allowed to sample from OOD-val pool.
             continue
         overlap = skeys_by_partition[name_a] & skeys_by_partition[name_b]
@@ -148,8 +148,8 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])
-        + len(data_indexes["validation"]["id"])
-        + len(data_indexes["validation"]["ood"])
+        + len(data_indexes["val"]["id"])
+        + len(data_indexes["val"]["ood"])
     )
     assert len(data_indexes["whole"]) == (
         len(data_indexes["trainval"])

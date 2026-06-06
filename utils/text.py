@@ -8,7 +8,7 @@ TextTemplate = list[list[str]]
 
 @dataclass(frozen=True)
 class TextGeneratorSpec:
-    dataset_name: str
+    dataset: str
     taxonomy_prefix: tuple[str, ...] = ()
     taxonomy_fields: tuple[str, ...] = ("species",)
     template_overrides: dict[str, TextTemplate] = field(default_factory=dict)
@@ -36,12 +36,12 @@ COMMON_TEXT_TEMPLATES: dict[str, TextTemplate] = {
 
 DATASET_TEXT_SPECS: dict[str, TextGeneratorSpec] = {
     "bryo": TextGeneratorSpec(
-        dataset_name="bryo",
+        dataset="bryo",
         taxonomy_prefix=("animalia", "bryozoa", "gymnolaemata", "cheilostomatida"),
         taxonomy_fields=("family", "genus"),
     ),
     "cub": TextGeneratorSpec(
-        dataset_name="cub",
+        dataset="cub",
         taxonomy_prefix=("animalia", "chordata", "aves"),
         taxonomy_fields=("order", "family", "genus", "species"),
         template_overrides={
@@ -67,7 +67,7 @@ DATASET_TEXT_SPECS: dict[str, TextGeneratorSpec] = {
         },
     ),
     "lepid": TextGeneratorSpec(
-        dataset_name="lepid",
+        dataset="lepid",
         taxonomy_prefix=("animalia", "arthropoda", "insecta", "lepidoptera"),
         taxonomy_fields=("family", "genus", "species"),
         template_overrides={
@@ -93,7 +93,7 @@ DATASET_TEXT_SPECS: dict[str, TextGeneratorSpec] = {
         },
     ),
     "nymph": TextGeneratorSpec(
-        dataset_name="nymph",
+        dataset="nymph",
         taxonomy_prefix=("animalia", "arthropoda", "insecta", "lepidoptera", "nymphalidae"),
         taxonomy_fields=("subfamily", "genus", "species"),
     ),
@@ -215,16 +215,16 @@ class DatasetTextGenerator:
             return "a"
         return "an" if stripped[0] in {"a", "e", "i", "o", "u"} else "a"
 
-def get_text_generator(dataset_name: str) -> DatasetTextGenerator:
-    if dataset_name not in DATASET_TEXT_SPECS:
-        raise ValueError(f"Unknown dataset_name for text generation: '{dataset_name}'")
-    return DatasetTextGenerator(DATASET_TEXT_SPECS[dataset_name])
+def get_text_generator(dataset: str) -> DatasetTextGenerator:
+    if dataset not in DATASET_TEXT_SPECS:
+        raise ValueError(f"Unknown dataset for text generation: '{dataset}'")
+    return DatasetTextGenerator(DATASET_TEXT_SPECS[dataset])
 
-def get_text_template(template_name: str, dataset_name: str | None = None) -> TextTemplate:
-    if dataset_name is None:
+def get_text_template(template_name: str, dataset: str | None = None) -> TextTemplate:
+    if dataset is None:
         if template_name not in COMMON_TEXT_TEMPLATES:
             raise ValueError(f"Unknown text template: '{template_name}'")
         template = COMMON_TEXT_TEMPLATES[template_name]
         return [list(segment_group) for segment_group in template]
 
-    return get_text_generator(dataset_name).get_template(template_name)
+    return get_text_generator(dataset).get_template(template_name)

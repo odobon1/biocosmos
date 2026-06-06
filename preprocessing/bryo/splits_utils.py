@@ -27,11 +27,11 @@ def build_data_indexes_bryo(genera, skeys_partitions, img_ptrs=None):
     if img_ptrs is None:
         img_ptrs = build_img_ptrs_bryo(genera)
 
-    def build_partition_index(partition_name):
+    def build_partition_index(partition):
         data_index = []
         cid2enc = {}
 
-        for cid, samp_idx in sorted(skeys_partitions[partition_name]):
+        for cid, samp_idx in sorted(skeys_partitions[partition]):
             if cid not in cid2enc:
                 cid2enc[cid] = len(cid2enc)
 
@@ -48,7 +48,7 @@ def build_data_indexes_bryo(genera, skeys_partitions, img_ptrs=None):
     return {
         "train": build_partition_index("train"),
         "trainval": build_partition_index("trainval"),
-        "validation": {
+        "val": {
             "id": build_partition_index("id_val"),
             "ood": build_partition_index("ood_val"),
         },

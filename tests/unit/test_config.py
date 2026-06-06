@@ -7,11 +7,12 @@ from utils.config import apply_model_specific_opt_defaults
 
 def make_train_config_dummy(**overrides):
     config = {
-        "campaign_name": "campaign",
-        "setting_name": "exp",
+        "campaign": "campaign",
+        "setting": "exp",
         "seed": 7,
-        "dataset_name": "cub",
-        "split_name": "D10",
+        "dataset": "cub",
+        "split": "D10",
+        "train_pt": "train",
         "sample_volume": 1_000,
         "eval_every": 100,
         "batch_size": 8,
@@ -42,6 +43,13 @@ def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_train_config_rejects_invalid_train_pt(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="Unknown train_pt"):
+        TrainConfig(**make_train_config_dummy(train_pt="invalid"))
+
+
 def test_train_config_rejects_freezing_both_encoders(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
@@ -70,7 +78,7 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
 def test_splits_config_accepts_optional_pos_filter() -> None:
     cfg = GenSplitConfig(
         seed=7,
-        split_name="split_a",
+        split="split_a",
         pct_partition=0.1,
         pct_ood_tol=0.01,
         size_dev=128,
@@ -86,7 +94,7 @@ def test_splits_config_accepts_optional_pos_filter() -> None:
 def test_splits_config_accepts_optional_ood_family_name() -> None:
     cfg = GenSplitConfig(
         seed=7,
-        split_name="split_a",
+        split="split_a",
         pct_partition=0.1,
         pct_ood_tol=0.01,
         size_dev=128,
@@ -103,7 +111,7 @@ def test_splits_config_rejects_unknown_pos_filter() -> None:
     with pytest.raises(ValueError, match="Unknown pos_filter"):
         GenSplitConfig(
             seed=7,
-            split_name="split_a",
+            split="split_a",
             pct_partition=0.1,
             pct_ood_tol=0.01,
             size_dev=128,
@@ -117,7 +125,7 @@ def test_splits_config_rejects_non_positive_size_dev() -> None:
     with pytest.raises(ValueError, match="size_dev must be greater than 0"):
         GenSplitConfig(
             seed=7,
-            split_name="split_a",
+            split="split_a",
             pct_partition=0.1,
             pct_ood_tol=0.01,
             size_dev=0,

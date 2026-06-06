@@ -7,7 +7,7 @@ from scipy.io import loadmat
 import numpy as np
 
 from preprocessing.common.splits import (
-    build_class_counts_train,
+    build_class_counts_by_partition,
     build_dev_skeys_partitions,
     build_id_eval_nshot,
     build_trainval_skeys_partition,
@@ -15,7 +15,7 @@ from preprocessing.common.splits import (
     save_split,
     strat_split,
     generate_basic_split_stats_table,
-    compute_train_rgb_norm_stats,
+    compute_rgb_norm_stats_by_partition,
 )
 from preprocessing.cub.splits_utils import build_data_indexes_cub
 from utils.config import get_config_splits
@@ -83,15 +83,15 @@ def _build_img_ptrs(index_rfpaths_all, class_data):
 
     return img_ptrs, cid_2_samp_idxs, rfpath_2_skey, cids, n_samps_dict
 
-def _build_skeys_from_rfpaths(index_rfpaths, rfpath_2_skey, partition_name: str):
+def _build_skeys_from_rfpaths(index_rfpaths, rfpath_2_skey, partition: str):
     skeys = set()
     for rfpath in index_rfpaths:
         if rfpath not in rfpath_2_skey:
-            raise KeyError(f"rfpath '{rfpath}' from partition '{partition_name}' not found in global lookup")
+            raise KeyError(f"rfpath '{rfpath}' from partition '{partition}' not found in global lookup")
         skeys.add(rfpath_2_skey[rfpath])
 
     if len(skeys) != len(index_rfpaths):
-        raise ValueError(f"Duplicate rfpaths detected in partition '{partition_name}'")
+        raise ValueError(f"Duplicate rfpaths detected in partition '{partition}'")
 
     return skeys
 
@@ -234,12 +234,12 @@ def build_splits() -> None:
     cfg = get_config_splits()
     seed_libs(cfg.seed, seed_torch=False)
 
-    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split_name}"
+    dpath_split = paths["metadata"][DATASET_NAME] / f"splits/{cfg.split}"
     dpath_figs = dpath_split / "figures"
     dpath_split_dev = paths["metadata"][DATASET_NAME] / "splits/dev"
     dpath_figs_dev = dpath_split_dev / "figures"
 
-    print(f"Generating split: '{cfg.split_name}'")
+    print(f"Generating split: '{cfg.split}'")
 
     class_data = load_pickle(paths["metadata"][DATASET_NAME] / "class_data.pkl")
 
@@ -299,12 +299,12 @@ def build_splits() -> None:
     skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
 
     all_skeys = set()
-    for partition_name, skeys in skeys_partitions.items():
-        if partition_name == "trainval":
+    for partition, skeys in skeys_partitions.items():
+        if partition == "trainval":
             continue
         intersection = all_skeys.intersection(skeys)
         if intersection:
-            raise ValueError(f"Partition '{partition_name}' overlaps previous partitions")
+            raise ValueError(f"Partition '{partition}' overlaps previous partitions")
         all_skeys.update(skeys)
 
     skeys_expected = set(rfpath_2_skey.values())
@@ -337,29 +337,27 @@ def build_splits() -> None:
     data_indexes_dev = build_data_indexes_cub(cids, skeys_partitions_dev, img_ptrs)
     print("Data indexes complete!")
 
-    print("Generating class counts for train partition...")
-    class_counts_train = build_class_counts_train(data_indexes)
-    class_counts_train_dev = build_class_counts_train(data_indexes_dev)
+    print("Generating class counts by partition...")
+    class_counts = build_class_counts_by_partition(data_indexes)
+    class_counts_dev = build_class_counts_by_partition(data_indexes_dev)
     print("Class counts complete!")
 
-    norm_mean, norm_std = compute_train_rgb_norm_stats(data_indexes["train"], dataset_name=DATASET_NAME)
+    norm_stats = compute_rgb_norm_stats_by_partition(data_indexes, dataset=DATASET_NAME)
 
     print("Saving split...")
     save_split(
         data_indexes,
         id_eval_nshot,
-        class_counts_train,
-        norm_mean,
-        norm_std,
+        class_counts,
+        norm_stats,
         dpath_split,
         dpath_figs,
     )
     save_split(
         data_indexes_dev,
         id_eval_nshot,
-        class_counts_train_dev,
-        norm_mean,
-        norm_std,
+        class_counts_dev,
+        norm_stats,
         dpath_split_dev,
         dpath_figs_dev,
     )

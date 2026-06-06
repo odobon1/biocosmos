@@ -24,8 +24,8 @@ def test_shuffle_list_is_seeded_and_non_mutating() -> None:
 
 def test_get_text_template_returns_known_templates() -> None:
     train_template = get_text_template("train")
-    lepid_template = get_text_template("train", dataset_name="lepid")
-    bioclip_template = get_text_template("sci", dataset_name="cub")
+    lepid_template = get_text_template("train", dataset="lepid")
+    bioclip_template = get_text_template("sci", dataset="cub")
 
     assert isinstance(train_template, list)
     assert train_template[0] == ["", "a photo of "]
@@ -35,9 +35,9 @@ def test_get_text_template_returns_known_templates() -> None:
 
 def test_printlog_eval_handles_missing_loss_key() -> None:
     class _EvalPipe:
-        partition_names = ["id"]
+        partitions = ["id"]
         nshot_bucket_names = []
-        bucket_partition_name = None
+        bucket_partition = None
         best_comp_map = None
         best_i2i_map = None
 

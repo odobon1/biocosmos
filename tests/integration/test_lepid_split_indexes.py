@@ -103,8 +103,8 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
 
     rfpaths_train = {datum["rfpath"] for datum in data_indexes["train"]}
     rfpaths_trainval = {datum["rfpath"] for datum in data_indexes["trainval"]}
-    rfpaths_id_val = {datum["rfpath"] for datum in data_indexes["validation"]["id"]}
-    rfpaths_ood_val = {datum["rfpath"] for datum in data_indexes["validation"]["ood"]}
+    rfpaths_id_val = {datum["rfpath"] for datum in data_indexes["val"]["id"]}
+    rfpaths_ood_val = {datum["rfpath"] for datum in data_indexes["val"]["ood"]}
     rfpaths_id_test = {datum["rfpath"] for datum in data_indexes["test"]["id"]}
     rfpaths_ood_test = {datum["rfpath"] for datum in data_indexes["test"]["ood"]}
 
@@ -119,8 +119,8 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])
-        + len(data_indexes["validation"]["id"])
-        + len(data_indexes["validation"]["ood"])
+        + len(data_indexes["val"]["id"])
+        + len(data_indexes["val"]["ood"])
     )
     assert len(data_indexes["whole"]) == (
         len(data_indexes["trainval"])

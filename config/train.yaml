@@ -1,7 +1,8 @@
-campaign_name: dev
-setting_name: dev
-dataset_name: bryo  # {bryo, cub, lepid, nymph}
-split_name: D10
+campaign: dev
+setting: dev
+dataset: bryo  # {bryo, cub, lepid, nymph}
+split: D10
+train_pt: train  # {train, trainval, whole}
 seed: 42
 
 sample_volume: 1_000_000

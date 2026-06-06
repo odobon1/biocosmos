@@ -112,9 +112,9 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.savefig(fpath_plot, dpi=300, bbox_inches="tight")
     plt.close()
 
-def get_dataloader(cfg, partition_name, modelw):
-    text_template = get_text_template(cfg.text_template, dataset_name=cfg.dataset_name)
-    index_data, _ = spawn_partition_data(config=cfg, partition_name=partition_name)
+def get_dataloader(cfg, partition, modelw):
+    text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
+    index_data, _ = spawn_partition_data(config=cfg, partition=partition)
     dataloader = spawn_dataloader(
         index_data=index_data,
         text_template=text_template,

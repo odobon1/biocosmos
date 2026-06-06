@@ -16,73 +16,84 @@ from utils.data import species_to_genus, Split
 from utils.utils import paths, save_pickle
 
 
-def compute_train_rgb_norm_stats(data_index_train: List[Dict], dataset_name: str) -> Tuple[Tuple[float], Tuple[float]]:
-    """
-    Compute train RGB normalization stats with equal image weighting.
-
-    Each image is summarized by channel-wise mean and variance, then merged into
-    aggregate moments. All images are weighted equally so aggregate stats are invariant 
-    to images with varying resolutions.
-
-    Args:
-        data_index_train: List of dictionaries containing training data information.
-        dataset_name: Name of the dataset.
-    Returns:
-        norm_mean: 3-tuple (R, G, B)
-        norm_std: 3-tuple (R, G, B)
-    """
-    imgs_root = paths["imgs"][dataset_name]
-    image_fpaths = [imgs_root / datum["rfpath"] for datum in data_index_train]
-
+def _process_rfpaths_parallel(rfpaths, dataset, desc):
+    imgs_root = paths["imgs"][dataset]
+    fpaths = [imgs_root / rfpath for rfpath in rfpaths]
     means = []
-    vars = []
-    if not image_fpaths:
-        raise ValueError("compute_train_rgb_norm_stats received an empty train index")
-
+    vars_ = []
     with ProcessPoolExecutor(max_workers=os.cpu_count()) as ex:
         max_in_flight = max(64, (os.cpu_count() or 1) * 4)
-        fpaths_iter = iter(image_fpaths)
+        fpaths_iter = iter(fpaths)
         in_flight = set()
-
-        for _ in range(min(max_in_flight, len(image_fpaths))):
+        for _ in range(min(max_in_flight, len(fpaths))):
             in_flight.add(ex.submit(process_image, next(fpaths_iter)))
-
-        pbar = tqdm(
-            total=len(image_fpaths),
-            desc="Computing train norm stats",
-            file=sys.stdout,
-        )
-
+        pbar = tqdm(total=len(fpaths), desc=desc, file=sys.stdout)
         while in_flight:
             done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
-
             for fut in done:
                 mean_img, var_img = fut.result()
                 means.append(mean_img)
-                vars.append(var_img)
+                vars_.append(var_img)
                 pbar.update(1)
-
                 try:
                     in_flight.add(ex.submit(process_image, next(fpaths_iter)))
                 except StopIteration:
                     pass
-
         pbar.close()
+    return means, vars_
 
-    means = np.stack(means)
-    vars = np.stack(vars)
 
+def _snapshot_norm_stats(all_means, all_vars):
+    means = np.stack(all_means)
+    vars_ = np.stack(all_vars)
     mean_agg = means.mean(axis=0)
-    var_agg = vars.mean(axis=0) + means.var(axis=0)
-
+    var_agg = vars_.mean(axis=0) + means.var(axis=0)
     std_agg = np.sqrt(np.clip(var_agg, 0.0, None))
+    return tuple(float(x) for x in mean_agg), tuple(float(x) for x in std_agg)
 
-    norm_mean = tuple(float(x) for x in mean_agg)
-    norm_std = tuple(float(x) for x in std_agg)
-    
-    return norm_mean, norm_std
 
-# helper for compute_train_rgb_norm_stats()
+def compute_rgb_norm_stats_by_partition(data_indexes, dataset: str) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
+    """
+    Compute RGB normalization stats for 'train', 'trainval', and 'whole' in a single
+    pass through the data. Stats are accumulated incrementally:
+
+      train images → snapshot → 'train'
+      + id_val + ood_val images → snapshot → 'trainval'
+      + id_test + ood_test images → snapshot → 'whole'
+
+    Each image contributes equally regardless of resolution.
+
+    Returns:
+        Dict mapping partition name to (norm_mean, norm_std), each a 3-tuple of floats.
+    """
+    groups = [
+        ("train",    [d["rfpath"] for d in data_indexes["train"]]),
+        ("trainval", [d["rfpath"] for d in data_indexes["val"]["id"]] +
+                     [d["rfpath"] for d in data_indexes["val"]["ood"]]),
+        ("whole",    [d["rfpath"] for d in data_indexes["test"]["id"]] +
+                     [d["rfpath"] for d in data_indexes["test"]["ood"]]),
+    ]
+
+    all_means: List = []
+    all_vars: List = []
+    results = {}
+
+    for pt_name, rfpaths in groups:
+        if rfpaths:
+            new_means, new_vars = _process_rfpaths_parallel(
+                rfpaths, dataset, desc=f"Computing norm stats ({pt_name})"
+            )
+            all_means.extend(new_means)
+            all_vars.extend(new_vars)
+
+        if not all_means:
+            raise ValueError(f"No images accumulated before '{pt_name}' norm stats snapshot")
+
+        results[pt_name] = _snapshot_norm_stats(all_means, all_vars)
+
+    return results
+
+# helper for _process_rfpaths_parallel()
 def process_image(fpath_img):
     with Image.open(fpath_img) as img:
         arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
@@ -589,16 +600,13 @@ def build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id):
 
     return id_eval_nshot
 
-def build_class_counts_train(data_indexes):
-    cid2enc = {}
-    index_encs = []
-    for cid in [datum["cid"] for datum in data_indexes["train"]]:
-        if cid not in cid2enc:
-            cid2enc[cid] = len(cid2enc)
-        index_encs.append(cid2enc[cid])
-    n_classes = len(cid2enc)
-    class_counts_train = np.bincount(index_encs, minlength=n_classes)
-    return class_counts_train
+def build_class_counts_by_partition(data_indexes):
+    results = {}
+    for pt_name in ("train", "trainval", "whole"):
+        pt_data = data_indexes[pt_name]
+        encs = [d["class_enc"] for d in pt_data]
+        results[pt_name] = np.bincount(encs, minlength=max(encs) + 1 if encs else 0)
+    return results
 
 def build_dev_skeys_partitions(skeys_partitions, size_dev):
     if "train" not in skeys_partitions:
@@ -607,12 +615,14 @@ def build_dev_skeys_partitions(skeys_partitions, size_dev):
         raise ValueError(f"size_dev must be greater than 0, got {size_dev}")
 
     return {
-        partition_name: set(sorted(skeys_partition)[:size_dev])
-        for partition_name, skeys_partition in skeys_partitions.items()
+        partition: set(sorted(skeys_partition)[:size_dev])
+        for partition, skeys_partition in skeys_partitions.items()
     }
 
-def save_split(data_indexes, id_eval_nshot, class_counts_train, norm_mean, norm_std, dpath_split, dpath_figs) -> None:
-    split = Split(data_indexes, id_eval_nshot, class_counts_train, norm_mean, norm_std)
+def save_split(data_indexes, id_eval_nshot, class_counts, norm_stats, dpath_split, dpath_figs) -> None:
+    norm_mean = {pt: norm_stats[pt][0] for pt in norm_stats}
+    norm_std = {pt: norm_stats[pt][1] for pt in norm_stats}
+    split = Split(data_indexes, id_eval_nshot, class_counts, norm_mean, norm_std)
     os.makedirs(dpath_split, exist_ok=True)
     os.makedirs(dpath_figs, exist_ok=True)
     save_pickle(split, dpath_split / "split.pkl")
@@ -943,8 +953,8 @@ def generate_basic_split_stats_table(
     ]
 
     data = []
-    for row_name, partition_name in row_specs:
-        skeys_partition = skeys_partitions[partition_name]
+    for row_name, partition in row_specs:
+        skeys_partition = skeys_partitions[partition]
         n_cids_partition = count_unique_cids_from_skeys(skeys_partition)
         n_samps_partition = len(skeys_partition)
         data.append([

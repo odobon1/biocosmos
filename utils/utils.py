@@ -129,13 +129,13 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
-def load_split(dataset_name, split_name):
-    fpath_split = paths["metadata"][dataset_name] / f"splits/{split_name}/split.pkl"
+def load_split(dataset, split):
+    fpath_split = paths["metadata"][dataset] / f"splits/{split}/split.pkl"
     split = load_pickle(fpath_split)
     return split
 
-def get_text_template(text_template_type, dataset_name=None):
-    return get_dataset_text_template(text_template_type, dataset_name=dataset_name)
+def get_text_template(text_template_type, dataset=None):
+    return get_dataset_text_template(text_template_type, dataset=dataset)
     
 
 class RunningMean:
@@ -209,8 +209,8 @@ class PrintLog:
         if PrintLog.logging:
             texts_by_partition = eval_pipe.get_eval_texts()
             lines = []
-            for partition_name, texts in texts_by_partition.items():
-                lines.append(f"[{partition_name}]")
+            for partition, texts in texts_by_partition.items():
+                lines.append(f"[{partition}]")
                 lines.extend(texts)
                 lines.append("")
             PrintLog.log_text_eval.write("\n".join(lines))
@@ -330,11 +330,11 @@ class PrintLog:
             pairs = [
                 ("All", f"{map_scores['all']:.4f}"),
                 ("I2I", f"{map_scores['i2i']:.4f}"),
-                *((p.upper(), f"{map_scores[p]:.4f}") for p in partition_names),
+                *((p.upper(), f"{map_scores[p]:.4f}") for p in partitions),
             ]
             return f"{title:-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(pairs) + "\n"
         
-        partition_names = eval_pipe.partition_names
+        partitions = eval_pipe.partitions
 
         lines_comp = f"{' ID/OOD Eval ':=^{SECTION_WIDTH}}\n"
 
@@ -359,9 +359,9 @@ class PrintLog:
             )
         
         loss_pairs = [
-            (partition_name.upper(), f"{eval_metrics['loss'][partition_name]:.3e}")
-            for partition_name in partition_names
-            if eval_metrics["loss"][partition_name] is not None
+            (partition.upper(), f"{eval_metrics['loss'][partition]:.3e}")
+            for partition in partitions
+            if eval_metrics["loss"][partition] is not None
         ]
         lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(loss_pairs) + "\n") if loss_pairs else ""
 
@@ -398,10 +398,10 @@ class PrintLog:
         lines = [
             "",
             PrintLog._block_metric_lines((
-                ("Campaign", cfg_train.campaign_name),
-                ("Setting", cfg_train.setting_name),
-                ("Dataset", cfg_train.dataset_name),
-                ("Split", cfg_train.split_name),
+                ("Campaign", cfg_train.campaign),
+                ("Setting", cfg_train.setting),
+                ("Dataset", cfg_train.dataset),
+                ("Split", cfg_train.split),
                 ("Seed", cfg_train.seed),
             )),
             "",
@@ -491,8 +491,8 @@ class PrintLog:
             f"Checkpoint: {cfg_eval.rfpath_model}",
             "",
             PrintLog._block_metric_lines((
-                ("Dataset", cfg_eval.dataset_name),
-                ("Split", cfg_eval.split_name),
+                ("Dataset", cfg_eval.dataset),
+                ("Split", cfg_eval.split),
                 ("Eval Type", cfg_eval.eval_type),
             )),
             "",

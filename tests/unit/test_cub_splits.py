@@ -375,8 +375,8 @@ def test_cub_data_indexes_partition_size_composition():
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])
-        + len(data_indexes["validation"]["id"])
-        + len(data_indexes["validation"]["ood"])
+        + len(data_indexes["val"]["id"])
+        + len(data_indexes["val"]["ood"])
     )
     assert len(data_indexes["whole"]) == (
         len(data_indexes["trainval"])

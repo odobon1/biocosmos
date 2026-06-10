@@ -79,6 +79,7 @@ def build_data_indexes_lepid(
     cids,
     skeys_partitions,
     cid_2_family,
+    cid2enc,
     img_ptrs=None,
     df_metadata=None,
 ):
@@ -94,12 +95,8 @@ def build_data_indexes_lepid(
 
     def build_partition_index(partition):
         data_index = []
-        cid2enc = {}
 
         for cid, samp_idx in sorted(skeys_partitions[partition]):
-            if cid not in cid2enc:
-                cid2enc[cid] = len(cid2enc)
-
             rfpath = img_ptrs[cid][samp_idx]
             fname = rfpath.split("/")[-1]
             pos = metadata_lookup["class_dv"].get(fname)

@@ -660,12 +660,23 @@ def build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id):
 
     return id_eval_nshot
 
-def build_class_counts_by_partition(data_indexes):
+def build_global_cid2enc(skeys_partitions):
+    all_cids = sorted({cid for skeys in skeys_partitions.values() for cid, _ in skeys})
+    global_cid2enc = {cid: enc for enc, cid in enumerate(all_cids)}
+    return global_cid2enc
+
+def build_class_counts_by_partition(data_indexes, n_classes):
     results = {}
-    for pt_name in ("train", "trainval", "whole"):
-        pt_data = data_indexes[pt_name]
-        encs = [d["class_enc"] for d in pt_data]
-        results[pt_name] = np.bincount(encs, minlength=max(encs) + 1 if encs else 0)
+    for pt_name, pt_data in (
+        ("train",    data_indexes["train"]),
+        ("trainval", data_indexes["trainval"]),
+        ("whole",    data_indexes["whole"]),
+    ):
+        counts = np.full(n_classes, np.nan)
+        for datum in pt_data:
+            enc = datum["class_enc"]
+            counts[enc] = 1 if np.isnan(counts[enc]) else counts[enc] + 1
+        results[pt_name] = counts
     return results
 
 def build_dev_skeys_partitions(skeys_partitions, size_dev):

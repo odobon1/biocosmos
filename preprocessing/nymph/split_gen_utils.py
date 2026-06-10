@@ -53,7 +53,7 @@ def build_cid_2_samp_idxs(
 
     return cid_2_samp_idxs
 
-def build_data_indexes(cids, skeys_partitions, img_ptrs=None, df_metadata=None):
+def build_data_indexes(cids, skeys_partitions, cid2enc, img_ptrs=None, df_metadata=None):
 
     if img_ptrs is None:
         img_ptrs = build_img_ptrs(cids)
@@ -64,11 +64,7 @@ def build_data_indexes(cids, skeys_partitions, img_ptrs=None, df_metadata=None):
 
     def build_partition_index(partition):
         data_index = []
-        cid2enc = {}
         for cid, samp_idx in sorted(skeys_partitions[partition]):
-            if cid not in cid2enc:
-                cid2enc[cid] = len(cid2enc)
-
             rfpath = img_ptrs[cid][samp_idx]
             fname = rfpath.split("/")[-1]
             pos = metadata_lookup["class_dv"].get(fname)

@@ -9,6 +9,7 @@ import numpy as np
 from preprocessing.common.split_gen import (
     build_class_counts_by_partition,
     build_dev_skeys_partitions,
+    build_global_cid2enc,
     build_id_eval_nshot,
     build_trainval_skeys_partition,
     generate_n_shot_table,
@@ -286,13 +287,14 @@ def build_splits() -> None:
     print("n-shot tracking complete!")
 
     print("Generating data indexes...")
-    data_indexes = build_data_indexes_cub(skeys_partitions, img_ptrs)
-    data_indexes_dev = build_data_indexes_cub(skeys_partitions_dev, img_ptrs)
+    cid2enc = build_global_cid2enc(skeys_partitions)
+    data_indexes = build_data_indexes_cub(skeys_partitions, img_ptrs, cid2enc)
+    data_indexes_dev = build_data_indexes_cub(skeys_partitions_dev, img_ptrs, cid2enc)
     print("Data indexes complete!")
 
     print("Generating class counts by partition...")
-    class_counts = build_class_counts_by_partition(data_indexes)
-    class_counts_dev = build_class_counts_by_partition(data_indexes_dev)
+    class_counts = build_class_counts_by_partition(data_indexes, len(cid2enc))
+    class_counts_dev = build_class_counts_by_partition(data_indexes_dev, len(cid2enc))
     print("Class counts complete!")
 
     norm_stats = get_norm_stats(data_indexes, dataset=DATASET_NAME, cfg=cfg)

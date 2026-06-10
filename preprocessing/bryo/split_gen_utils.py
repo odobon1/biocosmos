@@ -22,18 +22,14 @@ def build_img_ptrs_bryo(genera):
 
     return img_ptrs
 
-def build_data_indexes_bryo(genera, skeys_partitions, img_ptrs=None):
+def build_data_indexes_bryo(genera, skeys_partitions, cid2enc, img_ptrs=None):
     if img_ptrs is None:
         img_ptrs = build_img_ptrs_bryo(genera)
 
     def build_partition_index(partition):
         data_index = []
-        cid2enc = {}
 
         for cid, samp_idx in sorted(skeys_partitions[partition]):
-            if cid not in cid2enc:
-                cid2enc[cid] = len(cid2enc)
-
             data_index.append(
                 {
                     "cid": cid,

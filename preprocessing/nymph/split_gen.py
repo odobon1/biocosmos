@@ -13,6 +13,7 @@ from preprocessing.common.split_gen import (
     build_id_eval_nshot,
     build_class_counts_by_partition,
     build_dev_skeys_partitions,
+    build_global_cid2enc,
     save_split,
     gen_strat_sampling_dist_plots_ood,
     gen_strat_sampling_dist_plots_id,
@@ -133,15 +134,16 @@ def build_splits():
     # GENERATE DATA INDEXES
 
     print("Generating data indexes...")
-    data_indexes = build_data_indexes(cids, skeys_partitions)
-    data_indexes_dev = build_data_indexes(cids, skeys_partitions_dev)
+    cid2enc = build_global_cid2enc(skeys_partitions)
+    data_indexes = build_data_indexes(cids, skeys_partitions, cid2enc)
+    data_indexes_dev = build_data_indexes(cids, skeys_partitions_dev, cid2enc)
     print("Data indexes complete!")
 
     # CLASS COUNTS (FOR CLASS IMBALANCE)
 
     print("Generating class counts by partition...")
-    class_counts = build_class_counts_by_partition(data_indexes)
-    class_counts_dev = build_class_counts_by_partition(data_indexes_dev)
+    class_counts = build_class_counts_by_partition(data_indexes, len(cid2enc))
+    class_counts_dev = build_class_counts_by_partition(data_indexes_dev, len(cid2enc))
     print("Class counts complete!")
 
     norm_stats = get_norm_stats(data_indexes, dataset=DATASET_NAME, cfg=cfg)

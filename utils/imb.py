@@ -33,19 +33,19 @@ def compute_class_wts(dataset, split, cfg_loss, train_pt: str = "train"):
             class_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
             class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
 
-    # normalize s.t. mean(wts) == 1.0
+    # normalize s.t. mean(wts) == 1.0 (ignoring NaN entries for absent classes)
     # class_wts /= class_wts.mean()
-    class_wts = class_wts / class_wts.mean()
+    class_wts = class_wts / np.nanmean(class_wts)
 
     if cfg_loss.get('wting', {}).get('type') is not None:
         if cfg_cw["cp_type"] == 1:
-            class_pair_wts = class_pair_wts / class_pair_wts.mean()
+            class_pair_wts = class_pair_wts / np.nanmean(class_pair_wts)
         elif cfg_cw["cp_type"] == 2:
             mask = np.triu(np.ones_like(class_pair_wts, dtype=bool))
             # values of the upper triangle (1D)
             tri_vals = class_pair_wts[mask]
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing i.e. although (i, j) and (j, i) key into different elements of the matrix, we are treating these as being the same
-            class_pair_wts = class_pair_wts / tri_vals.mean()
+            class_pair_wts = class_pair_wts / np.nanmean(tri_vals)
     
     # # class weight clipping (currently not used)
     # class_wt_clip = cfg_cw.get("class_wt_clip", None)

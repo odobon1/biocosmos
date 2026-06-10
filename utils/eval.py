@@ -249,10 +249,6 @@ class PartitionEvaluationPipeline:
 
         return artifacts, loss_avg
 
-    @staticmethod
-    def _encode_cids(cids: List[str], cid2enc: Dict[str, int], device: torch.device) -> torch.Tensor:
-        return torch.tensor([cid2enc[cid] for cid in cids], device=device, dtype=torch.long)
-
     def _build_metric_views(
         self,
         scores_i2t: Dict[str, Any],
@@ -694,19 +690,6 @@ class EvaluationPipeline:
         partition_artifacts: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
 
-        full_set_index_data = []
-        for partition in self.partitions:
-            full_set_index_data.extend(self.partition_pipes[partition].index_data)
-        full_set_cid2enc = {
-            cid: class_enc
-            for class_enc, cid in enumerate(dict.fromkeys(datum["cid"] for datum in full_set_index_data))
-        }
-        full_set_bucket_map = build_class_enc_to_train_nshot_bucket(
-            dataset=self.partition_pipes[self.bucket_partition].cfg.dataset,
-            split=self.partition_pipes[self.bucket_partition].cfg.split,
-            cid2enc=full_set_cid2enc,
-        ) if self.bucket_partition is not None else {}
-
         for partition in self.partitions:
             pipe = self.partition_pipes[partition]
             artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw, loss_flag)
@@ -718,14 +701,7 @@ class EvaluationPipeline:
             dim=0,
         )
         full_set_class_encs_img = torch.cat(
-            [
-                PartitionEvaluationPipeline._encode_cids(
-                    partition_artifacts[partition]["cids_img"],
-                    full_set_cid2enc,
-                    full_set_embs_img.device,
-                )
-                for partition in self.partitions
-            ],
+            [partition_artifacts[partition]["class_encs_img"] for partition in self.partitions],
             dim=0,
         )
         full_set_embs_text = torch.cat(
@@ -733,14 +709,7 @@ class EvaluationPipeline:
             dim=0,
         )
         full_set_class_encs_text = torch.cat(
-            [
-                PartitionEvaluationPipeline._encode_cids(
-                    partition_artifacts[partition]["cids_text"],
-                    full_set_cid2enc,
-                    full_set_embs_img.device,
-                ).cpu()
-                for partition in self.partitions
-            ],
+            [partition_artifacts[partition]["class_encs_text"] for partition in self.partitions],
             dim=0,
         )
 
@@ -763,16 +732,6 @@ class EvaluationPipeline:
                 nshot_bucket_names=pipe.nshot_bucket_names if partition == self.bucket_partition else None,
             )
 
-            full_set_class_encs_img_q = PartitionEvaluationPipeline._encode_cids(
-                artifacts_partition["cids_img"],
-                full_set_cid2enc,
-                artifacts_partition["embs_img"].device,
-            )
-            full_set_class_encs_text_q = PartitionEvaluationPipeline._encode_cids(
-                artifacts_partition["cids_text"],
-                full_set_cid2enc,
-                artifacts_partition["embs_img"].device,
-            )
             self_match_idxs_g = torch.arange(
                 img_offset,
                 img_offset + artifacts_partition["embs_img"].size(0),
@@ -783,15 +742,15 @@ class EvaluationPipeline:
 
             full_set_scores = pipe.compute_map_scores(
                 embs_img_q=artifacts_partition["embs_img"],
-                class_encs_img_q=full_set_class_encs_img_q,
+                class_encs_img_q=artifacts_partition["class_encs_img"],
                 embs_text_q=artifacts_partition["embs_text"],
-                class_encs_text_q=full_set_class_encs_text_q,
+                class_encs_text_q=artifacts_partition["class_encs_text"].to(artifacts_partition["embs_img"].device),
                 embs_img_g=full_set_embs_img,
                 class_encs_img_g=full_set_class_encs_img,
                 embs_text_g=full_set_embs_text,
                 class_encs_text_g=full_set_class_encs_text,
                 self_match_idxs_g=self_match_idxs_g,
-                class_enc_to_bucket=full_set_bucket_map if partition == self.bucket_partition else None,
+                class_enc_to_bucket=pipe.class_enc_to_bucket if partition == self.bucket_partition else None,
                 nshot_bucket_names=self.nshot_bucket_names if partition == self.bucket_partition else None,
             )
 

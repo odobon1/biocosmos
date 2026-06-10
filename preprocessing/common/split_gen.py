@@ -990,7 +990,7 @@ def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_ti
         cell.set_linewidth(0.5)
 
     plt.title("n-shot Bucket Sample (Class) Counts", fontsize=fontsize_title, fontweight="bold", y=0.70)
-    plt.savefig(str(dpath_figs / "summary_nshot.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(dpath_figs / "summary_nshot.png", dpi=300, bbox_inches="tight")
 
 def count_unique_cids_from_skeys(skeys) -> int:
     return len({cid for cid, _ in skeys})
@@ -1008,7 +1008,7 @@ def render_partition_summary_table(
     labels_cols,
     data,
     title,
-    fpath,
+    dpath_figs,
     figsize=(5, 2),
     pad=-5,
     dpi=150,
@@ -1036,7 +1036,7 @@ def render_partition_summary_table(
         tbl.scale(*scale)
 
     plt.title(title, fontweight="bold", pad=pad)
-    plt.savefig(fpath, dpi=dpi, bbox_inches="tight")
+    plt.savefig(dpath_figs / "summary_partitions.png", dpi=dpi, bbox_inches="tight")
     plt.close()
 
 def generate_partition_summary_table(
@@ -1080,7 +1080,7 @@ def generate_partition_summary_table(
         labels_cols=labels_cols,
         data=data,
         title=title,
-        fpath=dpath_figs / "summary_partition.png",
+        dpath_figs=dpath_figs,
         figsize=figsize,
         pad=pad,
         dpi=dpi,

@@ -89,9 +89,11 @@ def test_bryo_split_partitions_do_not_overlap() -> None:
         | skeys_partitions["ood_test"]
     )
 
+    cid2enc = {cid: i for i, cid in enumerate(sorted(cids_n_samps))}
     data_indexes = build_data_indexes_bryo(
         sorted(cids_n_samps),
         skeys_partitions,
+        cid2enc,
         img_ptrs=img_ptrs_all,
     )
 

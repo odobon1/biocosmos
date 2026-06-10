@@ -47,7 +47,8 @@ def _make_nymph_fixtures():
 
 def test_nymph_data_indexes_partition_size_composition():
     cids, img_ptrs, df_metadata, skeys_partitions = _make_nymph_fixtures()
-    data_indexes = build_data_indexes(cids, skeys_partitions, img_ptrs=img_ptrs, df_metadata=df_metadata)
+    cid2enc = {cid: i for i, cid in enumerate(sorted(cids))}
+    data_indexes = build_data_indexes(cids, skeys_partitions, cid2enc, img_ptrs=img_ptrs, df_metadata=df_metadata)
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])

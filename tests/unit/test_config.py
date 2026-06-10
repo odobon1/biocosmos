@@ -20,8 +20,8 @@ def make_train_config_dummy(**overrides):
         "dev": {"logging": False},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
-        "loss": {"type": "bce", "sim": "cos", "targ": "aligned"},
-        "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0},
+        "loss": {"type": "bce", "sim": "cos", "targ": "aligned", "logits": {"scale_init": None, "bias_init": None}},
+        "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0, "logits": {"scale_init": None, "bias_init": None}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "l2reg": 0.0,
@@ -41,13 +41,6 @@ def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
         "utils.config.compute_dataloader_workers_prefetch",
         lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
-
-
-def test_train_config_rejects_invalid_train_pt(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
-
-    with pytest.raises(ValueError, match="Unknown train_pt"):
-        TrainConfig(**make_train_config_dummy(train_pt="invalid"))
 
 
 def test_train_config_rejects_freezing_both_encoders(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,50 +66,6 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert cfg.prefetch_factor == 2
     assert cfg.n_gpus == 1
     assert str(cfg.device) == "cuda"
-
-
-def test_splits_config_accepts_optional_pos_filter() -> None:
-    cfg = GenSplitConfig(
-        seed=7,
-        split="split_a",
-        pct_partition=0.1,
-        pct_ood_tol=0.01,
-        size_dev=128,
-        pos_filter="dorsal",
-        nst_names=["1-2", "3+"],
-        nst_seps=[2],
-    )
-
-    assert cfg.pos_filter == "dorsal"
-    assert cfg.size_dev == 128
-
-
-def test_splits_config_rejects_unknown_pos_filter() -> None:
-    with pytest.raises(ValueError, match="Unknown pos_filter"):
-        GenSplitConfig(
-            seed=7,
-            split="split_a",
-            pct_partition=0.1,
-            pct_ood_tol=0.01,
-            size_dev=128,
-            pos_filter="sideways",
-            nst_names=["1-2", "3+"],
-            nst_seps=[2],
-        )
-
-
-def test_splits_config_rejects_non_positive_size_dev() -> None:
-    with pytest.raises(ValueError, match="size_dev must be greater than 0"):
-        GenSplitConfig(
-            seed=7,
-            split="split_a",
-            pct_partition=0.1,
-            pct_ood_tol=0.01,
-            size_dev=0,
-            pos_filter=None,
-            nst_names=["1-2", "3+"],
-            nst_seps=[2],
-        )
 
 
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:

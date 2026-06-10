@@ -16,4 +16,4 @@ nst_seps: [20, 100]
 pos_filter: dorsal  # {null, dorsal} ~ only applies to nymph and lepid datasets
 
 dev:
-  skip_norm_stats: true
+  skip_norm_stats: false

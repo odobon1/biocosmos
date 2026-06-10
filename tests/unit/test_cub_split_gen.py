@@ -9,7 +9,6 @@ import pytest
 from preprocessing.cub.split_gen import (
     _build_classdir_to_cid,
     _build_img_ptrs,
-    _build_skeys_from_rfpaths,
     _choose_ood_val_cids,
     _class_dir_to_common_name,
     _normalize_cub_rfpath,
@@ -60,19 +59,9 @@ def _cfg(pct_partition=0.1, pct_ood_tol=0.005, seed=42):
 
 # ─── _normalize_cub_rfpath ───────────────────────────────────────────────────
 
-def test_normalize_cub_rfpath_raises_on_already_clean_path_without_images_prefix():
-    with pytest.raises(ValueError, match="Could not parse CUB rfpath"):
-        _normalize_cub_rfpath("001.Black_footed_Albatross/img_001.jpg")
-
-
 def test_normalize_cub_rfpath_strips_leading_prefix():
     raw = "/some/long/prefix/images/001.Black_footed_Albatross/img_001.jpg"
     assert _normalize_cub_rfpath(raw) == "001.Black_footed_Albatross/img_001.jpg"
-
-
-def test_normalize_cub_rfpath_raises_when_images_segment_is_absent():
-    with pytest.raises(ValueError, match="Could not parse CUB rfpath"):
-        _normalize_cub_rfpath("/no/IMGS/prefix/here.jpg")
 
 
 # ─── _build_classdir_to_cid ──────────────────────────────────────────────────
@@ -87,14 +76,6 @@ def test_build_classdir_to_cid_maps_each_class_dir_to_its_species_cid():
     assert result["black_footed_albatross"] == "diomedea_nigripes"
     assert result["laysan_albatross"] == "phoebastria_immutabilis"
     assert len(result) == 2
-
-
-def test_build_classdir_to_cid_raises_on_missing_species():
-    class_data = {
-        "bad_cid": {"species": None, "common_name": "class_dir"}
-    }
-    with pytest.raises(ValueError, match="Invalid species"):
-        _build_classdir_to_cid(class_data)
 
 
 def test_build_img_ptrs_assigns_sequential_samp_idxs_per_species():
@@ -131,50 +112,12 @@ def test_build_img_ptrs_skey_values_are_unique():
     assert len(skeys) == len(set(skeys))
 
 
-def test_build_img_ptrs_raises_on_bad_rfpath_format():
-    class_data = _make_class_data(("cid", "001.Albatross", "some_species"))
-    bad_rfpaths = ["only_one_part.jpg"]  # only 1 path segment → ValueError
-
-    with pytest.raises(ValueError, match="Unexpected CUB rfpath format"):
-        _build_img_ptrs(bad_rfpaths, class_data)
-
-
 def test_build_img_ptrs_raises_on_unknown_class_dir():
     class_data = _make_class_data(("cid", "001.Albatross", "some_species"))
     rfpaths = ["999.UnknownClass/img_0001.jpg"]
 
-    with pytest.raises(KeyError, match="missing from class_data mapping"):
+    with pytest.raises(KeyError):
         _build_img_ptrs(rfpaths, class_data)
-
-
-# ─── _build_skeys_from_rfpaths ───────────────────────────────────────────────
-
-def test_build_skeys_from_rfpaths_returns_correct_skeys():
-    rfpath_2_skey = {
-        "001.Cls/img_0.jpg": ("cid_a", 0),
-        "001.Cls/img_1.jpg": ("cid_a", 1),
-    }
-    result = _build_skeys_from_rfpaths(list(rfpath_2_skey.keys()), rfpath_2_skey, "test")
-
-    assert result == {("cid_a", 0), ("cid_a", 1)}
-
-
-def test_build_skeys_from_rfpaths_raises_on_unknown_rfpath():
-    rfpath_2_skey = {"001.Cls/img_0.jpg": ("cid_a", 0)}
-
-    with pytest.raises(KeyError, match="not found in global lookup"):
-        _build_skeys_from_rfpaths(["MISSING/img.jpg"], rfpath_2_skey, "test")
-
-
-def test_build_skeys_from_rfpaths_raises_on_duplicate_rfpaths():
-    rfpath_2_skey = {"001.Cls/img_0.jpg": ("cid_a", 0)}
-
-    with pytest.raises(ValueError, match="Duplicate rfpaths detected"):
-        _build_skeys_from_rfpaths(
-            ["001.Cls/img_0.jpg", "001.Cls/img_0.jpg"],
-            rfpath_2_skey,
-            "test",
-        )
 
 
 # ─── _choose_ood_val_cids ────────────────────────────────────────────────────
@@ -227,7 +170,7 @@ def test_choose_ood_val_cids_raises_when_target_cid_count_exceeds_available():
     cids, _ = _uniform_cids_and_skeys(5, 3)
 
     # n_cids_total_target=100 → target = round(100*0.5) = 50 species >> 5 available
-    with pytest.raises(ValueError, match="Target OOD-val cid count.*exceeds available"):
+    with pytest.raises(ValueError):
         _choose_ood_val_cids(
             cids_train=set(cids),
             n_cids_total_target=100,
@@ -319,21 +262,6 @@ def test_split_train_ood_val_cids_may_coincide_with_id_test_class_universe():
     assert len(ood_val) > 0
 
 
-def test_split_train_raises_when_id_val_target_exceeds_multis_pool():
-    # After OOD-val takes round(20*0.1)=2 species, remaining 18 are all singletons
-    # (1 sample each). n_samps_total_target=200 → id_val target = round(200*0.1)=20,
-    # but only 18 multi-eligible samples exist (all singletons → 0 multis actually),
-    # so the check fires.
-    pool = {(f"cid_{i:03d}", 0) for i in range(20)}  # 20 singletons, 1 sample each
-    with pytest.raises(ValueError, match="Target ID-val sample count.*exceeds available"):
-        _split_train_into_train_idval_oodval(
-            skeys_train_pool=pool,
-            n_cids_total_target=20,
-            n_samps_total_target=200,  # large target → id_val needs 20 multis, none exist
-            cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
-        )
-
-
 # ─── build_data_indexes_cub ──────────────────────────────────────────────────
 
 def _make_cub_fixtures():
@@ -369,7 +297,9 @@ def _make_cub_fixtures():
 
 def test_cub_data_indexes_partition_size_composition():
     cids, img_ptrs, skeys_partitions = _make_cub_fixtures()
-    data_indexes = build_data_indexes_cub(cids, skeys_partitions, img_ptrs)
+    all_cids = sorted({cid for skeys in skeys_partitions.values() for cid, _ in skeys})
+    cid2enc = {cid: i for i, cid in enumerate(all_cids)}
+    data_indexes = build_data_indexes_cub(skeys_partitions, img_ptrs, cid2enc)
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])

@@ -64,7 +64,7 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
                 },
             },
         },
-        "loss": {"id": None},
+        "loss_raw": {"id": None},
     }
 
     PrintLog.eval(eval_metrics, _EvalPipe())

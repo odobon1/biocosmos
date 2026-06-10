@@ -1,7 +1,5 @@
 artifacts/*
 !artifacts/.gitkeep
-!artifacts/clip_o1/
-!artifacts/clip_o1/**
 
 data/cub/*
 !data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy
@@ -12,7 +10,8 @@ preprocessing/nymph/intermediaries/*
 preprocessing/lepid/intermediaries/*
 !preprocessing/lepid/intermediaries/.gitkeep
 
-.codex
+.vscode/*
+.conda-env
 temp_lr_explorer.ipynb
 temp_phylo.ipynb
 temp_tax_dist.ipynb

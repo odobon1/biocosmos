@@ -93,10 +93,12 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
         | skeys_partitions["ood_test"]
     )
 
+    cid2enc = {cid: i for i, cid in enumerate(sorted(cids))}
     data_indexes = build_data_indexes_lepid(
         cids=cids,
         skeys_partitions=skeys_partitions,
         cid_2_family=cid_2_family,
+        cid2enc=cid2enc,
         img_ptrs=img_ptrs,
         df_metadata=df_metadata,
     )

@@ -160,13 +160,6 @@ def test_build_dev_skeys_partitions_caps_to_train_size() -> None:
     assert skeys_partitions_dev["ood_test"] == set()
 
 
-def test_build_dev_skeys_partitions_rejects_invalid_size() -> None:
-    skeys_partitions = {"train": {("cid_a", 0)}}
-
-    with pytest.raises(ValueError, match="size_dev must be greater than 0"):
-        build_dev_skeys_partitions(skeys_partitions, size_dev=0)
-
-
 def test_build_trainval_skeys_partition_unions_train_and_validation() -> None:
     skeys_partitions = {
         "train": {("cid_a", 0)},

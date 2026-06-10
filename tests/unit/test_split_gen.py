@@ -4,12 +4,10 @@ python -m pytest tests/unit/test_split_gen.py
 
 from types import SimpleNamespace
 import pandas as pd
-import pytest
 
 from preprocessing.common.split_gen import (
     build_dev_skeys_partitions,
     build_id_eval_nshot,
-    build_id_partitions,
     build_trainval_skeys_partition,
 )
 from preprocessing.nymph.split_gen_utils import build_cid_2_samp_idxs
@@ -22,7 +20,7 @@ def test_build_cid_2_samp_idxs_defaults_to_all_samples() -> None:
         "cid_b": {0: "cid_b/img0.png"},
     }
 
-    cid_2_samp_idxs = build_cid_2_samp_idxs(cids, img_ptrs=img_ptrs)
+    cid_2_samp_idxs = build_cid_2_samp_idxs(cids, img_ptrs)
 
     assert cid_2_samp_idxs == {
         "cid_a": [0, 1],
@@ -52,8 +50,8 @@ def test_build_cid_2_samp_idxs_filters_to_requested_position() -> None:
 
     cid_2_samp_idxs = build_cid_2_samp_idxs(
         cids,
+        img_ptrs,
         pos_filter="dorsal",
-        img_ptrs=img_ptrs,
         df_metadata=df_metadata,
     )
 
@@ -80,44 +78,16 @@ def test_build_cid_2_samp_idxs_returns_empty_list_when_species_has_no_matches() 
 
     cid_2_samp_idxs = build_cid_2_samp_idxs(
         cids,
+        img_ptrs,
         pos_filter="dorsal",
-        img_ptrs=img_ptrs,
         df_metadata=df_metadata,
     )
 
     assert cid_2_samp_idxs == {"cid_a": []}
 
 
-def test_gen_id_partitions_keeps_filtered_singleton_real_sample_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = SimpleNamespace(seed=7, pct_eval=0.1, pct_partition=0.05)
-    cids_id = {"cid_single", "cid_multi"}
-    cid_2_samp_idxs = {
-        "cid_single": [4],
-        "cid_multi": [0, 2],
-    }
-    cid_2_n_samps = {
-        "cid_single": 1,
-        "cid_multi": 2,
-    }
-
-    # This test targets singleton index retention only; keep strat_split out of scope.
-    monkeypatch.setattr("preprocessing.common.split_gen.strat_split", lambda **kwargs: (set(), set(), set()))
-
-    skeys_train, skeys_id_val, skeys_id_test, cid_2_skeys_id, _, _, _ = build_id_partitions(
-        cids_id,
-        cid_2_samp_idxs,
-        cid_2_n_samps,
-        cfg,
-    )
-
-    assert ("cid_single", 4) in skeys_train
-    assert ("cid_single", 0) not in skeys_train
-    assert cid_2_skeys_id["cid_single"] == [("cid_single", 4)]
-    assert all(skey[0] != "cid_single" for skey in skeys_id_val | skeys_id_test)
-
-
 def test_build_dev_skeys_partitions_uses_first_samples_per_partition() -> None:
-    skeys_partitions = {
+    skeys_pts = {
         "train": {
             ("cid_b", 2),
             ("cid_a", 0),
@@ -133,35 +103,35 @@ def test_build_dev_skeys_partitions_uses_first_samples_per_partition() -> None:
         "ood_val": {("cid_z", 3), ("cid_z", 1)},
     }
 
-    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=2)
+    skeys_pts_dev = build_dev_skeys_partitions(skeys_pts, size_dev=2)
 
-    assert set(skeys_partitions_dev.keys()) == set(skeys_partitions.keys())
-    assert skeys_partitions_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
-    assert skeys_partitions_dev["id_val"] == {("cid_x", 0), ("cid_x", 1)}
-    assert skeys_partitions_dev["id_test"] == {("cid_y", 2)}
-    assert skeys_partitions_dev["ood_val"] == {("cid_z", 1), ("cid_z", 3)}
+    assert set(skeys_pts_dev.keys()) == set(skeys_pts.keys())
+    assert skeys_pts_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
+    assert skeys_pts_dev["id_val"] == {("cid_x", 0), ("cid_x", 1)}
+    assert skeys_pts_dev["id_test"] == {("cid_y", 2)}
+    assert skeys_pts_dev["ood_val"] == {("cid_z", 1), ("cid_z", 3)}
 
 
 def test_build_dev_skeys_partitions_caps_to_train_size() -> None:
-    skeys_partitions = {
+    skeys_pts = {
         "train": {("cid_a", 0), ("cid_b", 1)},
         "id_val": {("cid_x", 2), ("cid_x", 1), ("cid_x", 0)},
         "ood_test": set(),
     }
 
-    skeys_partitions_dev = build_dev_skeys_partitions(skeys_partitions, size_dev=10)
+    skeys_pts_dev = build_dev_skeys_partitions(skeys_pts, size_dev=10)
 
-    assert skeys_partitions_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
-    assert skeys_partitions_dev["id_val"] == {
+    assert skeys_pts_dev["train"] == {("cid_a", 0), ("cid_b", 1)}
+    assert skeys_pts_dev["id_val"] == {
         ("cid_x", 0),
         ("cid_x", 1),
         ("cid_x", 2),
     }
-    assert skeys_partitions_dev["ood_test"] == set()
+    assert skeys_pts_dev["ood_test"] == set()
 
 
 def test_build_trainval_skeys_partition_unions_train_and_validation() -> None:
-    skeys_partitions = {
+    skeys_pts = {
         "train": {("cid_a", 0)},
         "id_val": {("cid_a", 1)},
         "ood_val": {("cid_b", 0)},
@@ -169,7 +139,7 @@ def test_build_trainval_skeys_partition_unions_train_and_validation() -> None:
         "ood_test": {("cid_c", 0)},
     }
 
-    trainval = build_trainval_skeys_partition(skeys_partitions)
+    trainval = build_trainval_skeys_partition(skeys_pts)
 
     assert trainval == {
         ("cid_a", 0),
@@ -179,7 +149,7 @@ def test_build_trainval_skeys_partition_unions_train_and_validation() -> None:
 
 
 def test_build_trainval_skeys_partition_excludes_id_test_overlap() -> None:
-    skeys_partitions = {
+    skeys_pts = {
         "train": {("cid_a", 0)},
         "id_val": {("cid_a", 1)},
         "ood_val": {("cid_b", 0), ("cid_c", 0)},
@@ -187,7 +157,7 @@ def test_build_trainval_skeys_partition_excludes_id_test_overlap() -> None:
         "ood_test": {("cid_e", 0)},
     }
 
-    trainval = build_trainval_skeys_partition(skeys_partitions)
+    trainval = build_trainval_skeys_partition(skeys_pts)
 
     assert trainval == {
         ("cid_a", 0),
@@ -196,49 +166,13 @@ def test_build_trainval_skeys_partition_excludes_id_test_overlap() -> None:
     }
 
 
-def test_build_id_eval_nshot_uses_train_for_id_val_and_trainval_for_id_test() -> None:
-    cfg = SimpleNamespace(nst_names=["few", "many"], nst_seps=[2])
-    cids_id = {"cid_a", "cid_b"}
-    cid_2_skeys_id = {
-        "cid_a": [("cid_a", 0), ("cid_a", 1), ("cid_a", 2)],
-        "cid_b": [("cid_b", 0), ("cid_b", 1), ("cid_b", 2), ("cid_b", 3)],
-    }
-    skeys_partitions = {
-        "train": {("cid_a", 0), ("cid_b", 0), ("cid_b", 1), ("cid_b", 2)},
-        "id_val": {("cid_a", 1)},
-        "id_test": {("cid_a", 2), ("cid_b", 3)},
-        "ood_val": set(),
-        "ood_test": set(),
-    }
-    skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
-
-    id_eval_nshot = build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id)
-
-    assert id_eval_nshot["buckets"]["few"]["id_val"] == {("cid_a", 1)}
-    assert id_eval_nshot["buckets"]["few"]["trainval"] == {
-        ("cid_a", 0),
-        ("cid_a", 1),
-    }
-    assert id_eval_nshot["buckets"]["few"]["id_test"] == {("cid_a", 2)}
-    assert id_eval_nshot["buckets"]["many"]["trainval"] == {
-        ("cid_b", 0),
-        ("cid_b", 1),
-        ("cid_b", 2),
-    }
-    assert id_eval_nshot["buckets"]["many"]["id_test"] == {("cid_b", 3)}
-
-
 def test_build_id_eval_nshot_buckets_ood_borrowed_id_test_by_trainval_cardinality() -> None:
     # cid_ood is an OOD species: 2 samples in ood_val (trainval), 1 borrowed into id_test.
     # trainval cardinality for cid_ood = 2.
     # With nst_seps=[2]: bisect_left([2], 2) == 0 → "few" bucket.
     # With nst_seps=[2]: bisect_left([2], 3) == 1 → "many" bucket.
     cfg = SimpleNamespace(nst_names=["few", "many"], nst_seps=[2])
-    cids_id = {"cid_a"}
-    cid_2_skeys_id = {
-        "cid_a": [("cid_a", 0), ("cid_a", 1)],
-    }
-    skeys_partitions = {
+    skeys_pts = {
         "train": {("cid_a", 0)},
         "id_val": {("cid_a", 1)},
         # cid_ood sample borrowed into id_test
@@ -247,72 +181,40 @@ def test_build_id_eval_nshot_buckets_ood_borrowed_id_test_by_trainval_cardinalit
         "ood_val": {("cid_ood", 1), ("cid_ood", 2)},
         "ood_test": set(),
     }
-    skeys_partitions["trainval"] = build_trainval_skeys_partition(skeys_partitions)
+    skeys_pts["trainval"] = build_trainval_skeys_partition(skeys_pts)
     # trainval = {(cid_a,0), (cid_a,1), (cid_ood,1), (cid_ood,2)}
     # cid_ood trainval count = 2 → bisect_left([2], 2) == 0 → "few" bucket
 
-    id_eval_nshot = build_id_eval_nshot(cfg, cids_id, skeys_partitions, cid_2_skeys_id)
+    id_eval_nshot = build_id_eval_nshot(skeys_pts, cfg)
 
     # cid_ood's borrowed id_test sample must appear in "few" id_test bucket (trainval count=2)
     assert ("cid_ood", 0) in id_eval_nshot["buckets"]["few"]["id_test"]
-    # No cid_ood samples in id_val or trainval buckets (OOD species are not ID)
+    # No cid_ood samples in id_val buckets (OOD species are not ID)
     for bucket_name in cfg.nst_names:
         assert ("cid_ood", 0) not in id_eval_nshot["buckets"][bucket_name]["id_val"]
-        assert ("cid_ood", 0) not in id_eval_nshot["buckets"][bucket_name]["trainval"]
-    # Total id_test skeys across all buckets equals len(skeys_partitions["id_test"])
+    # Total id_test skeys across all buckets equals len(skeys_pts["id_test"])
     all_id_test_bucketed = set()
     for bucket_name in cfg.nst_names:
         all_id_test_bucketed.update(id_eval_nshot["buckets"][bucket_name]["id_test"])
-    assert all_id_test_bucketed == skeys_partitions["id_test"]
+    assert all_id_test_bucketed == skeys_pts["id_test"]
 
 
-def test_build_id_partitions_can_draw_id_test_from_extra_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = SimpleNamespace(seed=5, pct_eval=0.5, pct_partition=0.1)
-    cids_id = {"cid_a"}
-    cid_2_samp_idxs = {"cid_a": [0, 1, 2, 3]}
-    cid_2_n_samps = {"cid_a": 4}
-    skeys_id_test_extra = {("cid_ood", 0), ("cid_ood", 1)}
+def test_build_id_eval_nshot_uses_train_for_id_val_and_trainval_for_id_test() -> None:
+    cfg = SimpleNamespace(nst_names=["few", "many"], nst_seps=[2])
+    skeys_pts = {
+        "train": {("cid_a", 0), ("cid_b", 0), ("cid_b", 1), ("cid_b", 2)},
+        "id_val": {("cid_a", 1)},
+        "id_test": {("cid_a", 2), ("cid_b", 3)},
+        "ood_val": set(),
+        "ood_test": set(),
+    }
+    skeys_pts["trainval"] = build_trainval_skeys_partition(skeys_pts)
 
-    # First call (ID test from ID+extra, choose_partition="test"):
-    #   strat_split returns (rem, val_tmp, test_tmp); chosen = test_tmp = {cid_ood 0}.
-    # Second call (ID val from remaining ID pool, choose_partition="val"):
-    #   strat_split returns (rem, val_tmp, test_tmp); chosen = val_tmp = {cid_a 1}.
-    #   test_tmp must be empty so nothing is restored into rem/train.
-    strat_calls = [
-        (
-            {("cid_a", 0), ("cid_a", 1), ("cid_a", 2), ("cid_a", 3), ("cid_ood", 0), ("cid_ood", 1)},
-            {("cid_a", 0)},
-            {("cid_ood", 0)},
-        ),
-        (
-            {("cid_a", 2), ("cid_a", 3)},
-            {("cid_a", 1)},
-            set(),
-        ),
-    ]
+    id_eval_nshot = build_id_eval_nshot(skeys_pts, cfg)
 
-    def strat_split_stub(**kwargs):
-        return strat_calls.pop(0)
-
-    monkeypatch.setattr("preprocessing.common.split_gen.strat_split", strat_split_stub)
-
-    (
-        skeys_train,
-        skeys_id_val,
-        skeys_id_test,
-        _,
-        _,
-        _,
-        skeys_id_test_extra_taken,
-    ) = build_id_partitions(
-        cids_id=cids_id,
-        cid_2_samp_idxs=cid_2_samp_idxs,
-        cid_2_n_samps=cid_2_n_samps,
-        cfg=cfg,
-        skeys_id_test_extra=skeys_id_test_extra,
-    )
-
-    assert ("cid_ood", 0) in skeys_id_test
-    assert skeys_id_test_extra_taken == {("cid_ood", 0)}
-    assert skeys_id_val == {("cid_a", 1)}
-    assert skeys_train == {("cid_a", 2), ("cid_a", 3)}
+    # cid_a: train=1 → few bucket for id_val; trainval=2 → few bucket for id_test
+    assert id_eval_nshot["buckets"]["few"]["id_val"] == {("cid_a", 1)}
+    assert id_eval_nshot["buckets"]["few"]["id_test"] == {("cid_a", 2)}
+    # cid_b: train=3 → many bucket for id_val; trainval=3 → many bucket for id_test
+    assert id_eval_nshot["buckets"]["many"]["id_val"] == set()
+    assert id_eval_nshot["buckets"]["many"]["id_test"] == {("cid_b", 3)}

@@ -1,6 +1,6 @@
 
 
-def build_img_ptrs_bryo(genera):
+def build_img_ptrs(genera):
     from utils.utils import paths
 
     img_ptrs = {}
@@ -22,14 +22,14 @@ def build_img_ptrs_bryo(genera):
 
     return img_ptrs
 
-def build_data_indexes_bryo(genera, skeys_partitions, cid2enc, img_ptrs=None):
+def build_data_indexes_bryo(genera, skeys_pts, cid2enc, img_ptrs=None):
     if img_ptrs is None:
-        img_ptrs = build_img_ptrs_bryo(genera)
+        img_ptrs = build_img_ptrs(genera)
 
     def build_partition_index(partition):
         data_index = []
 
-        for cid, samp_idx in sorted(skeys_partitions[partition]):
+        for cid, samp_idx in sorted(skeys_pts[partition]):
             data_index.append(
                 {
                     "cid": cid,

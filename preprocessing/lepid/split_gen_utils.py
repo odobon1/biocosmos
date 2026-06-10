@@ -5,7 +5,7 @@ from preprocessing.common.split_gen import truncate_subspecies
 from utils.utils import paths
 
 
-def build_img_ptrs_lepid(cids, cid_2_family):
+def build_img_ptrs(cids, cid_2_family):
 
     img_ptrs = {
         cid: {}
@@ -41,17 +41,16 @@ def build_img_ptrs_lepid(cids, cid_2_family):
 
     return img_ptrs
 
-def build_cid_2_samp_idxs_lepid(
+def build_cid_2_samp_idxs(
     cids,
+    img_ptrs,
     cid_2_family,
     pos_filter=None,
-    img_ptrs=None,
     df_metadata=None,
 ):
-    from utils.utils import paths
 
     if img_ptrs is None:
-        img_ptrs = build_img_ptrs_lepid(cids, cid_2_family)
+        img_ptrs = build_img_ptrs(cids, cid_2_family)
 
     if pos_filter is None:
         return {
@@ -75,18 +74,17 @@ def build_cid_2_samp_idxs_lepid(
 
     return cid_2_samp_idxs
 
-def build_data_indexes_lepid(
+def build_data_indexes(
     cids,
-    skeys_partitions,
+    skeys_pts,
     cid_2_family,
     cid2enc,
     img_ptrs=None,
     df_metadata=None,
 ):
-    from utils.utils import paths
 
     if img_ptrs is None:
-        img_ptrs = build_img_ptrs_lepid(cids, cid_2_family)
+        img_ptrs = build_img_ptrs(cids, cid_2_family)
 
     if df_metadata is None:
         df_metadata = pd.read_csv(paths["lepid_metadata_imgs"])
@@ -96,7 +94,7 @@ def build_data_indexes_lepid(
     def build_partition_index(partition):
         data_index = []
 
-        for cid, samp_idx in sorted(skeys_partitions[partition]):
+        for cid, samp_idx in sorted(skeys_pts[partition]):
             rfpath = img_ptrs[cid][samp_idx]
             fname = rfpath.split("/")[-1]
             pos = metadata_lookup["class_dv"].get(fname)

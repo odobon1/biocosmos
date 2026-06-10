@@ -23,32 +23,32 @@ def _make_nymph_fixtures():
             "sex":        ["female",   "male"],
         }
     )
-    skeys_partitions = {
+    skeys_pts = {
         "train":    {("sp_a", 0), ("sp_b", 0)},
         "id_val":   {("sp_a", 1)},
         "id_test":  {("sp_b", 1)},
         "ood_val":  {("sp_c", 0), ("sp_d", 0)},
         "ood_test": {("sp_e", 0)},
     }
-    skeys_partitions["trainval"] = (
-        skeys_partitions["train"]
-        | skeys_partitions["id_val"]
-        | skeys_partitions["ood_val"]
+    skeys_pts["trainval"] = (
+        skeys_pts["train"]
+        | skeys_pts["id_val"]
+        | skeys_pts["ood_val"]
     )
-    skeys_partitions["whole"] = (
-        skeys_partitions["train"]
-        | skeys_partitions["id_val"]
-        | skeys_partitions["id_test"]
-        | skeys_partitions["ood_val"]
-        | skeys_partitions["ood_test"]
+    skeys_pts["whole"] = (
+        skeys_pts["train"]
+        | skeys_pts["id_val"]
+        | skeys_pts["id_test"]
+        | skeys_pts["ood_val"]
+        | skeys_pts["ood_test"]
     )
-    return cids, img_ptrs, df_metadata, skeys_partitions
+    return cids, img_ptrs, df_metadata, skeys_pts
 
 
 def test_nymph_data_indexes_partition_size_composition():
-    cids, img_ptrs, df_metadata, skeys_partitions = _make_nymph_fixtures()
+    cids, img_ptrs, df_metadata, skeys_pts = _make_nymph_fixtures()
     cid2enc = {cid: i for i, cid in enumerate(sorted(cids))}
-    data_indexes = build_data_indexes(cids, skeys_partitions, cid2enc, img_ptrs=img_ptrs, df_metadata=df_metadata)
+    data_indexes = build_data_indexes(cids, skeys_pts, cid2enc, img_ptrs=img_ptrs, df_metadata=df_metadata)
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])

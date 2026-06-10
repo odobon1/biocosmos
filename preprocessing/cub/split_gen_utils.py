@@ -2,11 +2,11 @@ from typing import Iterable
 import matplotlib.pyplot as plt
 
 
-def build_data_indexes_cub(skeys_partitions, img_ptrs, cid2enc):
+def build_data_indexes_cub(skeys_pts, img_ptrs, cid2enc):
 
     def build_partition_index(partition):
         data_index = []
-        for cid, samp_idx in sorted(skeys_partitions[partition]):
+        for cid, samp_idx in sorted(skeys_pts[partition]):
             data_index.append({
                 "cid": cid,
                 "class_enc": cid2enc[cid],

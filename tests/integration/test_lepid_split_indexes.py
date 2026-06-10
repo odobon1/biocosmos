@@ -5,7 +5,7 @@ python -m pytest tests/integration/test_lepid_split_indexes.py
 import pandas as pd
 import pytest
 
-from preprocessing.lepid.split_gen_utils import build_data_indexes_lepid
+from preprocessing.lepid.split_gen_utils import build_data_indexes
 
 
 @pytest.mark.integration
@@ -59,7 +59,7 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
             ],
         }
     )
-    skeys_partitions = {
+    skeys_pts = {
         "train": {
             ("gena_speca", 0),
             ("genb_specb", 0),
@@ -78,25 +78,25 @@ def test_lepid_data_indexes_match_split_rfpath_invariants() -> None:
             ("gene_spece", 0),
         },
     }
-    skeys_partitions["trainval"] = {
+    skeys_pts["trainval"] = {
         ("gena_speca", 0),
         ("genb_specb", 0),
         ("gena_speca", 1),
         ("genc_specc", 0),
         ("gend_specd", 0),
     }
-    skeys_partitions["whole"] = (
-        skeys_partitions["train"]
-        | skeys_partitions["id_val"]
-        | skeys_partitions["id_test"]
-        | skeys_partitions["ood_val"]
-        | skeys_partitions["ood_test"]
+    skeys_pts["whole"] = (
+        skeys_pts["train"]
+        | skeys_pts["id_val"]
+        | skeys_pts["id_test"]
+        | skeys_pts["ood_val"]
+        | skeys_pts["ood_test"]
     )
 
     cid2enc = {cid: i for i, cid in enumerate(sorted(cids))}
-    data_indexes = build_data_indexes_lepid(
+    data_indexes = build_data_indexes(
         cids=cids,
-        skeys_partitions=skeys_partitions,
+        skeys_pts=skeys_pts,
         cid_2_family=cid_2_family,
         cid2enc=cid2enc,
         img_ptrs=img_ptrs,

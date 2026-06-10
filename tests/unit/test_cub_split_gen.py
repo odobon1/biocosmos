@@ -9,10 +9,8 @@ import pytest
 from preprocessing.cub.split_gen import (
     _build_classdir_to_cid,
     _build_img_ptrs,
-    _choose_ood_val_cids,
     _class_dir_to_common_name,
     _normalize_cub_rfpath,
-    _split_train_into_train_idval_oodval,
 )
 from preprocessing.cub.split_gen_utils import build_data_indexes_cub
 
@@ -78,24 +76,12 @@ def test_build_classdir_to_cid_maps_each_class_dir_to_its_species_cid():
     assert len(result) == 2
 
 
-def test_build_img_ptrs_assigns_sequential_samp_idxs_per_species():
-    class_data, rfpaths = _make_class_data_and_rfpaths([
-        ("001.Albatross", "diomedea_nigripes", 3),
-        ("002.Laysan", "phoebastria_immutabilis", 2),
-    ])
-    _, cid_2_samp_idxs, _, _, cid_2_n_samps = _build_img_ptrs(rfpaths, class_data)
-
-    assert cid_2_samp_idxs["diomedea_nigripes"] == [0, 1, 2]
-    assert cid_2_samp_idxs["phoebastria_immutabilis"] == [0, 1]
-    assert cid_2_n_samps == {"diomedea_nigripes": 3, "phoebastria_immutabilis": 2}
-
-
 def test_build_img_ptrs_rfpath_2_skey_covers_all_rfpaths():
     class_data, rfpaths = _make_class_data_and_rfpaths([
         ("001.Albatross", "diomedea_nigripes", 2),
         ("002.Laysan", "phoebastria_immutabilis", 3),
     ])
-    _, _, rfpath_2_skey, cids, _ = _build_img_ptrs(rfpaths, class_data)
+    _, rfpath_2_skey, cids = _build_img_ptrs(rfpaths, class_data)
 
     assert set(rfpath_2_skey.keys()) == set(rfpaths)
     assert set(cids) == {"diomedea_nigripes", "phoebastria_immutabilis"}
@@ -106,7 +92,7 @@ def test_build_img_ptrs_skey_values_are_unique():
         ("001.Albatross", "diomedea_nigripes", 4),
         ("002.Laysan", "phoebastria_immutabilis", 4),
     ])
-    _, _, rfpath_2_skey, _, _ = _build_img_ptrs(rfpaths, class_data)
+    _, rfpath_2_skey, _ = _build_img_ptrs(rfpaths, class_data)
 
     skeys = list(rfpath_2_skey.values())
     assert len(skeys) == len(set(skeys))
@@ -120,148 +106,6 @@ def test_build_img_ptrs_raises_on_unknown_class_dir():
         _build_img_ptrs(rfpaths, class_data)
 
 
-# ─── _choose_ood_val_cids ────────────────────────────────────────────────────
-
-def _uniform_cids_and_skeys(n_cids, samps_per_cid):
-    cids = [f"cid_{i:03d}" for i in range(n_cids)]
-    cid_2_skeys = {cid: [(cid, j) for j in range(samps_per_cid)] for cid in cids}
-    return cids, cid_2_skeys
-
-
-def test_choose_ood_val_cids_returns_empty_when_pct_partition_is_zero():
-    cids, _ = _uniform_cids_and_skeys(10, 5)
-    result = _choose_ood_val_cids(
-        cids_train=set(cids),
-        n_cids_total_target=10,
-        cfg=_cfg(pct_partition=0.0),
-    )
-    assert result == set()
-
-
-def test_choose_ood_val_cids_returns_exact_class_count():
-    n_cids = 20
-    cids, _ = _uniform_cids_and_skeys(n_cids, 10)
-    cfg = _cfg(pct_partition=0.1)
-
-    result = _choose_ood_val_cids(
-        cids_train=set(cids),
-        n_cids_total_target=n_cids,
-        cfg=cfg,
-    )
-
-    assert len(result) == round(n_cids * cfg.pct_partition)
-
-
-def test_choose_ood_val_cids_result_is_subset_of_train():
-    n_cids = 20
-    cids, _ = _uniform_cids_and_skeys(n_cids, 5)
-    cfg = _cfg(pct_partition=0.15)
-
-    result = _choose_ood_val_cids(
-        cids_train=set(cids),
-        n_cids_total_target=n_cids,
-        cfg=cfg,
-    )
-
-    assert result.issubset(set(cids))
-
-
-def test_choose_ood_val_cids_raises_when_target_cid_count_exceeds_available():
-    cids, _ = _uniform_cids_and_skeys(5, 3)
-
-    # n_cids_total_target=100 → target = round(100*0.5) = 50 species >> 5 available
-    with pytest.raises(ValueError):
-        _choose_ood_val_cids(
-            cids_train=set(cids),
-            n_cids_total_target=100,
-            cfg=_cfg(pct_partition=0.5),
-        )
-
-
-# ─── _split_train_into_train_idval_oodval ────────────────────────────────────
-
-def test_split_train_partitions_cover_pool_completely():
-    pool = _uniform_pool(20, 10)
-    train, id_val, ood_val = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=200,
-        cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
-    )
-    assert train | id_val | ood_val == pool
-
-
-def test_split_train_partitions_are_mutually_disjoint():
-    pool = _uniform_pool(20, 10)
-    train, id_val, ood_val = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=200,
-        cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
-    )
-    assert not (train & id_val)
-    assert not (train & ood_val)
-    assert not (id_val & ood_val)
-
-
-def test_split_train_id_val_hits_exact_sample_count():
-    n_samps_total = 200
-    pct = 0.1
-    pool = _uniform_pool(20, 10)
-    _, id_val, _ = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=n_samps_total,
-        cfg=_cfg(pct_partition=pct, pct_ood_tol=0.005),
-    )
-    assert len(id_val) == round(n_samps_total * pct)
-
-
-def test_split_train_ood_val_sample_proportion_within_tolerance():
-    n_samps_total = 200
-    pct = 0.1
-    tol = 0.005
-    pool = _uniform_pool(20, 10)
-    _, _, ood_val = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=n_samps_total,
-        cfg=_cfg(pct_partition=pct, pct_ood_tol=tol),
-    )
-    pct_actual = len(ood_val) / n_samps_total
-    assert abs(pct_actual - pct) < tol
-
-
-def test_split_train_every_id_species_has_at_least_one_train_sample():
-    pool = _uniform_pool(20, 10)
-    train, id_val, ood_val = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=200,
-        cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
-    )
-    ood_cids = {cid for cid, _ in ood_val}
-    id_cids = {cid for cid, _ in (train | id_val)} - ood_cids
-    train_cids = {cid for cid, _ in train}
-
-    for cid in id_cids:
-        assert cid in train_cids, f"Species '{cid}' has no samples in train partition"
-
-
-def test_split_train_ood_val_cids_may_coincide_with_id_test_class_universe():
-    # The function must not exclude OOD-val choices based on what's in fixed test partitions.
-    # Simply verify: the function succeeds and produces non-empty OOD-val without knowledge
-    # of any test partitions — overlap is allowed by design.
-    pool = _uniform_pool(20, 10)
-    _, _, ood_val = _split_train_into_train_idval_oodval(
-        skeys_train_pool=pool,
-        n_cids_total_target=20,
-        n_samps_total_target=200,
-        cfg=_cfg(pct_partition=0.1, pct_ood_tol=0.005),
-    )
-    assert len(ood_val) > 0
-
-
 # ─── build_data_indexes_cub ──────────────────────────────────────────────────
 
 def _make_cub_fixtures():
@@ -273,33 +117,33 @@ def _make_cub_fixtures():
         "sp_d": {0: "004.Sp_D/img0.jpg"},
         "sp_e": {0: "005.Sp_E/img0.jpg"},
     }
-    skeys_partitions = {
+    skeys_pts = {
         "train":   {("sp_a", 0), ("sp_b", 0)},
         "id_val":  {("sp_a", 1)},
         "id_test": {("sp_b", 1)},
         "ood_val": {("sp_c", 0), ("sp_d", 0)},
         "ood_test":{("sp_e", 0)},
     }
-    skeys_partitions["trainval"] = (
-        skeys_partitions["train"]
-        | skeys_partitions["id_val"]
-        | skeys_partitions["ood_val"]
+    skeys_pts["trainval"] = (
+        skeys_pts["train"]
+        | skeys_pts["id_val"]
+        | skeys_pts["ood_val"]
     )
-    skeys_partitions["whole"] = (
-        skeys_partitions["train"]
-        | skeys_partitions["id_val"]
-        | skeys_partitions["id_test"]
-        | skeys_partitions["ood_val"]
-        | skeys_partitions["ood_test"]
+    skeys_pts["whole"] = (
+        skeys_pts["train"]
+        | skeys_pts["id_val"]
+        | skeys_pts["id_test"]
+        | skeys_pts["ood_val"]
+        | skeys_pts["ood_test"]
     )
-    return cids, img_ptrs, skeys_partitions
+    return cids, img_ptrs, skeys_pts
 
 
 def test_cub_data_indexes_partition_size_composition():
-    cids, img_ptrs, skeys_partitions = _make_cub_fixtures()
-    all_cids = sorted({cid for skeys in skeys_partitions.values() for cid, _ in skeys})
+    cids, img_ptrs, skeys_pts = _make_cub_fixtures()
+    all_cids = sorted({cid for skeys in skeys_pts.values() for cid, _ in skeys})
     cid2enc = {cid: i for i, cid in enumerate(all_cids)}
-    data_indexes = build_data_indexes_cub(skeys_partitions, img_ptrs, cid2enc)
+    data_indexes = build_data_indexes_cub(skeys_pts, img_ptrs, cid2enc)
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])

@@ -35,7 +35,7 @@ MISSING_GENUS_2_FAMILY = {
 
 
 def build_tree_bryo() -> Tree:
-    tree = Phylo.read(paths["bryo_tree_raw"], "newick")
+    tree = Phylo.read(paths["raw_tree"]["bryo"], "newick")
     tip_names_trunc = set()
     for tip in tree.get_terminals():
         tip_name_trunc = trim_after_all_caps_underscore(tip.name).lower()

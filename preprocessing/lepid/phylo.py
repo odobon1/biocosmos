@@ -14,7 +14,7 @@ from preprocessing.common.phylo import augment_tree_with_polytomies, prune_tree,
 
 
 def build_tree_lepid() -> Tree:
-    tree = Phylo.read(paths["lepid_tree_raw"], "newick")
+    tree = Phylo.read(paths["raw_tree"]["lepid"], "newick")
     # heliconius_cydno/heliconius_cydno_alithea is the only instance where subspecies + corresponding species are both in tree, remove subspecies
     tree.prune(target="heliconius_cydno_alithea")
     # convert all subspecies names to species-level names by truncating after the second underscore

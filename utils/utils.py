@@ -49,12 +49,22 @@ if CLUSTER == "pace":
             "cub": dpath_root / "metadata/cub",
             "lepid": dpath_root / "metadata/lepid",
         },
-        "bryo_tree_raw": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
-        "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
-        "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
-        "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
-        "lepid_tree_raw": dpath_root / "data/lepid/tree_renamed_full.tre",
-        "nymph_tree_raw": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
+        "raw_tree": {
+            "bryo": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
+            "cub": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
+            "lepid": dpath_root / "data/lepid/tree_renamed_full.tre",
+            "nymph": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
+        },
+        "csv": {
+            "lepid": {
+                "imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+                "tax": dpath_lepid / "metadata/data_tree_meta.csv",
+            },
+            "nymph": {
+                "imgs": None,  # rip
+                "tax": None,  # rip
+            },
+        },
     }
 elif CLUSTER == "hpg":
 
@@ -91,13 +101,22 @@ elif CLUSTER == "hpg":
             "lepid": dpath_root / "metadata/lepid",
             "nymph": dpath_root / "metadata/nymph",
         },
-        "bryo_tree_raw": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
-        "cub_tree_raw": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
-        "lepid_metadata_imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
-        "lepid_metadata_tax": dpath_lepid / "metadata/data_tree_meta.csv",
-        "lepid_tree_raw": dpath_root / "data/lepid/tree_renamed_full.tre",
-        "nymph_metadata": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
-        "nymph_tree_raw": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
+        "raw_tree": {
+            "bryo": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
+            "cub": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
+            "lepid": dpath_root / "data/lepid/tree_renamed_full.tre",
+            "nymph": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
+        },
+        "csv": {
+            "lepid": {
+                "imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
+                "tax": dpath_lepid / "metadata/data_tree_meta.csv",
+            },
+            "nymph": {
+                "imgs": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
+                "tax": dpath_nymph / "metadata/data_meta-nymphalidae_whole_specimen-v250613.csv",
+            },
+        },
     }
 
 def seed_libs(seed, seed_torch=True):

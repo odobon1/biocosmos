@@ -66,11 +66,11 @@ def ascii_tree_lines(
 
 if __name__ == "__main__":
     
-    DATASET_NAME = "nymph"
-    # DATASET_NAME = "lepid"
+    DATASET = "nymph"
+    # DATASET = "lepid"
     FPATH_READABLE_TREE = "tools/readable_tree.txt"
 
-    tree = get_tree(DATASET_NAME)
+    tree = get_tree(DATASET)
     namer = Namer()
     lines = ascii_tree_lines(tree.root, namer)
     with open(FPATH_READABLE_TREE, "w", encoding="utf-8") as f:

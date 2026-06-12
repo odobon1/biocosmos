@@ -169,7 +169,7 @@ class MaybeToTensor:
 @dataclass
 class Split:
     data_indexes: list
-    id_eval_nshot: dict
+    nshot: dict
     class_counts: Dict[str, np.ndarray]
     norm_mean: Dict[str, Tuple[float]]
     norm_std: Dict[str, Tuple[float]]

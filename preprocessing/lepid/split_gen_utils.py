@@ -1,23 +1,23 @@
 import pandas as pd
 from tqdm import tqdm
 
-from preprocessing.common.split_gen import truncate_subspecies
+from preprocessing.common.split_gen import truncate_subspecies, GenSplitDataManager
 from utils.utils import paths
 
 
-def build_img_ptrs(cids, cid_2_family):
+def build_img_ptrs(cids):
 
-    img_ptrs = {
-        cid: {}
-        for cid in sorted(cids)
-    }
+    img_ptrs = {cid: {} for cid in sorted(cids)}
     cid_set = set(cids)
-    cid_offsets = {
-        cid: 0
-        for cid in sorted(cids)
-    }
-    df_metadata = pd.read_csv(paths["lepid_metadata_imgs"], usecols=["mask_path", "mask_name"])
-    for row in tqdm(df_metadata.itertuples(index=False), total=len(df_metadata), desc="Indexing Lepid images"):
+    cid_offsets = {cid: 0 for cid in sorted(cids)}
+
+    cid_2_family = {cid: GenSplitDataManager.class_data[cid]["family"] for cid in cids}
+    pos_filter = GenSplitDataManager.cfg.pos_filter
+
+    usecols = ["mask_path", "mask_name"] + (["class_dv"] if pos_filter is not None else [])
+    df_imgs = pd.read_csv(paths["csv"]["lepid"]["imgs"], usecols=usecols)
+
+    for row in tqdm(df_imgs.itertuples(index=False), total=len(df_imgs), desc="Indexing Lepid images"):
         mask_path = row.mask_path
         mask_name = row.mask_name
 
@@ -33,6 +33,8 @@ def build_img_ptrs(cids, cid_2_family):
             continue
         if cid_2_family[cid] != family:
             continue
+        if pos_filter is not None and row.class_dv != pos_filter:
+            continue
 
         rfpath = f"{family}/{subdir}/{mask_name}"
         idx = cid_offsets[cid]
@@ -40,91 +42,3 @@ def build_img_ptrs(cids, cid_2_family):
         cid_offsets[cid] += 1
 
     return img_ptrs
-
-def build_cid_2_samp_idxs(
-    cids,
-    img_ptrs,
-    cid_2_family,
-    pos_filter=None,
-    df_metadata=None,
-):
-
-    if img_ptrs is None:
-        img_ptrs = build_img_ptrs(cids, cid_2_family)
-
-    if pos_filter is None:
-        return {
-            cid: list(img_ptrs[cid].keys())
-            for cid in sorted(cids)
-        }
-
-    if df_metadata is None:
-        df_metadata = pd.read_csv(paths["lepid_metadata_imgs"])
-
-    pos_lookup = df_metadata.set_index("mask_name")["class_dv"]
-
-    cid_2_samp_idxs = {}
-    for cid in sorted(cids):
-        samp_idxs = []
-        for samp_idx, rfpath in sorted(img_ptrs[cid].items()):
-            fname_img = rfpath.split("/")[-1]
-            if pos_lookup.get(fname_img) == pos_filter:
-                samp_idxs.append(samp_idx)
-        cid_2_samp_idxs[cid] = samp_idxs
-
-    return cid_2_samp_idxs
-
-def build_data_indexes(
-    cids,
-    skeys_pts,
-    cid_2_family,
-    cid2enc,
-    img_ptrs=None,
-    df_metadata=None,
-):
-
-    if img_ptrs is None:
-        img_ptrs = build_img_ptrs(cids, cid_2_family)
-
-    if df_metadata is None:
-        df_metadata = pd.read_csv(paths["lepid_metadata_imgs"])
-
-    metadata_lookup = df_metadata.set_index("mask_name")[["class_dv", "sex"]]
-
-    def build_partition_index(partition):
-        data_index = []
-
-        for cid, samp_idx in sorted(skeys_pts[partition]):
-            rfpath = img_ptrs[cid][samp_idx]
-            fname = rfpath.split("/")[-1]
-            pos = metadata_lookup["class_dv"].get(fname)
-            sex = metadata_lookup["sex"].get(fname)
-            data_index.append(
-                {
-                    "cid": cid,
-                    "class_enc": cid2enc[cid],
-                    "rfpath": rfpath,
-                    "meta": {
-                        "pos": None if pd.isna(pos) else pos,
-                        "sex": None if pd.isna(sex) else sex,
-                    },
-                }
-            )
-        return data_index
-
-    validation_ood = build_partition_index("ood_val")
-    test_ood = build_partition_index("ood_test")
-
-    return {
-        "train": build_partition_index("train"),
-        "trainval": build_partition_index("trainval"),
-        "val": {
-            "id": build_partition_index("id_val"),
-            "ood": validation_ood,
-        },
-        "test": {
-            "id": build_partition_index("id_test"),
-            "ood": test_ood,
-        },
-        "whole": build_partition_index("whole"),
-    }

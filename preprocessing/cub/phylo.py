@@ -12,7 +12,7 @@ import pdb
 
 
 def build_tree_cub() -> Tree:
-    tree = Phylo.read(paths["cub_tree_raw"], "newick")
+    tree = Phylo.read(paths["raw_tree"]["cub"], "newick")
     for tip in tree.get_terminals():
         tip.name = tip.name[8:].lower().replace(" ", "_")
     return tree

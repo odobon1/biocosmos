@@ -7,7 +7,7 @@ from tools.clear_preprocessing import clear_all_preprocessing, remove_path
 
 
 def clear_cub_data() -> None:
-    preserved_path = paths["cub_tree_raw"]
+    preserved_path = paths["raw_tree"]["cub"]
     for child in paths["data"]["cub"].iterdir():
         if child == preserved_path:
             continue

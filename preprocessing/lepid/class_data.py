@@ -29,7 +29,7 @@ import pdb
 
 def generate_class_data() -> None:
     cids = get_cids_lepid()
-    df_metadata_tax = pd.read_csv(paths["lepid_metadata_tax"])
+    df_metadata_tax = pd.read_csv(paths["csv"]["lepid"]["tax"])
     genus_2_tax = (
         df_metadata_tax
         .drop_duplicates(subset=["genus"])

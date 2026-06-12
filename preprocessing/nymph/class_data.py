@@ -27,7 +27,7 @@ import pdb
 
 def generate_class_data() -> None:
     cids = get_cids_nymph()
-    df_metadata = pd.read_csv(paths["nymph_metadata"])
+    df_metadata = pd.read_csv(paths["csv"]["nymph"]["tax"])
     species_2_subfamily = (
         df_metadata
         .drop_duplicates(subset=["species"])

@@ -14,16 +14,46 @@ from PIL import Image
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Set, Optional, Any
 from pathlib import Path
+import pandas as pd
 
 from utils.data import Split
-from utils.utils import paths, save_pickle
-from utils.config import GenSplitConfig
+from utils.utils import paths, save_pickle, seed_libs, load_pickle
+from utils.config import get_config_splits
 
 import pdb
 
 
-def _process_rfpaths_parallel(rfpaths, dataset, desc):
-    imgs_root = paths["imgs"][dataset]
+class GenSplitDataManager:
+
+    dataset = None
+
+    class_data = None
+
+    dpath_split = None
+    dpath_figs = None
+    dpath_split_dev = None
+    dpath_figs_dev = None
+
+    @staticmethod
+    def setup(dataset):
+        GenSplitDataManager.dataset = dataset
+        GenSplitDataManager.cfg = cfg = get_config_splits()
+        print(f"Generating split: '{cfg.split}'...")
+        seed_libs(cfg.seed, seed_torch=False)
+        GenSplitDataManager.class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
+
+        GenSplitDataManager.dpath_split = paths["metadata"][dataset] / f"splits/{cfg.split}"
+        GenSplitDataManager.dpath_figs = GenSplitDataManager.dpath_split / "figures"
+        GenSplitDataManager.dpath_split_dev = paths["metadata"][dataset] / "splits/dev"
+        GenSplitDataManager.dpath_figs_dev = GenSplitDataManager.dpath_split_dev / "figures"
+
+    @staticmethod
+    def get_cids():
+        return sorted(GenSplitDataManager.class_data.keys())
+
+
+def _process_rfpaths_parallel(rfpaths, desc):
+    imgs_root = paths["imgs"][GenSplitDataManager.dataset]
     fpaths = [imgs_root / rfpath for rfpath in rfpaths]
     means = []
     vars_ = []
@@ -48,7 +78,6 @@ def _process_rfpaths_parallel(rfpaths, dataset, desc):
         pbar.close()
     return means, vars_
 
-
 def _snapshot_norm_stats(all_means, all_vars):
     means = np.stack(all_means)
     vars_ = np.stack(all_vars)
@@ -57,16 +86,16 @@ def _snapshot_norm_stats(all_means, all_vars):
     std_agg = np.sqrt(np.clip(var_agg, 0.0, None))
     return tuple(float(x) for x in mean_agg), tuple(float(x) for x in std_agg)
 
-
-def get_norm_stats(data_indexes, dataset: str, cfg) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
-    if cfg.dev.get("skip_norm_stats", False):
+def get_norm_stats(
+    data_indexes, 
+) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
+    if GenSplitDataManager.cfg.dev.get("skip_norm_stats", False):
         print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
         return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
-    return compute_rgb_norm_stats_by_partition(data_indexes, dataset)
+    return compute_rgb_norm_stats_by_partition(data_indexes)
 
 def compute_rgb_norm_stats_by_partition(
     data_indexes: Dict[str, Any],
-    dataset: str,
 ) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
     """
     Norm stats accumulated incrementally: train → snapshot, +val → snapshot, 
@@ -87,7 +116,7 @@ def compute_rgb_norm_stats_by_partition(
     for pt_name, rfpaths in groups:
         if rfpaths:
             new_means, new_vars = _process_rfpaths_parallel(
-                rfpaths, dataset, desc=f"Computing norm stats ({pt_name})"
+                rfpaths, desc=f"Computing norm stats ({pt_name})"
             )
             all_means.extend(new_means)
             all_vars.extend(new_vars)
@@ -214,7 +243,6 @@ def strat_sample_partition_ood(
     cid_2_penult: Dict[str, str],
     n_cids_whole: int,
     n_samps_whole: int,
-    cfg: GenSplitConfig,
     ood_tol_flag: bool,
 ):
     """
@@ -223,7 +251,7 @@ def strat_sample_partition_ood(
     """
     cid_2_skeys_pool = build_cid_2_skeys(skeys_pool)
     cids_pool = set(cid_2_skeys_pool.keys())
-    n_cids_pt = round(n_cids_whole * cfg.pct_partition)
+    n_cids_pt = round(n_cids_whole * GenSplitDataManager.cfg.pct_partition)
 
     penult_2_cids = defaultdict(list)
     for cid in sorted(cids_pool):
@@ -238,7 +266,7 @@ def strat_sample_partition_ood(
     while sample_once_more:
         i += 1
         if i % 10_000 == 0 and i > 0:
-            print(f"Warning: {i / 1_000}k seeds searched and no OOD partition found satisfying pct_ood_tol={cfg.pct_ood_tol}")
+            print(f"Warning: {i / 1_000}k seeds searched and no OOD partition found satisfying pct_ood_tol={GenSplitDataManager.cfg.pct_ood_tol}")
         
         cids_pt, cids_rem = strat_sample_partition(
             n_classes=len(penult_2_cids),
@@ -246,7 +274,7 @@ def strat_sample_partition_ood(
             n_insts_2_classes=n_insts_2_classes_penult_lvl,
             class_2_insts=penult_2_cids,
             insts=set(cids_pool),
-            seed=cfg.seed + i,
+            seed=GenSplitDataManager.cfg.seed + i,
         )
 
         skeys_pt = {
@@ -255,7 +283,7 @@ def strat_sample_partition_ood(
             for skey in cid_2_skeys_pool[cid]
         }
         pct_samps_pt = len(skeys_pt) / n_samps_whole
-        close_enough = abs(pct_samps_pt - cfg.pct_partition) <= cfg.pct_ood_tol
+        close_enough = abs(pct_samps_pt - GenSplitDataManager.cfg.pct_partition) <= GenSplitDataManager.cfg.pct_ood_tol
         if close_enough or not ood_tol_flag:
             sample_once_more = False
 
@@ -269,8 +297,7 @@ def strat_sample_partition_ood(
 
 def strat_sample_partition_id(
     skeys_pool: Set[Tuple[str, int]], 
-    n_samps_whole: int, 
-    cfg: GenSplitConfig,
+    n_samps_whole: int,
 ) -> Tuple[
     Set[Tuple[str, int]],
     Set[Tuple[str, int]],
@@ -292,7 +319,7 @@ def strat_sample_partition_id(
         for skey in cid_2_skeys_pool[cid]
     }
 
-    n_samps_id_val_target = round(n_samps_whole * cfg.pct_partition)
+    n_samps_id_val_target = round(n_samps_whole * GenSplitDataManager.cfg.pct_partition)
 
     n_insts_2_classes_leaf_lvl = defaultdict(list)
     cid_2_skeys_id_multis = defaultdict(list)
@@ -308,7 +335,7 @@ def strat_sample_partition_id(
         n_insts_2_classes=n_insts_2_classes_leaf_lvl,
         class_2_insts=cid_2_skeys_id_multis,
         insts=skeys_id_multis,
-        seed=cfg.seed,
+        seed=GenSplitDataManager.cfg.seed,
     )
 
     skeys_id_singles = {
@@ -324,7 +351,6 @@ def strat_sample_ood_id(
     n_cids_whole: int,
     n_samps_whole: int,
     cid_2_penult: Dict[str, str],
-    cfg: GenSplitConfig,
     ood_tol_flag: bool = True,
 ) -> Tuple[
     Set[Tuple[str, int]],
@@ -336,13 +362,11 @@ def strat_sample_ood_id(
         cid_2_penult,
         n_cids_whole,
         n_samps_whole,
-        cfg,
         ood_tol_flag,
     )
     skeys_pt_id, skeys_pool = strat_sample_partition_id(
         skeys_pool, 
         n_samps_whole, 
-        cfg,
     )
     return skeys_pt_ood, skeys_pt_id, skeys_pool
 
@@ -352,13 +376,16 @@ def build_cid_2_skeys(skeys: Set[Tuple[str, int]]) -> Dict[str, List[Tuple[str, 
         cid_2_skeys[cid].append((cid, samp_idx))
     return cid_2_skeys
 
-def build_trainval_skeys_partition(skeys_pts):
+def build_skeys_trainval(skeys_pts):
+    return (skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["ood_val"]) - skeys_pts["id_test"]
 
-    skeys_trainval = skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["ood_val"]
-    skeys_id_test = skeys_pts.get("id_test", set())
-    return skeys_trainval - skeys_id_test
+def add_trainval_whole(skeys_pts):
+    skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["ood_val"]
+    skeys_pts["whole"] = skeys_pts["trainval"] | skeys_pts["id_test"] | skeys_pts["ood_test"]
 
-def build_id_eval_nshot(skeys_pts, cfg):
+def build_nshot(skeys_pts):
+
+    cfg = GenSplitDataManager.cfg
 
     cid_2_skeys_trainval = build_cid_2_skeys(skeys_pts["trainval"])
     cid_2_skeys_id_test = build_cid_2_skeys(skeys_pts["id_test"])
@@ -368,40 +395,34 @@ def build_id_eval_nshot(skeys_pts, cfg):
         n_shot_tracker.append({"id_val": set(), "id_test": set()})
 
     for cid in sorted(cid_2_skeys_trainval):
-        cid_skeys_val = set()
-        cid_skeys_test = set(cid_2_skeys_id_test.get(cid, []))
-
         n_skeys_train = 0
+        in_id_val = False
         for skey in cid_2_skeys_trainval[cid]:
             if skey in skeys_pts["train"]:
                 n_skeys_train += 1
             elif skey in skeys_pts["id_val"]:
-                cid_skeys_val.add(skey)
+                in_id_val = True
 
-        idx_id_val_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
-        n_shot_tracker[idx_id_val_bucket]["id_val"].update(cid_skeys_val)
+        if in_id_val:
+            idx_id_val_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
+            n_shot_tracker[idx_id_val_bucket]["id_val"].add(cid)
 
-        idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, len(cid_2_skeys_trainval[cid]))
-        n_shot_tracker[idx_trainval_bucket]["id_test"].update(cid_skeys_test)
+        if cid in cid_2_skeys_id_test:
+            idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, len(cid_2_skeys_trainval[cid]))
+            n_shot_tracker[idx_trainval_bucket]["id_test"].add(cid)
 
     # Second pass: OOD-val classes whose samples were borrowed into id_test.
     # These species are not in cid_2_skeys_trainval, so they were missed above.
-    # We bucket their id_test samples using their trainval cardinality.
-    cid_2_id_test_skeys_ood = defaultdict(set)
-    for skey in skeys_pts["id_test"]:
-        cid = skey[0]
-        if cid not in cid_2_skeys_trainval:
-            cid_2_id_test_skeys_ood[cid].add(skey)
+    # We bucket them using their trainval cardinality.
+    cids_id_test_ood = {skey[0] for skey in skeys_pts["id_test"] if skey[0] not in cid_2_skeys_trainval}
+    for cid in sorted(cids_id_test_ood):
+        n_skeys_trainval_ood = len(cid_2_skeys_trainval.get(cid, []))
+        if n_skeys_trainval_ood == 0:
+            continue
+        idx_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval_ood)
+        n_shot_tracker[idx_bucket]["id_test"].add(cid)
 
-    if cid_2_id_test_skeys_ood:
-        for cid in sorted(cid_2_id_test_skeys_ood):
-            n_skeys_trainval_ood = len(cid_2_skeys_trainval.get(cid, []))
-            if n_skeys_trainval_ood == 0:
-                continue
-            idx_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval_ood)
-            n_shot_tracker[idx_bucket]["id_test"].update(cid_2_id_test_skeys_ood[cid])
-
-    id_eval_nshot = {
+    nshot = {
         "names": cfg.nst_names,
         "buckets": {
             name: {
@@ -412,7 +433,7 @@ def build_id_eval_nshot(skeys_pts, cfg):
         },
     }
 
-    return id_eval_nshot
+    return nshot
 
 def build_global_cid2enc(skeys_pts):
     all_cids = sorted({cid for skeys in skeys_pts.values() for cid, _ in skeys})
@@ -433,17 +454,76 @@ def build_class_counts_by_partition(data_indexes, n_classes):
         results[pt_name] = counts
     return results
 
-def build_dev_skeys_partitions(skeys_pts, size_dev):
+def build_skey2meta(
+    skeys: set[Tuple[str, int]],
+    img_ptrs, 
+) -> Dict[Tuple[str, int], Optional[Dict[str, Optional[str]]]]:
+    if GenSplitDataManager.dataset in ("lepid", "nymph"):
+        df = pd.read_csv(paths["csv"][GenSplitDataManager.dataset]["imgs"])
+        lookup = df.set_index("mask_name")[["class_dv", "sex"]]
+        result = {}
+        for skey in skeys:
+            cid, samp_idx = skey
+            fname = img_ptrs[cid][samp_idx].split("/")[-1]
+            pos = lookup["class_dv"].get(fname)
+            sex = lookup["sex"].get(fname)
+            result[(cid, samp_idx)] = {
+                "pos": None if pd.isna(pos) else pos,
+                "sex": None if pd.isna(sex) else sex,
+            }
+    else:
+        result = {skey: None for skey in skeys}
+    return result
+
+def build_data_indexes(
+    skeys_pts,
+    img_ptrs,
+    cid2enc,
+    skey2meta: Dict[Tuple[str, int], Optional[Dict[str, Optional[str]]]],
+):
+
+    def build_partition_index(partition):
+        data_index = []
+
+        for skey in sorted(skeys_pts[partition]):
+            cid, samp_idx = skey
+            data_index.append(
+                {
+                    "cid": cid,
+                    "class_enc": cid2enc[cid],
+                    "rfpath": img_ptrs[cid][samp_idx],
+                    "meta": skey2meta[skey],
+                }
+            )
+        return data_index
+
+    return {
+        "train": build_partition_index("train"),
+        "trainval": build_partition_index("trainval"),
+        "val": {
+            "id": build_partition_index("id_val"),
+            "ood": build_partition_index("ood_val"),
+        },
+        "test": {
+            "id": build_partition_index("id_test"),
+            "ood": build_partition_index("ood_test"),
+        },
+        "whole": build_partition_index("whole"),
+    }
+
+def build_dev_skeys_partitions(skeys_pts):
+    size_dev = GenSplitDataManager.cfg.size_dev
     return {
         pt: set(sorted(skeys_partition)[:size_dev])
         for pt, skeys_partition in skeys_pts.items()
     }
 
-def save_split(data_indexes, id_eval_nshot, class_counts, norm_stats, dpath_split, dpath_figs) -> None:
+def save_split(data_indexes, nshot, class_counts, norm_stats, dpath_split) -> None:
     norm_mean = {pt: norm_stats[pt][0] for pt in norm_stats}
     norm_std = {pt: norm_stats[pt][1] for pt in norm_stats}
-    split = Split(data_indexes, id_eval_nshot, class_counts, norm_mean, norm_std)
+    split = Split(data_indexes, nshot, class_counts, norm_mean, norm_std)
     os.makedirs(dpath_split, exist_ok=True)
+    dpath_figs = dpath_split / "figures"
     if os.path.exists(dpath_figs):
         shutil.rmtree(dpath_figs)
     os.makedirs(dpath_figs)
@@ -515,7 +595,6 @@ def plot_split_distribution(
 def gen_strat_sampling_dist_plots_ood(
     penult_2_cids: Dict[str, List[str]],
     skeys_pts: Dict[str, Set[Tuple[str, int]]],
-    dpath_figs: Path,
 ) -> None:
     """
     Generate OOD class-distribution plots and save to disk.
@@ -533,7 +612,6 @@ def gen_strat_sampling_dist_plots_ood(
             list of class IDs.
         skeys_pts: Dict with partition keys mapping to sets of sample 
             keys for each partition.
-        dpath_figs: Directory where plot files are written.
     """
 
     cids_train = {cid for cid, _ in skeys_pts["train"]}
@@ -566,7 +644,7 @@ def gen_strat_sampling_dist_plots_ood(
         title="OOD Stratified Sampling Distribution",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "ood_strat_sampling_dist.png",
+        fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist.png",
     )
 
     plot_split_distribution(
@@ -576,7 +654,7 @@ def gen_strat_sampling_dist_plots_ood(
         title="OOD Stratified Sampling Distribution (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "ood_strat_sampling_dist_log.png",
+        fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log.png",
         scale="symlog",
         markers=["|", "|", "|", "|", "|"],
         markersizes=[7, 5, 5, 5, 5],
@@ -592,7 +670,7 @@ def gen_strat_sampling_dist_plots_ood(
         title="OOD Stratified Sampling Distribution (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
+        fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
         ema=True,
         scale="log",
     )
@@ -600,7 +678,6 @@ def gen_strat_sampling_dist_plots_ood(
 def gen_strat_sampling_dist_plots_id(
     cid_2_n_samps: Dict[str, int],
     skeys_pts: Dict[str, Set[Tuple[str, int]]],
-    dpath_figs: Path,
 ) -> None:
     """
     Generate ID class-distribution plots and save to disk.
@@ -655,7 +732,7 @@ def gen_strat_sampling_dist_plots_id(
         title="ID Stratified Sampling Distribution",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "id_strat_sampling_dist.png",
+        fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist.png",
     )
 
     plot_split_distribution(
@@ -665,7 +742,7 @@ def gen_strat_sampling_dist_plots_id(
         title="ID Stratified Sampling Distribution (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "id_strat_sampling_dist_log.png",
+        fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log.png",
         scale="symlog",
         markers=["|", "|", "|", "|", "|"],
         markersizes=[7, 5, 5, 5, 5],
@@ -681,34 +758,33 @@ def gen_strat_sampling_dist_plots_id(
         title="ID Stratified Sampling Distribution (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
-        fpath=dpath_figs / "id_strat_sampling_dist_log_smooth.png",
+        fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log_smooth.png",
         ema=True,
         scale="log",
     )
 
-def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_title=8, fontsize=5) -> None:
-    n_shot_col_names = [name for name in id_eval_nshot["names"]]
+def generate_n_shot_table(nshot, skeys_pts, col_width=0.20, fontsize_title=8, fontsize=5) -> None:
+    cid_2_n_id_val = defaultdict(int)
+    for cid, _ in skeys_pts["id_val"]:
+        cid_2_n_id_val[cid] += 1
+    cid_2_n_id_test = defaultdict(int)
+    for cid, _ in skeys_pts["id_test"]:
+        cid_2_n_id_test[cid] += 1
+
+    n_shot_col_names = list(nshot["names"])
 
     row_values_id_val = ["ID Val"]
     row_values_id_test = ["ID Test"]
-    for name in id_eval_nshot["names"]:
-        bucket_skeys_set_id_val = id_eval_nshot["buckets"][name]["id_val"]
-        bucket_skeys_set_id_test = id_eval_nshot["buckets"][name]["id_test"]
+    for name in nshot["names"]:
+        cids_id_val = nshot["buckets"][name]["id_val"]
+        cids_id_test = nshot["buckets"][name]["id_test"]
 
-        num_samps_val = len(bucket_skeys_set_id_val)
-        if num_samps_val > 0:
-            cids, _ = zip(*bucket_skeys_set_id_val)
-            n_classes_val = len(set(cids))
-        else:
-            n_classes_val = 0
+        n_classes_val = len(cids_id_val)
+        num_samps_val = sum(cid_2_n_id_val[cid] for cid in cids_id_val)
         row_values_id_val.append(f"{num_samps_val:,} ({n_classes_val})")
 
-        num_samps_test = len(bucket_skeys_set_id_test)
-        if num_samps_test > 0:
-            cids, _ = zip(*bucket_skeys_set_id_test)
-            n_classes_test = len(set(cids))
-        else:
-            n_classes_test = 0
+        n_classes_test = len(cids_id_test)
+        num_samps_test = sum(cid_2_n_id_test[cid] for cid in cids_id_test)
         row_values_id_test.append(f"{num_samps_test:,} ({n_classes_test:,})")
 
     labels_cols = ["Partition"] + n_shot_col_names
@@ -738,7 +814,7 @@ def generate_n_shot_table(id_eval_nshot, dpath_figs, col_width=0.20, fontsize_ti
         cell.set_linewidth(0.5)
 
     plt.title("n-shot Bucket Sample (Class) Counts", fontsize=fontsize_title, fontweight="bold", y=0.70)
-    plt.savefig(dpath_figs / "summary_nshot.png", dpi=300, bbox_inches="tight")
+    plt.savefig(GenSplitDataManager.dpath_figs / "summary_nshot.png", dpi=300, bbox_inches="tight")
 
 def count_unique_cids_from_skeys(skeys) -> int:
     return len({cid for cid, _ in skeys})
@@ -756,7 +832,6 @@ def render_partition_summary_table(
     labels_cols,
     data,
     title,
-    dpath_figs,
     figsize=(5, 2),
     pad=-5,
     dpi=150,
@@ -784,12 +859,11 @@ def render_partition_summary_table(
         tbl.scale(*scale)
 
     plt.title(title, fontweight="bold", pad=pad)
-    plt.savefig(dpath_figs / "summary_partitions.png", dpi=dpi, bbox_inches="tight")
+    plt.savefig(GenSplitDataManager.dpath_figs / "summary_partitions.png", dpi=dpi, bbox_inches="tight")
     plt.close()
 
 def generate_partition_summary_table(
     skeys_pts,
-    dpath_figs,
     n_cids_total,
     title,
     labels_cols=None,
@@ -828,10 +902,108 @@ def generate_partition_summary_table(
         labels_cols=labels_cols,
         data=data,
         title=title,
-        dpath_figs=dpath_figs,
         figsize=figsize,
         pad=pad,
         dpi=dpi,
         fontsize=fontsize,
         scale=scale,
     )
+
+DATASET2FANCY = {
+    "bryo": "Bryozoa",
+    "cub": "CUB",
+    "lepid": "Lepidoptera",
+    "nymph": "Nymphalidae",
+}
+
+def generate_splits(
+    cids,
+    skeys_pts,
+    skeys_pts_dev,
+    img_ptrs,
+    penult_2_cids,
+    cid_2_n_samps,
+) -> None:
+
+    # N-SHOT TRACKING
+
+    print("Constructing n-shot tracking structures...")
+    nshot = build_nshot(skeys_pts)
+    print("n-shot tracking complete!")
+
+    # GENERATE DATA INDEXES
+
+    print("Generating data indexes...")
+    cid2enc = build_global_cid2enc(skeys_pts)
+    skey2meta = build_skey2meta(skeys_pts["whole"], img_ptrs)
+    data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
+    data_indexes_dev = build_data_indexes(skeys_pts_dev, img_ptrs, cid2enc, skey2meta)
+    print("Data indexes complete!")
+
+    # CLASS COUNTS
+
+    print("Generating class counts for train partitions...")
+    class_counts = build_class_counts_by_partition(data_indexes, len(cids))
+    class_counts_dev = build_class_counts_by_partition(data_indexes_dev, len(cids))
+    print("Class counts complete!")
+
+    # TRAIN PARTITIONS NORMALIZATION STATS
+
+    norm_stats = get_norm_stats(data_indexes)
+
+    # SAVE SPLITS
+
+    print("Saving splits...")
+    save_split(
+        data_indexes,
+        nshot,
+        class_counts,
+        norm_stats,
+        GenSplitDataManager.dpath_split,
+    )
+    save_split(
+        data_indexes_dev,
+        nshot,
+        class_counts_dev,
+        norm_stats,
+        GenSplitDataManager.dpath_split_dev,
+    )
+    print("Splits saved!")
+
+    # OOD STRATIFIED SAMPLING DISTRIBUTION PLOTTING
+
+    print("Generating OOD stratified sampling distribution plots...")
+    gen_strat_sampling_dist_plots_ood(
+        penult_2_cids,
+        skeys_pts,
+    )
+    print("OOD stratified sampling distribution plots complete!")
+
+    # ID STRATIFIED SAMPLING DISTRIBUTION PLOTTING (singletons omitted)
+
+    print("Generating ID stratified sampling distribution plots...")
+    gen_strat_sampling_dist_plots_id(
+        cid_2_n_samps,
+        skeys_pts,
+    )
+    print("ID stratified sampling distribution plots complete!")
+
+    # PARTITION SUMMARY TABLE
+
+    print("Generating partition summary table...")
+    generate_partition_summary_table(
+        skeys_pts=skeys_pts,
+        n_cids_total=len(cids),
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} Partition Summary",
+    )
+    print("Partition summary table complete!")
+
+    # N-SHOT BUCKET SUMMARY TABLE
+
+    print("Generating n-shot bucket summary table...")
+    generate_n_shot_table(nshot, skeys_pts)
+    print("n-shot tracking table complete!")
+
+    # SPLIT GENERATION COMPLETE
+
+    print("Splits complete!")

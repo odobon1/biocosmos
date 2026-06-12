@@ -143,7 +143,7 @@ class PartitionEvaluationPipeline:
 
         if self.partition == "id":
             split = load_split(config.dataset, config.split)
-            self.nshot_bucket_names = list(split.id_eval_nshot["names"])
+            self.nshot_bucket_names = list(split.nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 config.dataset,
                 config.split,
@@ -819,10 +819,10 @@ def build_class_enc_to_train_nshot_bucket(
     split = load_split(dataset, split)
     class_enc_to_bucket = {}
 
-    for bucket_name in split.id_eval_nshot["names"]:
-        skeys_id_val = split.id_eval_nshot["buckets"][bucket_name]["id_val"]
+    for bucket_name in split.nshot["names"]:
+        cids_id_val = split.nshot["buckets"][bucket_name]["id_val"]
 
-        for cid, _ in skeys_id_val:
+        for cid in cids_id_val:
             # Some split variants (e.g., dev) intentionally omit many classes from train; skip n-shot entries that are absent in current class encoding map.
             if cid not in cid2enc:
                 continue

@@ -12,7 +12,7 @@ import pdb
 
 
 def build_tree_nymph() -> Tree:
-    tree = Phylo.read(paths["nymph_tree_raw"], "newick")
+    tree = Phylo.read(paths["raw_tree"]["nymph"], "newick")
     for tip in tree.get_terminals():
         if tip.name in ("sp_1", "genus2_annette", "genus2_andromica"):
             tree.prune(target=tip.name)

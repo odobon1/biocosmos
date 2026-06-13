@@ -109,7 +109,7 @@ class PartitionEvaluationPipeline:
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
                "text_template: each inner list must contain exactly one element for eval"
 
-        index_data, cid2enc = spawn_partition_data(
+        index_data, cid2enc, enc2cid = spawn_partition_data(
             config,
             partition,
         )
@@ -126,6 +126,7 @@ class PartitionEvaluationPipeline:
 
         self.dataloader = spawn_dataloader(
             index_data=index_data,
+            enc2cid=enc2cid,
             text_template=text_template,
             config=config,
             shuffle=False,
@@ -820,7 +821,7 @@ def build_class_enc_to_train_nshot_bucket(
     class_enc_to_bucket = {}
 
     for bucket_name in split.nshot["names"]:
-        cids_val_id = split.nshot["buckets"][bucket_name]["val_id"]
+        cids_val_id = split.nshot["buckets"]["train/val"][bucket_name]
 
         for cid in cids_val_id:
             # Some split variants (e.g., dev) intentionally omit many classes from train; skip n-shot entries that are absent in current class encoding map.

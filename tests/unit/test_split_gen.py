@@ -36,16 +36,18 @@ def test_add_trainval_whole_unions_partitions() -> None:
     }
 
 
-def test_build_nshot_buckets_ood_borrowed_test_id_by_trainval_cardinality() -> None:
-    # cid_ood is an OOD species: 2 samples in val_ood (trainval), 1 borrowed into test_id.
-    # trainval cardinality for cid_ood = 2.
+def test_build_nshot_buckets_ood_val_species_in_test_id_by_trainval_cardinality() -> None:
+    # cid_ood lands in BOTH test_id and val_ood: ID-test draws a sample into test_id
+    # (species stays in the pool), then OOD-val claims its remaining samples. Since
+    # val_ood ⊆ trainval, cid_ood's trainval cardinality is 2 and it must be bucketed
+    # into trainval/test by that cardinality.
     # With nst_seps=[2]: bisect_left([2], 2) == 0 → "few" bucket.
     # With nst_seps=[2]: bisect_left([2], 3) == 1 → "many" bucket.
     cfg = SimpleNamespace(nst_names=["few", "many"], nst_seps=[2])
     skeys_pts = {
         "train": {("cid_a", 0)},
         "val_id": {("cid_a", 1)},
-        # cid_ood sample borrowed into test_id
+        # cid_ood sample drawn into test_id during ID-test sampling
         "test_id": {("cid_ood", 0)},
         # cid_ood has 2 samples remaining in val_ood (and thus in trainval)
         "val_ood": {("cid_ood", 1), ("cid_ood", 2)},
@@ -57,15 +59,15 @@ def test_build_nshot_buckets_ood_borrowed_test_id_by_trainval_cardinality() -> N
 
     nshot = build_nshot(skeys_pts, cfg)
 
-    # cid_ood's borrowed test_id sample must appear in "few" test_id bucket (trainval count=2)
-    assert "cid_ood" in nshot["buckets"]["few"]["test_id"]
+    # cid_ood's test_id sample must appear in "few" trainval/test bucket (trainval count=2)
+    assert "cid_ood" in nshot["buckets"]["trainval/test"]["few"]
     # No cid_ood entry in val_id buckets (OOD species are not ID)
     for bucket_name in cfg.nst_names:
-        assert "cid_ood" not in nshot["buckets"][bucket_name]["val_id"]
+        assert "cid_ood" not in nshot["buckets"]["train/val"][bucket_name]
     # Total test_id cids across all buckets equals cids in skeys_pts["test_id"]
     all_test_id_bucketed = set()
     for bucket_name in cfg.nst_names:
-        all_test_id_bucketed.update(nshot["buckets"][bucket_name]["test_id"])
+        all_test_id_bucketed.update(nshot["buckets"]["trainval/test"][bucket_name])
     assert all_test_id_bucketed == {cid for cid, _ in skeys_pts["test_id"]}
 
 
@@ -83,11 +85,11 @@ def test_build_nshot_uses_train_for_val_id_and_trainval_for_test_id() -> None:
     nshot = build_nshot(skeys_pts, cfg)
 
     # cid_a: train=1 → few bucket for val_id; trainval=2 → few bucket for test_id
-    assert nshot["buckets"]["few"]["val_id"] == {"cid_a"}
-    assert nshot["buckets"]["few"]["test_id"] == {"cid_a"}
+    assert nshot["buckets"]["train/val"]["few"] == {"cid_a"}
+    assert nshot["buckets"]["trainval/test"]["few"] == {"cid_a"}
     # cid_b: train=3 (no val_id sample) → many bucket for test_id only
-    assert nshot["buckets"]["many"]["val_id"] == set()
-    assert nshot["buckets"]["many"]["test_id"] == {"cid_b"}
+    assert nshot["buckets"]["train/val"]["many"] == set()
+    assert nshot["buckets"]["trainval/test"]["many"] == {"cid_b"}
 
 
 def test_build_data_indexes_partition_size_composition():

@@ -169,6 +169,7 @@ class MaybeToTensor:
 @dataclass
 class Split:
     data_indexes: list
+    enc2cid: Dict[int, str]
     nshot: dict
     class_counts: Dict[str, np.ndarray]
     norm_mean: Dict[str, Tuple[float]]
@@ -297,13 +298,15 @@ class DorsalVentralBatchSampler:
 class ImageTextDataset(Dataset):
 
     def __init__(
-        self, 
+        self,
         index_data,
+        enc2cid,
         text_template,
-        img_pp, 
+        img_pp,
         config,
     ):
         self.index_data = index_data
+        self.enc2cid = enc2cid
         self.text_template = text_template
         self.img_pp = img_pp
         self.dataset = config.dataset
@@ -316,7 +319,9 @@ class ImageTextDataset(Dataset):
         self.rank_encs = load_pickle(paths["metadata"][self.dataset] / "rank_encs.pkl")
 
         self.missing_class_data_cids = {
-            datum["cid"] for datum in self.index_data if datum["cid"] not in self.class_data
+            cid
+            for datum in self.index_data
+            if (cid := self.enc2cid[datum["class_enc"]]) not in self.class_data
         }
         if self.missing_class_data_cids:
             print(
@@ -351,17 +356,11 @@ class ImageTextDataset(Dataset):
         idx = encoded_idx % self.n_samples
 
         class_enc = self.index_data[idx]["class_enc"]
-        cid = self.index_data[idx]["cid"]
+        cid = self.enc2cid[class_enc]
         meta = self.index_data[idx]["meta"]
 
         rank_encs = []
         class_data_cid = self.class_data.get(cid)
-        if class_data_cid is None:
-            class_data_cid = {
-                "species": cid,
-                "genus": cid,
-                "common_name": None,
-            }
 
         for rank_name, rank_map in self.rank_encs.items():
             rank_value = class_data_cid.get(rank_name)
@@ -399,14 +398,11 @@ def collate_fn(subbatch):
 
     return imgs_sb, texts_sb, class_encs_sb, targ_data_sb
 
-def build_cid2enc(index_data):
+def build_cid2enc(index_data, enc2cid):
     cid2enc = {}
     for datum in index_data:
-        cid = datum["cid"]
         class_enc = datum["class_enc"]
-        if cid in cid2enc and cid2enc[cid] != class_enc:
-            raise ValueError(f"Inconsistent class_enc for cid '{cid}' in partition rows")
-        cid2enc[cid] = class_enc
+        cid2enc[enc2cid[class_enc]] = class_enc
     return cid2enc
 
 def spawn_partition_data(config: EvalConfig, partition: str):
@@ -421,8 +417,8 @@ def spawn_partition_data(config: EvalConfig, partition: str):
         index_data = split.data_indexes[partition]
     else:
         index_data = split.data_indexes[config.eval_type][partition]
-    cid2enc = build_cid2enc(index_data)
-    return index_data, cid2enc
+    cid2enc = build_cid2enc(index_data, split.enc2cid)
+    return index_data, cid2enc, split.enc2cid
 
 def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
     """
@@ -460,6 +456,7 @@ def spawn_partition_indexes_txts(cid2enc, text_template, dataset):
 
 def spawn_dataloader(
     index_data: List[Dict[str, Union[int, str]]],
+    enc2cid: Dict[int, str],
     text_template: List[List[str]],
     config,
     shuffle: bool,
@@ -483,7 +480,7 @@ def spawn_dataloader(
     - img_pp ---------- The image preprocessor          
     """
 
-    dataset = ImageTextDataset(index_data, text_template, img_pp, config)
+    dataset = ImageTextDataset(index_data, enc2cid, text_template, img_pp, config)
 
     bs_local = config.batch_size // dist.get_world_size()
 

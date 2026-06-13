@@ -16,4 +16,7 @@ nst_seps: [20, 100]
 pos_filter: dorsal  # {null, dorsal} ~ only applies to nymph and lepid datasets
 
 dev:
-  skip_norm_stats: false
+  debug_mode: false  # {true, false}
+  debug:  # parameters set/overridden with `debug_mode: true`
+    skip_norm_stats: true
+    pct_ood_tol: 0.01

@@ -63,10 +63,11 @@ class TrainPipeline:
 
         self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
 
-        index_data, _ = spawn_partition_data(config=self.cfg, partition=self.cfg.train_pt)
+        index_data, _, enc2cid = spawn_partition_data(config=self.cfg, partition=self.cfg.train_pt)
         text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
         self.dataloader = spawn_dataloader(
             index_data=index_data,
+            enc2cid=enc2cid,
             text_template=text_template_train,
             config=self.cfg,
             shuffle=True,

@@ -19,19 +19,19 @@ def build_rank_encs(
     - dict rank_name -> bidict(rank_value -> integer_key)
     """
     class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
-    sids_sorted = sorted(class_data.keys())
+    cids_sorted = sorted(class_data.keys())
 
     rank_encs: dict[str, bidict] = {rank: bidict() for rank in ranks}
 
     if "species" in rank_encs:
-        for rkey_species, sid in enumerate(sids_sorted):
-            rank_encs["species"][sid] = rkey_species
+        for rkey_species, cid in enumerate(cids_sorted):
+            rank_encs["species"][cid] = rkey_species
 
     for rank in ranks:
         if rank == "species":
             continue
 
-        rank_values = sorted({class_data[sid][rank] for sid in sids_sorted})
+        rank_values = sorted({class_data[cid][rank] for cid in cids_sorted})
         for rkey, value in enumerate(rank_values):
             rank_encs[rank][value] = rkey
 

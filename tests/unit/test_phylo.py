@@ -57,38 +57,38 @@ def tree_bundle():
     tree_nymph = build_tree_nymph()
 
     class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
-    # class data augmented with sids on trees not in class_data but with genera in class_data
+    # class data augmented with cids on trees not in class_data but with genera in class_data
     class_data_aug = augment_class_data(class_data, tree_lepid)
     class_data_aug = augment_class_data(class_data_aug, tree_nymph)
 
     tree_merge = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
-    # capture pre-prune sids before prune_tree mutates tree_merge in-place
-    sids_merge = {tip.name for tip in tree_merge.get_terminals()}
+    # capture pre-prune cids before prune_tree mutates tree_merge in-place
+    cids_merge = {tip.name for tip in tree_merge.get_terminals()}
     tree_merge_pruned = prune_tree(tree_merge, class_data_aug)
-    # tree_merge IS tree_merge_pruned (same object); capture post-prune sids for
+    # tree_merge IS tree_merge_pruned (same object); capture post-prune cids for
     # distance-test sampling so we never query a tip that was pruned away
-    sids_merge_pruned = {tip.name for tip in tree_merge.get_terminals()}
+    cids_merge_pruned = {tip.name for tip in tree_merge.get_terminals()}
 
     tree_poly = augment_tree_with_polytomies(tree_merge_pruned, class_data_aug)
     tree_poly_pruned = prune_tree(tree_poly, class_data)
 
-    sids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
-    sids_nymph = {tip.name for tip in tree_nymph.get_terminals()}
+    cids_lepid = {tip.name for tip in tree_lepid.get_terminals()}
+    cids_nymph = {tip.name for tip in tree_nymph.get_terminals()}
 
-    sids_lepid_only = sids_lepid - sids_nymph
-    sids_nymph_only = sids_nymph - sids_lepid
-    sids_shared = sids_lepid & sids_nymph
+    cids_lepid_only = cids_lepid - cids_nymph
+    cids_nymph_only = cids_nymph - cids_lepid
+    cids_shared = cids_lepid & cids_nymph
 
-    sids_lepid_cdnymph = {
-        sid
-        for sid in sids_lepid
-        if class_data_aug.get(sid, {}).get("family", "") == "nymphalidae"
+    cids_lepid_cdnymph = {
+        cid
+        for cid in cids_lepid
+        if class_data_aug.get(cid, {}).get("family", "") == "nymphalidae"
     }
 
-    sids_nymph_only_cdnymph = {
-        sid
-        for sid in sids_nymph_only
-        if class_data_aug.get(sid, {}).get("family", "") == "nymphalidae"
+    cids_nymph_only_cdnymph = {
+        cid
+        for cid in cids_nymph_only
+        if class_data_aug.get(cid, {}).get("family", "") == "nymphalidae"
     }
 
     bundle = {
@@ -100,15 +100,15 @@ def tree_bundle():
             "poly": tree_poly,
             "poly_pruned": tree_poly_pruned,
         },
-        "sids": {
-            "lepid": sids_lepid,
-            "nymph": sids_nymph,
-            "merge": sids_merge,
-            "nymph_only": sids_nymph_only,
-            "nymph_only_cdnymph": sids_nymph_only_cdnymph,
+        "cids": {
+            "lepid": cids_lepid,
+            "nymph": cids_nymph,
+            "merge": cids_merge,
+            "nymph_only": cids_nymph_only,
+            "nymph_only_cdnymph": cids_nymph_only_cdnymph,
             # intersect with post-prune merge tree so distance tests never query a pruned tip
-            "lepid_only_non_cdnymph": (sids_lepid_only - sids_lepid_cdnymph) & sids_merge_pruned,
-            "shared_cdnymph": sids_shared & sids_lepid_cdnymph,
+            "lepid_only_non_cdnymph": (cids_lepid_only - cids_lepid_cdnymph) & cids_merge_pruned,
+            "shared_cdnymph": cids_shared & cids_lepid_cdnymph,
         }
     }
 
@@ -188,22 +188,22 @@ def class_data_pyrisitia():
 
 def test_merge_preserves_all_terminal_taxa(tree_bundle) -> None:
     """
-    Test that all sids from both input trees are present in the merged tree.
+    Test that all cids from both input trees are present in the merged tree.
     """
-    sids_lepid = tree_bundle["sids"]["lepid"]
-    sids_nymph = tree_bundle["sids"]["nymph"]
-    sids_merge = tree_bundle["sids"]["merge"]
+    cids_lepid = tree_bundle["cids"]["lepid"]
+    cids_nymph = tree_bundle["cids"]["nymph"]
+    cids_merge = tree_bundle["cids"]["merge"]
 
-    sids_lepid_missing_in_merge = sids_lepid - sids_merge
-    sids_nymph_missing_in_merge = sids_nymph - sids_merge
+    cids_lepid_missing_in_merge = cids_lepid - cids_merge
+    cids_nymph_missing_in_merge = cids_nymph - cids_merge
 
-    assert not sids_lepid_missing_in_merge, (
+    assert not cids_lepid_missing_in_merge, (
         "Merged tree is missing Lepid terminals: "
-        f"{sorted(sids_lepid_missing_in_merge)[:10]}"
+        f"{sorted(cids_lepid_missing_in_merge)[:10]}"
     )
-    assert not sids_nymph_missing_in_merge, (
+    assert not cids_nymph_missing_in_merge, (
         "Merged tree is missing Nymph terminals: "
-        f"{sorted(sids_nymph_missing_in_merge)[:10]}"
+        f"{sorted(cids_nymph_missing_in_merge)[:10]}"
     )
 
 def test_merge_ultrametric(tree_bundle) -> None:
@@ -250,14 +250,14 @@ def test_merge_preserves_dists_lepid_non_nymph_backbone(tree_bundle) -> None:
     """
     tree_lepid = tree_bundle["tree"]["lepid"]
     tree_merge = tree_bundle["tree"]["merge"]
-    sids_lepid_only_non_cdnymph_sample = _sample(tree_bundle["sids"]["lepid_only_non_cdnymph"], SAMPLE_SIZE)
+    cids_lepid_only_non_cdnymph_sample = _sample(tree_bundle["cids"]["lepid_only_non_cdnymph"], SAMPLE_SIZE)
 
-    for sid_a, sid_b in combinations(sids_lepid_only_non_cdnymph_sample, 2):
-        dist_lepid = tree_lepid.distance(sid_a, sid_b)
-        dist_merge = tree_merge.distance(sid_a, sid_b)
+    for cid_a, cid_b in combinations(cids_lepid_only_non_cdnymph_sample, 2):
+        dist_lepid = tree_lepid.distance(cid_a, cid_b)
+        dist_merge = tree_merge.distance(cid_a, cid_b)
 
         assert dist_merge == pytest.approx(dist_lepid), (
-            f"Pairwise distance changed for {sid_a} vs {sid_b}: "
+            f"Pairwise distance changed for {cid_a} vs {cid_b}: "
             f"lepid={dist_lepid}, merged={dist_merge}"
         )
 
@@ -270,13 +270,13 @@ def test_merge_preserves_dists_nymph(tree_bundle) -> None:
     """
     tree_nymph = tree_bundle["tree"]["nymph"]
     tree_merge = tree_bundle["tree"]["merge"]
-    sids_shared_cdnymph_sample = _sample(tree_bundle["sids"]["shared_cdnymph"], SAMPLE_SIZE)
+    cids_shared_cdnymph_sample = _sample(tree_bundle["cids"]["shared_cdnymph"], SAMPLE_SIZE)
 
-    for sid_a, sid_b in combinations(sids_shared_cdnymph_sample, 2):
-        dist_nymph = tree_nymph.distance(sid_a, sid_b)
-        dist_merge = tree_merge.distance(sid_a, sid_b)
+    for cid_a, cid_b in combinations(cids_shared_cdnymph_sample, 2):
+        dist_nymph = tree_nymph.distance(cid_a, cid_b)
+        dist_merge = tree_merge.distance(cid_a, cid_b)
         assert dist_merge == pytest.approx(dist_nymph), (
-            f"Nymph pairwise distance changed for {sid_a} vs {sid_b}: "
+            f"Nymph pairwise distance changed for {cid_a} vs {cid_b}: "
             f"nymph={dist_nymph}, merged={dist_merge}"
         )
 
@@ -288,8 +288,8 @@ def test_merge_polytomy(tree_bundle) -> None:
     """
     tree_merge = tree_bundle["tree"]["merge"]
 
-    sid_nearest = "zerene_cesonia"
-    dist_colias_nearest = tree_merge.distance("colias_palaeno", sid_nearest)
+    cid_nearest = "zerene_cesonia"
+    dist_colias_nearest = tree_merge.distance("colias_palaeno", cid_nearest)
 
     assert abs(tree_merge.distance("colias_palaeno", "colias_croceus") - dist_colias_nearest) <= 1e-4
     assert abs(tree_merge.distance("colias_palaeno", "colias_hyale") - dist_colias_nearest) <= 1e-4
@@ -307,13 +307,13 @@ def test_merge_preserves_dists_lepid_only_non_nymph(tree_bundle) -> None:
     tree_lepid = tree_bundle["tree"]["lepid"]
     tree_merge = tree_bundle["tree"]["merge"]
 
-    sids_lepid_only_non_cdnymph_sample = _sample(tree_bundle["sids"]["lepid_only_non_cdnymph"], SAMPLE_SIZE)
-    for sid_a, sid_b in combinations(sids_lepid_only_non_cdnymph_sample, 2):
-        dist_lepid = tree_lepid.distance(sid_a, sid_b)
-        dist_merge = tree_merge.distance(sid_a, sid_b)
+    cids_lepid_only_non_cdnymph_sample = _sample(tree_bundle["cids"]["lepid_only_non_cdnymph"], SAMPLE_SIZE)
+    for cid_a, cid_b in combinations(cids_lepid_only_non_cdnymph_sample, 2):
+        dist_lepid = tree_lepid.distance(cid_a, cid_b)
+        dist_merge = tree_merge.distance(cid_a, cid_b)
 
         assert dist_merge == pytest.approx(dist_lepid), (
-            f"Pairwise distance changed for {sid_a} vs {sid_b}: "
+            f"Pairwise distance changed for {cid_a} vs {cid_b}: "
             f"lepid={dist_lepid}, merged={dist_merge}"
         )
 
@@ -325,12 +325,12 @@ def test_merge_preserves_dists_nymph_only(tree_bundle) -> None:
     tree_nymph = tree_bundle["tree"]["nymph"]
     tree_merge = tree_bundle["tree"]["merge"]
 
-    sids_nymph_only_sample = _sample(tree_bundle["sids"]["nymph_only_cdnymph"], SAMPLE_SIZE)
-    for sid_a, sid_b in combinations(sids_nymph_only_sample, 2):
-        dist_nymph = tree_nymph.distance(sid_a, sid_b)
-        dist_merge = tree_merge.distance(sid_a, sid_b)
+    cids_nymph_only_sample = _sample(tree_bundle["cids"]["nymph_only_cdnymph"], SAMPLE_SIZE)
+    for cid_a, cid_b in combinations(cids_nymph_only_sample, 2):
+        dist_nymph = tree_nymph.distance(cid_a, cid_b)
+        dist_merge = tree_merge.distance(cid_a, cid_b)
         assert dist_merge == pytest.approx(dist_nymph), (
-            f"Nymph-only pairwise distance changed for {sid_a} vs {sid_b}: "
+            f"Nymph-only pairwise distance changed for {cid_a} vs {cid_b}: "
             f"nymph={dist_nymph}, merged={dist_merge}"
         )
 
@@ -340,16 +340,16 @@ def test_merge_preserves_dists_nymph_only_and_shared(tree_bundle) -> None:
     Nymphalidae taxa are preserved exactly because that clade is inserted without scaling.
     Checks every pair in the cross-product of sampled nymph_only_cdnymph x shared_cdnymph.
     """
-    sids_nymph_only_sample = _sample(tree_bundle["sids"]["nymph_only_cdnymph"], SAMPLE_SIZE)
-    sids_shared_cdnymph_sample = _sample(tree_bundle["sids"]["shared_cdnymph"], SAMPLE_SIZE)
+    cids_nymph_only_sample = _sample(tree_bundle["cids"]["nymph_only_cdnymph"], SAMPLE_SIZE)
+    cids_shared_cdnymph_sample = _sample(tree_bundle["cids"]["shared_cdnymph"], SAMPLE_SIZE)
     tree_nymph = tree_bundle["tree"]["nymph"]
     tree_merge = tree_bundle["tree"]["merge"]
-    for sid_a in sids_nymph_only_sample:
-        for sid_b in sids_shared_cdnymph_sample:
-            dist_nymph = tree_nymph.distance(sid_a, sid_b)
-            dist_merge = tree_merge.distance(sid_a, sid_b)
+    for cid_a in cids_nymph_only_sample:
+        for cid_b in cids_shared_cdnymph_sample:
+            dist_nymph = tree_nymph.distance(cid_a, cid_b)
+            dist_merge = tree_merge.distance(cid_a, cid_b)
             assert dist_merge == pytest.approx(dist_nymph), (
-                f"Nymph cross-pair distance changed for {sid_a} vs {sid_b}: "
+                f"Nymph cross-pair distance changed for {cid_a} vs {cid_b}: "
                 f"nymph={dist_nymph}, merged={dist_merge}"
             )
 

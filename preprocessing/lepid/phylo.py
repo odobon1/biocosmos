@@ -49,28 +49,28 @@ def combine_trees_lepid_nymph(
 
     lepid_tips = tip_names(out.root)
     nymph_tips = tip_names(nymph.root)
-    nymph_genera = {sid.split("_", 1)[0] for sid in nymph_tips}
+    nymph_genera = {cid.split("_", 1)[0] for cid in nymph_tips}
     shared = lepid_tips & nymph_tips
     retained_lepid_tips = lepid_tips - shared
 
     lepid_nymphalidae_tips = {
-        sid
-        for sid in lepid_tips
-        if str(class_data.get(sid, {}).get("family", "")).lower() == "nymphalidae"
+        cid
+        for cid in lepid_tips
+        if str(class_data.get(cid, {}).get("family", "")).lower() == "nymphalidae"
     }
     lepid_only_nymph_genera_tips = {
-        sid
-        for sid in (lepid_tips - nymph_tips)
-        if str(class_data.get(sid, {}).get("family", "")).lower() == "nymphalidae"
-        and sid.split("_", 1)[0] in nymph_genera
+        cid
+        for cid in (lepid_tips - nymph_tips)
+        if str(class_data.get(cid, {}).get("family", "")).lower() == "nymphalidae"
+        and cid.split("_", 1)[0] in nymph_genera
     }
     retained_lepid_genus_to_tips: Dict[str, Set[str]] = {}
     retained_lepid_genus_to_rank: Dict[str, Dict[str, str]] = {}
-    for sid in retained_lepid_tips:
-        genus = sid.split("_", 1)[0]
-        retained_lepid_genus_to_tips.setdefault(genus, set()).add(sid)
+    for cid in retained_lepid_tips:
+        genus = cid.split("_", 1)[0]
+        retained_lepid_genus_to_tips.setdefault(genus, set()).add(cid)
 
-        rank_data = class_data.get(sid, {})
+        rank_data = class_data.get(cid, {})
         retained_lepid_genus_to_rank.setdefault(
             genus,
             {
@@ -81,13 +81,13 @@ def combine_trees_lepid_nymph(
         )
 
     nymph_non_nymphalidae_genera_to_tips: Dict[str, Set[str]] = {}
-    for sid in nymph_tips:
-        genus = sid.split("_", 1)[0]
+    for cid in nymph_tips:
+        genus = cid.split("_", 1)[0]
         if genus not in retained_lepid_genus_to_tips:
             continue
-        if str(class_data.get(sid, {}).get("family", "")).lower() == "nymphalidae":
+        if str(class_data.get(cid, {}).get("family", "")).lower() == "nymphalidae":
             continue
-        nymph_non_nymphalidae_genera_to_tips.setdefault(genus, set()).add(sid)
+        nymph_non_nymphalidae_genera_to_tips.setdefault(genus, set()).add(cid)
 
     if not lepid_nymphalidae_tips:
         return out
@@ -102,9 +102,9 @@ def combine_trees_lepid_nymph(
         return out
 
     retained_anchor_tips = tip_names(anchor) - shared
-    for sid in sorted(shared):
-        if out.find_any(name=sid) is not None:
-            out.prune(target=sid)
+    for cid in sorted(shared):
+        if out.find_any(name=cid) is not None:
+            out.prune(target=cid)
 
     if retained_anchor_tips:
         anchor = out.common_ancestor(sorted(retained_anchor_tips))
@@ -277,20 +277,20 @@ def rehome_lepid_only_shared_genus_tips(
         return
 
     nymph_tips_by_genus: Dict[str, Set[str]] = {}
-    for sid in nymph_tips:
-        genus = sid.split("_", 1)[0]
-        nymph_tips_by_genus.setdefault(genus, set()).add(sid)
+    for cid in nymph_tips:
+        genus = cid.split("_", 1)[0]
+        nymph_tips_by_genus.setdefault(genus, set()).add(cid)
 
     tips_by_genus: Dict[str, List[str]] = {}
-    for sid in tips_to_rehome:
-        genus = sid.split("_", 1)[0]
-        tips_by_genus.setdefault(genus, []).append(sid)
+    for cid in tips_to_rehome:
+        genus = cid.split("_", 1)[0]
+        tips_by_genus.setdefault(genus, []).append(cid)
 
     for genus in sorted(tips_by_genus.keys()):
         genus_nymph_tips_present = sorted(
-            sid
-            for sid in nymph_tips_by_genus.get(genus, set())
-            if tree.find_any(name=sid) is not None
+            cid
+            for cid in nymph_tips_by_genus.get(genus, set())
+            if tree.find_any(name=cid) is not None
         )
         if not genus_nymph_tips_present:
             continue
@@ -305,11 +305,11 @@ def rehome_lepid_only_shared_genus_tips(
         attach_depth = tree.distance(tree.root, attach_node)
         attach_branch = max(0.0, target_height - attach_depth)
 
-        for sid in sorted(tips_by_genus[genus]):
-            if tree.find_any(name=sid) is None:
+        for cid in sorted(tips_by_genus[genus]):
+            if tree.find_any(name=cid) is None:
                 continue
-            tree.prune(target=sid)
-            attach_node.clades.append(Clade(name=sid, branch_length=attach_branch))
+            tree.prune(target=cid)
+            attach_node.clades.append(Clade(name=cid, branch_length=attach_branch))
 
 # combine_trees_lepid_nymph() helper
 def rehome_nymph_non_nymphalidae_shared_genus_subtrees(
@@ -340,13 +340,13 @@ def rehome_nymph_non_nymphalidae_shared_genus_subtrees(
             continue
 
         present_tips = sorted(
-            sid for sid in genus_tips if tree.find_any(name=sid) is not None
+            cid for cid in genus_tips if tree.find_any(name=cid) is not None
         )
         if not present_tips:
             continue
 
-        for sid in present_tips:
-            tree.prune(target=sid)
+        for cid in present_tips:
+            tree.prune(target=cid)
 
         anchor = closest_genus_divergence_anchor(
             tree=tree,
@@ -389,9 +389,9 @@ def closest_genus_divergence_anchor(
             continue
 
         rank_candidates = {
-            sid
-            for sid in (lepid_tips - genus_tips)
-            if lepid_genus_to_rank.get(sid.split("_", 1)[0], {}).get(rank) == rank_value
+            cid
+            for cid in (lepid_tips - genus_tips)
+            if lepid_genus_to_rank.get(cid.split("_", 1)[0], {}).get(rank) == rank_value
         }
         if rank_candidates:
             candidates = rank_candidates
@@ -405,7 +405,7 @@ def closest_genus_divergence_anchor(
     ref_tip = min(genus_tips)
     closest_tip = min(
         candidates,
-        key=lambda sid: (tree.distance(ref_tip, sid), sid),
+        key=lambda cid: (tree.distance(ref_tip, cid), cid),
     )
     return tree.common_ancestor([ref_tip, closest_tip])
 
@@ -470,17 +470,17 @@ def collect_single_shared_expansions(
         if parent is not None and len(tip_cache[id(parent)] & shared) == 1:
             continue
 
-        shared_sid = next(iter(shared_here))
-        lepid_tip = lepid.find_any(name=shared_sid)
+        shared_cid = next(iter(shared_here))
+        lepid_tip = lepid.find_any(name=shared_cid)
         if lepid_tip is None:
             continue
 
-        shared_depth_in_clade = distance_from_clade(node, shared_sid)
+        shared_depth_in_clade = distance_from_clade(node, shared_cid)
         available_branch = lepid_tip.branch_length or 0.0
         if available_branch + 1e-8 < shared_depth_in_clade:
             continue
 
-        expansions.append((shared_sid, node, nymph_only_here))
+        expansions.append((shared_cid, node, nymph_only_here))
 
     return expansions
 
@@ -504,7 +504,7 @@ def main():
 
     class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
 
-    # class data augmented with sids on trees not in class_data but with genera in class_data (higher ranks wrt genera are known via class_data)
+    # class data augmented with cids on trees not in class_data but with genera in class_data (higher ranks wrt genera are known via class_data)
     class_data_aug = augment_class_data(class_data, tree_lepid)
     class_data_aug = augment_class_data(class_data_aug, tree_nymph)
     tree_merge = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)

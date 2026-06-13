@@ -15,9 +15,10 @@ def split_data(request):
     dataset = request.param
     split = load_pickle(paths["metadata"][dataset] / "splits/D10/split.pkl")
     di = split.data_indexes
+    enc2cid = split.enc2cid
     return {
         "nshot_val_id": {
-            name: set(split.nshot["buckets"][name]["val_id"])
+            name: set(split.nshot["buckets"]["train/val"][name])
             for name in split.nshot["names"]
         },
         "rfpaths": {
@@ -30,13 +31,13 @@ def split_data(request):
             "test_ood": {d["rfpath"] for d in di["test"]["ood"]},
         },
         "cids": {
-            "whole":    {d["cid"] for d in di["whole"]},
-            "train":    {d["cid"] for d in di["train"]},
-            "trainval": {d["cid"] for d in di["trainval"]},
-            "val_id":   {d["cid"] for d in di["val"]["id"]},
-            "val_ood":  {d["cid"] for d in di["val"]["ood"]},
-            "test_id":  {d["cid"] for d in di["test"]["id"]},
-            "test_ood": {d["cid"] for d in di["test"]["ood"]},
+            "whole":    {enc2cid[d["class_enc"]] for d in di["whole"]},
+            "train":    {enc2cid[d["class_enc"]] for d in di["train"]},
+            "trainval": {enc2cid[d["class_enc"]] for d in di["trainval"]},
+            "val_id":   {enc2cid[d["class_enc"]] for d in di["val"]["id"]},
+            "val_ood":  {enc2cid[d["class_enc"]] for d in di["val"]["ood"]},
+            "test_id":  {enc2cid[d["class_enc"]] for d in di["test"]["id"]},
+            "test_ood": {enc2cid[d["class_enc"]] for d in di["test"]["ood"]},
         },
     }
 

@@ -110,9 +110,10 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
 
 def get_dataloader(cfg, partition, modelw):
     text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
-    index_data, _ = spawn_partition_data(config=cfg, partition=partition)
+    index_data, _, enc2cid = spawn_partition_data(config=cfg, partition=partition)
     dataloader = spawn_dataloader(
         index_data=index_data,
+        enc2cid=enc2cid,
         text_template=text_template,
         config=cfg,
         shuffle=False,

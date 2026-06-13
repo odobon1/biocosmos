@@ -22,12 +22,12 @@ import pdb
 
 split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
 
-partition = ["id"] * len(split_p.data_indexes["val"]["id"]["sids"])
-sids = split_p.data_indexes["val"]["id"]["sids"]
+partition = ["id"] * len(split_p.data_indexes["val"]["id"]["cids"])
+cids = split_p.data_indexes["val"]["id"]["cids"]
 rfpaths = split_p.data_indexes["val"]["id"]["rfpaths"]
 
-partition += ["ood"] * len(split_p.data_indexes["val"]["ood"]["sids"])
-sids += split_p.data_indexes["val"]["ood"]["sids"]
+partition += ["ood"] * len(split_p.data_indexes["val"]["ood"]["cids"])
+cids += split_p.data_indexes["val"]["ood"]["cids"]
 rfpaths += split_p.data_indexes["val"]["ood"]["rfpaths"]
 
 _, device = setup_ddp()
@@ -40,14 +40,14 @@ fpath_imgs = paths["imgs"]["nymph"]
 
 protos = {"id": {}, "ood": {}}
 
-for i in tqdm(range(len(sids) // config_eval.batch_size + 1)):
+for i in tqdm(range(len(cids) // config_eval.batch_size + 1)):
     start = i * config_eval.batch_size
-    end = min((i + 1) * config_eval.batch_size, len(sids))
+    end = min((i + 1) * config_eval.batch_size, len(cids))
     if start >= end:
         break
 
     partition_b = partition[start:end]
-    sids_b = sids[start:end]
+    cids_b = cids[start:end]
     rfpaths_b = rfpaths[start:end]
 
     imgs = [modelw.img_pp_inf(Image.open(fpath_imgs / rfpath).convert("RGB")) for rfpath in rfpaths_b]
@@ -60,24 +60,24 @@ for i in tqdm(range(len(sids) // config_eval.batch_size + 1)):
 
     for j in range(n_imgs):
         partition_j = partition_b[j]
-        sid_j = sids_b[j]
+        cid_j = cids_b[j]
         emb_j = img_embs[j].cpu()
 
-        if sid_j not in protos[partition_j]:
-            protos[partition_j][sid_j] = {"embs": [], "count": 0}
+        if cid_j not in protos[partition_j]:
+            protos[partition_j][cid_j] = {"embs": [], "count": 0}
 
-        protos[partition_j][sid_j]["embs"].append(emb_j)
-        protos[partition_j][sid_j]["count"] += 1
+        protos[partition_j][cid_j]["embs"].append(emb_j)
+        protos[partition_j][cid_j]["count"] += 1
 
 for partition_k in tqdm(protos.keys()):
-    for sid_k in protos[partition_k].keys():
+    for cid_k in protos[partition_k].keys():
 
-        n_samps = protos[partition_k][sid_k]["count"]
-        embs_k = torch.stack(protos[partition_k][sid_k]["embs"])  # pt[N, D]
+        n_samps = protos[partition_k][cid_k]["count"]
+        embs_k = torch.stack(protos[partition_k][cid_k]["embs"])  # pt[N, D]
         proto_k = torch.mean(embs_k, dim=0)  # pt[D]
         proto_k = F.normalize(proto_k, p=2, dim=0)  # normalized to unit length
 
-        protos[partition_k][sid_k] = {"prototype": proto_k, "n_samples": n_samps}
+        protos[partition_k][cid_k] = {"prototype": proto_k, "n_samples": n_samps}
 
 save_pickle(protos, "prototypes_cos-cos_1-0.pkl")
 

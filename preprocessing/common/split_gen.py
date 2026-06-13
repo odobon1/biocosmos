@@ -87,7 +87,8 @@ def _snapshot_norm_stats(all_means, all_vars):
 def get_norm_stats(
     data_indexes, 
 ) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
-    if GenSplitDataManager.cfg.dev.get("skip_norm_stats", False):
+    dev_cfg = GenSplitDataManager.cfg.dev
+    if dev_cfg.get("debug_mode", False) and dev_cfg["debug"].get("skip_norm_stats", False):
         print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
         return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
     return compute_rgb_norm_stats_by_partition(data_indexes)
@@ -388,7 +389,7 @@ def build_nshot(skeys_pts, cfg=None):
 
     n_shot_tracker = []
     for _ in range(len(cfg.nst_names)):
-        n_shot_tracker.append({"val_id": set(), "test_id": set()})
+        n_shot_tracker.append({"train/val": set(), "trainval/test": set()})
 
     for cid in sorted(cid2sidxs_trainval):
         n_skeys_train = 0
@@ -401,31 +402,17 @@ def build_nshot(skeys_pts, cfg=None):
 
         if in_val_id:
             idx_val_id_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
-            n_shot_tracker[idx_val_id_bucket]["val_id"].add(cid)
+            n_shot_tracker[idx_val_id_bucket]["train/val"].add(cid)
 
         if cid in cid2sidxs_test_id:
             idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, len(cid2sidxs_trainval[cid]))
-            n_shot_tracker[idx_trainval_bucket]["test_id"].add(cid)
-
-    # Second pass: OOD-val classes whose samples were borrowed into test_id.
-    # These species are not in cid2sidxs_trainval, so they were missed above.
-    # We bucket them using their trainval cardinality.
-    cids_test_id_ood = {skey[0] for skey in skeys_pts["test_id"] if skey[0] not in cid2sidxs_trainval}
-    for cid in sorted(cids_test_id_ood):
-        n_skeys_trainval_ood = len(cid2sidxs_trainval.get(cid, []))
-        if n_skeys_trainval_ood == 0:
-            continue
-        idx_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval_ood)
-        n_shot_tracker[idx_bucket]["test_id"].add(cid)
+            n_shot_tracker[idx_trainval_bucket]["trainval/test"].add(cid)
 
     nshot = {
         "names": cfg.nst_names,
         "buckets": {
-            name: {
-                "val_id": bucket["val_id"],
-                "test_id": bucket["test_id"],
-            }
-            for name, bucket in zip(cfg.nst_names, n_shot_tracker)
+            "train/val": {name: bucket["train/val"]  for name, bucket in zip(cfg.nst_names, n_shot_tracker)},
+            "trainval/test": {name: bucket["trainval/test"] for name, bucket in zip(cfg.nst_names, n_shot_tracker)},
         },
     }
 
@@ -485,7 +472,6 @@ def build_data_indexes(
             cid, samp_idx = skey
             data_index.append(
                 {
-                    "cid": cid,
                     "class_enc": cid2enc[cid],
                     "rfpath": img_ptrs[cid][samp_idx],
                     "meta": skey2meta[skey],
@@ -514,10 +500,10 @@ def build_dev_skeys_partitions(skeys_pts):
         for pt, skeys_partition in skeys_pts.items()
     }
 
-def save_split(data_indexes, nshot, class_counts, norm_stats, dpath_split) -> None:
+def save_split(data_indexes, enc2cid, nshot, class_counts, norm_stats, dpath_split) -> None:
     norm_mean = {pt: norm_stats[pt][0] for pt in norm_stats}
     norm_std = {pt: norm_stats[pt][1] for pt in norm_stats}
-    split = Split(data_indexes, nshot, class_counts, norm_mean, norm_std)
+    split = Split(data_indexes, enc2cid, nshot, class_counts, norm_mean, norm_std)
     os.makedirs(dpath_split, exist_ok=True)
     dpath_figs = dpath_split / "figures"
     if os.path.exists(dpath_figs):
@@ -774,8 +760,8 @@ def generate_n_shot_table(nshot, skeys_pts, col_width=0.20, fontsize_title=8, fo
     row_values_val_id = ["ID Val"]
     row_values_test_id = ["ID Test"]
     for name in nshot["names"]:
-        cids_val_id = nshot["buckets"][name]["val_id"]
-        cids_test_id = nshot["buckets"][name]["test_id"]
+        cids_val_id = nshot["buckets"]["train/val"][name]
+        cids_test_id = nshot["buckets"]["trainval/test"][name]
 
         n_classes_val = len(cids_val_id)
         num_samps_val = sum(cid_2_n_val_id[cid] for cid in cids_val_id)
@@ -933,6 +919,7 @@ def generate_splits(
 
     print("Generating data indexes...")
     cid2enc = build_global_cid2enc(skeys_pts)
+    enc2cid = {enc: cid for cid, enc in cid2enc.items()}
     skey2meta = build_skey2meta(skeys_pts["whole"], img_ptrs)
     data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
     data_indexes_dev = build_data_indexes(skeys_pts_dev, img_ptrs, cid2enc, skey2meta)
@@ -954,6 +941,7 @@ def generate_splits(
     print("Saving splits...")
     save_split(
         data_indexes,
+        enc2cid,
         nshot,
         class_counts,
         norm_stats,
@@ -961,6 +949,7 @@ def generate_splits(
     )
     save_split(
         data_indexes_dev,
+        enc2cid,
         nshot,
         class_counts_dev,
         norm_stats,

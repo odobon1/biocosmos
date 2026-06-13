@@ -365,8 +365,16 @@ class GenSplitConfig:
             )
 
 
+def apply_splits_debug_overrides(cfg_dict: dict) -> dict:
+    cfg_dict = dict(cfg_dict)
+    dev_cfg = cfg_dict.get("dev", {}) or {}
+    if dev_cfg.get("debug_mode", False):
+        cfg_dict["pct_ood_tol"] = dev_cfg["debug"]["pct_ood_tol"]
+    return cfg_dict
+
 def get_config_splits():
     with open(paths["config"] / "split_gen.yaml") as f:
         cfg_dict = yaml.safe_load(f)
+    cfg_dict = apply_splits_debug_overrides(cfg_dict)
     cfg = GenSplitConfig(**cfg_dict)
     return cfg

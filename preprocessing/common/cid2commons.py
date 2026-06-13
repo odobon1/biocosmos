@@ -70,19 +70,19 @@ def _gbif_common_name(
     return name or None
 
 def build_cids2commons(
-    sids: Iterable[str],
+    cids: Iterable[str],
     *,
     max_workers: int = 16,
     lang: str = "eng",
     timeout: int = 10,
     progress_desc: str = "Retrieving Common Names",
 ) -> Dict[str, str | None]:
-    sids = sorted(sids)
+    cids = sorted(cids)
     cids2commons: Dict[str, str | None] = {}
     thread_local = threading.local()
 
-    def fetch_one(sid: str) -> tuple[str, str | None]:
-        scientific_name = sid.replace("_", " ")
+    def fetch_one(cid: str) -> tuple[str, str | None]:
+        scientific_name = cid.replace("_", " ")
         try:
             common = _gbif_common_name(
                 scientific_name,
@@ -91,15 +91,15 @@ def build_cids2commons(
                 lang=lang,
                 timeout=timeout,
             )
-            return sid, common
+            return cid, common
         except Exception as exc:
-            print(f"[WARN] Failed for {sid}: {exc}")
-            return sid, None
+            print(f"[WARN] Failed for {cid}: {exc}")
+            return cid, None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fetch_one, sid): sid for sid in sids}
+        futures = {executor.submit(fetch_one, cid): cid for cid in cids}
         for future in tqdm(as_completed(futures), total=len(futures), desc=progress_desc):
-            sid, common = future.result()
-            cids2commons[sid] = common
+            cid, common = future.result()
+            cids2commons[cid] = common
 
     return cids2commons

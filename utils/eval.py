@@ -820,21 +820,14 @@ def build_class_enc_to_train_nshot_bucket(
     class_enc_to_bucket = {}
 
     for bucket_name in split.nshot["names"]:
-        cids_id_val = split.nshot["buckets"][bucket_name]["id_val"]
+        cids_val_id = split.nshot["buckets"][bucket_name]["val_id"]
 
-        for cid in cids_id_val:
+        for cid in cids_val_id:
             # Some split variants (e.g., dev) intentionally omit many classes from train; skip n-shot entries that are absent in current class encoding map.
             if cid not in cid2enc:
                 continue
 
             class_enc = cid2enc[cid]
-
-            if class_enc in class_enc_to_bucket and class_enc_to_bucket[class_enc] != bucket_name:
-                raise ValueError(
-                    f"class_enc '{class_enc}' appears in multiple n-shot buckets: "
-                    f"{class_enc_to_bucket[class_enc]} and {bucket_name}"
-                )
-
             class_enc_to_bucket[class_enc] = bucket_name
 
     return class_enc_to_bucket

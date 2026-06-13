@@ -17,7 +17,6 @@ from utils.utils import (
     load_pickle,
     save_json,
     load_json,
-    get_text_template,
     RunningMean,
     Timer,
 )
@@ -225,14 +224,6 @@ class ArtifactManager:
         
         fpath_meta = ArtifactManager.dpath_setting / "metadata_setting.json"
         metadata = asdict(cfg_train)
-
-        # save full text combo-templates themselves and not just the names
-        text_template_full = {}
-
-        for template_tag, text_template in metadata["text_template"].items():
-            text_template_full[template_tag] = get_text_template(text_template, dataset=metadata["dataset"])
-        metadata["text_template"] = text_template_full
-
         clean_metadata(metadata)
         if fpath_meta.exists():
             metadata_loaded = load_json(fpath_meta)

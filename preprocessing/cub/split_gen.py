@@ -16,8 +16,6 @@ from preprocessing.common.split_gen import (
 from preprocessing.cub.split_gen_utils import build_img_ptrs, normalize_cub_rfpath
 from utils.utils import paths
 
-import pdb
-
 
 def build_splits() -> None:
     GenSplitDataManager.setup("cub")
@@ -41,7 +39,7 @@ def build_splits() -> None:
     rfpaths_test_id = rfpaths_whole[idxs_test_id]
     rfpaths_test_ood = rfpaths_whole[idxs_test_ood]
 
-    img_ptrs, rfpath_2_skey = build_img_ptrs(rfpaths_whole)
+    img_ptrs, rfpath_2_skey, _ = build_img_ptrs(rfpaths_whole)
     
     cid_2_n_samps = {cid: len(img_ptrs[cid]) for cid in cids}
 
@@ -54,13 +52,13 @@ def build_splits() -> None:
     # TEST PARTITIONS
 
     skeys_pool = {rfpath_2_skey[rfpath] for rfpath in rfpaths_pool}  # trainval skeys
-    skeys_id_test = {rfpath_2_skey[rfpath] for rfpath in rfpaths_test_id}
-    skeys_ood_test = {rfpath_2_skey[rfpath] for rfpath in rfpaths_test_ood}
+    skeys_test_id = {rfpath_2_skey[rfpath] for rfpath in rfpaths_test_id}
+    skeys_test_ood = {rfpath_2_skey[rfpath] for rfpath in rfpaths_test_ood}
 
     # VALIDATION PARTITIONS
 
     print("Constructing OOD + ID validation partitions...")
-    skeys_ood_val, skeys_id_val, skeys_train = strat_sample_ood_id(
+    skeys_val_ood, skeys_val_id, skeys_train = strat_sample_ood_id(
         skeys_pool,
         n_cids_whole,
         n_samps_whole,
@@ -75,10 +73,10 @@ def build_splits() -> None:
 
     skeys_pts = {
         "train": skeys_train,
-        "id_val": skeys_id_val,
-        "id_test": skeys_id_test,
-        "ood_val": skeys_ood_val,
-        "ood_test": skeys_ood_test,
+        "val_id": skeys_val_id,
+        "test_id": skeys_test_id,
+        "val_ood": skeys_val_ood,
+        "test_ood": skeys_test_ood,
     }
     add_trainval_whole(skeys_pts)
     skeys_pts_dev = build_dev_skeys_partitions(skeys_pts)

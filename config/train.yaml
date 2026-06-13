@@ -14,6 +14,10 @@ arch:  # architecture
   model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
 
+freeze:
+  image: false
+  text: false
+
 loss:  # primary loss
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
@@ -90,10 +94,11 @@ opt:  # optimization
   beta2: null  # if `null`, resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
-freeze:
-  image: false
-  text: false
-
 dev:
-  debug_mode: true
   logging: true
+  debug_mode: true  # {true, false}
+  debug:  # parameters overridden with `debug_mode: true`
+    sample_volume: 10_000
+    eval_every: 6_000
+    batch_size: 256
+    # maybe add activation checkpointing and etc.

@@ -20,8 +20,6 @@ from utils.data import Split
 from utils.utils import paths, save_pickle, seed_libs, load_pickle
 from utils.config import get_config_splits
 
-import pdb
-
 
 class GenSplitDataManager:
 
@@ -249,8 +247,8 @@ def strat_sample_partition_ood(
     Pick exactly round(n_cids_whole * pct_partition) classes for OOD-val,
     stratified by penultimate class.
     """
-    cid_2_skeys_pool = build_cid_2_skeys(skeys_pool)
-    cids_pool = set(cid_2_skeys_pool.keys())
+    cid2sidxs_pool = build_cid2sidxs(skeys_pool)
+    cids_pool = set(cid2sidxs_pool.keys())
     n_cids_pt = round(n_cids_whole * GenSplitDataManager.cfg.pct_partition)
 
     penult_2_cids = defaultdict(list)
@@ -278,9 +276,9 @@ def strat_sample_partition_ood(
         )
 
         skeys_pt = {
-            skey
+            (cid, sidx)
             for cid in cids_pt
-            for skey in cid_2_skeys_pool[cid]
+            for sidx in cid2sidxs_pool[cid]
         }
         pct_samps_pt = len(skeys_pt) / n_samps_whole
         close_enough = abs(pct_samps_pt - GenSplitDataManager.cfg.pct_partition) <= GenSplitDataManager.cfg.pct_ood_tol
@@ -288,9 +286,9 @@ def strat_sample_partition_ood(
             sample_once_more = False
 
     skeys_rem = {
-        skey
+        (cid, sidx)
         for cid in cids_rem
-        for skey in cid_2_skeys_pool[cid]
+        for sidx in cid2sidxs_pool[cid]
     }
 
     return skeys_pt, skeys_rem
@@ -303,48 +301,48 @@ def strat_sample_partition_id(
     Set[Tuple[str, int]],
 ]:
 
-    cid_2_skeys_pool = build_cid_2_skeys(skeys_pool)
-    cids_pool = set(cid_2_skeys_pool.keys())
+    cid2sidxs_pool = build_cid2sidxs(skeys_pool)
+    cids_pool = set(cid2sidxs_pool.keys())
 
     cids_pool_singles = {
         cid
         for cid in sorted(cids_pool)
-        if len(cid_2_skeys_pool[cid]) == 1
+        if len(cid2sidxs_pool[cid]) == 1
     }
     cids_pool_multis = cids_pool - cids_pool_singles
 
-    skeys_id_multis = {
-        skey
+    skeys_pool_multis = {
+        (cid, sidx)
         for cid in cids_pool_multis
-        for skey in cid_2_skeys_pool[cid]
+        for sidx in cid2sidxs_pool[cid]
     }
 
-    n_samps_id_val_target = round(n_samps_whole * GenSplitDataManager.cfg.pct_partition)
+    n_samps_pt = round(n_samps_whole * GenSplitDataManager.cfg.pct_partition)
 
     n_insts_2_classes_leaf_lvl = defaultdict(list)
-    cid_2_skeys_id_multis = defaultdict(list)
+    cid_2_skeys_pool_multis = defaultdict(list)
 
     for cid in sorted(cids_pool_multis):
-        skeys_cid = list(sorted(cid_2_skeys_pool[cid]))
-        cid_2_skeys_id_multis[cid] = skeys_cid
-        n_insts_2_classes_leaf_lvl[len(skeys_cid)].append(cid)
+        skeys_pool_multis_cid = [(cid, sidx) for sidx in sorted(cid2sidxs_pool[cid])]
+        cid_2_skeys_pool_multis[cid] = skeys_pool_multis_cid
+        n_insts_2_classes_leaf_lvl[len(skeys_pool_multis_cid)].append(cid)
 
-    skeys_id_val, skeys_train_multis = strat_sample_partition(
+    skeys_pt, skeys_pool_multis = strat_sample_partition(
         n_classes=len(cids_pool_multis),
-        n_draws=n_samps_id_val_target,
+        n_draws=n_samps_pt,
         n_insts_2_classes=n_insts_2_classes_leaf_lvl,
-        class_2_insts=cid_2_skeys_id_multis,
-        insts=skeys_id_multis,
+        class_2_insts=cid_2_skeys_pool_multis,
+        insts=skeys_pool_multis,
         seed=GenSplitDataManager.cfg.seed,
     )
 
-    skeys_id_singles = {
-        cid_2_skeys_pool[cid][0]
+    skeys_singles = {
+        (cid, cid2sidxs_pool[cid][0])
         for cid in sorted(cids_pool_singles)
     }
-    skeys_train = skeys_train_multis | skeys_id_singles
+    skeys_pool = skeys_pool_multis | skeys_singles
 
-    return skeys_id_val, skeys_train
+    return skeys_pt, skeys_pool
 
 def strat_sample_ood_id(
     skeys_pool: Set[Tuple[str, int]],
@@ -370,64 +368,62 @@ def strat_sample_ood_id(
     )
     return skeys_pt_ood, skeys_pt_id, skeys_pool
 
-def build_cid_2_skeys(skeys: Set[Tuple[str, int]]) -> Dict[str, List[Tuple[str, int]]]:
-    cid_2_skeys = defaultdict(list)
+def build_cid2sidxs(skeys: Set[Tuple[str, int]]) -> Dict[str, List[int]]:
+    cid2sidxs = defaultdict(list)
     for cid, samp_idx in sorted(skeys):
-        cid_2_skeys[cid].append((cid, samp_idx))
-    return cid_2_skeys
-
-def build_skeys_trainval(skeys_pts):
-    return (skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["ood_val"]) - skeys_pts["id_test"]
+        cid2sidxs[cid].append(samp_idx)
+    return cid2sidxs
 
 def add_trainval_whole(skeys_pts):
-    skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["ood_val"]
-    skeys_pts["whole"] = skeys_pts["trainval"] | skeys_pts["id_test"] | skeys_pts["ood_test"]
+    skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
+    skeys_pts["whole"] = skeys_pts["trainval"] | skeys_pts["test_id"] | skeys_pts["test_ood"]
 
-def build_nshot(skeys_pts):
+def build_nshot(skeys_pts, cfg=None):
 
-    cfg = GenSplitDataManager.cfg
+    if cfg is None:
+        cfg = GenSplitDataManager.cfg
 
-    cid_2_skeys_trainval = build_cid_2_skeys(skeys_pts["trainval"])
-    cid_2_skeys_id_test = build_cid_2_skeys(skeys_pts["id_test"])
+    cid2sidxs_trainval = build_cid2sidxs(skeys_pts["trainval"])
+    cid2sidxs_test_id = build_cid2sidxs(skeys_pts["test_id"])
 
     n_shot_tracker = []
     for _ in range(len(cfg.nst_names)):
-        n_shot_tracker.append({"id_val": set(), "id_test": set()})
+        n_shot_tracker.append({"val_id": set(), "test_id": set()})
 
-    for cid in sorted(cid_2_skeys_trainval):
+    for cid in sorted(cid2sidxs_trainval):
         n_skeys_train = 0
-        in_id_val = False
-        for skey in cid_2_skeys_trainval[cid]:
-            if skey in skeys_pts["train"]:
+        in_val_id = False
+        for sidx in cid2sidxs_trainval[cid]:
+            if (cid, sidx) in skeys_pts["train"]:
                 n_skeys_train += 1
-            elif skey in skeys_pts["id_val"]:
-                in_id_val = True
+            elif (cid, sidx) in skeys_pts["val_id"]:
+                in_val_id = True
 
-        if in_id_val:
-            idx_id_val_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
-            n_shot_tracker[idx_id_val_bucket]["id_val"].add(cid)
+        if in_val_id:
+            idx_val_id_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_train)
+            n_shot_tracker[idx_val_id_bucket]["val_id"].add(cid)
 
-        if cid in cid_2_skeys_id_test:
-            idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, len(cid_2_skeys_trainval[cid]))
-            n_shot_tracker[idx_trainval_bucket]["id_test"].add(cid)
+        if cid in cid2sidxs_test_id:
+            idx_trainval_bucket = bisect.bisect_left(cfg.nst_seps, len(cid2sidxs_trainval[cid]))
+            n_shot_tracker[idx_trainval_bucket]["test_id"].add(cid)
 
-    # Second pass: OOD-val classes whose samples were borrowed into id_test.
-    # These species are not in cid_2_skeys_trainval, so they were missed above.
+    # Second pass: OOD-val classes whose samples were borrowed into test_id.
+    # These species are not in cid2sidxs_trainval, so they were missed above.
     # We bucket them using their trainval cardinality.
-    cids_id_test_ood = {skey[0] for skey in skeys_pts["id_test"] if skey[0] not in cid_2_skeys_trainval}
-    for cid in sorted(cids_id_test_ood):
-        n_skeys_trainval_ood = len(cid_2_skeys_trainval.get(cid, []))
+    cids_test_id_ood = {skey[0] for skey in skeys_pts["test_id"] if skey[0] not in cid2sidxs_trainval}
+    for cid in sorted(cids_test_id_ood):
+        n_skeys_trainval_ood = len(cid2sidxs_trainval.get(cid, []))
         if n_skeys_trainval_ood == 0:
             continue
         idx_bucket = bisect.bisect_left(cfg.nst_seps, n_skeys_trainval_ood)
-        n_shot_tracker[idx_bucket]["id_test"].add(cid)
+        n_shot_tracker[idx_bucket]["test_id"].add(cid)
 
     nshot = {
         "names": cfg.nst_names,
         "buckets": {
             name: {
-                "id_val": bucket["id_val"],
-                "id_test": bucket["id_test"],
+                "val_id": bucket["val_id"],
+                "test_id": bucket["test_id"],
             }
             for name, bucket in zip(cfg.nst_names, n_shot_tracker)
         },
@@ -501,12 +497,12 @@ def build_data_indexes(
         "train": build_partition_index("train"),
         "trainval": build_partition_index("trainval"),
         "val": {
-            "id": build_partition_index("id_val"),
-            "ood": build_partition_index("ood_val"),
+            "id": build_partition_index("val_id"),
+            "ood": build_partition_index("val_ood"),
         },
         "test": {
-            "id": build_partition_index("id_test"),
-            "ood": build_partition_index("ood_test"),
+            "id": build_partition_index("test_id"),
+            "ood": build_partition_index("test_ood"),
         },
         "whole": build_partition_index("whole"),
     }
@@ -615,23 +611,23 @@ def gen_strat_sampling_dist_plots_ood(
     """
 
     cids_train = {cid for cid, _ in skeys_pts["train"]}
-    cids_ood_val = {cid for cid, _ in skeys_pts["ood_val"]}
-    cids_ood_test = {cid for cid, _ in skeys_pts["ood_test"]}
+    cids_val_ood = {cid for cid, _ in skeys_pts["val_ood"]}
+    cids_test_ood = {cid for cid, _ in skeys_pts["test_ood"]}
 
     penult_tups = [
         (
             len(cids),
             sum(cid in cids_train for cid in cids),
-            sum(cid in cids_ood_val for cid in cids),
-            sum(cid in cids_ood_test for cid in cids),
+            sum(cid in cids_val_ood for cid in cids),
+            sum(cid in cids_test_ood for cid in cids),
         )
         for cids in penult_2_cids.values()
     ]
     penult_tups.sort(key=lambda t: t[0], reverse=True)
-    n_cids_penult, n_cids_penult_train, n_cids_penult_ood_val, n_cids_penult_ood_test = zip(*penult_tups)
-    n_cids_penult_ood_eval = tuple(a + b for a, b in zip(n_cids_penult_ood_val, n_cids_penult_ood_test))
+    n_cids_penult, n_cids_penult_train, n_cids_penult_val_ood, n_cids_penult_test_ood = zip(*penult_tups)
+    n_cids_penult_ood_eval = tuple(a + b for a, b in zip(n_cids_penult_val_ood, n_cids_penult_test_ood))
 
-    data = [n_cids_penult, n_cids_penult_train, n_cids_penult_ood_eval, n_cids_penult_ood_val, n_cids_penult_ood_test]
+    data = [n_cids_penult, n_cids_penult_train, n_cids_penult_ood_eval, n_cids_penult_val_ood, n_cids_penult_test_ood]
     colors = ["crimson", "darkorange", "teal", "steelblue", "mediumpurple"]
     labels_data = ["Total", "Train", "OOD-Eval", "OOD-Val", "OOD-Test"]
     x_label = "Sorted Penultimate Classes"
@@ -697,31 +693,33 @@ def gen_strat_sampling_dist_plots_id(
         dpath_figs: Directory where plot files are written.
     """
 
-    skeys_id = skeys_pts["train"] | skeys_pts["id_val"] | skeys_pts["id_test"]
-    skeys_id_multis = {skey for skey in skeys_id if cid_2_n_samps[skey[0]] > 1}
-    cid_2_skeys_id_multis = build_cid_2_skeys(skeys_id_multis)
+    cids_train = {cid for cid, _ in skeys_pts["train"]}
+    skeys_id = skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["test_id"]
+    # skeys that are in train/id-val/id-test with cids in train
+    skeys_multis = {(cid, samp_key) for cid, samp_key in skeys_id if cid_2_n_samps[cid] > 1 and cid in cids_train}
+    cid2sidxs_multis = build_cid2sidxs(skeys_multis)
 
-    cid_tups = []
-    for cid in cid_2_skeys_id_multis:
-        n_skeys = cid_2_n_samps[cid]
-        n_skeys_train, n_skeys_id_val, n_skeys_id_test = 0, 0, 0
-        for skey in cid_2_skeys_id_multis[cid]:
-            if skey in skeys_pts["train"]:
-                n_skeys_train += 1
-            elif skey in skeys_pts["id_val"]:
-                n_skeys_id_val += 1
-            elif skey in skeys_pts["id_test"]:
-                n_skeys_id_test += 1
+    n_skeys_cids = []
+    for cid in cid2sidxs_multis:
+        n_skeys_whole_cid = cid_2_n_samps[cid]
+        n_skeys_train_cid, n_skeys_val_id_cid, n_skeys_test_id_cid = 0, 0, 0
+        for sidx in cid2sidxs_multis[cid]:
+            if (cid, sidx) in skeys_pts["train"]:
+                n_skeys_train_cid += 1
+            elif (cid, sidx) in skeys_pts["val_id"]:
+                n_skeys_val_id_cid += 1
+            elif (cid, sidx) in skeys_pts["test_id"]:
+                n_skeys_test_id_cid += 1
 
-        cid_tups.append((cid, n_skeys, n_skeys_train, n_skeys_id_val, n_skeys_id_test))
+        n_skeys_cids.append((cid, n_skeys_whole_cid, n_skeys_train_cid, n_skeys_val_id_cid, n_skeys_test_id_cid))
 
-    cid_tups.sort(key=lambda t: (t[1], t[0]), reverse=True)
-    _, n_skeys_ps, n_skeys_ps_train, n_skeys_ps_id_val, n_skeys_ps_id_test = zip(*cid_tups)
-    n_skeys_ps_id_eval = tuple(a + b for a, b in zip(n_skeys_ps_id_val, n_skeys_ps_id_test))
+    n_skeys_cids.sort(key=lambda t: (t[1], t[0]), reverse=True)
+    _, n_skeys_whole, n_skeys_train, n_skeys_val_id, n_skeys_test_id = zip(*n_skeys_cids)
+    n_skeys_eval_id = tuple(a + b for a, b in zip(n_skeys_val_id, n_skeys_test_id))
 
-    data = [n_skeys_ps, n_skeys_ps_train, n_skeys_ps_id_eval, n_skeys_ps_id_val, n_skeys_ps_id_test]
+    data = [n_skeys_whole, n_skeys_train, n_skeys_eval_id, n_skeys_val_id, n_skeys_test_id]
     colors = ["crimson", "darkorange", "teal", "steelblue", "mediumpurple"]
-    labels_data = ["Total", "Train (ID)", "Eval (ID)", "Val (ID)", "Test (ID)"]
+    labels_data = ["Total", "Train", "ID Eval", "ID Val", "ID Test"]
     x_label = "Sorted Classes"
     y_label = "Num. Samples"
 
@@ -764,31 +762,31 @@ def gen_strat_sampling_dist_plots_id(
     )
 
 def generate_n_shot_table(nshot, skeys_pts, col_width=0.20, fontsize_title=8, fontsize=5) -> None:
-    cid_2_n_id_val = defaultdict(int)
-    for cid, _ in skeys_pts["id_val"]:
-        cid_2_n_id_val[cid] += 1
-    cid_2_n_id_test = defaultdict(int)
-    for cid, _ in skeys_pts["id_test"]:
-        cid_2_n_id_test[cid] += 1
+    cid_2_n_val_id = defaultdict(int)
+    for cid, _ in skeys_pts["val_id"]:
+        cid_2_n_val_id[cid] += 1
+    cid_2_n_test_id = defaultdict(int)
+    for cid, _ in skeys_pts["test_id"]:
+        cid_2_n_test_id[cid] += 1
 
     n_shot_col_names = list(nshot["names"])
 
-    row_values_id_val = ["ID Val"]
-    row_values_id_test = ["ID Test"]
+    row_values_val_id = ["ID Val"]
+    row_values_test_id = ["ID Test"]
     for name in nshot["names"]:
-        cids_id_val = nshot["buckets"][name]["id_val"]
-        cids_id_test = nshot["buckets"][name]["id_test"]
+        cids_val_id = nshot["buckets"][name]["val_id"]
+        cids_test_id = nshot["buckets"][name]["test_id"]
 
-        n_classes_val = len(cids_id_val)
-        num_samps_val = sum(cid_2_n_id_val[cid] for cid in cids_id_val)
-        row_values_id_val.append(f"{num_samps_val:,} ({n_classes_val})")
+        n_classes_val = len(cids_val_id)
+        num_samps_val = sum(cid_2_n_val_id[cid] for cid in cids_val_id)
+        row_values_val_id.append(f"{num_samps_val:,} ({n_classes_val})")
 
-        n_classes_test = len(cids_id_test)
-        num_samps_test = sum(cid_2_n_id_test[cid] for cid in cids_id_test)
-        row_values_id_test.append(f"{num_samps_test:,} ({n_classes_test:,})")
+        n_classes_test = len(cids_test_id)
+        num_samps_test = sum(cid_2_n_test_id[cid] for cid in cids_test_id)
+        row_values_test_id.append(f"{num_samps_test:,} ({n_classes_test:,})")
 
     labels_cols = ["Partition"] + n_shot_col_names
-    data = [row_values_id_val, row_values_id_test]
+    data = [row_values_val_id, row_values_test_id]
 
     _, ax = plt.subplots(figsize=(5, 2))
     ax.axis("off")
@@ -822,10 +820,10 @@ def count_unique_cids_from_skeys(skeys) -> int:
 def count_total_samples_disjoint_partitions(skeys_pts) -> int:
     return len(
         skeys_pts["train"]
-        | skeys_pts["id_val"]
-        | skeys_pts["id_test"]
-        | skeys_pts["ood_val"]
-        | skeys_pts["ood_test"]
+        | skeys_pts["val_id"]
+        | skeys_pts["test_id"]
+        | skeys_pts["val_ood"]
+        | skeys_pts["test_ood"]
     )
 
 def render_partition_summary_table(
@@ -878,10 +876,10 @@ def generate_partition_summary_table(
 
     n_samps_total = count_total_samples_disjoint_partitions(skeys_pts)
     row_specs = [
-        ("OOD Test", "ood_test"),
-        ("ID Test", "id_test"),
-        ("OOD Val", "ood_val"),
-        ("ID Val", "id_val"),
+        ("OOD Test", "test_ood"),
+        ("ID Test", "test_id"),
+        ("OOD Val", "val_ood"),
+        ("ID Val", "val_id"),
         ("Train", "train"),
         ("TrainVal", "trainval"),
         ("Whole", "whole"),

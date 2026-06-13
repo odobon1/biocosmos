@@ -35,6 +35,7 @@ When editing existing code:
 When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
+- NEVER remove `import pdb` lines, even when they appear unused/dead. Leave them in place always.
 
 When your changes alter an interface (function signature, data structure, key names, dict schema, etc.):
 - Update all tests that exercise the changed interface to reflect the new contract.

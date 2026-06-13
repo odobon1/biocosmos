@@ -12,8 +12,6 @@ from preprocessing.common.split_gen import (
 )
 from preprocessing.lepid.split_gen_utils import build_img_ptrs
 
-import pdb
-
 
 def build_splits():
     GenSplitDataManager.setup("lepid")
@@ -34,7 +32,7 @@ def build_splits():
     # TEST PARTITIONS
 
     print("Constructing OOD + ID test partitions...")
-    skeys_ood_test, skeys_id_test, skeys_pool = strat_sample_ood_id(
+    skeys_test_ood, skeys_test_id, skeys_pool = strat_sample_ood_id(
         skeys_pool,
         n_cids_whole,
         n_samps_whole,
@@ -45,7 +43,7 @@ def build_splits():
     # VALIDATION PARTITIONS
 
     print("Constructing OOD + ID validation partitions...")
-    skeys_ood_val, skeys_id_val, skeys_train = strat_sample_ood_id(
+    skeys_val_ood, skeys_val_id, skeys_train = strat_sample_ood_id(
         skeys_pool,
         n_cids_whole,
         n_samps_whole,
@@ -59,10 +57,10 @@ def build_splits():
 
     skeys_pts = {
         "train": skeys_train,
-        "id_val": skeys_id_val,
-        "id_test": skeys_id_test,
-        "ood_val": skeys_ood_val,
-        "ood_test": skeys_ood_test,
+        "val_id": skeys_val_id,
+        "test_id": skeys_test_id,
+        "val_ood": skeys_val_ood,
+        "test_ood": skeys_test_ood,
     }
     add_trainval_whole(skeys_pts)
     skeys_pts_dev = build_dev_skeys_partitions(skeys_pts)

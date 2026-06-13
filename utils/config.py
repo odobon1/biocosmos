@@ -50,12 +50,12 @@ class TrainConfig:
     dv_batching: bool
 
     arch: dict
+    freeze: dict
     loss: dict
     loss2: dict
     text_template: dict
     img_norm: str
     opt: dict
-    freeze: dict
 
     dev: dict
 
@@ -84,6 +84,9 @@ class TrainConfig:
         if self.eval_every <= 0:
             raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
 
+        if self.freeze["image"] and self.freeze["text"]:
+            raise ValueError("Image and text encoders are both set to frozen!")
+
         if self.loss["type"] not in ("infonce1", "infonce2", "bce"):
             raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce}}")
         if self.loss2["type"] not in ("infonce1", "infonce2", "bce"):
@@ -104,9 +107,6 @@ class TrainConfig:
 
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
-
-        if self.freeze["image"] and self.freeze["text"]:
-            raise ValueError("Image and text encoders are both set to frozen!")
 
         for loss in [self.loss, self.loss2]:
             logits = loss["logits"]
@@ -144,9 +144,9 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     dev_cfg = cfg_dict.get("dev", {}) or {}
     if dev_cfg.get("debug_mode", False):
         cfg_dict["split"] = "dev"
-        cfg_dict["sample_volume"] = 20_000
-        cfg_dict["eval_every"] = 10_000
-        cfg_dict["batch_size"] = 1_024
+        cfg_dict["sample_volume"] = dev_cfg["debug"]["sample_volume"]
+        cfg_dict["eval_every"] = dev_cfg["debug"]["eval_every"]
+        cfg_dict["batch_size"] = dev_cfg["debug"]["batch_size"]
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
@@ -338,7 +338,6 @@ class GenSplitConfig:
     split: str
 
     pct_partition: float
-    pct_eval: float = field(init=False)
     pct_ood_tol: float
     size_dev: int
 
@@ -350,8 +349,6 @@ class GenSplitConfig:
     dev: dict
 
     def __post_init__(self):
-
-        self.pct_eval = 2 * self.pct_partition
 
         if self.pos_filter not in (None, "dorsal"):
             raise ValueError(

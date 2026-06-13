@@ -16,23 +16,27 @@ def split_data(request):
     split = load_pickle(paths["metadata"][dataset] / "splits/D10/split.pkl")
     di = split.data_indexes
     return {
+        "nshot_val_id": {
+            name: set(split.nshot["buckets"][name]["val_id"])
+            for name in split.nshot["names"]
+        },
         "rfpaths": {
             "whole":    {d["rfpath"] for d in di["whole"]},
             "train":    {d["rfpath"] for d in di["train"]},
             "trainval": {d["rfpath"] for d in di["trainval"]},
-            "id_val":   {d["rfpath"] for d in di["val"]["id"]},
-            "ood_val":  {d["rfpath"] for d in di["val"]["ood"]},
-            "id_test":  {d["rfpath"] for d in di["test"]["id"]},
-            "ood_test": {d["rfpath"] for d in di["test"]["ood"]},
+            "val_id":   {d["rfpath"] for d in di["val"]["id"]},
+            "val_ood":  {d["rfpath"] for d in di["val"]["ood"]},
+            "test_id":  {d["rfpath"] for d in di["test"]["id"]},
+            "test_ood": {d["rfpath"] for d in di["test"]["ood"]},
         },
         "cids": {
             "whole":    {d["cid"] for d in di["whole"]},
             "train":    {d["cid"] for d in di["train"]},
             "trainval": {d["cid"] for d in di["trainval"]},
-            "id_val":   {d["cid"] for d in di["val"]["id"]},
-            "ood_val":  {d["cid"] for d in di["val"]["ood"]},
-            "id_test":  {d["cid"] for d in di["test"]["id"]},
-            "ood_test": {d["cid"] for d in di["test"]["ood"]},
+            "val_id":   {d["cid"] for d in di["val"]["id"]},
+            "val_ood":  {d["cid"] for d in di["val"]["ood"]},
+            "test_id":  {d["cid"] for d in di["test"]["id"]},
+            "test_ood": {d["cid"] for d in di["test"]["ood"]},
         },
     }
 
@@ -42,13 +46,13 @@ def split_data(request):
 @pytest.mark.integration
 def test_whole_covers_all_partitions(split_data):
     r = split_data["rfpaths"]
-    assert r["whole"] == r["trainval"] | r["id_test"] | r["ood_test"]
+    assert r["whole"] == r["trainval"] | r["test_id"] | r["test_ood"]
 
 
 @pytest.mark.integration
 def test_trainval_covers_train_and_val_partitions(split_data):
     r = split_data["rfpaths"]
-    assert r["trainval"] == r["train"] | r["id_val"] | r["ood_val"]
+    assert r["trainval"] == r["train"] | r["val_id"] | r["val_ood"]
 
 
 # ─── rfpath disjointness ──────────────────────────────────────────────────────
@@ -56,55 +60,69 @@ def test_trainval_covers_train_and_val_partitions(split_data):
 @pytest.mark.integration
 def test_trainval_disjoint_from_test(split_data):
     r = split_data["rfpaths"]
-    assert r["trainval"] & r["id_test"] == set()
-    assert r["trainval"] & r["ood_test"] == set()
+    assert r["trainval"] & r["test_id"] == set()
+    assert r["trainval"] & r["test_ood"] == set()
 
 
 @pytest.mark.integration
 def test_train_eval_partitions_disjoint(split_data):
     r = split_data["rfpaths"]
 
-    assert r["train"] & r["id_val"] == set()
-    assert r["train"] & r["ood_val"] == set()
-    assert r["train"] & r["id_test"] == set()
-    assert r["train"] & r["ood_test"] == set()
+    assert r["train"] & r["val_id"] == set()
+    assert r["train"] & r["val_ood"] == set()
+    assert r["train"] & r["test_id"] == set()
+    assert r["train"] & r["test_ood"] == set()
 
-    assert r["id_val"] & r["ood_val"] == set()
-    assert r["id_val"] & r["id_test"] == set()
-    assert r["id_val"] & r["ood_test"] == set()
+    assert r["val_id"] & r["val_ood"] == set()
+    assert r["val_id"] & r["test_id"] == set()
+    assert r["val_id"] & r["test_ood"] == set()
 
-    assert r["ood_val"] & r["id_test"] == set()
-    assert r["ood_val"] & r["ood_test"] == set()
+    assert r["val_ood"] & r["test_id"] == set()
+    assert r["val_ood"] & r["test_ood"] == set()
 
-    assert r["id_test"] & r["ood_test"] == set()
+    assert r["test_id"] & r["test_ood"] == set()
 
 
 # ─── cid consistency ──────────────────────────────────────────────────────────
 
 @pytest.mark.integration
-def test_id_cids_disjoint_from_ood_val_cids(split_data):
+def test_id_cids_disjoint_from_val_ood_cids(split_data):
     c = split_data["cids"]
-    assert c["train"] & c["ood_val"] == set()
+    assert c["train"] & c["val_ood"] == set()
 
 
 @pytest.mark.integration
-def test_trainval_cids_disjoint_from_ood_test_cids(split_data):
+def test_trainval_cids_disjoint_from_test_ood_cids(split_data):
     c = split_data["cids"]
-    assert c["trainval"] & c["ood_test"] == set()
+    assert c["trainval"] & c["test_ood"] == set()
 
 
 @pytest.mark.integration
 def test_trainval_cids_composition(split_data):
     c = split_data["cids"]
-    assert c["trainval"] == c["train"] | c["ood_val"]
-    assert len(c["trainval"]) == len(c["train"]) + len(c["ood_val"])
+    assert c["trainval"] == c["train"] | c["val_ood"]
+    assert len(c["trainval"]) == len(c["train"]) + len(c["val_ood"])
 
 
 @pytest.mark.integration
 def test_whole_cids_composition(split_data):
     c = split_data["cids"]
-    assert c["whole"] == c["trainval"] | c["ood_test"], (
-        f"{len(c['whole'])} != {len(c['trainval'])} + {len(c['ood_test'])} "
-        f"= {len(c['trainval']) + len(c['ood_test'])}"
+    assert c["whole"] == c["trainval"] | c["test_ood"], (
+        f"{len(c['whole'])} != {len(c['trainval'])} + {len(c['test_ood'])} "
+        f"= {len(c['trainval']) + len(c['test_ood'])}"
     )
-    assert len(c["whole"]) == len(c["trainval"]) + len(c["ood_test"])
+    assert len(c["whole"]) == len(c["trainval"]) + len(c["test_ood"])
+
+
+# ─── n-shot buckets ───────────────────────────────────────────────────────────
+
+@pytest.mark.integration
+def test_nshot_val_id_buckets_disjoint(split_data):
+    """Each class belongs to at most one n-shot bucket (by val_id membership)."""
+    buckets = split_data["nshot_val_id"]
+    names = list(buckets)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert buckets[a] & buckets[b] == set(), (
+                f"cids appear in multiple n-shot buckets: {a} and {b}"
+            )

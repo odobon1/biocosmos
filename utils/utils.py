@@ -439,6 +439,15 @@ class PrintLog:
             "",
         ]
 
+        lines.extend([  # freeze block
+            "=== Freeze ===",
+            PrintLog._block_metric_lines((
+                ("Image", cfg_train.freeze["image"]),
+                ("Text", cfg_train.freeze["text"]),
+            )),
+            "",
+        ])
+
         lines.extend(PrintLog._format_loss_block(cfg_train.loss))  # primary loss block
 
         if cfg_train.loss2["mix"] != 0.0:
@@ -469,15 +478,6 @@ class PrintLog:
                 ("β2",     cfg_train.opt['beta2']),
                 ("ε",      cfg_train.opt['eps']),
             ]),
-            "",
-        ])
-
-        lines.extend([  # freeze block
-            "=== Freeze ===",
-            PrintLog._block_metric_lines((
-                ("Image", cfg_train.freeze["image"]),
-                ("Text", cfg_train.freeze["text"]),
-            )),
             "",
         ])
 

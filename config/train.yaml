@@ -1,13 +1,13 @@
 campaign: dev
 setting: dev
+seed: 42
 dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
-train_pt: whole  # {train, trainval, whole}
-seed: 42
+train_pt: train  # {train, trainval}
 
 sample_volume: 1_000_000
 eval_every: 50_000
-batch_size: 4096  # {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
+batch_size: 4_096  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batching
 
 arch:  # architecture

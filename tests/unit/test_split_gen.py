@@ -5,13 +5,13 @@ python -m pytest tests/unit/test_split_gen.py
 from types import SimpleNamespace
 
 from preprocessing.common.split_gen import (
-    add_trainval_whole,
+    add_trainval,
     build_data_indexes,
     build_nshot,
 )
 
 
-def test_add_trainval_whole_unions_partitions() -> None:
+def test_add_trainval_unions_partitions() -> None:
     skeys_pts = {
         "train": {("cid_a", 0)},
         "val_id": {("cid_a", 1)},
@@ -20,19 +20,12 @@ def test_add_trainval_whole_unions_partitions() -> None:
         "test_ood": {("cid_c", 0)},
     }
 
-    add_trainval_whole(skeys_pts)
+    add_trainval(skeys_pts)
 
     assert skeys_pts["trainval"] == {
         ("cid_a", 0),
         ("cid_a", 1),
         ("cid_b", 0),
-    }
-    assert skeys_pts["whole"] == {
-        ("cid_a", 0),
-        ("cid_a", 1),
-        ("cid_b", 0),
-        ("cid_a", 2),
-        ("cid_c", 0),
     }
 
 
@@ -53,7 +46,7 @@ def test_build_nshot_buckets_ood_val_species_in_test_id_by_trainval_cardinality(
         "val_ood": {("cid_ood", 1), ("cid_ood", 2)},
         "test_ood": set(),
     }
-    add_trainval_whole(skeys_pts)
+    add_trainval(skeys_pts)
     # trainval = {(cid_a,0), (cid_a,1), (cid_ood,1), (cid_ood,2)}
     # cid_ood trainval count = 2 → bisect_left([2], 2) == 0 → "few" bucket
 
@@ -80,7 +73,7 @@ def test_build_nshot_uses_train_for_val_id_and_trainval_for_test_id() -> None:
         "val_ood": set(),
         "test_ood": set(),
     }
-    add_trainval_whole(skeys_pts)
+    add_trainval(skeys_pts)
 
     nshot = build_nshot(skeys_pts, cfg)
 
@@ -108,20 +101,15 @@ def test_build_data_indexes_partition_size_composition():
         "test_ood": {("sp_e", 0)},
     }
     skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
-    skeys_pts["whole"] = skeys_pts["trainval"] | skeys_pts["test_id"] | skeys_pts["test_ood"]
+    skeys_all = skeys_pts["trainval"] | skeys_pts["test_id"] | skeys_pts["test_ood"]
 
     all_cids = sorted({cid for pt in skeys_pts.values() for cid, _ in pt})
     cid2enc = {cid: i for i, cid in enumerate(all_cids)}
-    skey2meta = {skey: None for skey in skeys_pts["whole"]}
+    skey2meta = {skey: None for skey in skeys_all}
     data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
 
     assert len(data_indexes["trainval"]) == (
         len(data_indexes["train"])
         + len(data_indexes["val"]["id"])
         + len(data_indexes["val"]["ood"])
-    )
-    assert len(data_indexes["whole"]) == (
-        len(data_indexes["trainval"])
-        + len(data_indexes["test"]["id"])
-        + len(data_indexes["test"]["ood"])
     )

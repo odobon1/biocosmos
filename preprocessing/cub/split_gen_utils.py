@@ -20,7 +20,7 @@ def _build_classdir_to_cid(class_data):
         classdir_to_cid[common_name] = species
     return classdir_to_cid
 
-def build_img_ptrs(rfpaths_whole, class_data=None):
+def build_img_ptrs(rfpaths_all, class_data=None):
     if class_data is None:
         class_data = GenSplitDataManager.class_data
     classdir_to_cid = _build_classdir_to_cid(class_data)
@@ -29,7 +29,7 @@ def build_img_ptrs(rfpaths_whole, class_data=None):
     rfpath_2_skey = {}
     cid_offsets = defaultdict(int)
 
-    for rfpath in rfpaths_whole:
+    for rfpath in rfpaths_all:
         parts = rfpath.split("/")
         class_dir = parts[0]
         class_name = _class_dir_to_common_name(class_dir)

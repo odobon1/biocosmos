@@ -71,8 +71,8 @@ class TrainConfig:
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
-        if self.train_pt not in ("train", "trainval", "whole"):
-            raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval, whole}}")
+        if self.train_pt not in ("train", "trainval"):
+            raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.data_indexes[self.train_pt])

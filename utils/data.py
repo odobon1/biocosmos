@@ -413,7 +413,7 @@ def spawn_partition_data(config: EvalConfig, partition: str):
     - split --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
     """
     split = load_split(config.dataset, config.split)
-    if partition in ("train", "trainval", "whole"):
+    if partition in ("train", "trainval"):
         index_data = split.data_indexes[partition]
     else:
         index_data = split.data_indexes[config.eval_type][partition]

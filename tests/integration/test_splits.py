@@ -26,7 +26,6 @@ def split_data(request):
             for name in split.nshot["names"]
         },
         "rfpaths": {
-            "whole":    {d["rfpath"] for d in di["whole"]},
             "train":    {d["rfpath"] for d in di["train"]},
             "trainval": {d["rfpath"] for d in di["trainval"]},
             "val_id":   {d["rfpath"] for d in di["val"]["id"]},
@@ -35,7 +34,6 @@ def split_data(request):
             "test_ood": {d["rfpath"] for d in di["test"]["ood"]},
         },
         "cids": {
-            "whole":    {enc2cid[d["class_enc"]] for d in di["whole"]},
             "train":    {enc2cid[d["class_enc"]] for d in di["train"]},
             "trainval": {enc2cid[d["class_enc"]] for d in di["trainval"]},
             "val_id":   {enc2cid[d["class_enc"]] for d in di["val"]["id"]},
@@ -47,12 +45,6 @@ def split_data(request):
 
 
 # ─── rfpath coverage ─────────────────────────────────────────────────────────
-
-@pytest.mark.integration
-def test_whole_covers_all_partitions(split_data):
-    r = split_data["rfpaths"]
-    assert r["whole"] == r["trainval"] | r["test_id"] | r["test_ood"]
-
 
 @pytest.mark.integration
 def test_trainval_covers_train_and_val_partitions(split_data):
@@ -107,16 +99,6 @@ def test_trainval_cids_composition(split_data):
     c = split_data["cids"]
     assert c["trainval"] == c["train"] | c["val_ood"]
     assert len(c["trainval"]) == len(c["train"]) + len(c["val_ood"])
-
-
-@pytest.mark.integration
-def test_whole_cids_composition(split_data):
-    c = split_data["cids"]
-    assert c["whole"] == c["trainval"] | c["test_ood"], (
-        f"{len(c['whole'])} != {len(c['trainval'])} + {len(c['test_ood'])} "
-        f"= {len(c['trainval']) + len(c['test_ood'])}"
-    )
-    assert len(c["whole"]) == len(c["trainval"]) + len(c["test_ood"])
 
 
 # ─── n-shot buckets ───────────────────────────────────────────────────────────

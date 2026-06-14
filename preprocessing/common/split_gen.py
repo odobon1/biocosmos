@@ -90,7 +90,7 @@ def get_norm_stats(
     dev_cfg = GenSplitDataManager.cfg.dev
     if dev_cfg.get("debug_mode", False) and dev_cfg["debug"].get("skip_norm_stats", False):
         print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
-        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
+        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval")}
     return compute_rgb_norm_stats_by_partition(data_indexes)
 
 def compute_rgb_norm_stats_by_partition(
@@ -103,9 +103,7 @@ def compute_rgb_norm_stats_by_partition(
     groups = [
         ("train",    [d["rfpath"] for d in data_indexes["train"]]),
         ("trainval", [d["rfpath"] for d in data_indexes["val"]["id"]] +
-                     [d["rfpath"] for d in data_indexes["val"]["ood"]]),
-        ("whole",    [d["rfpath"] for d in data_indexes["test"]["id"]] +
-                     [d["rfpath"] for d in data_indexes["test"]["ood"]]),
+                     [d["rfpath"] for d in data_indexes["val"]["ood"]])
     ]
 
     all_means: List = []
@@ -240,17 +238,17 @@ def strat_sample_partition(
 def strat_sample_partition_ood(
     skeys_pool: Set[Tuple[str, int]],
     cid_2_penult: Dict[str, str],
-    n_cids_whole: int,
-    n_samps_whole: int,
+    n_cids_all: int,
+    n_samps_all: int,
     ood_tol_flag: bool,
 ):
     """
-    Pick exactly round(n_cids_whole * pct_partition) classes for OOD-val,
+    Pick exactly round(n_cids_all * pct_partition) classes for OOD-val,
     stratified by penultimate class.
     """
     cid2sidxs_pool = build_cid2sidxs(skeys_pool)
     cids_pool = set(cid2sidxs_pool.keys())
-    n_cids_pt = round(n_cids_whole * GenSplitDataManager.cfg.pct_partition)
+    n_cids_pt = round(n_cids_all * GenSplitDataManager.cfg.pct_partition)
 
     penult_2_cids = defaultdict(list)
     for cid in sorted(cids_pool):
@@ -281,7 +279,7 @@ def strat_sample_partition_ood(
             for cid in cids_pt
             for sidx in cid2sidxs_pool[cid]
         }
-        pct_samps_pt = len(skeys_pt) / n_samps_whole
+        pct_samps_pt = len(skeys_pt) / n_samps_all
         close_enough = abs(pct_samps_pt - GenSplitDataManager.cfg.pct_partition) <= GenSplitDataManager.cfg.pct_ood_tol
         if close_enough or not ood_tol_flag:
             sample_once_more = False
@@ -296,7 +294,7 @@ def strat_sample_partition_ood(
 
 def strat_sample_partition_id(
     skeys_pool: Set[Tuple[str, int]], 
-    n_samps_whole: int,
+    n_samps_all: int,
 ) -> Tuple[
     Set[Tuple[str, int]],
     Set[Tuple[str, int]],
@@ -318,7 +316,7 @@ def strat_sample_partition_id(
         for sidx in cid2sidxs_pool[cid]
     }
 
-    n_samps_pt = round(n_samps_whole * GenSplitDataManager.cfg.pct_partition)
+    n_samps_pt = round(n_samps_all * GenSplitDataManager.cfg.pct_partition)
 
     n_insts_2_classes_leaf_lvl = defaultdict(list)
     cid_2_skeys_pool_multis = defaultdict(list)
@@ -347,8 +345,8 @@ def strat_sample_partition_id(
 
 def strat_sample_ood_id(
     skeys_pool: Set[Tuple[str, int]],
-    n_cids_whole: int,
-    n_samps_whole: int,
+    n_cids_all: int,
+    n_samps_all: int,
     cid_2_penult: Dict[str, str],
     ood_tol_flag: bool = True,
 ) -> Tuple[
@@ -359,13 +357,13 @@ def strat_sample_ood_id(
     skeys_pt_ood, skeys_pool = strat_sample_partition_ood(
         skeys_pool,
         cid_2_penult,
-        n_cids_whole,
-        n_samps_whole,
+        n_cids_all,
+        n_samps_all,
         ood_tol_flag,
     )
     skeys_pt_id, skeys_pool = strat_sample_partition_id(
         skeys_pool, 
-        n_samps_whole, 
+        n_samps_all, 
     )
     return skeys_pt_ood, skeys_pt_id, skeys_pool
 
@@ -375,9 +373,8 @@ def build_cid2sidxs(skeys: Set[Tuple[str, int]]) -> Dict[str, List[int]]:
         cid2sidxs[cid].append(samp_idx)
     return cid2sidxs
 
-def add_trainval_whole(skeys_pts):
+def add_trainval(skeys_pts):
     skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
-    skeys_pts["whole"] = skeys_pts["trainval"] | skeys_pts["test_id"] | skeys_pts["test_ood"]
 
 def build_nshot(skeys_pts, cfg=None):
 
@@ -428,7 +425,6 @@ def build_class_counts_by_partition(data_indexes, n_classes):
     for pt_name, pt_data in (
         ("train",    data_indexes["train"]),
         ("trainval", data_indexes["trainval"]),
-        ("whole",    data_indexes["whole"]),
     ):
         counts = np.full(n_classes, np.nan)
         for datum in pt_data:
@@ -438,14 +434,15 @@ def build_class_counts_by_partition(data_indexes, n_classes):
     return results
 
 def build_skey2meta(
-    skeys: set[Tuple[str, int]],
+    skeys_pts,
     img_ptrs, 
 ) -> Dict[Tuple[str, int], Optional[Dict[str, Optional[str]]]]:
+    skeys_all = {skey for pt in ("train", "val_id", "val_ood", "test_id", "test_ood") for skey in skeys_pts[pt]}
     if GenSplitDataManager.dataset in ("lepid", "nymph"):
         df = pd.read_csv(paths["csv"][GenSplitDataManager.dataset]["imgs"])
         lookup = df.set_index("mask_name")[["class_dv", "sex"]]
         result = {}
-        for skey in skeys:
+        for skey in skeys_all:
             cid, samp_idx = skey
             fname = img_ptrs[cid][samp_idx].split("/")[-1]
             pos = lookup["class_dv"].get(fname)
@@ -455,7 +452,7 @@ def build_skey2meta(
                 "sex": None if pd.isna(sex) else sex,
             }
     else:
-        result = {skey: None for skey in skeys}
+        result = {skey: None for skey in skeys_all}
     return result
 
 def build_data_indexes(
@@ -481,16 +478,15 @@ def build_data_indexes(
 
     return {
         "train": build_partition_index("train"),
-        "trainval": build_partition_index("trainval"),
         "val": {
             "id": build_partition_index("val_id"),
             "ood": build_partition_index("val_ood"),
         },
+        "trainval": build_partition_index("trainval"),
         "test": {
             "id": build_partition_index("test_id"),
             "ood": build_partition_index("test_ood"),
         },
-        "whole": build_partition_index("whole"),
     }
 
 def build_dev_skeys_partitions(skeys_pts):
@@ -687,7 +683,7 @@ def gen_strat_sampling_dist_plots_id(
 
     n_skeys_cids = []
     for cid in cid2sidxs_multis:
-        n_skeys_whole_cid = cid_2_n_samps[cid]
+        n_skeys_all_cid = cid_2_n_samps[cid]
         n_skeys_train_cid, n_skeys_val_id_cid, n_skeys_test_id_cid = 0, 0, 0
         for sidx in cid2sidxs_multis[cid]:
             if (cid, sidx) in skeys_pts["train"]:
@@ -697,13 +693,13 @@ def gen_strat_sampling_dist_plots_id(
             elif (cid, sidx) in skeys_pts["test_id"]:
                 n_skeys_test_id_cid += 1
 
-        n_skeys_cids.append((cid, n_skeys_whole_cid, n_skeys_train_cid, n_skeys_val_id_cid, n_skeys_test_id_cid))
+        n_skeys_cids.append((cid, n_skeys_all_cid, n_skeys_train_cid, n_skeys_val_id_cid, n_skeys_test_id_cid))
 
     n_skeys_cids.sort(key=lambda t: (t[1], t[0]), reverse=True)
-    _, n_skeys_whole, n_skeys_train, n_skeys_val_id, n_skeys_test_id = zip(*n_skeys_cids)
+    _, n_skeys_all, n_skeys_train, n_skeys_val_id, n_skeys_test_id = zip(*n_skeys_cids)
     n_skeys_eval_id = tuple(a + b for a, b in zip(n_skeys_val_id, n_skeys_test_id))
 
-    data = [n_skeys_whole, n_skeys_train, n_skeys_eval_id, n_skeys_val_id, n_skeys_test_id]
+    data = [n_skeys_all, n_skeys_train, n_skeys_eval_id, n_skeys_val_id, n_skeys_test_id]
     colors = ["crimson", "darkorange", "teal", "steelblue", "mediumpurple"]
     labels_data = ["Total", "Train", "ID Eval", "ID Val", "ID Test"]
     x_label = "Sorted Classes"
@@ -868,13 +864,12 @@ def generate_partition_summary_table(
 
     n_samps_total = count_total_samples_disjoint_partitions(skeys_pts)
     row_specs = [
-        ("OOD Test", "test_ood"),
-        ("ID Test", "test_id"),
-        ("OOD Val", "val_ood"),
-        ("ID Val", "val_id"),
         ("Train", "train"),
         ("TrainVal", "trainval"),
-        ("Whole", "whole"),
+        ("ID Val", "val_id"),
+        ("ID Test", "test_id"),
+        ("OOD Val", "val_ood"),
+        ("OOD Test", "test_ood"),
     ]
 
     data = []
@@ -926,7 +921,7 @@ def generate_splits(
     print("Generating data indexes...")
     cid2enc = build_global_cid2enc(skeys_pts)
     enc2cid = {enc: cid for cid, enc in cid2enc.items()}
-    skey2meta = build_skey2meta(skeys_pts["whole"], img_ptrs)
+    skey2meta = build_skey2meta(skeys_pts, img_ptrs)
     data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
     data_indexes_dev = build_data_indexes(skeys_pts_dev, img_ptrs, cid2enc, skey2meta)
     print("Data indexes complete!")

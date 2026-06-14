@@ -21,13 +21,13 @@ CAMPAIGN = "dev"
 SEED0 = 42
 NUM_SEEDS = 1
 
-DATASETS = ("nymph",)
+DATASETS = ("bryo", "cub", "lepid", "nymph")
 
 BASELINE_OVERRIDES = [
     # {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    {"loss.targ": "aligned", "name": "iw"},
-    {"loss.targ": "multipos", "name": "sw"},
+    # {"loss.targ": "aligned", "name": "iw"},
+    # {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -128,7 +128,7 @@ def _run_trial_subprocess(cfg_dict: dict) -> None:
         raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_body)
 
 def _check_trial_completion(dpath_trial: Path) -> bool:
-    fpath_metadata_trial = dpath_trial / "metadata_trial.json"
+    fpath_metadata_trial = dpath_trial / "trial_metadata.json"
     if not fpath_metadata_trial.exists():
         complete = False
     else:
@@ -146,7 +146,7 @@ def run_campaign() -> None:
     save_pickle(time_data, dpath_campaign / "time.pkl")
 
     n_gpus = torch.cuda.device_count()
-    fpath_meta = dpath_campaign / "metadata_campaign.json"
+    fpath_meta = dpath_campaign / "campaign_metadata.json"
     if fpath_meta.exists():
         existing_meta = load_json(fpath_meta)
         if existing_meta["n_gpus"] != n_gpus:
@@ -159,7 +159,7 @@ def run_campaign() -> None:
             "duration": "0-00:00:00",
             "n_gpus": n_gpus,
         }
-        save_json(metadata_camp, dpath_campaign / "metadata_campaign.json")
+        save_json(metadata_camp, dpath_campaign / "campaign_metadata.json")
 
     cfg_baseline = _load_or_create_baseline_config()
     settings = _expand_settings(BASELINE_OVERRIDES)

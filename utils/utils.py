@@ -489,6 +489,7 @@ class PrintLog:
 
     @staticmethod
     def _format_hw_block(cfg_train):
+        chunk_size = cfg_train.hw.chunk_size
         lines_hw = [
             "=== Hardware ===",
             PrintLog._block_metric_lines((
@@ -498,6 +499,11 @@ class PrintLog:
                 ("Num. Workers", cfg_train.n_workers),
                 ("Prefetch Factor", cfg_train.prefetch_factor),
                 ("Device", cfg_train.device),
+            )),
+            "Chunk Size",
+            PrintLog._block_metric_lines((
+                ("- img-to-img mAP", f"{chunk_size['map_img2img']:,}"),
+                ("- cross-modal mAP", f"{chunk_size['map_cross_modal']:,}"),
             )),
             "",
         ]

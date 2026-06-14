@@ -623,7 +623,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Stratified Sampling Distribution",
+        title="OOD Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist.png",
@@ -633,7 +633,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Stratified Sampling Distribution (Log-Scale)",
+        title="OOD Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log.png",
@@ -649,7 +649,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Stratified Sampling Distribution (Log-Scale + Smoothed)",
+        title="OOD Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
@@ -713,7 +713,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Stratified Sampling Distribution",
+        title="ID Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist.png",
@@ -723,7 +723,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Stratified Sampling Distribution (Log-Scale)",
+        title="ID Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log.png",
@@ -739,7 +739,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Stratified Sampling Distribution (Log-Scale + Smoothed)",
+        title="ID Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log_smooth.png",
@@ -747,7 +747,13 @@ def gen_strat_sampling_dist_plots_id(
         scale="log",
     )
 
-def generate_n_shot_table(nshot, skeys_pts, col_width=0.20, fontsize_title=8, fontsize=5) -> None:
+def generate_n_shot_table(
+    nshot, 
+    skeys_pts, 
+    col_widths=[0.30, 0.20], 
+    fontsize_title=8, 
+    fontsize=5,
+) -> None:
     cid_2_n_val_id = defaultdict(int)
     for cid, _ in skeys_pts["val_id"]:
         cid_2_n_val_id[cid] += 1
@@ -757,27 +763,27 @@ def generate_n_shot_table(nshot, skeys_pts, col_width=0.20, fontsize_title=8, fo
 
     n_shot_col_names = list(nshot["names"])
 
-    row_values_val_id = ["ID Val"]
-    row_values_test_id = ["ID Test"]
+    row_values_val = ["Train / ID Val"]
+    row_values_test = ["TrainVal / ID Test"]
     for name in nshot["names"]:
         cids_val_id = nshot["buckets"]["train/val"][name]
         cids_test_id = nshot["buckets"]["trainval/test"][name]
 
         n_classes_val = len(cids_val_id)
         num_samps_val = sum(cid_2_n_val_id[cid] for cid in cids_val_id)
-        row_values_val_id.append(f"{num_samps_val:,} ({n_classes_val})")
+        row_values_val.append(f"{num_samps_val:,} ({n_classes_val})")
 
         n_classes_test = len(cids_test_id)
         num_samps_test = sum(cid_2_n_test_id[cid] for cid in cids_test_id)
-        row_values_test_id.append(f"{num_samps_test:,} ({n_classes_test:,})")
+        row_values_test.append(f"{num_samps_test:,} ({n_classes_test:,})")
 
-    labels_cols = ["Partition"] + n_shot_col_names
-    data = [row_values_val_id, row_values_test_id]
+    labels_cols = ["Partitions (Train / Eval)"] + n_shot_col_names
+    data = [row_values_val, row_values_test]
 
     _, ax = plt.subplots(figsize=(5, 2))
     ax.axis("off")
 
-    col_widths = [col_width] * len(labels_cols)
+    col_widths = [col_widths[0]] + [col_widths[1]] * (len(labels_cols) - 1)
 
     tbl = ax.table(
         cellText=data,
@@ -981,7 +987,7 @@ def generate_splits(
     generate_partition_summary_table(
         skeys_pts=skeys_pts,
         n_cids_total=len(cids),
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} Partition Summary",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} Partitions",
     )
     print("Partition summary table complete!")
 

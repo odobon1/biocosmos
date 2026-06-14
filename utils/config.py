@@ -72,7 +72,7 @@ class TrainConfig:
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
         if self.train_pt not in ("train", "trainval", "whole"):
-            raise ValueError(f"Unknown train_pt: '{self.train_pt}', must be one of {{train, trainval, whole}}")
+            raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval, whole}}")
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.data_indexes[self.train_pt])
@@ -252,6 +252,7 @@ class HardwareConfig:
     max_n_workers_gpu: int | None
     persistent_workers_train: bool
     persistent_workers_eval: bool
+    chunk_size: dict
 
 
 def get_config_hardware():
@@ -283,6 +284,9 @@ class EvalConfig:
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
+        if self.eval_type not in ("val", "test"):
+            raise ValueError(f"Unknown eval partition: '{self.eval_type}', must be one of {{val, test}}")
+
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
@@ -303,8 +307,8 @@ class EvalConfig:
             if not fpath_model.exists():
                 raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
             
-            fpath_metadata_trial = fpath_model.parent / "../../metadata_trial.json"
-            fpath_metadata_setting = fpath_model.parent / "../../../../metadata_setting.json"
+            fpath_metadata_trial = fpath_model.parent / "../../trial_metadata.json"
+            fpath_metadata_setting = fpath_model.parent / "../../../../setting_metadata.json"
             metadata_setting = load_json(fpath_metadata_setting)
             metadata_trial = load_json(fpath_metadata_trial)
 

@@ -17,8 +17,12 @@ def split_data(request):
     di = split.data_indexes
     enc2cid = split.enc2cid
     return {
-        "nshot_val_id": {
+        "nshot_val": {
             name: set(split.nshot["buckets"]["train/val"][name])
+            for name in split.nshot["names"]
+        },
+        "nshot_test": {
+            name: set(split.nshot["buckets"]["trainval/test"][name])
             for name in split.nshot["names"]
         },
         "rfpaths": {
@@ -118,9 +122,21 @@ def test_whole_cids_composition(split_data):
 # ─── n-shot buckets ───────────────────────────────────────────────────────────
 
 @pytest.mark.integration
-def test_nshot_val_id_buckets_disjoint(split_data):
+def test_nshot_val_buckets_disjoint(split_data):
     """Each class belongs to at most one n-shot bucket (by val_id membership)."""
-    buckets = split_data["nshot_val_id"]
+    buckets = split_data["nshot_val"]
+    names = list(buckets)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert buckets[a] & buckets[b] == set(), (
+                f"cids appear in multiple n-shot buckets: {a} and {b}"
+            )
+
+
+@pytest.mark.integration
+def test_nshot_test_buckets_disjoint(split_data):
+    """Each class belongs to at most one n-shot bucket (by trainval membership)."""
+    buckets = split_data["nshot_test"]
     names = list(buckets)
     for i, a in enumerate(names):
         for b in names[i + 1:]:

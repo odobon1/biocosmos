@@ -142,7 +142,7 @@ class ArtifactManager:
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
-        ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "metadata_trial.json"
+        ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "chkpts/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "chkpts/best_img2img"
@@ -177,7 +177,7 @@ class ArtifactManager:
             return f"{days}-{hours:02}:{minutes:02}:{seconds:02}"
         
         fpath_pkl = ArtifactManager.dpath_campaign / "time.pkl"
-        fpath_json = ArtifactManager.dpath_campaign / "metadata_campaign.json"
+        fpath_json = ArtifactManager.dpath_campaign / "campaign_metadata.json"
 
         time_data = load_pickle(fpath_pkl)
 
@@ -191,7 +191,7 @@ class ArtifactManager:
         time_data["elapsed"] = time_elapsed
         save_pickle(time_data, fpath_pkl)
         
-        metadata_camp = load_json(ArtifactManager.dpath_campaign / "metadata_campaign.json")
+        metadata_camp = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
         metadata_camp["duration"] = format_duration(time_elapsed)
         save_json(metadata_camp, fpath_json)
 
@@ -222,7 +222,7 @@ class ArtifactManager:
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]
         
-        fpath_meta = ArtifactManager.dpath_setting / "metadata_setting.json"
+        fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
         metadata = asdict(cfg_train)
         clean_metadata(metadata)
         if fpath_meta.exists():
@@ -632,12 +632,11 @@ def plot_composite_metrics(
 
     ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
     if len(data_epoch.get("grad_norm_model", [])) == len(x_train):
-        ax5.plot(x_train, data_epoch["grad_norm_model"], label="Model Grad Norm", color="green")
+        ax5.plot(x_train, data_epoch["grad_norm_model"], color="green")
     ax5.set_ylabel("Model Grad Norm", fontsize=fontsize_axes, fontweight="bold")
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")
-    ax5.legend(loc="upper right", fontsize=fontsize_legend)
     ax5.grid(True)
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 

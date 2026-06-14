@@ -1,8 +1,12 @@
 mixed_prec:  true  # mixed precision for training and validation
 act_chkpt:   true  # activation checkpointing
 
-prefetch_factor: 2  # dataloader prefetch factor
-max_n_workers_gpu: 8  # max dataloader workers per GPU (null for no cap)
+prefetch_factor: 1  # dataloader prefetch factor
+max_n_workers_gpu: 4  # max dataloader workers per GPU (null for no cap)
 
 persistent_workers_train: true  # keep train dataloader workers alive across train epochs
 persistent_workers_eval:  true  # keep eval dataloader workers alive across validation epochs
+
+chunk_size:
+  map_img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
+  map_cross_modal: 512

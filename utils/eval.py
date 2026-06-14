@@ -390,12 +390,15 @@ class PartitionEvaluationPipeline:
         nshot_bucket_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
 
+        chunk_size = self.cfg.hw.chunk_size
+
         scores_i2t = compute_map_cross_modal(
             embs_q=embs_img_q.cpu(),
             class_encs_q=class_encs_img_q.cpu(),
             embs_g=embs_text_g.cpu(),
             class_encs_g=class_encs_text_g.cpu(),
             compute_accuracy=True,
+            chunk_size=chunk_size["map_cross_modal"],
         )
         scores_i2i = compute_map_img2img(
             embs_q=embs_img_q,
@@ -403,12 +406,14 @@ class PartitionEvaluationPipeline:
             embs_g=embs_img_g,
             class_encs_g=class_encs_img_g,
             self_match_idxs_g=self_match_idxs_g,
+            chunk_size=chunk_size["map_img2img"],
         )
         scores_t2i = compute_map_cross_modal(
             embs_q=embs_text_q.cpu(),
             class_encs_q=class_encs_text_q.cpu(),
             embs_g=embs_img_g.cpu(),
             class_encs_g=class_encs_img_g.cpu(),
+            chunk_size=chunk_size["map_cross_modal"],
         )
 
         return self._build_metric_views(
@@ -428,7 +433,7 @@ def compute_map_img2img(
     embs_g: torch.Tensor,
     class_encs_g: torch.Tensor,
     self_match_idxs_g: Optional[torch.Tensor] = None,
-    chunk_size: int = 16384,
+    chunk_size: int = 512,
 ) -> Union[float, Dict[str, Any]]:
     """
     GPU-accelerated chunked vectorized mAP for evaluating image-to-image retrieval.
@@ -554,16 +559,18 @@ def compute_map_cross_modal(
     embs_g: torch.Tensor, 
     class_encs_g: torch.Tensor,
     compute_accuracy: bool = False,
+    chunk_size: int = 512,
 ) -> Union[float, Dict[str, Any]]:
     """
     Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
-    Note: Tensors stay on CPU for this ~ it's safe, it's fast (enough)
-    
+    Computes the Q x N similarity matrix in chunks over the query dim to bound host memory.
+
     Args:
     - embs_q --------- Query embeddings
     - class_encs_q --- Query class encodings (corresponding to query embeddings)
     - embs_g --------- Gallery embeddings
     - class_encs_g --- Gallery class encodings (corresponding to gallery embeddings)
+    - chunk_size ----- Chunk size (num. queries per chunk) for the similarity matrix (to bound memory)
 
     Returns:
     - [float] ------------ Mean Average Precision (mAP) over all queries
@@ -574,24 +581,41 @@ def compute_map_cross_modal(
     class_encs_g = class_encs_g.to(device)
     class_encs_q = class_encs_q.to(device)
 
+    Q = embs_q.size(0)  # num. query embeddings
     N = embs_g.size(0)  # num. gallery embeddings
 
-    # full similarity matrix
-    sim = compute_sim(embs_q, embs_g, "cos")  # pt[Q, N]
+    ranks = torch.arange(1, N+1, device=device).float()  # pt[N]
+    ap    = torch.empty(Q, device=device)  # pt[Q]
+    acc   = torch.empty(Q, device=device) if compute_accuracy else None  # pt[Q]
 
-    # get top-N neighbors per query (all of them)
-    _, idxs = sim.topk(N, dim=1)  # pt[Q, N]
+    # chunked over the query dim to bound the Q x N similarity matrix in memory
+    for i in range(0, Q, chunk_size):
+        i_end = min(i + chunk_size, Q)
 
-    # positives mask / boolean relevance mask (True wherever the query class matches the candidate class)
-    pos_mask = class_encs_q.unsqueeze(1) == class_encs_g[idxs]  # pt[Q, N]
+        embs_q_chunk       = embs_q[i:i_end]
+        class_encs_q_chunk = class_encs_q[i:i_end]
 
-    # cumulative precision at each rank
-    ranks    = torch.arange(1, N+1, device=sim.device)  # pt[N]
-    cum_prec = pos_mask.cumsum(dim=1).float() / ranks  # pt[Q, N]
+        # chunked similarity matrix (chunk x all)
+        sim_chunk = compute_sim(embs_q_chunk, embs_g, "cos")  # pt[U, N]
 
-    # compute AP per query: sum(precision@hit) / num. positives
-    pos_counts = pos_mask.sum(dim=1).float()  # pt[Q]
-    ap         = (cum_prec * pos_mask.float()).sum(dim=1) / pos_counts  # pt[Q]
+        # get top-N neighbors per query (all of them)
+        _, idxs_chunk = sim_chunk.topk(N, dim=1)  # pt[U, N]
+
+        # positives mask / boolean relevance mask (True wherever the query class matches the candidate class)
+        pos_mask_chunk = class_encs_q_chunk.unsqueeze(1) == class_encs_g[idxs_chunk]  # pt[U, N]
+
+        # cumulative precision at each rank
+        cum_prec_chunk = pos_mask_chunk.cumsum(dim=1).float() / ranks  # pt[U, N]
+
+        # compute AP per query: sum(precision@hit) / num. positives
+        pos_counts_chunk = pos_mask_chunk.sum(dim=1).float()  # pt[U]
+        ap[i:i_end] = (cum_prec_chunk * pos_mask_chunk.float()).sum(dim=1) / pos_counts_chunk  # pt[U]
+
+        if compute_accuracy:
+            acc[i:i_end] = pos_mask_chunk[:, 0].float()  # pt[U]
+
+        # free up memory
+        del embs_q_chunk, class_encs_q_chunk, sim_chunk, idxs_chunk, pos_mask_chunk, cum_prec_chunk
 
     map = ap.mean().item()
 
@@ -608,8 +632,6 @@ def compute_map_cross_modal(
     }
 
     if compute_accuracy:
-        acc = pos_mask[:, 0].float()
-
         # Macro accuracy: class-balanced top-1 retrieval accuracy.
         class_acc = compute_class_means_from_query_metric(class_encs_q=class_encs_q, values=acc)
         active_acc_classes = ~torch.isnan(class_acc)

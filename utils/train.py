@@ -127,6 +127,7 @@ class ArtifactManager:
     fpath_metadata_trial = None
     dpath_model_best_comp = None
     dpath_model_best_i2i = None
+    dpath_model_final = None
     dpath_model_checkpoint = None
     resuming = False
     dataset = None
@@ -146,6 +147,7 @@ class ArtifactManager:
 
         ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "chkpts/best_comp"
         ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "chkpts/best_img2img"
+        ArtifactManager.dpath_model_final = ArtifactManager.dpath_trial / "chkpts/final"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
         if ArtifactManager.dpath_trial.exists():
@@ -162,7 +164,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "chkpts", "chkpts/in_progress", "chkpts/best_comp", "chkpts/best_img2img", "plots"):
+        for subdir in ("logs", "chkpts", "chkpts/in_progress", "chkpts/best_comp", "chkpts/best_img2img", "chkpts/final", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod

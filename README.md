@@ -107,6 +107,25 @@ In standalone training (`python -m train`), only layers 1, 3, and 4 apply.
 
 <br>
 
+# Experimental Procedure
+
+Experiments proceed in two stages. A fixed number of epochs is used across all trials (no early stopping), so results stay comparable across runs.
+
+## Stage 1 — Selection
+
+Model selection: hyperparameter tuning, preliminary ablations, etc.
+* Train on the `train` partition.
+* Evaluate on the in-distribution (ID) and out-of-distribution (OOD) **validation** partitions.
+
+## Stage 2 — Final Testing
+
+Final performance measurement, performed ideally only once. Each additional look at test performance risks leaking test-set information into subsequent decisions (adaptive overfitting), inflating the reported numbers relative to true generalization; keeping the test partitions untouched until the end preserves them as an unbiased estimate.
+* With hyperparameters and design choices fixed from Stage 1, train on the `trainval` partition.
+* Evaluate on the ID and OOD **test** partitions.
+* No train-time evaluations are performed while training on `trainval`; final performance is collected via standalone evaluation.
+
+<br>
+
 # Supported Architectures
 
 The **Max Batch Size** column indicates max batch size whilst training on a single B200 using mixed precision and activation checkpointing.

@@ -170,12 +170,12 @@ class PartitionEvaluationPipeline:
         else:
             embs_text_all = modelw.embed_texts(self.index_text)
         
-        # image embeddings
+        # image embeddings (+ paired text embeddings & targets for the loss)
         embs_imgs = []
+        embs_txts = []
         class_encs_img = []
+        targ_data_loss = []
         cids_img = []
-        loss_total = 0.0
-        n_samps_loss = 0
         for imgs_sb, texts_sb, class_encs_img_sb, targ_data_sb in tqdm(
             self.dataloader,
             desc=f"Eval ({self.partition})",
@@ -183,36 +183,20 @@ class PartitionEvaluationPipeline:
             disable=(dist.get_rank() != 0),
         ):
             imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
-            class_encs_img_sb = class_encs_img_sb.to(modelw.device, non_blocking=True)
-
-            B = imgs_sb.size(0)
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
-                    _, loss_raw, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
-                        imgs_sb,
-                        texts_sb,
-                        class_encs_img_sb,
-                        targ_data_sb,
-                        loss_flag,
-                    )
+                    embs_img_b, embs_txt_b = modelw.batch_step_local(imgs_sb, texts_sb)
             else:
-                _, loss_raw, embs_img_b, _, _, class_encs_img_b = modelw.batch_step_local(
-                    imgs_sb,
-                    texts_sb,
-                    class_encs_img_sb,
-                    targ_data_sb,
-                    loss_flag,
-                )
+                embs_img_b, embs_txt_b = modelw.batch_step_local(imgs_sb, texts_sb)
 
             embs_imgs.append(embs_img_b.cpu())
-            class_encs_img.append(class_encs_img_b.cpu())
+            class_encs_img.append(class_encs_img_sb.cpu())
             cids_img.extend(targ_data["cid"] for targ_data in targ_data_sb)
 
             if loss_flag:
-                batch_loss = loss_raw.detach().item() * B
-                loss_total += batch_loss
-                n_samps_loss += B
+                embs_txts.append(embs_txt_b.cpu())
+                targ_data_loss.extend(targ_data_sb)
 
         if embs_imgs:
             embs_img_local = torch.cat(embs_imgs, dim=0).to(modelw.device)
@@ -227,15 +211,25 @@ class PartitionEvaluationPipeline:
 
         loss_avg = None
         if loss_flag:
-            stats = torch.tensor([
-                loss_total,
-                n_samps_loss,
-            ], device=modelw.device)
-            dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+            if embs_txts:
+                embs_txt_local = torch.cat(embs_txts, dim=0).to(modelw.device)
+            else:
+                embs_txt_local = torch.empty((0, modelw.embed_dim), device=modelw.device)
 
-            loss_total = stats[0].item()
-            n_samps_loss = stats[1].item()
-            loss_avg = loss_total / n_samps_loss
+            embs_txt_all = gather_variable_rows(embs_txt_local)
+            targ_data_all = gather_object_list(targ_data_loss)
+
+            # global negative pool: per-rank eval batch x world size (mirrors the global training batch)
+            chunk_size = self.batch_size * dist.get_world_size()
+            if self.mixed_prec:
+                with autocast(device_type=modelw.device.type):
+                    loss_avg = modelw.eval_loss_chunked(
+                        embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, chunk_size,
+                    )
+            else:
+                loss_avg = modelw.eval_loss_chunked(
+                    embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, chunk_size,
+                )
 
         modelw.model.train()
 

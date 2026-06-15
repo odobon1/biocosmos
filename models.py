@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import open_clip
 import abc
-from typing import List, Tuple, Any, Dict, Union
+from typing import List, Tuple, Any, Dict, Union, Optional
 from pathlib import Path
 
 from utils.utils import paths, load_split
@@ -546,12 +546,10 @@ class VLMWrapper(abc.ABC):
         self,
         imgs_sb: torch.Tensor,
         txts_sb: Tuple[str],
-        class_encs_sb: torch.Tensor,
-        targ_data_sb: Tuple[Any],
-        loss_flag: bool,
-    ) -> Tuple[Any]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Eval-oriented forward pass that keeps the batch local to the current rank.
+        Returns normalized image and text embeddings for the local sub-batch.
         """
         toks_sb = self.txt_pp(txts_sb)
         output = self.model(imgs_sb, toks_sb)
@@ -559,34 +557,54 @@ class VLMWrapper(abc.ABC):
         embs_img_sb = F.normalize(output[0], dim=1)
         embs_txt_sb = F.normalize(output[1], dim=1)
 
-        if not loss_flag:
-            return None, None, embs_img_sb, embs_txt_sb, (None, None), class_encs_sb
+        return embs_img_sb, embs_txt_sb
 
-        targ_data_list = list(targ_data_sb)
-        loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
-            embs_img_sb,
-            embs_txt_sb,
-            class_encs_sb,
-            targ_data_list,
-            self.cfg.loss,
-            secondary=False,
-        )
+    def eval_loss_chunked(
+        self,
+        embs_img: torch.Tensor,
+        embs_txt: torch.Tensor,
+        class_encs: torch.Tensor,
+        targ_data: List[Any],
+        chunk_size: int,
+    ) -> Optional[float]:
+        """
+        Raw eval loss over precomputed paired (image, text) embeddings, using
+        fixed-size chunks as the contrastive negative pool so the difficulty
+        matches the global training batch (rather than a single rank's local
+        sub-batch). The final partial chunk is dropped so every chunk poses an
+        equal-size negative pool; returns None when there isn't one full chunk.
 
-        mix = self.cfg.loss2["mix"]
-        if mix != 0.0:
-            loss2, loss2_raw, logits2 = self._loss_for_cfg_full_batch(
-                embs_img_sb,
-                embs_txt_sb,
-                class_encs_sb,
-                targ_data_list,
-                self.cfg.loss2,
-                secondary=True,
+        Inputs are the full partition gathered across ranks, so this runs
+        identically (and redundantly) on every rank with no further collectives.
+        """
+        N = embs_img.size(0)
+        if N < chunk_size:
+            return None
+
+        # deterministic shuffle (identical on every rank) so chunks are class-mixed
+        perm = torch.randperm(N, generator=torch.Generator().manual_seed(0)).to(embs_img.device)
+        embs_img = embs_img[perm]
+        embs_txt = embs_txt[perm]
+        class_encs = class_encs[perm]
+        targ_data = [targ_data[i] for i in perm.tolist()]
+
+        loss_total = 0.0
+        n_samps = 0
+        for i in range(0, N - chunk_size + 1, chunk_size):
+            sl = slice(i, i + chunk_size)
+            _, loss_raw, _ = self._loss_for_cfg_full_batch(
+                embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss, secondary=False,
             )
-            loss = (1.0 - mix) * loss1 + mix * loss2
-            loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
-            return loss, loss_raw, embs_img_sb, embs_txt_sb, (logits1, logits2), class_encs_sb
+            mix = self.cfg.loss2["mix"]
+            if mix != 0.0:
+                _, loss2_raw, _ = self._loss_for_cfg_full_batch(
+                    embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss2, secondary=True,
+                )
+                loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
+            loss_total += loss_raw.item() * chunk_size
+            n_samps += chunk_size
 
-        return loss1, loss1_raw, embs_img_sb, embs_txt_sb, (logits1, None), class_encs_sb
+        return loss_total / n_samps
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:

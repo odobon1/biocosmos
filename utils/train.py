@@ -574,7 +574,7 @@ def plot_composite_metrics(
         nshot_ylabel = "Full-Set n-shot mAP (ID)" if full_set else "n-shot mAP (ID)"
     comp_nshot = id_mode_scores.get("map", {}).get(nshot_key, {})
     if bucket_comp_keys:
-        for key in bucket_comp_keys:
+        for key in reversed(bucket_comp_keys):
             label = key
             maybe_plot(ax1, x_eval, comp_nshot, key, label, linestyle=":")
         if comp_nshot:
@@ -603,7 +603,7 @@ def plot_composite_metrics(
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
     comp_nshot_acc = id_mode_scores.get("acc", {}).get("n-shot", {})
     if bucket_comp_keys:
-        for key in bucket_comp_keys:
+        for key in reversed(bucket_comp_keys):
             maybe_plot(ax3, x_eval, comp_nshot_acc, key, key, linestyle=":")
         if comp_nshot_acc:
             ax3.legend(loc="lower right", fontsize=fontsize_legend)
@@ -618,10 +618,10 @@ def plot_composite_metrics(
     if len(data_epoch.get("loss_raw_train", [])) == len(x_train):
         ax4.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
     for partition in partitions:
-        if len(data_eval.get("loss", {}).get(partition, [])) == len(x_eval):
+        if len(data_eval.get("loss_raw", {}).get(partition, [])) == len(x_eval):
             ax4.plot(
                 x_eval,
-                data_eval["loss"][partition],
+                data_eval["loss_raw"][partition],
                 label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition.split("_"))])} Val Loss',
             )
     ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")

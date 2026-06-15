@@ -179,6 +179,8 @@ During training, partial batches are dropped by default. For more granular batch
 from each category, which may result in fewer batches per epoch. Dorsal/ventral batching can only be toggled for train.
 For eval, loss is computed for full batches only, although performance computation includes partial batches.
 
+For train-time eval loss, the gathered eval embeddings are deterministically shuffled (a fixed-seed permutation, identical on every rank) before being sliced into chunks of size `eval_batch_size × world_size`. The shuffle mixes the rank-ordered, class-clustered gather output so each chunk presents a varied set of in-batch negatives, and the fixed seed keeps the chunking reproducible across runs — making the eval batch loss an apples-to-apples comparison with the global train batch loss. The trailing partial chunk is dropped.
+
 ## Tensor Dimensionality Annotation Conventions:
 B: Batch dim. <br>
 C: Channels <br>

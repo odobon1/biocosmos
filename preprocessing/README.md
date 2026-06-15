@@ -1,243 +1,286 @@
-# Nymphalidae Metadata Generation
+# Metadata Generation
 
-Note: everything described in this file is executed when `./setup.sh` is run from the root as described in the setup procedure.
+Preprocessing turns raw image directories, taxonomy CSVs, and phylogenetic trees
+into the per-dataset metadata artifacts consumed by training: `class_data.pkl`,
+`tree.pkl`, `rank_encs.pkl`, and the split bundles under `splits/`.
 
-## Generate common names
-**preprocessing/nymph/cids2commons.py**
+The pipeline runs in five steps, in dependency order:
 
-To execute from root:
+```
+cids2commons  →  class_data  →  phylo  →  rank_encs  →  split_gen
+```
+
+Each step is implemented in `preprocessing/common/` and invoked by a thin
+per-dataset entry point under `preprocessing/<dataset>/` that supplies
+dataset-specific parameters and helpers (e.g. `species_ids.py`,
+`split_gen_utils.py`). The sections below are organized by step; dataset-specific
+nuances are called out within each section.
+
+## Running
+
+All metadata artifacts are committed to the repo, so the pipeline does not need to
+be run for normal use. To regenerate everything from scratch, run the full pipeline
+end-to-end for all four datasets (in dependency order) with:
+```
+./setup.sh
+```
+To regenerate a single step on its own, run the `python -m ...` command listed in
+that step's section below.
+
+All commands below are run from the repo root.
+
+
+# cids2commons
+
+Resolves a common (vernacular) name for each class via the GBIF API.
+
+**Shared:** `preprocessing/common/cid2commons.py` (`build_cids2commons`)
+
+`build_cids2commons` matches each scientific name with GBIF
+(`species/match` → `species/{key}/vernacularNames`) and keeps the first English
+vernacular name.
+
+**Only `nymph` and `lepid` run this step.** CUB resolves common names inside its
+`class_data` step (from the dataset's `.mat` file + GBIF), and Bryozoa stores
+`common_name = None` — common names pertain to species, but Bryozoa's leaf-level
+classes are at the genus level.
+
+### Nymphalidae
 ```
 python -m preprocessing.nymph.cids2commons
 ```
-**Requires:**
-- Butterflies data on HiPerGator
+- **Requires:** Nymphalidae image data on HiPerGator
+- **Produces:** `preprocessing/nymph/intermediaries/cids2commons.pkl`
 
-**Produces:**
-- `preprocessing/nymph/intermediaries/cids2commons.pkl`
+Class IDs come from listing the image directory and filtering to well-formed
+alphabetic species names (`species_ids.get_cids_nymph`), with a few hyphenated
+exceptions (e.g. `polygonia_c-album`).
 
-
-## Generate class data
-**preprocessing/nymph/class_data.py**
-
-To execute from root:
-```
-python -m preprocessing.nymph.class_data
-```
-**Requires:**
-- `preprocessing/nymph/intermediaries/cids2commons.pkl`
-
-**Produces:**
-- `metadata/nymph/class_data.pkl`
-
-
-## Generate Data Split
-**preprocessing/nymph/split_gen.py**
-
-To execute from root:
-```
-python -m preprocessing.nymph.split_gen
-```
-**Requires:**
-- `metadata/nymph/class_data.pkl`
-
-**Produces:**
-- `metadata/nymph/splits/<split>/split.pkl`
-- `metadata/nymph/splits/<split>/figures/*`
-- `metadata/nymph/splits/dev/split.pkl`
-- `metadata/nymph/splits/dev/figures/*`
-
-This is configured to generate split S29-42 by default, but can be adjusted in `config/split_gen.yaml`.
-
-Conventions used for split naming, using S29-42 as an example:
-* **29** refers to 29% of the data being split out (equally distributed between ID/OOD val/test)
-* **42** refers to the seed used for split generation
-
-This script generates in-distribution (ID) and out-of-distribution (OOD) stratified splits for train/val/test.
-In addition to the primary split, it also generates a default `dev` split where every partition mirrors the primary partition keys and contains the first `size_dev` samples from the primary train partition.
-
-First, entire species are split out for OOD zero-shot evaluation. Selection is stratified by genus and tuned to hit a target OOD proportion by number of species and total samples within a specified tolerance. Next, ID eval splits are sampled from the remaining pool. Singleton classes are temporarily excluded so they don't leak pseudo-OOD examples into ID eval (selection of such samples for ID eval would effectively render them OOD). Samples corresponding to non-singleton species are split into ID val/test sets, stratified by species. The remainder of the samples are joined with the singletons to produce the train set.
-
-![System diagram](../images/strat_process.png)
-
-The sklearn stratified splitter (train_test_split) errors out if the number of classes exceeds the number of test samples, which was the case for the OOD splits. Also, in the ID case, because our dataset is extremely long-tailed, with many classes that have very few instances, the sklearn stratified split yields a significant number of species that are completely unsampled from. To address these problems, each stratified split is performed in 2 stages:
-* Sparse Stratified Split (custom sampling method)
-* Standard Stratified Split (sklearn)
-
-For the OOD splits, classes are genera and instances are species. For the ID splits, classes are species and instances are samples. Stratification process: Overall, the classes are first grouped by their instance-counts (1-instance classes, 2-instance classes, etc.). The sparse stratified splitter algorithm then samples from the classes with the fewest amount of instances in a way that abides by the target split percentage. For example, if the target OOD split percentage is 10%, the sparse splitter will first iterate through classes containing 1 instance and select 1 class for val/test from every ten 1-instance classes. It will then iterate through 2-instance classes and select 1 instance for val/test from every five 2-instance classes. This pattern continues until n (for n-instances) becomes high enough that the sklearn splitter behaves as desired, at which point the sklearn stratified splitter is used for the remainder of the larger classes.
-Note: The ID split begins at 2-instance classes (2-sample species) because the singletons are first removed for reasons previously described.
-Note: The first stage of stratification (sparse) is done to ensure a well-distributed split among classes with fewer instances. By default, the sklearn stratified splitter (and all the other numerous stratified splitters I tried) will leave these unassigned, effectively leaving the tail end of the distribution completely unsampled from. In other words, the standard sklearn splitting process biases evaluation away from measuring few-shot learning.
-
-Datastructures are created for tracking n-shot subsets of ID splits for monitoring robustness to class imbalance and assessing the effectiveness of class imbalance methods utilized. The variety (num. species) and volume (num. samples) of n-shot ID eval subsets are summarized to assess the reliability of each subset (subsets with lower volume yield less reliable estimates) and inform the bounds of the n-shot buckets.
-
-## Generate Phylogenetic Tree
-**preprocessing/nymph/phylo.py**
-
-To execute from root:
-```
-python -m preprocessing.nymph.phylo
-```
-**Requires:**
-- Nymphalidae phylogenetic tree data (`paths["raw_tree"]["nymph"]`)
-- `metadata/nymph/class_data.pkl`
-
-**Produces:**
-- `metadata/nymph/tree.pkl`
-
-## Generate Rank Encodings
-**preprocessing/nymph/rank_encs.py**
-
-To execute from root:
-```
-python -m preprocessing.nymph.rank_encs
-```
-**Requires:**
-- `metadata/nymph/class_data.pkl`
-
-**Produces:**
-- `metadata/nymph/rank_encs.pkl`
-
-Rank keys are used for generating intermediate targets for use with hierarchical loss. Future work involves experimentation with phylogenetic distance metrics to provide a higher fidelity learning signal.
-
-
-# Lepidoptera Metadata Generation
-
-## Generate common names
-**preprocessing/lepid/cids2commons.py**
-
-To execute from root:
+### Lepidoptera
 ```
 python -m preprocessing.lepid.cids2commons
 ```
-**Requires:**
-- Lepidoptera image data on HiPerGator
+- **Requires:** Lepidoptera image data on HiPerGator
+- **Produces:** `preprocessing/lepid/intermediaries/cids2commons.pkl`
 
-**Produces:**
-- `preprocessing/lepid/intermediaries/cids2commons.pkl`
+Class IDs come from per-family image subdirectories (`species_ids.get_cids_lepid`),
+with subspecies names truncated to species level, then flattened across families.
 
 
-## Generate class data
-**preprocessing/lepid/class_data.py**
+# class_data
 
-To execute from root:
+Builds `class_data.pkl`: a mapping `cid -> {rank: value, ..., "common_name": ...}`
+that is the source of truth for class taxonomy throughout preprocessing and
+training. Available taxonomic ranks vary by dataset.
+
+> Bryozoa generates `class_data.pkl` jointly with its tree — see the
+> [phylo](#phylo) section.
+
+### Nymphalidae
+```
+python -m preprocessing.nymph.class_data
+```
+- **Requires:** `preprocessing/nymph/intermediaries/cids2commons.pkl`; Nymphalidae
+  taxonomy CSV (`/lustre/blue2/arthur.porto/data/datasets/nymphalidae_whole_specimen-v250613/metadata/data_meta-nymphalidae_whole_specimen-v250613.csv`)
+- **Produces:** `metadata/nymph/class_data.pkl`
+
+Ranks: `subfamily`, `genus`, `species`, `common_name`. Genus is parsed from the
+class ID; subfamily comes from the taxonomy CSV (the placeholder `"moth"` →
+`None`).
+
+### Lepidoptera
 ```
 python -m preprocessing.lepid.class_data
 ```
-**Requires:**
-- `preprocessing/lepid/intermediaries/cids2commons.pkl`
-- `paths["csv"]["lepid"]["tax"]` CSV (taxonomic metadata)
+- **Requires:** `preprocessing/lepid/intermediaries/cids2commons.pkl`; Lepidoptera
+  taxonomy CSV (`/lustre/blue2/arthur.porto/data/datasets/butterflies_whole_specimen-clean_rot_512-v2025_05_07/metadata/data_tree_meta.csv`)
+- **Produces:** `metadata/lepid/class_data.pkl`
 
-**Produces:**
-- `metadata/lepid/class_data.pkl`
+Ranks: `family`, `subfamily`, `tribe`, `genus`, `species`, `common_name`. Family
+comes from the image subdirectory; subfamily/tribe are looked up per genus from
+the taxonomy CSV.
+
+### CUB
+```
+python -m preprocessing.cub.class_data
+```
+- **Requires:** CUB `att_splits.mat` (`data/cub/xlsa17/data/CUB/`);
+  internet access (GBIF API)
+- **Produces:** `metadata/cub/class_data.pkl`
+
+Ranks: `order`, `family`, `genus`, `species`, `common_name`. CUB has no separate
+`cids2commons` step: common names are parsed from the class names in the `.mat`
+file, corrected via a small manual map (`COMMON_NAME_CORRECTIONS`) for names GBIF
+can't resolve, then queried against GBIF (iNaturalist backbone first, general
+backbone as fallback) to resolve `order`/`family`/`genus`/`species`. Bird hits
+(`class == "Aves"`) are preferred.
 
 
-## Generate Phylogenetic Tree
-**preprocessing/lepid/phylo.py**
+# phylo
 
-To execute from root:
+Builds `tree.pkl`: a `Bio.Phylo` tree whose terminals are class IDs, used to
+derive phylogenetic learning signal. Classes present in `class_data` but missing
+from the raw tree are grafted on.
+
+**Shared:** `preprocessing/common/phylo.py`
+- `augment_tree_with_polytomies` — inserts each missing class as a polytomy at the
+  most specific rank where its taxon and a sibling taxon both have a representative
+  already on the tree, grafting at the deepest MRCA between them. A second pass rehomes inserted classes to an
+  interpretable divergence anchor.
+- `prune_tree` — drops tips not in `class_data`.
+- `augment_class_data` — infers taxonomy for tree tips absent from `class_data`
+  using a same-genus representative (skipping genera with conflicting ranks).
+  Used only for butterfly datasets preprocessing (`nymph`, `lepid`).
+
+### Nymphalidae
+```
+python -m preprocessing.nymph.phylo
+```
+- **Requires:** Nymphalidae raw tree (`data/nymph/tree_nymphalidae_chazot2021_all.tree`);
+  `metadata/nymph/class_data.pkl`
+- **Produces:** `metadata/nymph/tree.pkl`
+
+The raw newick is read and a few stray tips pruned. `class_data` is augmented from
+the tree, the tree is pruned to that augmented set, missing classes are added as
+polytomies, then the tree is pruned back to the original `class_data`.
+
+### Lepidoptera
 ```
 python -m preprocessing.lepid.phylo
 ```
-**Requires:**
-- Lepidoptera phylogenetic tree data (`paths["raw_tree"]["lepid"]`)
-- `metadata/nymph/tree.pkl` (Nymphalidae tree, for merging)
-- `metadata/lepid/class_data.pkl`
+- **Requires:** Lepidoptera raw tree (`data/lepid/tree_renamed_full.tre`); the
+  Nymphalidae tree (rebuilt from the raw nymph tree); `metadata/lepid/class_data.pkl`
+- **Produces:** `metadata/lepid/tree.pkl`
 
-**Produces:**
-- `metadata/lepid/tree.pkl`
+The Lepid tree is the global backbone. Subspecies tips are truncated to species
+level. The intact Nymphalidae tree is merged in (`combine_trees_lepid_nymph`)
+without branch-length scaling: the shared Lepid Nymphalidae tips are pruned and
+the Nymph subtree is attached at the lowest ancestor on the Lepid Nymphalidae path
+that keeps terminal depth ultrametric. Lepid-only tips and non-Nymphalidae genera
+sourced from the Nymph tree are then rehomed onto their nearest retained anchor.
+The merged tree is augmented with polytomies and pruned, as above.
 
-The Lepid tree is used as the global backbone. The Nymphalidae subtree is merged into it, preserving the full Nymph tree exactly without branch-length scaling, then attaching it at the appropriate anchor point on the Lepid Nymphalidae path.
-
-
-## Generate Data Split
-**preprocessing/lepid/split_gen.py**
-
-To execute from root:
+### CUB
 ```
-python -m preprocessing.lepid.split_gen
+python -m preprocessing.cub.phylo
 ```
-**Requires:**
-- `metadata/lepid/class_data.pkl`
-- `metadata/lepid/tree.pkl`
+- **Requires:** CUB raw tree (`data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy`);
+  `metadata/cub/class_data.pkl`
+- **Produces:** `metadata/cub/tree.pkl`
 
-**Produces:**
-- `metadata/lepid/splits/<split>/split.pkl`
-- `metadata/lepid/splits/<split>/figures/*`
-- `metadata/lepid/splits/dev/split.pkl`
-- `metadata/lepid/splits/dev/figures/*`
+Tip names are normalized to class ID formatting (strip the leading prefix, lowercase,
+spaces → underscores), missing classes are added as polytomies, then pruned to
+`class_data`.
 
-This is configured via `config/split_gen.yaml`. Lepid now follows the same standard split setup as Nymph: ID plus OOD-species partitions for validation/test (no separate OOD-family or OOD-genus partitions).
-
-
-## Generate Rank Encodings
-**preprocessing/lepid/rank_encs.py**
-
-To execute from root:
-```
-python -m preprocessing.lepid.rank_encs
-```
-**Requires:**
-- `metadata/lepid/class_data.pkl`
-
-**Produces:**
-- `metadata/lepid/rank_encs.pkl`
-
-Encodes ranks: `family`, `genus`, `species`.
-
-
-# Bryozoa Metadata Generation
-
-## Generate class data and phylogenetic tree
-**preprocessing/bryo/class_data_phylo.py**
-
-Note: Class data and phylo tree generation are inherently coupled for this one. Scientific names are needed to grab taxonomic info from GBIF used to construct class data. Image directories do not provide scientific names, only genus names. Using genus names of image directories, scientific names are harvested from phylo tree and used to query GBIF for taxonomic info. Tree tip names are then converted from sci-name to genus and all other species in that genus pruned.
-
-To execute from root:
+### Bryozoa (class_data + phylo, combined)
 ```
 python -m preprocessing.bryo.class_data_phylo
 ```
-**Requires:**
-- Bryozoa image data on HiPerGator (genus-level subdirectories)
-- `metadata/bryo/SI_Fig1(BIG).newick` (Bryozoa phylogenetic tree)
-- Internet access (GBIF API used to resolve taxonomic info per genus)
+- **Requires:** Bryozoa image data on HiPerGator (genus-level subdirectories);
+  Bryozoa raw tree (`data/bryo/SI_Fig1(BIG).newick`); internet access (GBIF API)
+- **Produces:** `metadata/bryo/class_data.pkl`, `metadata/bryo/tree.pkl`
 
-**Produces:**
-- `metadata/bryo/class_data.pkl`
-- `metadata/bryo/tree.pkl`
+Class data and the tree are generated together because they are mutually
+dependent: image directories provide only genus names, while scientific names
+(needed to resolve taxonomy from GBIF) come from the tree. The newick is pruned to
+one tip per genus (dropping duplicates, `UNKNOWN`s, and taxonomically conflicted
+tips) and tip names lowercased. For each genus present in the image data, a
+species name from the tree is used to query GBIF for family-level taxonomy (a
+small `MISSING_GENUS_2_FAMILY` map covers genera GBIF can't resolve). The tree is
+then pruned/renamed to one tip per genus retained in `class_data`, and missing
+classes are added as polytomies. Bryozoa classes are **genera**.
 
-Class data and the phylogenetic tree are generated together because the tree is used to identify which genera have resolvable taxonomy. The newick tree is pruned to one tip per genus (removing duplicates, unknowns, and taxonomically conflicted entries), genus names are normalized to lowercase, and GBIF is queried to resolve family-level taxonomy. The tree is then further pruned to retain only genera present in both the image data and the resolved class data.
+
+# rank_encs
+
+Builds `rank_encs.pkl`: per-rank `bidict`s mapping each rank value to a contiguous
+integer key, used to generate intermediate hierarchical targets during training when discrete
+hierarchical-taxonomic loss is used.
+
+**Shared:** `preprocessing/common/rank_encs.py` (`build_rank_encs`)
+
+Encodings are deterministic: `species` keys follow the sorted class IDs, and every
+other rank's keys follow its sorted distinct values. Each dataset's entry point
+just declares which ranks to encode.
+
+| dataset | command                                   | ranks                              |
+|---------|-------------------------------------------|------------------------------------|
+| `nymph` | `python -m preprocessing.nymph.rank_encs` | `genus`, `species`                 |
+| `lepid` | `python -m preprocessing.lepid.rank_encs` | `family`, `genus`, `species`       |
+| `cub`   | `python -m preprocessing.cub.rank_encs`   | `order`, `family`, `genus`, `species` |
+| `bryo`  | `python -m preprocessing.bryo.rank_encs`  | `family`, `genus`                  |
+
+- **Requires:** `metadata/<dataset>/class_data.pkl`
+- **Produces:** `metadata/<dataset>/rank_encs.pkl`
 
 
-## Generate Data Split
-**preprocessing/bryo/split_gen.py**
+# split_gen
 
-To execute from root:
+Generates the train/validation/test split bundle for each dataset, with both
+in-distribution (ID) and out-of-distribution (OOD) evaluation partitions.
+
+**Shared:** `preprocessing/common/split_gen.py` (`GenSplitDataManager`,
+stratified samplers, `generate_splits`)
+
+**Config:** `config/split_gen.yaml`
+- `split` — label for the output directory (default `D10`)
+- `seed` — RNG seed
+- `pct_partition` — fraction of classes/samples drawn into each eval partition
+- `pct_ood_tol` — tolerance on OOD sample volume vs. target; the OOD draw is a
+  random search over seeds until within tolerance (too small ⇒ never terminates)
+- `size_dev` — partition size of the `dev` split
+- `nst_names` / `nst_seps` — n-shot bucket names and separators
+- `pos_filter` — `{null, dorsal}`; only affects `nymph` and `lepid`
+- `dev.debug_mode` — when true, applies `dev.debug` overrides
+
+Each dataset is invoked the same way and produces the same outputs:
 ```
-python -m preprocessing.bryo.split_gen
+python -m preprocessing.<dataset>.split_gen
 ```
-**Requires:**
-- `metadata/bryo/class_data.pkl`
-- Bryozoa image data on HiPerGator
+- **Requires:** `metadata/<dataset>/class_data.pkl`; dataset image data on HiPerGator
+- **Produces:**
+  - `metadata/<dataset>/splits/<split>/split.pkl` + `figures/*`
+  - `metadata/<dataset>/splits/dev/split.pkl` + `figures/*`
 
-**Produces:**
-- `metadata/bryo/splits/<split>/split.pkl`
-- `metadata/bryo/splits/<split>/figures/*`
-- `metadata/bryo/splits/dev/split.pkl`
-- `metadata/bryo/splits/dev/figures/*`
+A `split.pkl` bundles the per-partition data indexes (`train`, `val.id`,
+`val.ood`, `trainval`, `test.id`, `test.ood`), the class-ID↔encoding map, n-shot
+tracking buckets, per-class counts (train and trainval), and RGB normalization
+statistics. The `dev` split mirrors the partition keys and takes the first
+`size_dev` samples of each. RGB norm stats are accumulated incrementally over the
+`train` and `trainval` partitions.
 
-OOD genera are defined as genera present in the image data but absent from `class_data` (i.e. genera without resolved taxonomy). ID/OOD splits are otherwise generated using the same sparse + standard stratified splitting approach as the other datasets.
+### Stratified splitting
 
+For ID/OOD partitions that aren't predefined by the dataset, each partition is
+drawn with a two-stage stratified sampler:
 
-## Generate Rank Encodings
-**preprocessing/bryo/rank_encs.py**
+1. **Sparse stratified split** (custom). Classes are grouped by instance count.
+   The sampler draws proportionally from the smallest groups first (e.g. 1 of
+   every ten 1-instance classes at a 10% target), ensuring the long tail is
+   represented. Without this, standard stratified splitters leave low-count
+   classes completely unsampled, biasing evaluation away from few-shot
+   performance.
+2. **Standard stratified split** (sklearn `train_test_split`) for the remaining
+   larger classes, where it behaves well.
 
-To execute from root:
-```
-python -m preprocessing.bryo.rank_encs
-```
-**Requires:**
-- `metadata/bryo/class_data.pkl`
+OOD is drawn first (whole penultimate-rank groups held out as unseen classes),
+then ID (samples held out from seen classes; singletons are excluded from the ID
+draw so they don't leak into eval, then rejoined into train). For datasets that
+draw their own test partition, this whole procedure runs twice — once for test,
+once for val.
 
-**Produces:**
-- `metadata/bryo/rank_encs.pkl`
+n-shot buckets track how many classes fall into each shot range (for monitoring
+robustness to class imbalance), and summary/distribution figures are written
+alongside each split.
 
-Encodes ranks: `family`, `genus`.
+### Dataset nuances
+
+- **Nymphalidae / Lepidoptera** — penultimate rank is `genus`. Image pointers are
+  built from the image directories and honor `pos_filter` (e.g. `dorsal`-only).
+  Per-sample metadata (`pos`, `sex`) is attached from the images CSV. Both test
+  and val partitions are sampled.
+- **CUB** — penultimate rank is `genus`. The ID/OOD **test** partitions are taken
+  from CUB's predefined `att_splits.mat` (`test_seen` / `test_unseen`), so only
+  the validation partition is sampled (with `ood_tol_flag=False`).
+- **Bryozoa** — classes are genera; penultimate rank is `family`. ID/OOD test and
+  val partitions are both sampled with the standard stratified procedure.

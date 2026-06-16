@@ -148,6 +148,7 @@ class PartitionEvaluationPipeline:
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 config.dataset,
                 config.split,
+                config.eval_type,
                 self.cid2enc,
             )
         else:
@@ -651,9 +652,6 @@ class EvaluationPipeline:
 
         self.header_tag = header_tag
 
-        self.best_comp_map = None
-        self.best_i2i_map = None
-
         self.split = load_split(config.dataset, config.split)
         self.partitions = list_eval_partitions(self.split, config.eval_type)
         self.partition_pipes = {
@@ -665,17 +663,6 @@ class EvaluationPipeline:
             )
             for partition in self.partitions
         }
-        self.bucket_partition = next(
-            (
-                partition
-                for partition, pipe in self.partition_pipes.items()
-                if pipe.nshot_bucket_names
-            ),
-            None,
-        )
-        self.nshot_bucket_names = [] if self.bucket_partition is None else list(
-            self.partition_pipes[self.bucket_partition].nshot_bucket_names
-        )
 
     def get_eval_texts(self) -> Dict[str, List[str]]:
         return {
@@ -687,7 +674,7 @@ class EvaluationPipeline:
         self, 
         modelw: Any,
         loss_flag: bool = True,
-    ) -> Tuple[Dict[str, Any], bool, bool, float]:
+    ) -> Tuple[Dict[str, Any], float]:
 
         timer = Timer()
         timer.start()
@@ -745,8 +732,8 @@ class EvaluationPipeline:
                 class_encs_img_g=artifacts_partition["class_encs_img"],
                 embs_text_g=artifacts_partition["embs_text"],
                 class_encs_text_g=artifacts_partition["class_encs_text"],
-                class_enc_to_bucket=pipe.class_enc_to_bucket if partition == self.bucket_partition else None,
-                nshot_bucket_names=pipe.nshot_bucket_names if partition == self.bucket_partition else None,
+                class_enc_to_bucket=pipe.class_enc_to_bucket,
+                nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
             self_match_idxs_g = torch.arange(
@@ -767,8 +754,8 @@ class EvaluationPipeline:
                 embs_text_g=full_set_embs_text,
                 class_encs_text_g=full_set_class_encs_text,
                 self_match_idxs_g=self_match_idxs_g,
-                class_enc_to_bucket=pipe.class_enc_to_bucket if partition == self.bucket_partition else None,
-                nshot_bucket_names=self.nshot_bucket_names if partition == self.bucket_partition else None,
+                class_enc_to_bucket=pipe.class_enc_to_bucket,
+                nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
             for set_key, scores in (("closed_set", closed_set_scores), ("full_set", full_set_scores)):
@@ -801,45 +788,29 @@ class EvaluationPipeline:
                 },
             }
 
-        is_best_comp, is_best_i2i = self.check_bests(
-            harmonic_mean(accum[("closed_set", "standard")]["all"]),
-            harmonic_mean(accum[("closed_set", "standard")]["i2i"]),
-        )
-        
         timer.stop()
 
-        return eval_metrics, is_best_comp, is_best_i2i, timer.get_elapsed_time()
-
-    def check_bests(self, comp_map: float, i2i_map: float) -> Tuple[bool, bool]:
-        is_best_comp, is_best_i2i = False, False
-        if self.best_comp_map is None:
-            self.best_comp_map = comp_map
-            self.best_i2i_map = i2i_map
-        else:
-            if comp_map > self.best_comp_map:
-                self.best_comp_map = comp_map
-                is_best_comp = True
-            if i2i_map > self.best_i2i_map:
-                self.best_i2i_map = i2i_map
-                is_best_i2i = True
-        return is_best_comp, is_best_i2i
+        return eval_metrics, timer.get_elapsed_time()
 
 def build_class_enc_to_train_nshot_bucket(
     dataset: str,
     split: str,
+    eval_type: str,
     cid2enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
-    Build class_enc -> bucket_name using ID-val bucket memberships.
+    Build class_enc -> bucket_name using the n-shot bucket set for the eval partition:
+    eval_type "val" -> "train/val" buckets, eval_type "test" -> "trainval/test" buckets.
     """
 
+    bucket_key = "train/val" if eval_type == "val" else "trainval/test"
     split = load_split(dataset, split)
     class_enc_to_bucket = {}
 
     for bucket_name in split.nshot["names"]:
-        cids_val_id = split.nshot["buckets"]["train/val"][bucket_name]
+        cids_id = split.nshot["buckets"][bucket_key][bucket_name]
 
-        for cid in cids_val_id:
+        for cid in cids_id:
             # Some split variants (e.g., dev) intentionally omit many classes from train; skip n-shot entries that are absent in current class encoding map.
             if cid not in cid2enc:
                 continue

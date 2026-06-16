@@ -64,12 +64,14 @@ Note: The full similarity matrix is computed for all model types, including SigL
     Tip: Cosine LR scheduler parameters are in `config/train.yaml` under `opt.lr`.
 
 ## Evaluate a trained model
-1. In `config/eval.yaml`, set `rfpath_model` to checkpointed model weights (e.g. `artifacts/dev/iw/lepid/42/chkpts/best_comp/model.pt`).
+1. In `config/eval.yaml`, set `rfpath_model` to checkpointed model weights (e.g. `artifacts/dev/iw/lepid/42/chkpts/final/model.pt`).
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
     When `rfpath_model` is set, eval overrides `dataset`, `split`, `model_type`, `non_causal`, `img_norm` from setting + trial saved metadata.
+
+    Note: n-shot performance is reported for the ID partition only; the bucket set follows `eval_type` — `val` → `train/val` buckets, `test` → `trainval/test` buckets.
 
 ## Evaluate a base model
 1. In `config/eval.yaml`, set `rfpath_model: null`.
@@ -102,7 +104,7 @@ Training config is assembled from multiple sources. Layers are listed in increas
 | 1 (lowest) | `config/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
 | 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
 | 3 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
-| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"`, `sample_volume → 20_000`, `eval_every → 10_000`, `batch_size → 1_024`. |
+| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"`, `sample_volume → 20_000`, `chkpt_every → 10_000`, `batch_size → 1_024`. |
 | 5 (highest) | `BASELINE_OVERRIDES` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined at the top of `campaign_runner.py`. |
 
 In standalone training (`python -m train`), only layers 1, 3, and 4 apply.

@@ -14,7 +14,7 @@ def make_train_config_dummy(**overrides):
         "split": "D10",
         "train_pt": "train",
         "sample_volume": 1_000,
-        "eval_every": 100,
+        "chkpt_every": 100,
         "batch_size": 8,
         "dv_batching": False,
         "dev": {"logging": False},

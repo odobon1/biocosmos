@@ -426,7 +426,7 @@ class PrintLog:
             "",
             PrintLog._block_metric_lines((
                 ("Sample Volume", f"{cfg_train.sample_volume:,}"),
-                ("Eval Every", f"{cfg_train.eval_every:,} samples"),
+                ("Checkpoint Every", f"{cfg_train.chkpt_every:,} samples"),
                 ("Batch Size", f"{cfg_train.batch_size}"),
                 ("DV Batching", f"{cfg_train.dv_batching}"),
             )),

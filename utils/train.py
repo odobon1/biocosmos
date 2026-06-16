@@ -66,11 +66,6 @@ class TrialData:
 
         self.eval_metrics = None  # most recent eval metrics
         self.time_eval = None  # most recent eval time
-        self.eval_metrics_best_comp = None
-        self.eval_metrics_best_i2i = None
-
-        self.n_samps_seen_best_comp = 0
-        self.n_samps_seen_best_i2i = 0
 
         self.timer_trial = Timer()
         self.timer_trial.start()
@@ -124,10 +119,6 @@ class TrialData:
         obj.timer_trial = Timer()
         obj.timer_trial.set_elapsed_time(trial_state["timer_trial_elapsed"])
         obj.timer_trial.start()
-        obj.n_samps_seen_best_comp = trial_state["n_samps_seen_best_comp"]
-        obj.n_samps_seen_best_i2i = trial_state["n_samps_seen_best_i2i"]
-        obj.eval_metrics_best_comp = trial_state["eval_metrics_best_comp"]
-        obj.eval_metrics_best_i2i = trial_state["eval_metrics_best_i2i"]
         return obj
 
     @rank0
@@ -141,8 +132,6 @@ class ArtifactManager:
     dpath_setting = None
     dpath_trial = None
     fpath_metadata_trial = None
-    dpath_model_best_comp = None
-    dpath_model_best_i2i = None
     dpath_model_final = None
     dpath_model_checkpoint = None
     resuming = False
@@ -165,8 +154,6 @@ class ArtifactManager:
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
-        ArtifactManager.dpath_model_best_comp = ArtifactManager.dpath_trial / "chkpts/best_comp"
-        ArtifactManager.dpath_model_best_i2i = ArtifactManager.dpath_trial / "chkpts/best_img2img"
         ArtifactManager.dpath_model_final = ArtifactManager.dpath_trial / "chkpts/final"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
@@ -184,7 +171,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "chkpts", "chkpts/in_progress", "chkpts/best_comp", "chkpts/best_img2img", "chkpts/final", "plots"):
+        for subdir in ("logs", "chkpts", "chkpts/in_progress", "plots"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
@@ -346,7 +333,7 @@ class ArtifactManager:
             "n_batches_seen": train_pipe.n_batches_seen,
             "idx_epoch": train_pipe.idx_epoch,
             "idx_batch": idx_batch,
-            "eval_threshold": train_pipe.eval_threshold,
+            "chkpt_thresh": train_pipe.chkpt_thresh,
             "rmean_time_train_n": train_pipe.rmean_time_train.n,
             "rmean_time_train_mean": train_pipe.rmean_time_train.mean,
             "rmean_time_eval_n": train_pipe.rmean_time_eval.n,
@@ -384,10 +371,6 @@ class ArtifactManager:
             "rmean_time_eval_n": data.rmean_time_eval.n,
             "rmean_time_eval_mean": data.rmean_time_eval.mean,
             "timer_trial_elapsed": data.timer_trial.get_elapsed_time(),
-            "n_samps_seen_best_comp": data.n_samps_seen_best_comp,
-            "n_samps_seen_best_i2i": data.n_samps_seen_best_i2i,
-            "eval_metrics_best_comp": data.eval_metrics_best_comp,
-            "eval_metrics_best_i2i": data.eval_metrics_best_i2i,
         }
         save_pickle(state, ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
 
@@ -431,14 +414,14 @@ def plot_metrics(
     data_epoch = data["epoch"]
     data_eval = data["eval"]
 
+    # eval panels (retrieval / n-shot / accuracy) are populated only when eval ran;
+    # train panels (loss / grad norm / lr) plot whenever train data is present (e.g. train_pt=trainval).
     partitions = [k for k in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).keys() if k != "comp"]
-    if not partitions or "comp" not in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}):
-        return
 
     x_eval = data_eval["n_samps_seen"]
     x_train = data_epoch["n_samps_seen"]
 
-    bucket_partition = next((name for name in partitions if name.startswith("id")), None)
+    bucket_partition = "id" if "id" in partitions else None
     bucket_comp_keys_standard = [
         key for key in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).get(bucket_partition, {}).get("map", {}).get("n-shot", {}).keys()
     ]
@@ -571,8 +554,8 @@ def plot_composite_metrics(
 
     ax0 = fig.add_subplot(gs[0, 0])
 
-    id_partition = next((name for name in partitions if name.startswith("id")), None)
-    ood_partition = next((name for name in partitions if name.startswith("ood")), None)
+    id_partition = "id" if "id" in partitions else None
+    ood_partition = "ood" if "ood" in partitions else None
     retrieval_specs = (
         ("i2t", "I2T", "blue"),
         ("i2i", "I2I", "red"),
@@ -600,7 +583,8 @@ def plot_composite_metrics(
 
     ax0.set_ylabel(retrieval_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
-    ax0.legend(loc="lower right", fontsize=fontsize_legend)
+    if partitions:
+        ax0.legend(loc="lower right", fontsize=fontsize_legend)
     ax0.grid(True)
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -636,7 +620,8 @@ def plot_composite_metrics(
             )
     ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
-    ax2.legend(loc="lower right", fontsize=fontsize_legend)
+    if partitions:
+        ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 

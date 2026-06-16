@@ -271,7 +271,13 @@ once for val.
 
 n-shot buckets track how many classes fall into each shot range (for monitoring
 robustness to class imbalance), and summary/distribution figures are written
-alongside each split.
+alongside each split. Two bucket sets are built, each pairing a shot-count
+partition with the ID eval partition it scores:
+
+- **`train/val`** — ID-`val` classes, bucketed by their **`train`**-partition
+  sample cardinality.
+- **`trainval/test`** — ID-`test` classes, bucketed by their **`trainval`**-partition
+  sample cardinality.
 
 ### Dataset nuances
 

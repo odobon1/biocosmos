@@ -28,7 +28,7 @@ def main():
         modelw.img_pp_inf,
     )
 
-    eval_metrics, _, _, _ = eval_pipe.evaluate(modelw, loss_flag=False)
+    eval_metrics, _ = eval_pipe.evaluate(modelw, loss_flag=False)
 
     PrintLog.eval(eval_metrics, eval_pipe)
 

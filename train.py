@@ -77,13 +77,17 @@ class TrainPipeline:
             persistent_workers=self.cfg.hw.persistent_workers_train,
         )
 
-        text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
-        self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
+        self.eval_enabled = self.cfg.train_pt != "trainval"
+        if self.eval_enabled:
+            text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
+            self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
+        else:
+            self.eval_pipe = None
 
         self.lr_warmup = self.cfg.opt["lr"]["warmup"]
         self.init_opt_and_lr_sched()
         self.n_batches_seen = 0
-        self.eval_threshold = self.cfg.eval_every
+        self.chkpt_thresh = self.cfg.chkpt_every
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
 
         self.n_samps_seen = 0
@@ -104,7 +108,7 @@ class TrainPipeline:
             self.n_samps_seen = resume_state["n_samps_seen"]
             self.n_batches_seen = resume_state["n_batches_seen"]
             self.idx_epoch = max(0, resume_state["idx_epoch"] - 1)
-            self.eval_threshold = resume_state["eval_threshold"]
+            self.chkpt_thresh = resume_state["chkpt_thresh"]
             self.rmean_time_train.n = resume_state["rmean_time_train_n"]
             self.rmean_time_train.mean = resume_state["rmean_time_train_mean"]
             self.rmean_time_eval.n = resume_state["rmean_time_eval_n"]
@@ -169,18 +173,6 @@ class TrainPipeline:
             self.n_samps_seen,
             self.n_samps_seen,
         )
-        ArtifactManager.save_eval_data(
-            ArtifactManager.dpath_model_best_comp,
-            self.data.eval_metrics_best_comp,
-            self.data.n_samps_seen_best_comp,
-            self.n_samps_seen,
-        )
-        ArtifactManager.save_eval_data(
-            ArtifactManager.dpath_model_best_i2i,
-            self.data.eval_metrics_best_i2i,
-            self.data.n_samps_seen_best_i2i,
-            self.n_samps_seen,
-        )
 
     @rank0
     def _print_log_eval(self, header):
@@ -196,19 +188,11 @@ class TrainPipeline:
         )
 
     @rank0
-    def _checkpoint(self, header, checkpoint_best_comp, checkpoint_best_i2i, idx_batch):
-        self.data.update_eval(self.n_samps_seen)
-        self._print_log_eval(header)
-        if checkpoint_best_comp:
-            self.modelw.save(ArtifactManager.dpath_model_best_comp)
-            self.data.n_samps_seen_best_comp = self.n_samps_seen
-            self.data.eval_metrics_best_comp = self.data.eval_metrics
-        if checkpoint_best_i2i:
-            self.modelw.save(ArtifactManager.dpath_model_best_i2i)
-            self.data.n_samps_seen_best_i2i = self.n_samps_seen
-            self.data.eval_metrics_best_i2i = self.data.eval_metrics
-
-        self._save_eval_data()
+    def _checkpoint(self, header, idx_batch):
+        if self.eval_enabled:
+            self.data.update_eval(self.n_samps_seen)
+            self._print_log_eval(header)
+            self._save_eval_data()
         ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train)
         if not self.cfg.standalone:
             ArtifactManager.update_campaign_time()
@@ -251,11 +235,12 @@ class TrainPipeline:
 
             if self._resume_state is None:
                 ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train, init_flag=True)
-                PrintLog.texts_eval(self.eval_pipe)
+                if self.eval_enabled:
+                    PrintLog.texts_eval(self.eval_pipe)
 
             # BASE EVAL
 
-            if self._resume_state is None:
+            if self._resume_state is None and self.eval_enabled:
                 cached = ArtifactManager.load_base_eval_cache()
                 if cached is not None:
                     scores = parse_scores(cached["scores"])
@@ -263,12 +248,9 @@ class TrainPipeline:
                         "scores": scores,
                         "loss_raw": {p: None for p in self.eval_pipe.partitions},
                     }
-                    comp_map = scores["closed_set"]["standard"]["comp"]["map"]
-                    self.eval_pipe.best_comp_map = comp_map["all"]
-                    self.eval_pipe.best_i2i_map = comp_map["i2i"]
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                 else:
-                    eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                    eval_metrics, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
                     ArtifactManager.save_base_eval_cache(eval_metrics)
                 if time_eval is not None:
                     self.rmean_time_eval.update(time_eval)
@@ -276,11 +258,11 @@ class TrainPipeline:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
                 header = "Base - Cached" if cached is not None else "Base"
-                self._checkpoint(header=header, checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch=-1)
+                self._checkpoint(header=header, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
                 ArtifactManager.save_rng_states(self._local_rank)
                 dist.barrier()
-            else:
+            elif self._resume_state is not None:
                 # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
                 if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch"] == -1:
                     if "rng_states" in self._resume_state and self._local_rank in self._resume_state["rng_states"]:
@@ -376,28 +358,27 @@ class TrainPipeline:
                             grad_norm_model=grad_norm_model,
                         )
 
-                    if self.n_samps_seen >= self.eval_threshold:
+                    if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()
                         self.timer_train.stop()
 
-                        while self.n_samps_seen >= self.eval_threshold:
-                            threshold_hit = self.eval_threshold
-                            self.eval_threshold += self.cfg.eval_every
+                        while self.n_samps_seen >= self.chkpt_thresh:
+                            threshold_hit = self.chkpt_thresh
+                            self.chkpt_thresh += self.cfg.chkpt_every
 
                         # TRAIN-TIME EVAL
 
-                        eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(
-                            self.modelw,
-                            loss_flag=True,
-                        )
-                        self.rmean_time_eval.update(time_eval)
-                        if self.data is not None:
-                            self.data.eval_metrics = eval_metrics
-                            self.data.time_eval = time_eval
+                        if self.eval_enabled:
+                            eval_metrics, time_eval = self.eval_pipe.evaluate(
+                                self.modelw,
+                                loss_flag=True,
+                            )
+                            self.rmean_time_eval.update(time_eval)
+                            if self.data is not None:
+                                self.data.eval_metrics = eval_metrics
+                                self.data.time_eval = time_eval
                         self._checkpoint(
                             header=f"{threshold_hit:,}",
-                            checkpoint_best_comp=is_best_comp, 
-                            checkpoint_best_i2i=is_best_i2i, 
                             idx_batch=idx_batch,
                         )
                         ArtifactManager.save_rng_states(self._local_rank)
@@ -428,28 +409,28 @@ class TrainPipeline:
 
             # FINAL EVAL
 
-            eval_metrics, is_best_comp, is_best_i2i, time_eval = self.eval_pipe.evaluate(
-                self.modelw,
-                loss_flag=True,
-            )
-            self.rmean_time_eval.update(time_eval)
-            if self.data is not None:
-                self.data.eval_metrics = eval_metrics
-                self.data.time_eval = time_eval
+            if self.eval_enabled:
+                eval_metrics, time_eval = self.eval_pipe.evaluate(
+                    self.modelw,
+                    loss_flag=True,
+                )
+                self.rmean_time_eval.update(time_eval)
+                if self.data is not None:
+                    self.data.eval_metrics = eval_metrics
+                    self.data.time_eval = time_eval
             self._checkpoint(
                 header="Final",
-                checkpoint_best_comp=is_best_comp, 
-                checkpoint_best_i2i=is_best_i2i, 
                 idx_batch=-1,
             )
             if self.data is not None:
                 self.modelw.save(ArtifactManager.dpath_model_final)
-                ArtifactManager.save_eval_data(
-                    ArtifactManager.dpath_model_final,
-                    eval_metrics,
-                    self.n_samps_seen,
-                    self.n_samps_seen,
-                )
+                if self.eval_enabled:
+                    ArtifactManager.save_eval_data(
+                        ArtifactManager.dpath_model_final,
+                        eval_metrics,
+                        self.n_samps_seen,
+                        self.n_samps_seen,
+                    )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 

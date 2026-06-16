@@ -45,7 +45,7 @@ class TrainConfig:
     train_pt: str
 
     sample_volume: int
-    eval_every: int
+    chkpt_every: int
     batch_size: int
     dv_batching: bool
 
@@ -61,8 +61,8 @@ class TrainConfig:
 
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
-    
-    eval_type: str = "val"
+
+    eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
     hw: dict = field(init=False, default_factory=dict)
 
@@ -74,6 +74,8 @@ class TrainConfig:
         if self.train_pt not in ("train", "trainval"):
             raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
 
+        self.eval_type = "val" if self.train_pt == "train" else None
+
         split = load_split(self.dataset, self.split)
         size_train = len(split.data_indexes[self.train_pt])
         if self.batch_size > size_train:
@@ -81,8 +83,8 @@ class TrainConfig:
         samps_per_epoch = size_train - size_train % self.batch_size
         self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
         
-        if self.eval_every <= 0:
-            raise ValueError(f"eval_every must be greater than 0, got {self.eval_every}")
+        if self.chkpt_every <= 0:
+            raise ValueError(f"chkpt_every must be greater than 0, got {self.chkpt_every}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
@@ -145,7 +147,7 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     if dev_cfg.get("debug_mode", False):
         cfg_dict["split"] = "dev"
         cfg_dict["sample_volume"] = dev_cfg["debug"]["sample_volume"]
-        cfg_dict["eval_every"] = dev_cfg["debug"]["eval_every"]
+        cfg_dict["chkpt_every"] = dev_cfg["debug"]["chkpt_every"]
         cfg_dict["batch_size"] = dev_cfg["debug"]["batch_size"]
     return cfg_dict
 

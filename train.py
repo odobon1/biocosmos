@@ -427,13 +427,14 @@ class TrainPipeline:
                 checkpoint_best_i2i=is_best_i2i, 
                 idx_batch=-1,
             )
-            self.modelw.save(ArtifactManager.dpath_model_final)
-            ArtifactManager.save_eval_data(
-                ArtifactManager.dpath_model_final,
-                self.data.eval_metrics,
-                self.n_samps_seen,
-                self.n_samps_seen,
-            )
+            if self.data is not None:
+                self.modelw.save(ArtifactManager.dpath_model_final)
+                ArtifactManager.save_eval_data(
+                    ArtifactManager.dpath_model_final,
+                    eval_metrics,
+                    self.n_samps_seen,
+                    self.n_samps_seen,
+                )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 

@@ -446,28 +446,28 @@ class VLMWrapper(abc.ABC):
             return embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
 
         device = embs_img_sb.device
-        B_local = embs_img_sb.size(0)
+        SB = embs_img_sb.size(0)
 
         # gather true local batch sizes from all ranks
-        sizes_t = torch.tensor([B_local], device=device, dtype=torch.long)
+        sizes_t = torch.tensor([SB], device=device, dtype=torch.long)
         sizes_list = [torch.zeros_like(sizes_t) for _ in range(self.world_size)]
         dist.all_gather(sizes_list, sizes_t)
         sizes = [int(x.item()) for x in sizes_list]
 
-        B_max = max(sizes)
+        SB_max = max(sizes)
 
-        def pad_rows(x: torch.Tensor, B_target: int) -> torch.Tensor:
-            B = x.size(0)
-            if B == B_target:
+        def pad_rows(x: torch.Tensor, SB_target: int) -> torch.Tensor:
+            SB = x.size(0)
+            if SB == SB_target:
                 return x
-            pad_shape = (B_target - B, *x.shape[1:])
+            pad_shape = (SB_target - SB, *x.shape[1:])
             pad = torch.zeros(pad_shape, device=x.device, dtype=x.dtype)
             return torch.cat([x, pad], dim=0)
 
         # pad tensors so all_gather can handle the last uneven batch
-        embs_img_pad = pad_rows(embs_img_sb, B_max)
-        embs_txt_pad = pad_rows(embs_txt_sb, B_max)
-        class_encs_pad = pad_rows(class_encs_sb, B_max)
+        embs_img_pad = pad_rows(embs_img_sb, SB_max)
+        embs_txt_pad = pad_rows(embs_txt_sb, SB_max)
+        class_encs_pad = pad_rows(class_encs_sb, SB_max)
 
         # embeddings (need gradients)
         img_parts_pad = _AllGather.apply(embs_img_pad)
@@ -508,9 +508,9 @@ class VLMWrapper(abc.ABC):
         Performs a single forward pass step. Encodes images and text, computes loss if flag is set.
 
         Args:
-        - imgs_sb --------- Sub-batch of images; pt[B, C, H, W]
+        - imgs_sb --------- Sub-batch of images; pt[SB, C, H, W]
         - txts_sb --------- Sub-batch of texts
-        - class_encs_sb --- Sub-batch of class encodings; pt[B]
+        - class_encs_sb --- Sub-batch of class encodings; pt[SB]
         - targ_data_sb ---- Sub-batch of target data
         - loss_flag ------- Whether to compute loss
 
@@ -565,7 +565,7 @@ class VLMWrapper(abc.ABC):
         embs_txt: torch.Tensor,
         class_encs: torch.Tensor,
         targ_data: List[Any],
-        chunk_size: int,
+        chunk_size_loss: int,
     ) -> Optional[float]:
         """
         Raw eval loss over precomputed paired (image, text) embeddings, using
@@ -575,10 +575,23 @@ class VLMWrapper(abc.ABC):
         equal-size negative pool; returns None when there isn't one full chunk.
 
         Inputs are the full partition gathered across ranks, so this runs
-        identically (and redundantly) on every rank with no further collectives.
+        identically (and redundantly) on every rank with no further
+        collectives.
+
+        Args:
+        - embs_img ---------- Gathered, normalized image embeddings for the full partition; pt[N, D]
+        - embs_txt ---------- Gathered, normalized (paired) text embeddings for the full partition; pt[N, D]
+        - class_encs -------- Gathered class encodings for the full partition; pt[N]
+        - targ_data --------- Gathered target data for the full partition (len N)
+        - chunk_size_loss --- Contrastive negative-pool size per chunk; set to the global batch size
+                              (per-rank sub-batch x world_size) so the eval loss is apples-to-apples
+                              with train batch loss
+
+        Returns:
+        - Mean raw eval loss across full chunks, or None if N < chunk_size_loss
         """
         N = embs_img.size(0)
-        if N < chunk_size:
+        if N < chunk_size_loss:
             return None
 
         # deterministic shuffle (identical on every rank) so chunks are class-mixed
@@ -590,8 +603,8 @@ class VLMWrapper(abc.ABC):
 
         loss_total = 0.0
         n_samps = 0
-        for i in range(0, N - chunk_size + 1, chunk_size):
-            sl = slice(i, i + chunk_size)
+        for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
+            sl = slice(i, i + chunk_size_loss)
             _, loss_raw, _ = self._loss_for_cfg_full_batch(
                 embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss, secondary=False,
             )
@@ -601,8 +614,8 @@ class VLMWrapper(abc.ABC):
                     embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss2, secondary=True,
                 )
                 loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
-            loss_total += loss_raw.item() * chunk_size
-            n_samps += chunk_size
+            loss_total += loss_raw.item() * chunk_size_loss
+            n_samps += chunk_size_loss
 
         return loss_total / n_samps
 

@@ -188,8 +188,11 @@ For train-time eval loss, the gathered eval embeddings are deterministically shu
 ## Base Model Performance Cache
 The base-model evaluation at the start of each trial (the untrained model's performance) is cached at `base_eval_cache/<model_type>/<img_norm>/<dataset>/<split>/eval.json`. On the first trial for a given `(model_type, img_norm, dataset, split)`, the base eval runs and its scores are cached; subsequent trials reuse the cached scores instead of re-running the base eval. The cached `eval.json` mirrors a checkpoint `eval.json` minus the `loss_raw` and `n_samps_seen` fields. To force base evals to recompute, delete the `base_eval_cache/` directory.
 
+The cached scores are reproducible across single-GPU and multi-GPU runs: performance metrics are computed on the full set of embeddings gathered from all ranks, so the complete evaluation set, and thus the resulting scores, are identical regardless of `world_size`. A cache written on one GPU count is therefore safe to reuse on another.
+
 ## Tensor Dimensionality Annotation Conventions:
 B: Batch dim. <br>
+SB: Sub-batch dim. (multi-GPU) <br>
 C: Channels <br>
 H: Image height <br>
 W: Image width <br>

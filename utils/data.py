@@ -168,10 +168,10 @@ class MaybeToTensor:
 
 @dataclass
 class Split:
-    data_indexes: list
+    data_indexes: Dict[str, Any]
     enc2cid: Dict[int, str]
-    nshot: dict
-    class_counts: Dict[str, np.ndarray]
+    nshot: Dict[str, Any]
+    class_counts: Dict[str, np.ndarray[int]]
     norm_mean: Dict[str, Tuple[float]]
     norm_std: Dict[str, Tuple[float]]
 
@@ -387,15 +387,9 @@ class ImageTextDataset(Dataset):
         return img_t, text, class_enc, targ_data
 
 def collate_fn(subbatch):
-    """
-    collate_fn takes list of individual samples from Dataset and merges them into a single batch
-    augmentation can be done here methinks
-    """
     imgs_sb, texts_sb, class_encs_sb, targ_data_sb = zip(*subbatch)
-
-    imgs_sb       = torch.stack(imgs_sb, dim=0)  # pt[B, C, H, W]
-    class_encs_sb = torch.tensor(class_encs_sb)  # pt[B]
-
+    imgs_sb = torch.stack(imgs_sb, dim=0)  # pt[SB, C, H, W]
+    class_encs_sb = torch.tensor(class_encs_sb)  # pt[SB]
     return imgs_sb, texts_sb, class_encs_sb, targ_data_sb
 
 def build_cid2enc(index_data, enc2cid):
@@ -482,8 +476,6 @@ def spawn_dataloader(
 
     dataset = ImageTextDataset(index_data, enc2cid, text_template, img_pp, config)
 
-    bs_local = config.batch_size // dist.get_world_size()
-
     # conditionally use D/V sampling only when a config flag is set (so eval still uses the normal behaviour)
     if use_dv_sampler:
         index_pos = []
@@ -533,9 +525,10 @@ def spawn_dataloader(
                 shuffle=shuffle,
                 drop_last=drop_last,
             )
+        SB = config.batch_size // dist.get_world_size()
         dataloader = DataLoader(
             dataset,
-            batch_size=bs_local,
+            batch_size=SB,
             shuffle=False,
             num_workers=config.n_workers,
             pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost

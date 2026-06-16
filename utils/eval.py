@@ -139,7 +139,7 @@ class PartitionEvaluationPipeline:
 
         self.cfg = config
         self.partition = partition
-        self.batch_size = self.dataloader.batch_size
+        self.subbatch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
 
         if self.partition == "id":
@@ -221,15 +221,15 @@ class PartitionEvaluationPipeline:
             targ_data_all = gather_object_list(targ_data_loss)
 
             # global negative pool: per-rank eval batch x world size (mirrors the global training batch)
-            chunk_size = self.batch_size * dist.get_world_size()
+            B = self.subbatch_size * dist.get_world_size()
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type):
                     loss_avg = modelw.eval_loss_chunked(
-                        embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, chunk_size,
+                        embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
                     )
             else:
                 loss_avg = modelw.eval_loss_chunked(
-                    embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, chunk_size,
+                    embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
                 )
 
         modelw.model.train()

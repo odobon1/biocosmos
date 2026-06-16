@@ -25,6 +25,21 @@ from utils.ddp import rank0
 import pdb
 
 
+def format_scores(scores):
+    if scores is None:
+        return None
+    if isinstance(scores, dict):
+        return {k: format_scores(v) for k, v in scores.items()}
+    return f"{float(scores):.4f}"
+
+def parse_scores(scores):
+    if scores is None:
+        return None
+    if isinstance(scores, dict):
+        return {k: parse_scores(v) for k, v in scores.items()}
+    return float(scores)
+
+
 class TrialData:
 
     def __init__(self, dpath_trial):
@@ -87,7 +102,8 @@ class TrialData:
                     dst[score_name].append(score_value)
 
         self.n_evals += 1
-        self.rmean_time_eval.update(self.time_eval)
+        if self.time_eval is not None:
+            self.rmean_time_eval.update(self.time_eval)
 
         self.data_eval["n_samps_seen"].append(n_samps_seen)
 
@@ -132,6 +148,8 @@ class ArtifactManager:
     resuming = False
     dataset = None
     split = None
+    model_type = None
+    img_norm = None
 
     @staticmethod
     def set_paths(cfg_train):
@@ -140,6 +158,8 @@ class ArtifactManager:
         ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / cfg_train.setting
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
+        ArtifactManager.model_type = cfg_train.arch["model_type"]
+        ArtifactManager.img_norm = cfg_train.img_norm
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
@@ -236,7 +256,7 @@ class ArtifactManager:
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean):
 
-        if data.n_evals > 0:
+        if data.rmean_time_eval.n > 0:
             mean_time_eval = f"{data.rmean_time_eval.value():.2f}"
         else:
             mean_time_eval = None
@@ -253,7 +273,7 @@ class ArtifactManager:
             },
             "eval": {
                 "mean": mean_time_eval,
-                "n": data.n_evals,
+                "n": data.rmean_time_eval.n,
             },
             "trial": time_elapsed_trial,
         }
@@ -279,19 +299,39 @@ class ArtifactManager:
     @staticmethod
     @rank0
     def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
-        def format_scores(scores):
-            if scores is None:
-                return None
-            if isinstance(scores, dict):
-                return {k: format_scores(v) for k, v in scores.items()}
-            return f"{float(scores):.4f}"
-
         fpath_meta = dpath_model / "eval.json"
         metadata = {
             **format_scores(eval_metrics),
             "n_samps_seen": f"{n_samps_seen_chkpt:,}/{n_samps_seen:,}",
         }
         save_json(metadata, fpath_meta)
+
+    @staticmethod
+    def base_eval_cache_path():
+        return (
+            paths["root"]
+            / "base_eval_cache"
+            / ArtifactManager.model_type
+            / ArtifactManager.img_norm
+            / ArtifactManager.dataset
+            / ArtifactManager.split
+            / "eval.json"
+        )
+
+    @staticmethod
+    def load_base_eval_cache():
+        fpath = ArtifactManager.base_eval_cache_path()
+        if not fpath.exists():
+            return None
+        return load_json(fpath)
+
+    @staticmethod
+    @rank0
+    def save_base_eval_cache(eval_metrics):
+        fpath = ArtifactManager.base_eval_cache_path()
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        metadata = {k: format_scores(v) for k, v in eval_metrics.items() if k != "loss_raw"}
+        save_json(metadata, fpath)
 
     @staticmethod
     @rank0

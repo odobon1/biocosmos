@@ -29,16 +29,18 @@ conda activate biocosmos_b200
 ```
 Note: `environment.yaml` can be used for non-B200 jobs.
 
-## Data
-
 ## Preprocessing
 
-Run setup script:
-```
-./setup.sh
-```
+All metadata artifacts (including splits) and data indexing structures needed for train and eval are committed to the repo, so preprocessing does not need to be run for normal use. See [preprocessing/README.md](preprocessing/README.md) for details on the pipeline and how to regenerate these artifacts.
 
-`setup.sh` generates metadata (including split) and various data indexing structures needed for train and eval. See [preprocessing/README.md](preprocessing/README.md) for details.
+# Datasets
+
+| Name         | Alias   | Class Level | Available Ranks                           |
+|--------------|---------|-------------|-------------------------------------------|
+| Nymphalidae  | `nymph` | species     | subfamily, genus, species                 |
+| Lepidoptera  | `lepid` | species     | family, subfamily, tribe, genus, species  |
+| CUB          | `cub`   | species     | order, family, genus, species             |
+| Bryozoa      | `bryo`  | genus       | family, genus                             |
 
 # Testing
 
@@ -180,6 +182,9 @@ from each category, which may result in fewer batches per epoch. Dorsal/ventral 
 For eval, loss is computed for full batches only, although performance computation includes partial batches.
 
 For train-time eval loss, the gathered eval embeddings are deterministically shuffled (a fixed-seed permutation, identical on every rank) before being sliced into chunks of size `eval_batch_size × world_size`. The shuffle mixes the rank-ordered, class-clustered gather output so each chunk presents a varied set of in-batch negatives, and the fixed seed keeps the chunking reproducible across runs — making the eval batch loss an apples-to-apples comparison with the global train batch loss. The trailing partial chunk is dropped.
+
+## Base Model Performance Cache
+The base-model evaluation at the start of each trial (the untrained model's performance) is cached at `base_eval_cache/<model_type>/<img_norm>/<dataset>/<split>/eval.json`. On the first trial for a given `(model_type, img_norm, dataset, split)`, the base eval runs and its scores are cached; subsequent trials reuse the cached scores instead of re-running the base eval. The cached `eval.json` mirrors a checkpoint `eval.json` minus the `loss_raw` and `n_samps_seen` fields. To force base evals to recompute, delete the `base_eval_cache/` directory.
 
 ## Tensor Dimensionality Annotation Conventions:
 B: Batch dim. <br>

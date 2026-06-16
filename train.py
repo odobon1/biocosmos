@@ -30,7 +30,7 @@ from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import EvaluationPipeline
 from utils.config import get_config_train
-from utils.train import TrialData, ArtifactManager, plot_metrics
+from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
 import pdb
@@ -256,12 +256,27 @@ class TrainPipeline:
             # BASE EVAL
 
             if self._resume_state is None:
-                eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
-                self.rmean_time_eval.update(time_eval)
+                cached = ArtifactManager.load_base_eval_cache()
+                if cached is not None:
+                    scores = parse_scores(cached["scores"])
+                    eval_metrics = {
+                        "scores": scores,
+                        "loss_raw": {p: None for p in self.eval_pipe.partitions},
+                    }
+                    comp_map = scores["closed_set"]["standard"]["comp"]["map"]
+                    self.eval_pipe.best_comp_map = comp_map["all"]
+                    self.eval_pipe.best_i2i_map = comp_map["i2i"]
+                    time_eval = None  # cached base eval was not run; don't pollute eval-time mean
+                else:
+                    eval_metrics, _, _, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                    ArtifactManager.save_base_eval_cache(eval_metrics)
+                if time_eval is not None:
+                    self.rmean_time_eval.update(time_eval)
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
-                self._checkpoint(header="Base", checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch=-1)
+                header = "Base - Cached" if cached is not None else "Base"
+                self._checkpoint(header=header, checkpoint_best_comp=True, checkpoint_best_i2i=True, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
                 ArtifactManager.save_rng_states(self._local_rank)
                 dist.barrier()

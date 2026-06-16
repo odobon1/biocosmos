@@ -1,6 +1,8 @@
 artifacts/*
 !artifacts/.gitkeep
 
+base_eval_cache/
+
 metadata/*/splits/*/figures/*.png
 !metadata/*/splits/*/figures/summary_*.png
 

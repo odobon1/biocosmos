@@ -4,12 +4,16 @@ python -m campaign_runner
 
 from pathlib import Path
 from copy import deepcopy
+import ctypes
 import json
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import traceback
 import time
+import psutil
 import torch
 
 from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict
@@ -21,13 +25,15 @@ CAMPAIGN = "dev"
 SEED0 = 42
 NUM_SEEDS = 1
 
-DATASETS = ("bryo", "cub", "lepid", "nymph")
+# DATASETS = ("bryo", "cub", "lepid", "nymph")
+# DATASETS = ("nymph", "lepid", "cub", "bryo")
+DATASETS = ("nymph",)
 
 BASELINE_OVERRIDES = [
-    # {"batch_size": 32_000, "name": "way-too-big-bs"},
+    {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    # {"loss.targ": "aligned", "name": "iw"},
-    # {"loss.targ": "multipos", "name": "sw"},
+    {"loss.targ": "aligned", "name": "iw"},
+    {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -98,6 +104,37 @@ def _write_setting_overrides(setting: str, normalized_overrides: dict) -> None:
 def _iter_seeds() -> list[int]:
     return list(range(SEED0, SEED0 + NUM_SEEDS))
 
+def _enable_child_subreaper() -> None:
+    """Become the reaper for orphaned descendants. torch elastic starts each
+    rank in its own session, so when a rank is SIGKILLed (e.g. OOM) its
+    DataLoader workers orphan to init and escape any process-group kill from
+    here. As a subreaper we inherit them instead, so _reap_subtree can find
+    and kill them."""
+    PR_SET_CHILD_SUBREAPER = 36
+    try:
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+    except OSError:
+        pass
+
+def _reap_subtree(grace: float = 10.0) -> None:
+    """SIGKILL and reap every descendant process (torchrun, ranks, DataLoader
+    workers). Relies on _enable_child_subreaper so orphaned workers reparent
+    here and show up as descendants."""
+    parent = psutil.Process()
+    deadline = time.time() + grace
+    while True:
+        procs = parent.children(recursive=True)
+        if not procs:
+            return
+        for p in procs:
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+        psutil.wait_procs(procs, timeout=2)
+        if time.time() >= deadline:
+            return
+
 def _run_trial_subprocess(cfg_dict: dict) -> None:
     cmd = [
         "torchrun",
@@ -109,21 +146,48 @@ def _run_trial_subprocess(cfg_dict: dict) -> None:
         json.dumps(cfg_dict),
     ]
 
+    # start_new_session isolates torchrun from the terminal's Ctrl-C so the
+    # campaign drives teardown itself (via _reap_subtree) rather than racing
+    # torchrun's own signal handling.
     proc = subprocess.Popen(
         cmd,
         stdout=None,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
 
-    stderr_data = b""
-    assert proc.stderr is not None
-    while chunk := proc.stderr.read1(4096):
-        sys.stderr.buffer.write(chunk)
-        sys.stderr.buffer.flush()
-        stderr_data += chunk
+    # Drain stderr in a thread: when a rank is SIGKILLed (e.g. OOM), its
+    # DataLoader workers are orphaned but keep the stderr pipe's write end open,
+    # so a read-until-EOF loop in this process would hang forever even after
+    # torchrun itself exits.
+    stderr_chunks: list[bytes] = []
+    def _drain() -> None:
+        assert proc.stderr is not None
+        while chunk := proc.stderr.read1(4096):
+            sys.stderr.buffer.write(chunk)
+            sys.stderr.buffer.flush()
+            stderr_chunks.append(chunk)
 
-    return_code = proc.wait()
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+
+    try:
+        return_code = proc.wait()
+    finally:
+        # Tear down the entire descendant subtree on any exit from the wait.
+        # Covers normal crash recovery (orphaned DataLoader workers left by a
+        # SIGKILLed rank, which would otherwise keep leaking into the cgroup
+        # memory budget of later trials) and Ctrl-C / SIGTERM of the campaign
+        # (the detached trial would otherwise keep running). A process-group
+        # kill is insufficient: elastic puts each rank in its own session.
+        _reap_subtree()
+
+    # Bounded: don't re-hang if a worker is wedged in uninterruptible sleep and
+    # still holding the pipe; the daemon thread is torn down at interpreter exit.
+    reader.join(timeout=30)
+
     if return_code != 0:
+        stderr_data = b"".join(stderr_chunks)
         stderr_body = "\n".join(stderr_data.decode(errors="replace").splitlines())
         raise subprocess.CalledProcessError(return_code, cmd, stderr=stderr_body)
 
@@ -136,7 +200,15 @@ def _check_trial_completion(dpath_trial: Path) -> bool:
         complete = metadata_trial["complete"]
     return complete
 
+def _raise_interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
+
 def run_campaign() -> None:
+    _enable_child_subreaper()
+    # Route SIGTERM (e.g. `kill`, SLURM scancel) through the same path as Ctrl-C
+    # so the trial's subtree is torn down before the campaign exits.
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+
     time_data = {
         "last_updated": time.time(),
         "elapsed": 0.0,
@@ -199,6 +271,12 @@ def run_campaign() -> None:
                 try:
                     _run_trial_subprocess(cfg_dict)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
+                except KeyboardInterrupt:
+                    print(
+                        f"\n[{idx_trial}/{n_trials}] INTERRUPTED — terminated trial process group; exiting campaign.",
+                        flush=True,
+                    )
+                    return
                 except Exception as e:
                     _log_trial_error(
                         dpath_campaign=_dpath_campaign(),

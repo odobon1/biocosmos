@@ -33,14 +33,16 @@ Note: `environment.yaml` can be used for non-B200 jobs.
 
 All metadata artifacts (including splits) and data indexing structures needed for train and eval are committed to the repo, so preprocessing does not need to be run for normal use. See [preprocessing/README.md](preprocessing/README.md) for details on the pipeline and how to regenerate these artifacts.
 
-# Datasets
+# Dataset Characteristics
 
-| Name         | Alias   | Class Level | Available Ranks                           |
-|--------------|---------|-------------|-------------------------------------------|
-| Nymphalidae  | `nymph` | species     | subfamily, genus, species                 |
-| Lepidoptera  | `lepid` | species     | family, subfamily, tribe, genus, species  |
-| CUB          | `cub`   | species     | order, family, genus, species             |
-| Bryozoa      | `bryo`  | genus       | family, genus                             |
+| Name        | Alias   | Class Level | Available Taxonomic Ranks                | Class Imbalance    | Total Images | Filetype | Resolution                                                                                           | Imagery                                                                      |
+|-------------|---------|-------------|------------------------------------------|--------------------|--------------|----------|--------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| Bryozoa     | `bryo`  | genus       | family, genus                            | moderate imbalance | 18,696       | `.jpg`   | Variable, high resolution<ul><li>short-side&nbsp;min:&nbsp;144</li><li>long-side&nbsp;max:&nbsp;5120</li><li>short-side&nbsp;median:&nbsp;1536</li><li>long-side&nbsp;median:&nbsp;2048</li></ul>  | Natural settings; **greyscale**; many images with scientific annotations |
+| CUB         | `cub`   | species     | order, family, genus, species            | well-balanced      | 11,788       | `.jpg`   | Variable resolution<ul><li>short-side&nbsp;min:&nbsp;120</li><li>long-side&nbsp;max:&nbsp;500</li><li>short-side&nbsp;median:&nbsp;357</li><li>long-side&nbsp;median:&nbsp;500</li></ul>     | Natural settings                                                        |
+| Lepidoptera | `lepid` | species     | family, subfamily, tribe, genus, species | extreme imbalance  | 619,248      | `.png`   | 512×512 (fixed)                                                                                        | Curated, museum-quality specimens; uniformly preprocessed **(cite Lepidoptera publication)** |
+| Nymphalidae | `nymph` | species     | subfamily, genus, species                | extreme imbalance  | 230,689      | `.png`   | 336×336 (fixed)                                                                                        | Curated, museum-quality specimens; uniformly preprocessed             |
+
+A note on CUB: standard protocol test partitions used (not stratified; appears to be randomly sampled); our custom stratification method used for generating ID + OOD validation partitions. Well-balanced → impossible to draw OOD classes satisfying typical OOD sample-volume tolerance thresholds.
 
 # Testing
 

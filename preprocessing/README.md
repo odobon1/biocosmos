@@ -263,11 +263,23 @@ drawn with a two-stage stratified sampler:
 2. **Standard stratified split** (sklearn `train_test_split`) for the remaining
    larger classes, where it behaves well.
 
-OOD is drawn first (whole penultimate-rank groups held out as unseen classes),
-then ID (samples held out from seen classes; singletons are excluded from the ID
-draw so they don't leak into eval, then rejoined into train). For datasets that
+Within a single partition draw, OOD is drawn first (whole penultimate-rank groups
+held out as unseen classes), then ID (samples held out from seen classes;
+singletons are excluded from the ID draw so they don't leak into eval, which would
+effectively render them OOD samples, then rejoined into train). For datasets that
 draw their own test partition, this whole procedure runs twice — once for test,
-once for val.
+once for val — so the overall sampling order is:
+
+1. OOD test
+2. ID test
+3. OOD validation
+4. ID validation
+
+Each draw partitions off a fraction of what remains, so earlier draws take
+priority: test is carved out before validation, and unseen (OOD) classes before
+held-out (ID) samples. The exception is CUB, whose ID/OOD test partitions are
+predefined and well-established in the relevant literature (taken from
+`att_splits.mat`); for CUB only the validation partitions (steps 3–4) are sampled.
 
 n-shot buckets track how many classes fall into each shot range (for monitoring
 robustness to class imbalance), and summary/distribution figures are written

@@ -21,6 +21,14 @@ from utils.utils import paths, save_pickle, seed_libs, load_pickle
 from utils.config import get_config_splits
 
 
+DATASET2FANCY = {
+    "bryo": "Bryozoa",
+    "cub": "CUB",
+    "lepid": "Lepidoptera",
+    "nymph": "Nymphalidae",
+}
+
+
 class GenSplitDataManager:
 
     dataset = None
@@ -619,7 +627,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Partition Distributions",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist.png",
@@ -629,7 +637,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Partition Distributions (Log-Scale)",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log.png",
@@ -645,7 +653,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title="OOD Partition Distributions (Log-Scale + Smoothed)",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
@@ -709,7 +717,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Partition Distributions",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist.png",
@@ -719,7 +727,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Partition Distributions (Log-Scale)",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log.png",
@@ -735,7 +743,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title="ID Partition Distributions (Log-Scale + Smoothed)",
+        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log_smooth.png",
@@ -799,7 +807,12 @@ def generate_n_shot_table(
     for (_, _), cell in tbl.get_celld().items():
         cell.set_linewidth(0.5)
 
-    plt.title("n-shot Bucket Sample (Class) Counts", fontsize=fontsize_title, fontweight="bold", y=0.70)
+    plt.title(
+        f"{DATASET2FANCY[GenSplitDataManager.dataset]} - n-shot Bucket Sample (Class) Counts",
+        fontsize=fontsize_title, 
+        fontweight="bold", 
+        y=0.70,
+    )
     plt.savefig(GenSplitDataManager.dpath_figs / "summary_nshot.png", dpi=300, bbox_inches="tight")
 
 def count_unique_cids_from_skeys(skeys) -> int:
@@ -893,13 +906,6 @@ def generate_partition_summary_table(
         fontsize=fontsize,
         scale=scale,
     )
-
-DATASET2FANCY = {
-    "bryo": "Bryozoa",
-    "cub": "CUB",
-    "lepid": "Lepidoptera",
-    "nymph": "Nymphalidae",
-}
 
 def generate_splits(
     cids,

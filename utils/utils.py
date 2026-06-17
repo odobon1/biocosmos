@@ -513,7 +513,7 @@ class PrintLog:
     def init_eval(cfg_eval):
         lines: list[str] = [
             "",
-            f"Checkpoint: {cfg_eval.rfpath_model}",
+            f"Checkpoint: {cfg_eval.rdpath_model}/",
             "",
             PrintLog._block_metric_lines((
                 ("Dataset", cfg_eval.dataset),

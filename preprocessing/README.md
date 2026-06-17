@@ -279,7 +279,7 @@ Each draw partitions off a fraction of what remains, so earlier draws take
 priority: test is carved out before validation, and unseen (OOD) classes before
 held-out (ID) samples. The exception is CUB, whose ID/OOD test partitions are
 predefined and well-established in the relevant literature (taken from
-`att_splits.mat`); for CUB only the validation partitions (steps 3–4) are sampled.
+`att_splits.mat`); for CUB, only the validation partitions are sampled (steps 3–4).
 
 n-shot buckets track how many classes fall into each shot range (for monitoring
 robustness to class imbalance), and summary/distribution figures are written

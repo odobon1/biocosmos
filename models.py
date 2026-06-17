@@ -151,7 +151,7 @@ class VLMWrapper(abc.ABC):
     def build(cls, config: Union[TrainConfig, EvalConfig], verbose: bool) -> Any:
         """
         Factory method to construct the appropriate VLM wrapper based on configuration.
-        Handles loading from checkpoint if `rfpath_model` is specified.
+        Handles loading from checkpoint if `rdpath_model` is specified.
 
         Args:
         - config ---- Configuration object containing architecture and loss settings
@@ -161,10 +161,10 @@ class VLMWrapper(abc.ABC):
         - Initialized VLMWrapper subclass instance
         """
         checkpoint = None
-        if isinstance(config, EvalConfig) and config.rfpath_model is not None:
+        if getattr(config, "rdpath_model", None) is not None:
             if verbose:
-                print(f"Loading '{config.rfpath_model}'...")
-            fpath_model = paths["root"] / config.rfpath_model
+                print(f"Loading '{config.rdpath_model}'/model.pt...")
+            fpath_model = paths["root"] / config.rdpath_model / "model.pt"
             checkpoint = torch.load(
                 fpath_model, 
                 map_location="cpu",  # map_location="cpu" avoids loading two copies of the entire state dict into VRAM at once

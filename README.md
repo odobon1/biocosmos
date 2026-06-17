@@ -66,17 +66,17 @@ Note: The full similarity matrix is computed for all model types, including SigL
     Tip: Cosine LR scheduler parameters are in `config/train.yaml` under `opt.lr`.
 
 ## Evaluate a trained model
-1. In `config/eval.yaml`, set `rfpath_model` to checkpointed model weights (e.g. `artifacts/dev/iw/lepid/42/chkpts/final/model.pt`).
+1. In `config/eval.yaml`, set `rdpath_model` to checkpointed model directory (e.g. `artifacts/dev/iw/lepid/42/chkpts/final`).
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
-    When `rfpath_model` is set, eval overrides `dataset`, `split`, `model_type`, `non_causal`, `img_norm` from setting + trial saved metadata.
+    When `rdpath_model` is set, eval overrides `dataset`, `split`, `model_type`, `non_causal`, `img_norm` from setting + trial saved metadata.
 
     Note: n-shot performance is reported for the ID partition only; the bucket set follows `eval_type` — `val` → `train/val` buckets, `test` → `trainval/test` buckets.
 
 ## Evaluate a base model
-1. In `config/eval.yaml`, set `rfpath_model: null`.
+1. In `config/eval.yaml`, set `rdpath_model: null`.
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
@@ -188,7 +188,7 @@ For eval, loss is computed for full batches only, although performance computati
 For train-time eval loss, the gathered eval embeddings are deterministically shuffled (a fixed-seed permutation, identical on every rank) before being sliced into chunks of size `eval_batch_size × world_size`. The shuffle mixes the rank-ordered, class-clustered gather output so each chunk presents a varied set of in-batch negatives, and the fixed seed keeps the chunking reproducible across runs — making the eval batch loss an apples-to-apples comparison with the global train batch loss. The trailing partial chunk is dropped.
 
 ## Base Model Performance Cache
-The base-model evaluation at the start of each trial (the untrained model's performance) is cached at `base_eval_cache/<model_type>/<img_norm>/<dataset>/<split>/eval.json`. On the first trial for a given `(model_type, img_norm, dataset, split)`, the base eval runs and its scores are cached; subsequent trials reuse the cached scores instead of re-running the base eval. The cached `eval.json` mirrors a checkpoint `eval.json` minus the `loss_raw` and `n_samps_seen` fields. To force base evals to recompute, delete the `base_eval_cache/` directory.
+The base-model evaluation at the start of each trial (the untrained model's performance) is cached at `base_eval_cache/<model_type>/<img_norm>/<dataset>/<split>/metrics.json`. On the first trial for a given `(model_type, img_norm, dataset, split)`, the base eval runs and its scores are cached; subsequent trials reuse the cached scores instead of re-running the base eval. The cached `metrics.json` mirrors a checkpoint `metrics.json` minus the `loss_raw` and `n_samps_seen` fields. To force base evals to recompute, delete the `base_eval_cache/` directory.
 
 The cached scores are reproducible across single-GPU and multi-GPU runs: performance metrics are computed on the full set of embeddings gathered from all ranks, so the complete evaluation set, and thus the resulting scores, are identical regardless of `world_size`. A cache written on one GPU count is therefore safe to reuse on another.
 

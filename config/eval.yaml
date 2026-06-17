@@ -1,13 +1,13 @@
-rfpath_model: null  # relative filepath to checkpointed model weights (set null for base model)
-# rfpath_model: artifacts/dev/hp/nymph/42/chkpts/best_comp/model.pt  # dataset, split, model_type, non_causal, img_norm are overridden if rfpath_model is specified
-dataset: lepid  # {bryo, cub, lepid, nymph}
+rdpath_model: null  # relative dirpath to checkpoint directory (contains model.pt; set null for base model)
+# rdpath_model: artifacts/devdev/hp/nymph/42/chkpts/final  # dataset, split, model_type, non_causal, img_norm are overridden if rdpath_model is specified
+dataset: nymph  # {bryo, cub, lepid, nymph}
 split: D10  # {D10, dev}
 eval_type: val  # {val, test}
 
-batch_size: 1024  # 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+batch_size: 1_024  # 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768
 
 arch:
-  model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   non_causal: false
 
 img_norm: default  # {default, dataset}

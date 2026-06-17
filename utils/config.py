@@ -267,7 +267,7 @@ def get_config_hardware():
 @dataclass
 class EvalConfig:
 
-    rfpath_model: str | None
+    rdpath_model: str | None
     dataset: str
     split: str
     eval_type: str
@@ -292,8 +292,8 @@ class EvalConfig:
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
-        if self.rfpath_model is None and self.img_norm == "dataset":
-            raise ValueError("img_norm='dataset' requires a model checkpoint (rfpath_model) to infer which partition's norm stats were used during training")
+        if self.rdpath_model is None and self.img_norm == "dataset":
+            raise ValueError("img_norm='dataset' requires a model checkpoint (rdpath_model) to infer which partition's norm stats were used during training")
 
         cfg_hw = get_config_hardware()
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
@@ -304,13 +304,14 @@ class EvalConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
 
-        if self.rfpath_model is not None:
-            fpath_model = paths["root"] / self.rfpath_model
+        if self.rdpath_model is not None:
+            dpath_model = paths["root"] / self.rdpath_model
+            fpath_model = dpath_model / "model.pt"
             if not fpath_model.exists():
                 raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
-            
-            fpath_metadata_trial = fpath_model.parent / "../../trial_metadata.json"
-            fpath_metadata_setting = fpath_model.parent / "../../../../setting_metadata.json"
+
+            fpath_metadata_trial = dpath_model / "../../trial_metadata.json"
+            fpath_metadata_setting = dpath_model / "../../../../setting_metadata.json"
             metadata_setting = load_json(fpath_metadata_setting)
             metadata_trial = load_json(fpath_metadata_trial)
 
@@ -331,6 +332,76 @@ def get_config_eval(verbose=True):
     with open(paths["config"] / "eval.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg = EvalConfig(**cfg_dict)
+    cfg.hw = get_config_hardware()
+    if verbose:
+        PrintLog.init_eval(cfg)
+    return cfg
+
+
+@dataclass
+class ManifoldVizConfig:
+
+    rdpath_model: str
+
+    tsne: dict = field(default_factory=dict)
+
+    # operational defaults (kept out of the yaml)
+    eval_type: str = "val"
+    batch_size: int = 1_024
+    text_template: str = "sci"
+
+    # overridden from checkpoint metadata in __post_init__
+    dataset: str | None = None
+    split: str | None = None
+    arch: dict = field(default_factory=dict)
+    img_norm: str = "default"
+
+    hw: dict = field(init=False, default_factory=dict)
+
+    def __post_init__(self):
+
+        if self.rdpath_model is None:
+            raise ValueError("rdpath_model must be specified for manifold viz")
+
+        if self.eval_type not in ("val", "test"):
+            raise ValueError(f"Unknown eval partition: '{self.eval_type}', must be one of {{val, test}}")
+
+        dpath_model = paths["root"] / self.rdpath_model
+        fpath_model = dpath_model / "model.pt"
+        if not fpath_model.exists():
+            raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
+
+        fpath_metadata_trial = dpath_model / "../../trial_metadata.json"
+        fpath_metadata_setting = dpath_model / "../../../../setting_metadata.json"
+        metadata_setting = load_json(fpath_metadata_setting)
+        metadata_trial = load_json(fpath_metadata_trial)
+
+        self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
+        self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
+        self.img_norm = metadata_setting["img_norm"]  # override img_norm
+        self.dataset = metadata_trial["dataset"]  # override dataset
+        self.split = metadata_trial["split"]  # override split
+
+        cfg_hw = get_config_hardware()
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
+            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
+            prefetch_factor=cfg_hw.prefetch_factor,
+        )
+        self.n_gpus = slurm_alloc["n_gpus"]
+        self.n_cpus = slurm_alloc["n_cpus"]
+        self.ram = slurm_alloc["ram"]
+
+        self.device = torch.device("cuda")
+
+    @classmethod
+    def has_field(cls, name_field):
+        return name_field in cls.__dataclass_fields__
+
+
+def get_config_manifold_viz(verbose=True):
+    with open(paths["config"] / "manifold_viz.yaml") as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg = ManifoldVizConfig(**cfg_dict)
     cfg.hw = get_config_hardware()
     if verbose:
         PrintLog.init_eval(cfg)

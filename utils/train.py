@@ -171,7 +171,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "chkpts", "chkpts/in_progress", "plots"):
+        for subdir in ("logs", "chkpts", "chkpts/in_progress", "learning_curves"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
@@ -286,7 +286,7 @@ class ArtifactManager:
     @staticmethod
     @rank0
     def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
-        fpath_meta = dpath_model / "eval.json"
+        fpath_meta = dpath_model / "metrics.json"
         metadata = {
             **format_scores(eval_metrics),
             "n_samps_seen": f"{n_samps_seen_chkpt:,}/{n_samps_seen:,}",
@@ -302,7 +302,7 @@ class ArtifactManager:
             / ArtifactManager.img_norm
             / ArtifactManager.dataset
             / ArtifactManager.split
-            / "eval.json"
+            / "metrics.json"
         )
 
     @staticmethod
@@ -451,7 +451,7 @@ def plot_metrics(
         accuracy_ylabel="I2T Accuracy",
         nshot_accuracy_ylabel="n-shot Accuracy (ID)",
         plot_title="Train Metrics",
-        output_filename="train_metrics.png",
+        output_filename="closed_standard.png",
     )
 
     plot_composite_metrics(
@@ -475,7 +475,7 @@ def plot_metrics(
         accuracy_ylabel="I2T Per-Class Accuracy",
         nshot_accuracy_ylabel="n-shot Per-Class\nAccuracy (ID)",
         plot_title="Train Metrics (Macro)",
-        output_filename="train_metrics_macro.png",
+        output_filename="closed_macro.png",
     )
 
     plot_composite_metrics(
@@ -499,7 +499,7 @@ def plot_metrics(
         accuracy_ylabel="Full-Set I2T Accuracy",
         nshot_accuracy_ylabel="Full-Set n-shot Accuracy (ID)",
         plot_title="Train Metrics (Full-Set)",
-        output_filename="train_metrics_fullset.png",
+        output_filename="full_standard.png",
     )
 
     plot_composite_metrics(
@@ -523,7 +523,7 @@ def plot_metrics(
         accuracy_ylabel="Full-Set I2T Per-Class Accuracy",
         nshot_accuracy_ylabel="Full-Set n-shot Per-Class\nAccuracy (ID)",
         plot_title="Train Metrics (Macro Full-Set)",
-        output_filename="train_metrics_macro_fullset.png",
+        output_filename="full_macro.png",
     )
 
 def plot_composite_metrics(
@@ -694,7 +694,7 @@ def plot_composite_metrics(
     fig.suptitle(plot_title, fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    plots_dir = dpath_trial / "plots"
+    plots_dir = dpath_trial / "learning_curves"
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / output_filename)
     plt.close(fig)

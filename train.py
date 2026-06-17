@@ -29,6 +29,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import EvaluationPipeline
+from utils.manifold_viz import generate_manifold_viz
 from utils.config import get_config_train
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
@@ -431,6 +432,16 @@ class TrainPipeline:
                         self.n_samps_seen,
                         self.n_samps_seen,
                     )
+
+            # MANIFOLD VIZ (final checkpoint model) — all ranks join the embedding all-gather; plotting is rank-0 only
+            if self.eval_enabled:
+                generate_manifold_viz(
+                    self.cfg,
+                    self.modelw,
+                    self.eval_pipe.partition_pipes["id"].dataloader,
+                    self.eval_pipe.partition_pipes["ood"].dataloader,
+                    ArtifactManager.dpath_model_final / "viz",
+                )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 

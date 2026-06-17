@@ -96,9 +96,9 @@ opt:  # optimization
 
 dev:
   logging: true
-  debug_mode: false  # {true, false}
+  debug_mode: true  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
-    sample_volume: 10_000
-    chkpt_every: 6_000
+    sample_volume: 8_000
+    chkpt_every: 5_000
     batch_size: 256
     # maybe add activation checkpointing and etc.

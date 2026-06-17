@@ -208,6 +208,7 @@ class TrainPipeline:
         metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
         metadata_trial["complete"] = True
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
+        ArtifactManager.update_metric_stats()
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.mixed_prec:

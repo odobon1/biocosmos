@@ -132,7 +132,7 @@ def seed_libs(seed, seed_torch=True):
 
 def save_json(data, fpath):
     with open(fpath, "w") as f:
-        json.dump(data, f, indent=4)
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 def load_json(fpath):
     with open(fpath, "r") as f:

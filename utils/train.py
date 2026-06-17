@@ -294,6 +294,50 @@ class ArtifactManager:
         save_json(metadata, fpath_meta)
 
     @staticmethod
+    def _aggregate_metric_stats(values, percent=True):
+        first = values[0]
+        if isinstance(first, dict):
+            return {
+                k: ArtifactManager._aggregate_metric_stats(
+                    [v[k] for v in values], percent=percent and k != "loss_raw"
+                )
+                for k in first
+            }
+        if len(values) == 1:
+            return values[0]
+        nums = np.array([float(v) for v in values])
+        mean = nums.mean()
+        std = nums.std(ddof=1)
+        if percent:
+            return f"{mean * 100:.2f}% ± {std * 100:.2f}%"
+        return f"{mean:.4f} ± {std:.4f}"
+
+    @staticmethod
+    @rank0
+    def update_metric_stats():
+        dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
+        metric_dicts = []
+        for dpath_trial in sorted(dpath_dataset.iterdir()):
+            fpath_meta = dpath_trial / "trial_metadata.json"
+            fpath_metrics = dpath_trial / "chkpts/final/metrics.json"
+            if not (fpath_meta.exists() and fpath_metrics.exists()):
+                continue
+            if not load_json(fpath_meta).get("complete", False):
+                continue
+            metrics = load_json(fpath_metrics)
+            metrics.pop("n_samps_seen", None)
+            metric_dicts.append(metrics)
+
+        if not metric_dicts:
+            return
+
+        stats = {
+            "n_trials": len(metric_dicts),
+            **ArtifactManager._aggregate_metric_stats(metric_dicts),
+        }
+        save_json(stats, dpath_dataset / "metric_stats.json")
+
+    @staticmethod
     def base_eval_cache_path():
         return (
             paths["root"]

@@ -29,8 +29,24 @@ def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> 
     assert out_second == baseline_a
 
 
+def test_load_or_create_manifold_viz_reuses_existing_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_mviz")
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
-def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> None:
+    cfg_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
+    cfg_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
+
+    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: cfg_a)
+    out_first = cr._load_or_create_manifold_viz_config()
+
+    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: cfg_b)
+    out_second = cr._load_or_create_manifold_viz_config()
+
+    assert out_first == cfg_a
+    assert out_second == cfg_a
+
+
+def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "CAMPAIGN", "cmp_b")
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "NUM_SEEDS", 2)
@@ -54,6 +70,7 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
 
     scheduled = []
 
@@ -66,11 +83,12 @@ def test_run_campaign_matrix_and_dataset_outer_order(tmp_path, monkeypatch) -> N
 
     assert len(scheduled) == 8
 
-    assert scheduled[0] == (42, "cub", "iw", "aligned")
-    assert scheduled[1] == (42, "cub", "hp", "phylo")
-    assert scheduled[2] == (43, "cub", "iw", "aligned")
-    assert scheduled[3] == (43, "cub", "hp", "phylo")
-    assert scheduled[4] == (42, "lepid", "iw", "aligned")
+    assert set(scheduled) == {
+        (seed, dataset, setting, targ)
+        for seed in (42, 43)
+        for dataset in ("cub", "lepid")
+        for setting, targ in (("iw", "aligned"), ("hp", "phylo"))
+    }
 
 
 
@@ -97,6 +115,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_fpath: None)
 
     cr.run_campaign()
@@ -151,6 +170,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         },
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
 
     scheduled = []
 

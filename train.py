@@ -442,6 +442,7 @@ class TrainPipeline:
                     self.eval_pipe.partition_pipes["id"].dataloader,
                     self.eval_pipe.partition_pipes["ood"].dataloader,
                     ArtifactManager.dpath_model_final / "viz",
+                    cfg_tsne=self.cfg.tsne,
                 )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()

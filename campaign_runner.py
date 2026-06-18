@@ -16,7 +16,7 @@ import time
 import psutil
 import torch
 
-from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict
+from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
@@ -30,10 +30,10 @@ NUM_SEEDS = 1
 DATASETS = ("nymph",)
 
 BASELINE_OVERRIDES = [
-    {"batch_size": 32_000, "name": "way-too-big-bs"},
+    # {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    {"loss.targ": "aligned", "name": "iw"},
-    {"loss.targ": "multipos", "name": "sw"},
+    # {"loss.targ": "aligned", "name": "iw"},
+    # {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -79,6 +79,16 @@ def _load_or_create_baseline_config() -> dict:
     fpath.parent.mkdir(parents=True, exist_ok=True)
     save_json(cfg_baseline, fpath)
     return cfg_baseline
+
+def _load_or_create_manifold_viz_config() -> dict:
+    fpath = _dpath_campaign() / "cfg_manifold_viz.json"
+    if fpath.exists():
+        return load_json(fpath)
+
+    cfg_manifold_viz = load_manifold_viz_config_dict()
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    save_json(cfg_manifold_viz, fpath)
+    return cfg_manifold_viz
 
 def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict]]:
     settings = []
@@ -234,6 +244,7 @@ def run_campaign() -> None:
         save_json(metadata_camp, dpath_campaign / "campaign_metadata.json")
 
     cfg_baseline = _load_or_create_baseline_config()
+    cfg_manifold_viz = _load_or_create_manifold_viz_config()
     settings = _expand_settings(BASELINE_OVERRIDES)
     seeds = _iter_seeds()
 
@@ -244,8 +255,8 @@ def run_campaign() -> None:
     print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
 
     idx_trial = 0
-    for dataset in DATASETS:
-        for seed in seeds:
+    for seed in seeds:
+        for dataset in DATASETS:
             for setting, setting_payload in settings:
                 idx_trial += 1
 
@@ -260,6 +271,7 @@ def run_campaign() -> None:
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
+                cfg_dict["tsne"] = cfg_manifold_viz["tsne"]
                 cfg_dict["_setting_overrides"] = setting_payload
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 

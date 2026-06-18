@@ -9,8 +9,7 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 import random
 
-from utils.data import spawn_dataloader, spawn_partition_data, load_cid_2_penult
-from utils.utils import get_text_template
+from utils.data import load_cid_2_penult
 from utils.eval import gather_variable_rows, gather_object_list
 from utils.ddp import rank0
 
@@ -106,38 +105,26 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.savefig(fpath_plot, dpi=300, bbox_inches="tight")
     plt.close()
 
-def get_dataloader(cfg, partition, modelw):
-    text_template = get_text_template(cfg.text_template, dataset=cfg.dataset)
-    index_data, _, enc2cid = spawn_partition_data(config=cfg, partition=partition)
-    dataloader = spawn_dataloader(
-        index_data=index_data,
-        enc2cid=enc2cid,
-        text_template=text_template,
-        config=cfg,
-        shuffle=False,
-        drop_last=False,
-        img_pp=modelw.img_pp_inf,
-        use_dv_sampler=False,
-        exact_distributed=True,
-    )
-    return dataloader
-
 @rank0
 def generate_projection_plots(
-    embs_id, penults_id, cids_id,
-    embs_ood, penults_ood, cids_ood,
+    embs_id,
+    embs_ood,
+    cids_id,
+    cids_ood,
+    penults_id,
+    penults_ood,
     dpath_vis,
     tag=None,
-    tsne_cfg=None,
+    cfg_tsne=None,
 ):
     """
     Compute t-SNE/PCA projections of the ID/OOD embeddings and write the 8 plots
     under dpath_vis/{tsne,pca}/. Rank-0 only.
     """
-    tsne_cfg = tsne_cfg or {}
+    cfg_tsne = cfg_tsne or {}
     # compute t-SNE projections
-    proj_tsne_id  = compute_tsne(embs_id, **tsne_cfg)
-    proj_tsne_ood = compute_tsne(embs_ood, **tsne_cfg)
+    proj_tsne_id  = compute_tsne(embs_id, **cfg_tsne)
+    proj_tsne_ood = compute_tsne(embs_ood, **cfg_tsne)
     # compute PCA projections
     proj_pca_id  = compute_pca(embs_id)
     proj_pca_ood = compute_pca(embs_ood)
@@ -180,7 +167,7 @@ def generate_projection_plots(
     plot_projection(proj_pca_ood, penults_ood, title_pca_ood_penult, fpath_pca_ood_penult, "PCA")
     plot_projection(proj_pca_ood, cids_ood, title_pca_ood_class, fpath_pca_ood_class, "PCA")
 
-def generate_manifold_viz(cfg, modelw, dataloader_id, dataloader_ood, dpath_vis, tag=None, tsne_cfg=None):
+def generate_manifold_viz(cfg, modelw, dataloader_id, dataloader_ood, dpath_vis, tag=None, cfg_tsne=None):
     """
     Build ID/OOD image embeddings from `modelw` over the given dataloaders and write the
     t-SNE/PCA plots under `dpath_vis`. Every rank participates in the embedding all-gather;
@@ -190,9 +177,13 @@ def generate_manifold_viz(cfg, modelw, dataloader_id, dataloader_ood, dpath_vis,
     embs_id, penults_id, cids_id = get_embs_and_labels(modelw, dataloader_id, cfg.device, cfg.hw.mixed_prec, cid_2_penult)
     embs_ood, penults_ood, cids_ood = get_embs_and_labels(modelw, dataloader_ood, cfg.device, cfg.hw.mixed_prec, cid_2_penult)
     generate_projection_plots(
-        embs_id, penults_id, cids_id,
-        embs_ood, penults_ood, cids_ood,
+        embs_id,
+        embs_ood,
+        cids_id,
+        cids_ood,
+        penults_id,
+        penults_ood,
         dpath_vis,
         tag=tag,
-        tsne_cfg=tsne_cfg,
+        cfg_tsne=cfg_tsne,
     )

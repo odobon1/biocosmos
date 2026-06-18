@@ -61,6 +61,7 @@ class TrainConfig:
 
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
+    tsne: dict | None = None  # manifold-viz t-SNE params; resolved from manifold_viz.yaml when not supplied
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
@@ -237,6 +238,8 @@ def build_train_config(cfg_dict: dict) -> TrainConfig:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg = TrainConfig(**cfg_dict)
     cfg.hw = get_config_hardware()
+    if cfg.tsne is None:  # standalone runs: campaign trials inject the snapshotted params
+        cfg.tsne = get_config_manifold_viz().tsne
     return cfg
 
 def get_config_train(cfg_dict: dict | None = None):
@@ -341,71 +344,15 @@ def get_config_eval(verbose=True):
 @dataclass
 class ManifoldVizConfig:
 
-    rdpath_model: str
-
     tsne: dict = field(default_factory=dict)
 
-    # operational defaults (kept out of the yaml)
-    eval_type: str = "val"
-    batch_size: int = 1_024
-    text_template: str = "sci"
 
-    # overridden from checkpoint metadata in __post_init__
-    dataset: str | None = None
-    split: str | None = None
-    arch: dict = field(default_factory=dict)
-    img_norm: str = "default"
-
-    hw: dict = field(init=False, default_factory=dict)
-
-    def __post_init__(self):
-
-        if self.rdpath_model is None:
-            raise ValueError("rdpath_model must be specified for manifold viz")
-
-        if self.eval_type not in ("val", "test"):
-            raise ValueError(f"Unknown eval partition: '{self.eval_type}', must be one of {{val, test}}")
-
-        dpath_model = paths["root"] / self.rdpath_model
-        fpath_model = dpath_model / "model.pt"
-        if not fpath_model.exists():
-            raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
-
-        fpath_metadata_trial = dpath_model / "../../trial_metadata.json"
-        fpath_metadata_setting = dpath_model / "../../../../setting_metadata.json"
-        metadata_setting = load_json(fpath_metadata_setting)
-        metadata_trial = load_json(fpath_metadata_trial)
-
-        self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
-        self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
-        self.img_norm = metadata_setting["img_norm"]  # override img_norm
-        self.dataset = metadata_trial["dataset"]  # override dataset
-        self.split = metadata_trial["split"]  # override split
-
-        cfg_hw = get_config_hardware()
-        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
-            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
-            prefetch_factor=cfg_hw.prefetch_factor,
-        )
-        self.n_gpus = slurm_alloc["n_gpus"]
-        self.n_cpus = slurm_alloc["n_cpus"]
-        self.ram = slurm_alloc["ram"]
-
-        self.device = torch.device("cuda")
-
-    @classmethod
-    def has_field(cls, name_field):
-        return name_field in cls.__dataclass_fields__
-
-
-def get_config_manifold_viz(verbose=True):
+def load_manifold_viz_config_dict() -> dict:
     with open(paths["config"] / "manifold_viz.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    cfg = ManifoldVizConfig(**cfg_dict)
-    cfg.hw = get_config_hardware()
-    if verbose:
-        PrintLog.init_eval(cfg)
-    return cfg
+        return yaml.safe_load(f)
+
+def get_config_manifold_viz():
+    return ManifoldVizConfig(**load_manifold_viz_config_dict())
 
 
 @dataclass

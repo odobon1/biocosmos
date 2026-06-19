@@ -156,8 +156,8 @@ class PartitionEvaluationPipeline:
             self.class_enc_to_bucket = {}
 
     @torch.no_grad()
-    def collect_eval_artifacts(
-        self, 
+    def collect_eval_bundle(
+        self,
         modelw: Any,
         loss_flag: bool,
     ) -> Tuple[Dict[str, Any], Optional[float]]:
@@ -234,7 +234,7 @@ class PartitionEvaluationPipeline:
 
         modelw.model.train()
 
-        artifacts = {
+        eval_bundle = {
             "embs_img": embs_img_all,
             "class_encs_img": class_encs_img_all,
             "cids_img": cids_img,
@@ -243,7 +243,7 @@ class PartitionEvaluationPipeline:
             "cids_text": list(self.index_text_cids),
         }
 
-        return artifacts, loss_avg
+        return eval_bundle, loss_avg
 
     def _build_metric_views(
         self,
@@ -671,10 +671,11 @@ class EvaluationPipeline:
         }
 
     def evaluate(
-        self, 
+        self,
         modelw: Any,
         loss_flag: bool = True,
-    ) -> Tuple[Dict[str, Any], float]:
+        collect_eval_bundles: bool = False,
+    ) -> Tuple[Dict[str, Any], float, Optional[Dict[str, Dict[str, Any]]]]:
 
         timer = Timer()
         timer.start()
@@ -691,64 +692,64 @@ class EvaluationPipeline:
             for set_key in ("closed_set", "full_set")
             for grp in ("standard", "per_class")
         }
-        partition_artifacts: Dict[str, Dict[str, Any]] = {}
+        eval_bundles: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
 
         for partition in self.partitions:
             pipe = self.partition_pipes[partition]
-            artifacts_partition, loss_avg_partition = pipe.collect_eval_artifacts(modelw, loss_flag)
-            partition_artifacts[partition] = artifacts_partition
+            eval_bundle_partition, loss_avg_partition = pipe.collect_eval_bundle(modelw, loss_flag)
+            eval_bundles[partition] = eval_bundle_partition
             partition_losses[partition] = loss_avg_partition
 
         full_set_embs_img = torch.cat(
-            [partition_artifacts[partition]["embs_img"] for partition in self.partitions],
+            [eval_bundles[partition]["embs_img"] for partition in self.partitions],
             dim=0,
         )
         full_set_class_encs_img = torch.cat(
-            [partition_artifacts[partition]["class_encs_img"] for partition in self.partitions],
+            [eval_bundles[partition]["class_encs_img"] for partition in self.partitions],
             dim=0,
         )
         full_set_embs_text = torch.cat(
-            [partition_artifacts[partition]["embs_text"] for partition in self.partitions],
+            [eval_bundles[partition]["embs_text"] for partition in self.partitions],
             dim=0,
         )
         full_set_class_encs_text = torch.cat(
-            [partition_artifacts[partition]["class_encs_text"] for partition in self.partitions],
+            [eval_bundles[partition]["class_encs_text"] for partition in self.partitions],
             dim=0,
         )
 
         img_offset = 0
         for partition in self.partitions:
             pipe = self.partition_pipes[partition]
-            artifacts_partition = partition_artifacts[partition]
+            eval_bundle_partition = eval_bundles[partition]
             loss_avg_partition = partition_losses[partition]
 
             closed_set_scores = pipe.compute_map_scores(
-                embs_img_q=artifacts_partition["embs_img"],
-                class_encs_img_q=artifacts_partition["class_encs_img"],
-                embs_text_q=artifacts_partition["embs_text"],
-                class_encs_text_q=artifacts_partition["class_encs_text"].to(artifacts_partition["embs_img"].device),
-                embs_img_g=artifacts_partition["embs_img"],
-                class_encs_img_g=artifacts_partition["class_encs_img"],
-                embs_text_g=artifacts_partition["embs_text"],
-                class_encs_text_g=artifacts_partition["class_encs_text"],
+                embs_img_q=eval_bundle_partition["embs_img"],
+                class_encs_img_q=eval_bundle_partition["class_encs_img"],
+                embs_text_q=eval_bundle_partition["embs_text"],
+                class_encs_text_q=eval_bundle_partition["class_encs_text"].to(eval_bundle_partition["embs_img"].device),
+                embs_img_g=eval_bundle_partition["embs_img"],
+                class_encs_img_g=eval_bundle_partition["class_encs_img"],
+                embs_text_g=eval_bundle_partition["embs_text"],
+                class_encs_text_g=eval_bundle_partition["class_encs_text"],
                 class_enc_to_bucket=pipe.class_enc_to_bucket,
                 nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
             self_match_idxs_g = torch.arange(
                 img_offset,
-                img_offset + artifacts_partition["embs_img"].size(0),
-                device=artifacts_partition["embs_img"].device,
+                img_offset + eval_bundle_partition["embs_img"].size(0),
+                device=eval_bundle_partition["embs_img"].device,
                 dtype=torch.long,
             )
-            img_offset += artifacts_partition["embs_img"].size(0)
+            img_offset += eval_bundle_partition["embs_img"].size(0)
 
             full_set_scores = pipe.compute_map_scores(
-                embs_img_q=artifacts_partition["embs_img"],
-                class_encs_img_q=artifacts_partition["class_encs_img"],
-                embs_text_q=artifacts_partition["embs_text"],
-                class_encs_text_q=artifacts_partition["class_encs_text"].to(artifacts_partition["embs_img"].device),
+                embs_img_q=eval_bundle_partition["embs_img"],
+                class_encs_img_q=eval_bundle_partition["class_encs_img"],
+                embs_text_q=eval_bundle_partition["embs_text"],
+                class_encs_text_q=eval_bundle_partition["class_encs_text"].to(eval_bundle_partition["embs_img"].device),
                 embs_img_g=full_set_embs_img,
                 class_encs_img_g=full_set_class_encs_img,
                 embs_text_g=full_set_embs_text,
@@ -790,7 +791,8 @@ class EvaluationPipeline:
 
         timer.stop()
 
-        return eval_metrics, timer.get_elapsed_time()
+        eval_bundles_out = eval_bundles if collect_eval_bundles else None
+        return eval_metrics, timer.get_elapsed_time(), eval_bundles_out
 
 def build_class_enc_to_train_nshot_bucket(
     dataset: str,

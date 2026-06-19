@@ -252,7 +252,7 @@ class TrainPipeline:
                     }
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                 else:
-                    eval_metrics, time_eval = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                    eval_metrics, time_eval, _ = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
                     ArtifactManager.save_base_eval_cache(eval_metrics)
                 if time_eval is not None:
                     self.rmean_time_eval.update(time_eval)
@@ -371,7 +371,7 @@ class TrainPipeline:
                         # TRAIN-TIME EVAL
 
                         if self.eval_enabled:
-                            eval_metrics, time_eval = self.eval_pipe.evaluate(
+                            eval_metrics, time_eval, _ = self.eval_pipe.evaluate(
                                 self.modelw,
                                 loss_flag=True,
                             )
@@ -412,9 +412,17 @@ class TrainPipeline:
             # FINAL EVAL
 
             if self.eval_enabled:
-                eval_metrics, time_eval = self.eval_pipe.evaluate(
+                eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
+                    collect_eval_bundles=True,
+                )
+                generate_manifold_viz(
+                    self.cfg.dataset,
+                    eval_bundles["id"],
+                    eval_bundles["ood"],
+                    ArtifactManager.dpath_model_final / "viz",
+                    cfg_tsne=self.cfg.tsne,
                 )
                 self.rmean_time_eval.update(time_eval)
                 if self.data is not None:
@@ -433,17 +441,6 @@ class TrainPipeline:
                         self.n_samps_seen,
                         self.n_samps_seen,
                     )
-
-            # MANIFOLD VIZ (final checkpoint model) — all ranks join the embedding all-gather; plotting is rank-0 only
-            if self.eval_enabled:
-                generate_manifold_viz(
-                    self.cfg,
-                    self.modelw,
-                    self.eval_pipe.partition_pipes["id"].dataloader,
-                    self.eval_pipe.partition_pipes["ood"].dataloader,
-                    ArtifactManager.dpath_model_final / "viz",
-                    cfg_tsne=self.cfg.tsne,
-                )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 

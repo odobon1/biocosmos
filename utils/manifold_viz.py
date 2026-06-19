@@ -1,54 +1,13 @@
-import torch
-import torch.distributed as dist
-from torch.amp import autocast
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-from tqdm import tqdm
 import random
 
 from utils.data import load_cid_2_penult
-from utils.eval import gather_variable_rows, gather_object_list
 from utils.ddp import rank0
 
-
-def get_embs_and_labels(modelw, dataloader, device, mixed_prec, cid_2_penult):
-    """
-    Iterate through dataloader to generate image embeddings and retrieve labels
-    (penultimate-level groups + leaf-level class IDs), all-gathered across ranks.
-    """
-    modelw.model.eval()
-
-    embs_all, penults_all, cids_all = [], [], []
-
-    if dist.get_rank() == 0:
-        print("Generating embeddings...")
-    with torch.no_grad():
-        for imgs_b, _, _, targ_data_b in tqdm(dataloader, disable=(dist.get_rank() != 0)):
-            imgs_b = imgs_b.to(device, non_blocking=True)
-
-            # generate embeddings
-            if mixed_prec:
-                with autocast(device_type=device.type):
-                    embs_img_b = modelw.embed_images(imgs_b)
-            else:
-                embs_img_b = modelw.embed_images(imgs_b)
-
-            embs_all.append(embs_img_b)
-            for item in targ_data_b:
-                cid = item["cid"]
-                cids_all.append(cid)
-                penults_all.append(cid_2_penult[cid])
-
-    # under DDP each rank only sees its shard; all-gather so the full partition is plotted
-    embs_local = torch.cat(embs_all, dim=0)
-    embs_all = gather_variable_rows(embs_local).cpu().numpy()
-    penults_all = gather_object_list(penults_all)
-    cids_all = gather_object_list(cids_all)
-
-    return embs_all, penults_all, cids_all
 
 def compute_tsne(embeddings, perplexity=30, n_iter=1000, init="pca", random_state=42):
     """
@@ -105,7 +64,6 @@ def plot_projection(embs_2d, labels, title, fpath_plot, method):
     plt.savefig(fpath_plot, dpi=300, bbox_inches="tight")
     plt.close()
 
-@rank0
 def generate_projection_plots(
     embs_id,
     embs_ood,
@@ -119,7 +77,7 @@ def generate_projection_plots(
 ):
     """
     Compute t-SNE/PCA projections of the ID/OOD embeddings and write the 8 plots
-    under dpath_vis/{tsne,pca}/. Rank-0 only.
+    under dpath_vis/{tsne,pca}/.
     """
     cfg_tsne = cfg_tsne or {}
     # compute t-SNE projections
@@ -167,15 +125,19 @@ def generate_projection_plots(
     plot_projection(proj_pca_ood, penults_ood, title_pca_ood_penult, fpath_pca_ood_penult, "PCA")
     plot_projection(proj_pca_ood, cids_ood, title_pca_ood_class, fpath_pca_ood_class, "PCA")
 
-def generate_manifold_viz(cfg, modelw, dataloader_id, dataloader_ood, dpath_vis, tag=None, cfg_tsne=None):
+@rank0
+def generate_manifold_viz(dataset, eval_bundle_id, eval_bundle_ood, dpath_vis, tag=None, cfg_tsne=None):
     """
-    Build ID/OOD image embeddings from `modelw` over the given dataloaders and write the
-    t-SNE/PCA plots under `dpath_vis`. Every rank participates in the embedding all-gather;
-    the projection + plotting is rank-0 only.
+    Write the t-SNE/PCA plots under `dpath_vis`, reusing the ID/OOD image embeddings collected
+    during eval (already all-gathered to every rank). Rank-0 only.
     """
-    cid_2_penult = load_cid_2_penult(cfg.dataset)
-    embs_id, penults_id, cids_id = get_embs_and_labels(modelw, dataloader_id, cfg.device, cfg.hw.mixed_prec, cid_2_penult)
-    embs_ood, penults_ood, cids_ood = get_embs_and_labels(modelw, dataloader_ood, cfg.device, cfg.hw.mixed_prec, cid_2_penult)
+    cid_2_penult = load_cid_2_penult(dataset)
+    embs_id = eval_bundle_id["embs_img"].cpu().numpy()
+    embs_ood = eval_bundle_ood["embs_img"].cpu().numpy()
+    cids_id = eval_bundle_id["cids_img"]
+    cids_ood = eval_bundle_ood["cids_img"]
+    penults_id = [cid_2_penult[cid] for cid in cids_id]
+    penults_ood = [cid_2_penult[cid] for cid in cids_ood]
     generate_projection_plots(
         embs_id,
         embs_ood,

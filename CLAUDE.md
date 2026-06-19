@@ -50,7 +50,18 @@ When your changes affect anything documented in a README (config paths, CLI comm
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 4. No Legacy Support
+
+**No backwards compatibility. No migration paths. Code for the current schema only.**
+
+This is a research codebase; old campaigns, caches, checkpoints, and snapshots are disposable and regenerated, not preserved.
+
+- When a config/data/dict schema changes, assume the current schema everywhere. Don't add fallbacks for the old one.
+- No defensive `.get(key, default)` / `getattr` / `try/except` to tolerate configs or artifacts written before a field existed. Index/access directly and let it fail loudly if the schema is stale.
+- No version flags, no "if old format" branches, no shims to read legacy outputs.
+- If a change makes old artifacts unreadable, the answer is to regenerate them — say so, don't write compatibility code.
+
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 

@@ -20,7 +20,7 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN = "dev"
+CAMPAIGN = "dev5"
 
 SEED0 = 42
 NUM_SEEDS = 1
@@ -271,7 +271,7 @@ def run_campaign() -> None:
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
-                cfg_dict["tsne"] = cfg_manifold_viz["tsne"]
+                cfg_dict["manifold_viz"] = cfg_manifold_viz
                 cfg_dict["_setting_overrides"] = setting_payload
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 

@@ -70,7 +70,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"stoch_layer": True, "tsne": {"perplexity": 30, "n_iter": 1000}})
 
     scheduled = []
 
@@ -115,7 +115,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"stoch_layer": True, "tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_fpath: None)
 
     cr.run_campaign()
@@ -170,7 +170,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         },
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"stoch_layer": True, "tsne": {"perplexity": 30, "n_iter": 1000}})
 
     scheduled = []
 

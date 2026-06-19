@@ -65,20 +65,20 @@ aug:  # image augmentation
   rrcrop:  # random resized crop
     scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
     ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
-  hflip: false  # horizontal flip w/ 50% probability
+  hflip: true  # horizontal flip w/ 50% probability
   cjit:  # color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
-  cjit_prob: 0.5
-  sharpness: [0.5, 2.0]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
+  cjit_prob: 0.3
+  sharpness: [0.75, 1.333]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
   sharpness_prob: 0.2
   gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
     sigma: [0.0, 1.0]
-  gblur_prob: 0.3
-img_norm: default  # {default, dataset}
+  gblur_prob: 0.2
+img_norm: dataset  # {default, dataset}
 
 text_template:
   train: train
@@ -95,8 +95,9 @@ opt:  # optimization
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
 dev:
+  save_mid_evals: true  # (true) persist train-time eval results (metrics.json + viz/) under evals/<thresh>/ per checkpoint threshold
   logging: true
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 8_000
     chkpt_every: 5_000

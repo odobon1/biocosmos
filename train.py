@@ -3,6 +3,7 @@ torchrun --standalone --nproc-per-node=auto -m train
 """
 
 import sys
+import shutil
 import random
 import numpy as np
 import torch
@@ -44,6 +45,13 @@ torch.set_printoptions(
     edgeitems=3,  # num items to show at the start/end of each dim
     linewidth=120
 )
+
+
+def _fmt_thresh(n_samps):
+    """Compact dir name for a sample-count eval threshold, e.g. 100_000 -> '100k'."""
+    if n_samps % 1000 == 0:
+        return f"{n_samps // 1000}k"
+    return str(n_samps)
 
 
 class TrainPipeline:
@@ -176,6 +184,27 @@ class TrainPipeline:
         )
 
     @rank0
+    def _copy_base_eval(self):
+        # mirror the base-model eval (metrics.json + viz/) into evals/_base/ alongside the threshold snapshots
+        src = ArtifactManager.base_eval_cache_dpath()
+        if not src.exists():
+            return
+        shutil.copytree(src, ArtifactManager.dpath_trial / "evals" / "_base", dirs_exist_ok=True)
+
+    @rank0
+    def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
+        dpath_eval = ArtifactManager.dpath_trial / "evals" / _fmt_thresh(threshold_hit)
+        dpath_eval.mkdir(parents=True, exist_ok=True)
+        ArtifactManager.save_eval_data(dpath_eval, eval_metrics, self.n_samps_seen, self.n_samps_seen)
+        generate_manifold_viz(
+            self.cfg.dataset,
+            eval_bundles["id"],
+            eval_bundles["ood"],
+            dpath_eval / "viz",
+            self.cfg.manifold_viz,
+        )
+
+    @rank0
     def _print_log_eval(self, header):
         sys.stdout.write('\r')
         sys.stdout.flush()
@@ -263,8 +292,10 @@ class TrainPipeline:
                         eval_bundles["id"],
                         eval_bundles["ood"],
                         ArtifactManager.base_eval_cache_dpath() / "viz",
-                        cfg_tsne=self.cfg.tsne,
+                        self.cfg.manifold_viz,
                     )
+                if self.cfg.dev["save_mid_evals"]:
+                    self._copy_base_eval()
                 if time_eval is not None:
                     self.rmean_time_eval.update(time_eval)
                 if self.data is not None:
@@ -382,14 +413,18 @@ class TrainPipeline:
                         # TRAIN-TIME EVAL
 
                         if self.eval_enabled:
-                            eval_metrics, time_eval, _ = self.eval_pipe.evaluate(
+                            save_mid = self.cfg.dev["save_mid_evals"]
+                            eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                                 self.modelw,
                                 loss_flag=True,
+                                collect_eval_bundles=save_mid,
                             )
                             self.rmean_time_eval.update(time_eval)
                             if self.data is not None:
                                 self.data.eval_metrics = eval_metrics
                                 self.data.time_eval = time_eval
+                            if save_mid:
+                                self._save_mid_eval(threshold_hit, eval_metrics, eval_bundles)
                         self._checkpoint(
                             header=f"{threshold_hit:,}",
                             idx_batch=idx_batch,
@@ -433,7 +468,7 @@ class TrainPipeline:
                     eval_bundles["id"],
                     eval_bundles["ood"],
                     ArtifactManager.dpath_model_final / "viz",
-                    cfg_tsne=self.cfg.tsne,
+                    self.cfg.manifold_viz,
                 )
                 self.rmean_time_eval.update(time_eval)
                 if self.data is not None:

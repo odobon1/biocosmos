@@ -1,5 +1,5 @@
 import torch
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from copy import deepcopy
 import math
 import yaml
@@ -61,7 +61,7 @@ class TrainConfig:
 
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
-    tsne: dict | None = None  # manifold-viz t-SNE params; resolved from manifold_viz.yaml when not supplied
+    manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
@@ -238,8 +238,8 @@ def build_train_config(cfg_dict: dict) -> TrainConfig:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg = TrainConfig(**cfg_dict)
     cfg.hw = get_config_hardware()
-    if cfg.tsne is None:  # standalone runs: campaign trials inject the snapshotted params
-        cfg.tsne = get_config_manifold_viz().tsne
+    if cfg.manifold_viz is None:  # standalone runs: campaign trials inject the snapshotted config
+        cfg.manifold_viz = asdict(get_config_manifold_viz())
     return cfg
 
 def get_config_train(cfg_dict: dict | None = None):
@@ -344,6 +344,7 @@ def get_config_eval(verbose=True):
 @dataclass
 class ManifoldVizConfig:
 
+    stoch_layer: bool
     tsne: dict = field(default_factory=dict)
 
 

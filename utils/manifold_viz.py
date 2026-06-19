@@ -27,35 +27,49 @@ def compute_pca(embeddings):
     embs_2d = pca.fit_transform(embeddings)
     return embs_2d
 
-def plot_projection(embs_2d, labels, title, fpath_plot, method):
+def build_color_map(labels):
+    """
+    Deterministic label -> color over the full label set, so a class keeps the same color
+    across every plot (rounds, t-SNE/PCA, ID/OOD). Palette is shuffled (fixed seed) to avoid
+    similar colors landing on adjacent classes.
+    """
+    labels_sorted = sorted(set(labels))
+    colors = list(sns.color_palette("husl", len(labels_sorted)))
+    random.seed(42)
+    random.shuffle(colors)
+    return dict(zip(labels_sorted, colors))
+
+def plot_projection(embs_2d, labels, title, fpath_plot, method, color_map, stoch_layer, alpha=1.0):
     print(f"Plotting {method} projection...")
 
-    # convert labels to numpy array for indexing convenience
-    labels_np = np.array(labels)
-    unique_labels = sorted(list(set(labels)))
-    n_classes = len(unique_labels)
+    labels_arr = np.asarray(labels)
+    point_colors = np.array([color_map[label] for label in labels])  # per-point RGB
+
+    # draw order: shuffled (stochastic layering, so no single class fully occludes another)
+    # or class-grouped in sorted order (original layering); both are deterministic
+    if stoch_layer:
+        order = np.random.default_rng(42).permutation(len(labels_arr))
+    else:
+        order = np.argsort(labels_arr, kind="stable")
+
+    point_alpha = alpha[order] if isinstance(alpha, np.ndarray) else alpha  # per-point alpha masks a partition
 
     plt.figure(figsize=(16, 12))
 
-    colors = list(sns.color_palette("husl", n_classes))
-    random.seed(42)
-    random.shuffle(colors)  # shuffle colors to mitigate similar colors for nearby classes
-
-    for i, label in enumerate(unique_labels):
-        mask = (labels_np == label)  # boolean mask for current label
-
-        plt.scatter(
-            embs_2d[mask, 0],
-            embs_2d[mask, 1],
-            c=[colors[i]],
-            label=label,
-            s=60,
-            alpha=0.8,
-        )
+    plt.scatter(
+        embs_2d[order, 0],
+        embs_2d[order, 1],
+        c=point_colors[order],
+        s=15,
+        alpha=point_alpha,
+    )
 
     plt.title(title, fontsize=20, fontweight='bold')
     plt.xlabel(f"{method} Dimension 1", fontsize=14)
     plt.ylabel(f"{method} Dimension 2", fontsize=14)
+
+    if method == "t-SNE":
+        plt.gca().set_aspect("equal", adjustable="box")  # t-SNE dims are unitless; render 1:1 so structure isn't stretched
 
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
@@ -71,65 +85,65 @@ def generate_projection_plots(
     cids_ood,
     penults_id,
     penults_ood,
+    color_leaf,
+    color_penult,
     dpath_vis,
     tag=None,
     cfg_tsne=None,
+    stoch_layer=True,
 ):
     """
-    Compute t-SNE/PCA projections of the ID/OOD embeddings and write the 8 plots
-    under dpath_vis/{tsne,pca}/.
+    Compute t-SNE/PCA projections of the ID/OOD embeddings and write 20 plots under
+    dpath_vis/{tsne,pca}/: ID-only, OOD-only, the combined ID+OOD projection, and the
+    combined projection with each partition masked (alpha 0) in turn, each colored by
+    penultimate-level group and by leaf class. The combined plots are a joint projection
+    over the stacked ID+OOD embeddings (the separate ID/OOD projections live in different
+    coordinate spaces and cannot be overlaid); the masked variants share that exact
+    geometry, only hiding the other partition's points.
     """
     cfg_tsne = cfg_tsne or {}
-    # compute t-SNE projections
-    proj_tsne_id  = compute_tsne(embs_id, **cfg_tsne)
-    proj_tsne_ood = compute_tsne(embs_ood, **cfg_tsne)
-    # compute PCA projections
-    proj_pca_id  = compute_pca(embs_id)
-    proj_pca_ood = compute_pca(embs_ood)
+    embs_fullset = np.concatenate([embs_id, embs_ood], axis=0)
+    cids_fullset = list(cids_id) + list(cids_ood)
+    penults_fullset = list(penults_id) + list(penults_ood)
 
-    dpath_tsne = dpath_vis / "tsne"
-    dpath_pca = dpath_vis / "pca"
-    dpath_tsne.mkdir(parents=True, exist_ok=True)
-    dpath_pca.mkdir(parents=True, exist_ok=True)
-    fpath_tsne_id_penult = dpath_tsne / "id_penult.png"
-    fpath_tsne_id_class = dpath_tsne / "id_leaf.png"
-    fpath_tsne_ood_penult = dpath_tsne / "ood_penult.png"
-    fpath_tsne_ood_class = dpath_tsne / "ood_leaf.png"
-    fpath_pca_id_penult = dpath_pca / "id_penult.png"
-    fpath_pca_id_class = dpath_pca / "id_leaf.png"
-    fpath_pca_ood_penult = dpath_pca / "ood_penult.png"
-    fpath_pca_ood_class = dpath_pca / "ood_leaf.png"
+    # per-point alpha over the fullset (ID rows first, then OOD) to mask one partition
+    is_id = np.arange(len(cids_fullset)) < len(cids_id)
+    alpha_id = is_id.astype(float)
+    alpha_ood = (~is_id).astype(float)
 
-    if tag is not None:
-        tag = f" ({tag})"
-    else:
-        tag = ""
+    tag = f" ({tag})" if tag is not None else ""
 
-    title_tsne_id_penult = f"t-SNE: ID validation, colored by penult. lvl{tag}"
-    title_tsne_id_class = f"t-SNE: ID validation, colored by class{tag}"
-    title_tsne_ood_penult = f"t-SNE: OOD validation, colored by penult. lvl{tag}"
-    title_tsne_ood_class = f"t-SNE: OOD validation, colored by class{tag}"
-    title_pca_id_penult = f"PCA: ID validation, colored by penult. lvl{tag}"
-    title_pca_id_class = f"PCA: ID validation, colored by class{tag}"
-    title_pca_ood_penult = f"PCA: OOD validation, colored by penult. lvl{tag}"
-    title_pca_ood_class = f"PCA: OOD validation, colored by class{tag}"
+    for method, project in (("t-SNE", lambda e: compute_tsne(e, **cfg_tsne)), ("PCA", compute_pca)):
+        dpath_method = dpath_vis / ("tsne" if method == "t-SNE" else "pca")
+        dpath_method.mkdir(parents=True, exist_ok=True)
 
-    # plot t-SNE projections
-    plot_projection(proj_tsne_id, penults_id, title_tsne_id_penult, fpath_tsne_id_penult, "t-SNE")
-    plot_projection(proj_tsne_id, cids_id, title_tsne_id_class, fpath_tsne_id_class, "t-SNE")
-    plot_projection(proj_tsne_ood, penults_ood, title_tsne_ood_penult, fpath_tsne_ood_penult, "t-SNE")
-    plot_projection(proj_tsne_ood, cids_ood, title_tsne_ood_class, fpath_tsne_ood_class, "t-SNE")
-    # plot PCA projections
-    plot_projection(proj_pca_id, penults_id, title_pca_id_penult, fpath_pca_id_penult, "PCA")
-    plot_projection(proj_pca_id, cids_id, title_pca_id_class, fpath_pca_id_class, "PCA")
-    plot_projection(proj_pca_ood, penults_ood, title_pca_ood_penult, fpath_pca_ood_penult, "PCA")
-    plot_projection(proj_pca_ood, cids_ood, title_pca_ood_class, fpath_pca_ood_class, "PCA")
+        proj_id = project(embs_id)
+        proj_ood = project(embs_ood)
+        proj_fullset = project(embs_fullset)
+
+        # (projection, labels, color_map, filename, subject, label_kind, alpha)
+        panels = [
+            (proj_id,      penults_id,      color_penult, "id_penult.png",          "ID",            "penult. lvl", 1.0),
+            (proj_id,      cids_id,         color_leaf,   "id_leaf.png",            "ID",            "class",       1.0),
+            (proj_ood,     penults_ood,     color_penult, "ood_penult.png",         "OOD",           "penult. lvl", 1.0),
+            (proj_ood,     cids_ood,        color_leaf,   "ood_leaf.png",           "OOD",           "class",       1.0),
+            (proj_fullset, penults_fullset, color_penult, "fullset_penult.png",     "ID+OOD",        "penult. lvl", 1.0),
+            (proj_fullset, cids_fullset,    color_leaf,   "fullset_leaf.png",       "ID+OOD",        "class",       1.0),
+            (proj_fullset, penults_fullset, color_penult, "fullset_id_penult.png",  "ID (in ID+OOD)",  "penult. lvl", alpha_id),
+            (proj_fullset, cids_fullset,    color_leaf,   "fullset_id_leaf.png",    "ID (in ID+OOD)",  "class",       alpha_id),
+            (proj_fullset, penults_fullset, color_penult, "fullset_ood_penult.png", "OOD (in ID+OOD)", "penult. lvl", alpha_ood),
+            (proj_fullset, cids_fullset,    color_leaf,   "fullset_ood_leaf.png",   "OOD (in ID+OOD)", "class",       alpha_ood),
+        ]
+        for proj, labels, color_map, fname, subject, kind, alpha in panels:
+            title = f"{method}: {subject} validation, colored by {kind}{tag}"
+            plot_projection(proj, labels, title, dpath_method / fname, method, color_map, stoch_layer, alpha)
 
 @rank0
-def generate_manifold_viz(dataset, eval_bundle_id, eval_bundle_ood, dpath_vis, tag=None, cfg_tsne=None):
+def generate_manifold_viz(dataset, eval_bundle_id, eval_bundle_ood, dpath_vis, cfg_manifold_viz, tag=None):
     """
     Write the t-SNE/PCA plots under `dpath_vis`, reusing the ID/OOD image embeddings collected
-    during eval (already all-gathered to every rank). Rank-0 only.
+    during eval (already all-gathered to every rank). `cfg_manifold_viz` is the manifold_viz.yaml
+    contents (t-SNE params + stochastic-layering flag). Rank-0 only.
     """
     cid_2_penult = load_cid_2_penult(dataset)
     embs_id = eval_bundle_id["embs_img"].cpu().numpy()
@@ -138,6 +152,9 @@ def generate_manifold_viz(dataset, eval_bundle_id, eval_bundle_ood, dpath_vis, t
     cids_ood = eval_bundle_ood["cids_img"]
     penults_id = [cid_2_penult[cid] for cid in cids_id]
     penults_ood = [cid_2_penult[cid] for cid in cids_ood]
+    # color maps span the whole dataset so a class is colored identically in every plot
+    color_leaf = build_color_map(cid_2_penult.keys())
+    color_penult = build_color_map(cid_2_penult.values())
     generate_projection_plots(
         embs_id,
         embs_ood,
@@ -145,7 +162,10 @@ def generate_manifold_viz(dataset, eval_bundle_id, eval_bundle_ood, dpath_vis, t
         cids_ood,
         penults_id,
         penults_ood,
+        color_leaf,
+        color_penult,
         dpath_vis,
         tag=tag,
-        cfg_tsne=cfg_tsne,
+        cfg_tsne=cfg_manifold_viz["tsne"],
+        stoch_layer=cfg_manifold_viz["stoch_layer"],
     )

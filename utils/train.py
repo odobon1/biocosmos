@@ -338,7 +338,7 @@ class ArtifactManager:
         save_json(stats, dpath_dataset / "metric_stats.json")
 
     @staticmethod
-    def base_eval_cache_path():
+    def base_eval_cache_dpath():
         return (
             paths["root"]
             / "base_eval_cache"
@@ -346,8 +346,11 @@ class ArtifactManager:
             / ArtifactManager.img_norm
             / ArtifactManager.dataset
             / ArtifactManager.split
-            / "metrics.json"
         )
+
+    @staticmethod
+    def base_eval_cache_path():
+        return ArtifactManager.base_eval_cache_dpath() / "metrics.json"
 
     @staticmethod
     def load_base_eval_cache():

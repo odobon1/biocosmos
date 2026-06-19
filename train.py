@@ -252,8 +252,19 @@ class TrainPipeline:
                     }
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                 else:
-                    eval_metrics, time_eval, _ = self.eval_pipe.evaluate(self.modelw, loss_flag=False)
+                    eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                        self.modelw,
+                        loss_flag=False,
+                        collect_eval_bundles=True,
+                    )
                     ArtifactManager.save_base_eval_cache(eval_metrics)
+                    generate_manifold_viz(
+                        self.cfg.dataset,
+                        eval_bundles["id"],
+                        eval_bundles["ood"],
+                        ArtifactManager.base_eval_cache_dpath() / "viz",
+                        cfg_tsne=self.cfg.tsne,
+                    )
                 if time_eval is not None:
                     self.rmean_time_eval.update(time_eval)
                 if self.data is not None:

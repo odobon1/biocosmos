@@ -5,9 +5,9 @@ dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 1_000_000
-chkpt_every: 50_000
-batch_size: 512  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
+sample_volume: 100_000
+chkpt_every: 25_000
+batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # architecture
@@ -86,7 +86,7 @@ text_template:
 
 opt:  # optimization
   lr:  # learning rate
-    init: 1.0e-5
+    init: 1.2e-5
     decay_factor: 1.0e-3  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
     warmup: 100_000  # sample volume for linear LR warmup
   l2reg: null  # if `null`, resolved from model-specific default hyperparam config
@@ -95,11 +95,17 @@ opt:  # optimization
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
 dev:
-  save_mid_evals: true  # (true) persist train-time eval results (metrics.json + viz/) under evals/<thresh>/ per checkpoint threshold
+  traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
+  viz_manifold: true  # {true, false}; (true) compute and save PCA + t-SNE projections to disk; (false) overrides manifold_viz.plot_Xpanel flags to false
+  manifold_viz:
+    plot_2panel: true  # {true, false}; (true) plot 2-panel PCA's + t-SNE's
+    plot_4panel: true  # {true, false}; (true) plot 4-panel PCA's + t-SNE's
+    plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
+    # note: even when all 3 flags are false, projections will still be computed and saved to disk
   logging: true
   debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
-    sample_volume: 8_000
-    chkpt_every: 5_000
-    batch_size: 256
+    sample_volume: 6_000
+    chkpt_every: 3_000
+    batch_size: 1024
     # maybe add activation checkpointing and etc.

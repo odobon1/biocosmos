@@ -17,16 +17,8 @@ from pathlib import Path
 import pandas as pd
 
 from utils.data import Split
-from utils.utils import paths, save_pickle, seed_libs, load_pickle
+from utils.utils import paths, save_pickle, seed_libs, load_pickle, DATASET_ALIAS2NAME
 from utils.config import get_config_splits
-
-
-DATASET2FANCY = {
-    "bryo": "Bryozoa",
-    "cub": "CUB",
-    "lepid": "Lepidoptera",
-    "nymph": "Nymphalidae",
-}
 
 
 class GenSplitDataManager:
@@ -623,11 +615,13 @@ def gen_strat_sampling_dist_plots_ood(
     x_label = "Sorted Penultimate Classes"
     y_label = "Num. Classes"
 
+    dataset_name = DATASET_ALIAS2NAME[GenSplitDataManager.dataset]
+
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions",
+        title=f"{dataset_name} - OOD Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist.png",
@@ -637,7 +631,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions (Log-Scale)",
+        title=f"{dataset_name} - OOD Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log.png",
@@ -653,7 +647,7 @@ def gen_strat_sampling_dist_plots_ood(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - OOD Partition Distributions (Log-Scale + Smoothed)",
+        title=f"{dataset_name} - OOD Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "ood_strat_sampling_dist_log_smooth.png",
@@ -713,11 +707,13 @@ def gen_strat_sampling_dist_plots_id(
     x_label = "Sorted Classes"
     y_label = "Num. Samples"
 
+    dataset_name = DATASET_ALIAS2NAME[GenSplitDataManager.dataset]
+
     plot_split_distribution(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions",
+        title=f"{dataset_name} - ID Partition Distributions",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist.png",
@@ -727,7 +723,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions (Log-Scale)",
+        title=f"{dataset_name} - ID Partition Distributions (Log-Scale)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log.png",
@@ -743,7 +739,7 @@ def gen_strat_sampling_dist_plots_id(
         data,
         labels_data,
         colors,
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} - ID Partition Distributions (Log-Scale + Smoothed)",
+        title=f"{dataset_name} - ID Partition Distributions (Log-Scale + Smoothed)",
         x_label=x_label,
         y_label=y_label,
         fpath=GenSplitDataManager.dpath_figs / "id_strat_sampling_dist_log_smooth.png",
@@ -807,8 +803,9 @@ def generate_n_shot_table(
     for (_, _), cell in tbl.get_celld().items():
         cell.set_linewidth(0.5)
 
+    dataset_name = DATASET_ALIAS2NAME[GenSplitDataManager.dataset]
     plt.title(
-        f"{DATASET2FANCY[GenSplitDataManager.dataset]} - n-shot Bucket Sample (Class) Counts",
+        f"{dataset_name} - n-shot Bucket Sample (Class) Counts",
         fontsize=fontsize_title, 
         fontweight="bold", 
         y=0.70,
@@ -985,10 +982,11 @@ def generate_splits(
     # PARTITION SUMMARY TABLE
 
     print("Generating partition summary table...")
+    dataset_name = DATASET_ALIAS2NAME[GenSplitDataManager.dataset]
     generate_partition_summary_table(
         skeys_pts=skeys_pts,
         n_cids_total=len(cids),
-        title=f"{DATASET2FANCY[GenSplitDataManager.dataset]} Partitions",
+        title=f"{dataset_name} Partitions",
     )
     print("Partition summary table complete!")
 

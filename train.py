@@ -4,6 +4,7 @@ torchrun --standalone --nproc-per-node=auto -m train
 
 import sys
 import shutil
+import traceback
 import random
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from utils.utils import (
     get_text_template,
     RunningMean,
     Timer,
+    TimeTracker,
     PrintLog,
     model_grad_l2_norm,
     load_json,
@@ -30,7 +32,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import EvaluationPipeline
-from utils.manifold_viz import generate_manifold_viz
+from utils.manifold_viz import compute_projections, render_eval, render_evolution, VizContext
 from utils.config import get_config_train
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
@@ -102,8 +104,8 @@ class TrainPipeline:
         self.n_samps_seen = 0
         self.idx_epoch = 0
         self.timer_train = Timer()
-        self.rmean_time_train = RunningMean()
-        self.rmean_time_eval = RunningMean()
+        self.time_tracker = TimeTracker()
+        self._viz_context = VizContext(self.cfg.setting, self.cfg.dataset, self.cfg.split, self.cfg.eval_type)
 
         if dist.get_rank() == 0:
             if resume_state is not None and trial_state is not None:
@@ -118,10 +120,7 @@ class TrainPipeline:
             self.n_batches_seen = resume_state["n_batches_seen"]
             self.idx_epoch = max(0, resume_state["idx_epoch"] - 1)
             self.chkpt_thresh = resume_state["chkpt_thresh"]
-            self.rmean_time_train.n = resume_state["rmean_time_train_n"]
-            self.rmean_time_train.mean = resume_state["rmean_time_train_mean"]
-            self.rmean_time_eval.n = resume_state["rmean_time_eval_n"]
-            self.rmean_time_eval.mean = resume_state["rmean_time_eval_mean"]
+            self.time_tracker.load_state_dict(resume_state["times"])
             self.opt.load_state_dict(resume_state["optimizer"])
             for state in self.opt.state.values():
                 for k, v in state.items():
@@ -185,24 +184,54 @@ class TrainPipeline:
 
     @rank0
     def _copy_base_eval(self):
-        # mirror the base-model eval (metrics.json + viz/) into evals/_base/ alongside the threshold snapshots
+        # mirror the base-model eval cache (metrics.json + projections.npz) into evals/_base/, so base is
+        # a uniform member of the eval sequence the render pass sweeps
         src = ArtifactManager.base_eval_cache_dpath()
         if not src.exists():
             return
         shutil.copytree(src, ArtifactManager.dpath_trial / "evals" / "_base", dirs_exist_ok=True)
 
+    def _compute_projections_timed(self, eval_bundles, dpath_cache):
+        # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.
+        # All ranks spend ~the same wall time here; only rank-0's tracker is persisted.
+        with self.time_tracker.measure("viz_compute"):
+            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz)
+
+    def _viz_eval(self, eval_bundles, eval_name):
+        """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
+        evals/<eval_name>/, then render its per-eval plots from the cache (rank 0). The collective compute
+        and the rank-0 render are kept separate so the sharded t-SNE stays a clean all-ranks op."""
+        dpath_eval = ArtifactManager.dpath_trial / "evals" / eval_name
+        self._compute_projections_timed(eval_bundles, dpath_eval)
+        self._render_eval_safe(eval_name)
+
     @rank0
+    def _render_eval_safe(self, eval_name):
+        # best-effort per-eval render: viz must never crash a training run; elapsed folds into viz_render
+        try:
+            with self.time_tracker.measure("viz_render"):
+                render_eval(ArtifactManager.dpath_trial / "evals", eval_name, self.cfg.manifold_viz, self._viz_context, self.cfg.dev["manifold_viz"])
+        except Exception:
+            traceback.print_exc()
+
+    @rank0
+    def _render_evolution_safe(self):
+        # best-effort cross-eval evolution GIFs from the cached projections (once per trial)
+        try:
+            with self.time_tracker.measure("evolution", scalar=True):
+                render_evolution(ArtifactManager.dpath_trial / "evals", ArtifactManager.dpath_trial / "viz",
+                                 self.cfg.manifold_viz, self._viz_context, self.cfg.dev["manifold_viz"])
+        except Exception:
+            traceback.print_exc()
+
     def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
-        dpath_eval = ArtifactManager.dpath_trial / "evals" / _fmt_thresh(threshold_hit)
-        dpath_eval.mkdir(parents=True, exist_ok=True)
-        ArtifactManager.save_eval_data(dpath_eval, eval_metrics, self.n_samps_seen, self.n_samps_seen)
-        generate_manifold_viz(
-            self.cfg.dataset,
-            eval_bundles["id"],
-            eval_bundles["ood"],
-            dpath_eval / "viz",
-            self.cfg.manifold_viz,
-        )
+        # NOT @rank0: _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank
+        # must enter it. Only the metrics write is rank-0 gated.
+        eval_name = _fmt_thresh(threshold_hit)
+        if dist.get_rank() == 0:
+            ArtifactManager.save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name, eval_metrics, self.n_samps_seen, self.n_samps_seen)
+        if self.cfg.dev["viz_manifold"]:
+            self._viz_eval(eval_bundles, eval_name)
 
     @rank0
     def _print_log_eval(self, header):
@@ -214,16 +243,16 @@ class TrainPipeline:
             header=header,
             n_samps_seen=self.n_samps_seen,
             time_eval=self.data.time_eval,
-            time_eval_avg=self.rmean_time_eval.value() if self.rmean_time_eval.n > 0 else None,
+            time_eval_avg=self.time_tracker.mean("eval"),
         )
 
     @rank0
-    def _checkpoint(self, header, idx_batch):
-        if self.eval_enabled:
+    def _checkpoint(self, header, idx_batch, record_eval=True):
+        if self.eval_enabled and record_eval:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data()
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker)
         if not self.cfg.standalone:
             ArtifactManager.update_campaign_time()
 
@@ -265,7 +294,7 @@ class TrainPipeline:
         try:
 
             if self._resume_state is None:
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.rmean_time_train, init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 
@@ -284,20 +313,16 @@ class TrainPipeline:
                     eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                         self.modelw,
                         loss_flag=False,
-                        collect_eval_bundles=True,
+                        collect_eval_bundles=self.cfg.dev["viz_manifold"],
                     )
                     ArtifactManager.save_base_eval_cache(eval_metrics)
-                    generate_manifold_viz(
-                        self.cfg.dataset,
-                        eval_bundles["id"],
-                        eval_bundles["ood"],
-                        ArtifactManager.base_eval_cache_dpath() / "viz",
-                        self.cfg.manifold_viz,
-                    )
-                if self.cfg.dev["save_mid_evals"]:
-                    self._copy_base_eval()
+                    if self.cfg.dev["viz_manifold"]:
+                        self._compute_projections_timed(eval_bundles, ArtifactManager.base_eval_cache_dpath())
+                self._copy_base_eval()  # base -> evals/_base (uniform member of the eval sequence)
+                if self.cfg.dev["viz_manifold"]:
+                    self._render_eval_safe("_base")
                 if time_eval is not None:
-                    self.rmean_time_eval.update(time_eval)
+                    self.time_tracker.add("eval", time_eval)
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
@@ -410,27 +435,29 @@ class TrainPipeline:
                             threshold_hit = self.chkpt_thresh
                             self.chkpt_thresh += self.cfg.chkpt_every
 
-                        # TRAIN-TIME EVAL
-
-                        if self.eval_enabled:
-                            save_mid = self.cfg.dev["save_mid_evals"]
-                            eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
-                                self.modelw,
-                                loss_flag=True,
-                                collect_eval_bundles=save_mid,
-                            )
-                            self.rmean_time_eval.update(time_eval)
-                            if self.data is not None:
-                                self.data.eval_metrics = eval_metrics
-                                self.data.time_eval = time_eval
-                            if save_mid:
+                        # skip the train-time eval+checkpoint when the threshold lands on
+                        # sample_volume -- the final eval+checkpoint right below cover it
+                        if threshold_hit != self.cfg.sample_volume:
+                            # TRAIN-TIME EVAL (skipped entirely when traintime_evals is off -- only base/final eval)
+                            traintime_eval = self.eval_enabled and self.cfg.dev["traintime_evals"]
+                            if traintime_eval:
+                                eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                                    self.modelw,
+                                    loss_flag=True,
+                                    collect_eval_bundles=self.cfg.dev["viz_manifold"],
+                                )
+                                self.time_tracker.add("eval", time_eval)
+                                if self.data is not None:
+                                    self.data.eval_metrics = eval_metrics
+                                    self.data.time_eval = time_eval
                                 self._save_mid_eval(threshold_hit, eval_metrics, eval_bundles)
-                        self._checkpoint(
-                            header=f"{threshold_hit:,}",
-                            idx_batch=idx_batch,
-                        )
-                        ArtifactManager.save_rng_states(self._local_rank)
-                        dist.barrier()
+                            self._checkpoint(
+                                header=f"{threshold_hit:,}",
+                                idx_batch=idx_batch,
+                                record_eval=traintime_eval,
+                            )
+                            ArtifactManager.save_rng_states(self._local_rank)
+                            dist.barrier()
 
                         self.timer_train.start()
                         pbar.refresh()
@@ -443,11 +470,11 @@ class TrainPipeline:
                 self.timer_train.stop()
                 time_train = self.timer_train.get_elapsed_time()
                 self.timer_train.reset()
-                self.rmean_time_train.update(time_train)
+                self.time_tracker.add("train", time_train)
 
                 PrintLog.epoch(
                     time_train,
-                    self.rmean_time_train.value(),
+                    self.time_tracker.mean("train"),
                     loss_mean.value(),
                     loss_raw_mean.value(),
                     self.n_samps_seen,
@@ -461,32 +488,28 @@ class TrainPipeline:
                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
-                    collect_eval_bundles=True,
+                    collect_eval_bundles=self.cfg.dev["viz_manifold"],
                 )
-                generate_manifold_viz(
-                    self.cfg.dataset,
-                    eval_bundles["id"],
-                    eval_bundles["ood"],
-                    ArtifactManager.dpath_model_final / "viz",
-                    self.cfg.manifold_viz,
-                )
-                self.rmean_time_eval.update(time_eval)
+                self.time_tracker.add("eval", time_eval)
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
+                    ArtifactManager.save_eval_data(
+                        ArtifactManager.dpath_eval_final,
+                        eval_metrics,
+                        self.n_samps_seen,
+                        self.n_samps_seen,
+                    )
+                if self.cfg.dev["viz_manifold"]:
+                    self._viz_eval(eval_bundles, "final")  # COLLECTIVE compute+cache (+ optional rank-0 render)
+                    if self.cfg.dev["traintime_evals"]:  # no mid-evals -> nothing to evolve across
+                        self._render_evolution_safe()  # before _checkpoint so its time lands in the runtime block
             self._checkpoint(
                 header="Final",
                 idx_batch=-1,
             )
             if self.data is not None:
                 self.modelw.save(ArtifactManager.dpath_model_final)
-                if self.eval_enabled:
-                    ArtifactManager.save_eval_data(
-                        ArtifactManager.dpath_model_final,
-                        eval_metrics,
-                        self.n_samps_seen,
-                        self.n_samps_seen,
-                    )
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()
 

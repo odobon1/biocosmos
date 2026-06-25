@@ -87,6 +87,12 @@ class TrainConfig:
         if self.chkpt_every <= 0:
             raise ValueError(f"chkpt_every must be greater than 0, got {self.chkpt_every}")
 
+        if self.sample_volume % self.chkpt_every != 0:
+            raise ValueError(
+                f"sample_volume ({self.sample_volume}) must be a multiple of chkpt_every "
+                f"({self.chkpt_every}) so the final checkpoint threshold lands on sample_volume"
+            )
+
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
@@ -341,11 +347,28 @@ def get_config_eval(verbose=True):
     return cfg
 
 
+# per-dataset manifold-viz scatter marker size (nymph/lepid have many points -> smaller markers)
+DATASET2MARKER_SIZE = {
+    "bryo": 7,
+    "cub": 7,
+    "lepid": 1,
+    "nymph": 2,
+}
+
+
 @dataclass
 class ManifoldVizConfig:
 
-    stoch_layer: bool
+    n_stoch_layers: int
+    eval_duration: int
+    bg_color: str | None
     tsne: dict = field(default_factory=dict)
+    color: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # n_stoch_layers sample draw-order shuffles per eval frame: =1 -> static PNG, >1 -> strobe GIF
+        if self.n_stoch_layers < 1:
+            raise ValueError(f"n_stoch_layers must be >= 1, got {self.n_stoch_layers}")
 
 
 def load_manifold_viz_config_dict() -> dict:

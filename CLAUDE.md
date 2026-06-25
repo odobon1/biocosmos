@@ -41,12 +41,12 @@ When your changes alter an interface (function signature, data structure, key na
 - Update all tests that exercise the changed interface to reflect the new contract.
 - Don't leave tests asserting old behavior that no longer applies — stale tests are another kind of orphan.
 - Don't add shims or workarounds to make old tests pass against a changed contract; update the tests directly.
-- This applies even when the task description doesn't mention tests. If you changed it, you own the test update.
+- This applies even when the task description doesn't mention tests. If your change made a test stale, fix it in the same change.
 
 When your changes affect anything documented in a README (config paths, CLI commands, file names, feature behavior, etc.):
 - Update every README.md that references the changed thing.
 - Don't leave documentation describing behavior that no longer applies — stale docs are another kind of orphan.
-- This applies even when the task description doesn't mention docs. If you changed it, you own the README update.
+- This applies even when the task description doesn't mention docs. If your change made a doc stale, fix it in the same change.
 
 The test: Every changed line should trace directly to the user's request.
 
@@ -60,6 +60,7 @@ This is a research codebase; old campaigns, caches, checkpoints, and snapshots a
 - No defensive `.get(key, default)` / `getattr` / `try/except` to tolerate configs or artifacts written before a field existed. Index/access directly and let it fail loudly if the schema is stale.
 - No version flags, no "if old format" branches, no shims to read legacy outputs.
 - If a change makes old artifacts unreadable, the answer is to regenerate them — say so, don't write compatibility code.
+- No need to warn me that a change breaks pre-change artifacts (e.g. resuming an old checkpoint will KeyError on a new state field). That's expected and fine — old artifacts get regenerated.
 
 ## 5. Goal-Driven Execution
 

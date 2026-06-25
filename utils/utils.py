@@ -8,6 +8,7 @@ import json
 from typing import List, Any, Dict, Optional
 import math
 import time
+from contextlib import contextmanager
 
 from utils.text import get_text_template as get_dataset_text_template
 from utils.ddp import rank0
@@ -148,6 +149,13 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
+DATASET_ALIAS2NAME = {
+    "bryo": "Bryozoa",
+    "cub": "CUB",
+    "lepid": "Lepidoptera",
+    "nymph": "Nymphalidae",
+}
+
 def load_split(dataset, split):
     fpath_split = paths["metadata"][dataset] / f"splits/{split}/split.pkl"
     split = load_pickle(fpath_split)
@@ -172,6 +180,72 @@ class RunningMean:
 
     def value(self):
         return self.mean
+
+
+class TimeTracker:
+    """
+    Per-trial timing registry. MEANS are running means over repeated, homogeneous events
+    (`train` per epoch; `eval`/`viz_compute`/`viz_render` per eval); SCALARS are one-off durations
+    measured once per trial (`evolution`, the evolution-GIF build). A bucket's total time is mean*n
+    for means and the value for scalars; the unattributed remainder of the trial wall-clock
+    (checkpoint I/O, sync, etc.) is reported separately as "other" (trial - attributed()).
+    """
+
+    MEANS = ("train", "eval", "viz_compute", "viz_render")
+    SCALARS = ("evolution",)
+
+    def __init__(self):
+        self._means = {name: RunningMean() for name in self.MEANS}
+        self._scalars = {name: None for name in self.SCALARS}
+
+    def add(self, name, value):
+        self._means[name].update(value)
+
+    def set(self, name, value):
+        self._scalars[name] = value
+
+    @contextmanager
+    def measure(self, name, scalar=False):
+        """Time the with-block into bucket `name` (running mean via add(), or one-off SCALAR via set()
+        when scalar=True). Records only on a clean exit -- if the block raises, the elapsed time is NOT
+        folded in (so a failed best-effort render doesn't pollute the mean) and the exception propagates."""
+        timer = Timer()
+        timer.start()
+        yield
+        timer.stop()
+        (self.set if scalar else self.add)(name, timer.get_elapsed_time())
+
+    def mean(self, name):
+        rm = self._means[name]
+        return rm.value() if rm.n > 0 else None
+
+    def n(self, name):
+        return self._means[name].n
+
+    def scalar(self, name):
+        return self._scalars[name]
+
+    def total(self, name):
+        if name in self._means:
+            rm = self._means[name]
+            return rm.mean * rm.n
+        value = self._scalars[name]
+        return value if value is not None else 0.0
+
+    def attributed(self):
+        return sum(self.total(name) for name in (*self.MEANS, *self.SCALARS))
+
+    def state_dict(self):
+        return {
+            "means": {name: (rm.n, rm.mean) for name, rm in self._means.items()},
+            "scalars": dict(self._scalars),
+        }
+
+    def load_state_dict(self, state):
+        for name, (n, mean) in state["means"].items():
+            self._means[name].n = n
+            self._means[name].mean = mean
+        self._scalars.update(state["scalars"])
 
 
 def model_grad_l2_norm(model: torch.nn.Module) -> float:

@@ -17,8 +17,9 @@ from utils.utils import (
     load_pickle,
     save_json,
     load_json,
-    RunningMean,
+    TimeTracker,
     Timer,
+    DATASET_ALIAS2NAME,
 )
 from utils.ddp import rank0
 
@@ -61,7 +62,6 @@ class TrialData:
             "eval": self.data_eval,
         }
 
-        self.rmean_time_eval = RunningMean()
         self.n_evals = 0
 
         self.eval_metrics = None  # most recent eval metrics
@@ -97,8 +97,6 @@ class TrialData:
                     dst[score_name].append(score_value)
 
         self.n_evals += 1
-        if self.time_eval is not None:
-            self.rmean_time_eval.update(self.time_eval)
 
         self.data_eval["n_samps_seen"].append(n_samps_seen)
 
@@ -114,8 +112,6 @@ class TrialData:
         obj.data_epoch = obj.data["epoch"]
         obj.data_eval = obj.data["eval"]
         obj.n_evals = trial_state["n_evals"]
-        obj.rmean_time_eval.n = trial_state["rmean_time_eval_n"]
-        obj.rmean_time_eval.mean = trial_state["rmean_time_eval_mean"]
         obj.timer_trial = Timer()
         obj.timer_trial.set_elapsed_time(trial_state["timer_trial_elapsed"])
         obj.timer_trial.start()
@@ -133,6 +129,7 @@ class ArtifactManager:
     dpath_trial = None
     fpath_metadata_trial = None
     dpath_model_final = None
+    dpath_eval_final = None
     dpath_model_checkpoint = None
     resuming = False
     dataset = None
@@ -155,6 +152,7 @@ class ArtifactManager:
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_model_final = ArtifactManager.dpath_trial / "chkpts/final"
+        ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals/final"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
         if ArtifactManager.dpath_trial.exists():
@@ -241,36 +239,42 @@ class ArtifactManager:
             save_json(metadata, fpath_meta)
 
     @staticmethod
-    def _get_trial_runtime_data(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean):
+    def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):
 
-        if data.rmean_time_eval.n > 0:
-            mean_time_eval = f"{data.rmean_time_eval.value():.2f}"
-        else:
-            mean_time_eval = None
+        def fmt(seconds):
+            return f"{seconds:.2f}" if seconds is not None else None
+
+        def mean_bucket(name):
+            return {"mean": fmt(time_tracker.mean(name)), "n": time_tracker.n(name)}
+
+        # train mean keyed on idx_epoch (epochs *started*) to match its per-epoch cadence; shows
+        # "0.00" between the first epoch's start and finish, as before.
         if idx_epoch > 0:
-            mean_time_train = f"{rmean_time_train.value():.2f}"
+            mean_time_train = fmt(time_tracker.mean("train") or 0.0)
         else:
             mean_time_train = None
 
-        time_elapsed_trial = f"{data.timer_trial.get_elapsed_time():.2f}"
+        time_trial = data.timer_trial.get_elapsed_time()
+        # remainder of the trial wall-clock not attributed to a tracked bucket -- checkpoint I/O,
+        # sync/barriers, and any in-progress epoch's train time not yet folded into the train mean
+        time_other = time_trial - time_tracker.attributed()
+
         runtime_data = {
-            "train": {
-                "mean": mean_time_train,
-                "n": idx_epoch,
-            },
-            "eval": {
-                "mean": mean_time_eval,
-                "n": data.rmean_time_eval.n,
-            },
-            "trial": time_elapsed_trial,
+            "train": {"mean": mean_time_train, "n": idx_epoch},
+            "eval": mean_bucket("eval"),
+            "viz_compute": mean_bucket("viz_compute"),
+            "viz_render": mean_bucket("viz_render"),
+            "evolution": fmt(time_tracker.scalar("evolution")),
+            "other": fmt(time_other),
+            "trial": fmt(time_trial),
         }
 
         return runtime_data
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, rmean_time_train: RunningMean, init_flag=False):
-        runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, rmean_time_train)
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, init_flag=False):
+        runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         if init_flag:
             metadata_trial = {
                 "dataset": ArtifactManager.dataset,
@@ -286,6 +290,7 @@ class ArtifactManager:
     @staticmethod
     @rank0
     def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
+        dpath_model.mkdir(parents=True, exist_ok=True)
         fpath_meta = dpath_model / "metrics.json"
         metadata = {
             **format_scores(eval_metrics),
@@ -319,7 +324,7 @@ class ArtifactManager:
         metric_dicts = []
         for dpath_trial in sorted(dpath_dataset.iterdir()):
             fpath_meta = dpath_trial / "trial_metadata.json"
-            fpath_metrics = dpath_trial / "chkpts/final/metrics.json"
+            fpath_metrics = dpath_trial / "evals/final/metrics.json"
             if not (fpath_meta.exists() and fpath_metrics.exists()):
                 continue
             if not load_json(fpath_meta).get("complete", False):
@@ -381,10 +386,7 @@ class ArtifactManager:
             "idx_epoch": train_pipe.idx_epoch,
             "idx_batch": idx_batch,
             "chkpt_thresh": train_pipe.chkpt_thresh,
-            "rmean_time_train_n": train_pipe.rmean_time_train.n,
-            "rmean_time_train_mean": train_pipe.rmean_time_train.mean,
-            "rmean_time_eval_n": train_pipe.rmean_time_eval.n,
-            "rmean_time_eval_mean": train_pipe.rmean_time_eval.mean,
+            "times": train_pipe.time_tracker.state_dict(),
         }
         if train_pipe.cfg.hw.mixed_prec:
             state["scaler"] = train_pipe.scaler.state_dict()
@@ -415,8 +417,6 @@ class ArtifactManager:
     def save_trial_state(data):
         state = {
             "n_evals": data.n_evals,
-            "rmean_time_eval_n": data.rmean_time_eval.n,
-            "rmean_time_eval_mean": data.rmean_time_eval.mean,
             "timer_trial_elapsed": data.timer_trial.get_elapsed_time(),
         }
         save_pickle(state, ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
@@ -460,6 +460,7 @@ def plot_metrics(
     data = data_tracker.data
     data_epoch = data["epoch"]
     data_eval = data["eval"]
+    title_suffix = f" -- {ArtifactManager.dpath_setting.name}, {DATASET_ALIAS2NAME[ArtifactManager.dataset]}"
 
     # eval panels (retrieval / n-shot / accuracy) are populated only when eval ran;
     # train panels (loss / grad norm / lr) plot whenever train data is present (e.g. train_pt=trainval).
@@ -497,7 +498,7 @@ def plot_metrics(
         retrieval_ylabel="mAP Scores",
         accuracy_ylabel="I2T Accuracy",
         nshot_accuracy_ylabel="n-shot Accuracy (ID)",
-        plot_title="Train Metrics",
+        plot_title=f"Train Metrics{title_suffix}",
         output_filename="closed_standard.png",
     )
 
@@ -521,7 +522,7 @@ def plot_metrics(
         retrieval_ylabel="Macro mAP Scores",
         accuracy_ylabel="I2T Per-Class Accuracy",
         nshot_accuracy_ylabel="n-shot Per-Class\nAccuracy (ID)",
-        plot_title="Train Metrics (Macro)",
+        plot_title=f"Train Metrics (Macro){title_suffix}",
         output_filename="closed_macro.png",
     )
 
@@ -545,7 +546,7 @@ def plot_metrics(
         retrieval_ylabel="Full-Set mAP Scores",
         accuracy_ylabel="Full-Set I2T Accuracy",
         nshot_accuracy_ylabel="Full-Set n-shot Accuracy (ID)",
-        plot_title="Train Metrics (Full-Set)",
+        plot_title=f"Train Metrics (Full-Set){title_suffix}",
         output_filename="full_standard.png",
     )
 
@@ -569,7 +570,7 @@ def plot_metrics(
         retrieval_ylabel="Full-Set Macro mAP Scores",
         accuracy_ylabel="Full-Set I2T Per-Class Accuracy",
         nshot_accuracy_ylabel="Full-Set n-shot Per-Class\nAccuracy (ID)",
-        plot_title="Train Metrics (Macro Full-Set)",
+        plot_title=f"Train Metrics (Macro Full-Set){title_suffix}",
         output_filename="full_macro.png",
     )
 
@@ -707,7 +708,7 @@ def plot_composite_metrics(
     ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
     if len(data_epoch.get("grad_norm_model", [])) == len(x_train):
         ax5.plot(x_train, data_epoch["grad_norm_model"], color="green")
-    ax5.set_ylabel("Model Grad Norm", fontsize=fontsize_axes, fontweight="bold")
+    ax5.set_ylabel("Grad Norm", fontsize=fontsize_axes, fontweight="bold")
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")

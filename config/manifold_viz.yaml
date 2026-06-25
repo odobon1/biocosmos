@@ -1,5 +1,28 @@
-stoch_layer: true  # {true, false}; stochastic layering -- samples plotted in random order instead of in class groups, applies to both t-SNE and PCA
+n_stoch_layers: 7  # sample draw-order shuffles per eval frame (>= 1). =1 -> static PNG; >1 -> strobe GIF
+eval_duration: 1500  # ms each eval is shown in any GIF; per-frame ms = eval_duration / n_stoch_layers
+bg_color: "#F5F5DC"  # background color in hex format; null -> white; #F2E8CF (soft warm beige); #F5F5DC (CSS beige); #EAE0C8 (more tan)
 
 tsne:
-  perplexity: 30
+  # perplexity: [7, 15, 30, 60, 120]  # list of t-SNE perplexities; a t-SNE is generated at each. >1 -> tsne/ and 4panel/ dirs are suffixed by perplexity (tsne_15, 4panel_15, ...); a single value keeps the unsuffixed tsne/ and 4panel/
+  perplexity: [30]
   n_iter: 1000
+  ema_tau: 0.5  # (0.0, 1.0]; t-SNE orientation smoothing: each eval is aligned (orthogonal Procrustes, rotation + reflection) to a running reference of per-class CoMs, into which this fraction of the eval's oriented CoMs is then mixed (1.0 = align to the previous eval only; smaller damps drift across evals)
+
+color:
+  seed: 42  # rotates the whole palette (phase offset); changes the colors, keeps the count-ordering
+  # Colors are assigned to classes in order of sample count (golden-ratio hue + low-discrepancy
+  # vibrancy), so similar-count classes get maximally different colors and near-identical colors
+  # only land on classes with very different counts. Each band fixes a "vibrancy" via saturation
+  # (0-1, color intensity) and lightness (0-1, darkness->brightness); `weight` is each band's
+  # relative share of classes (need not sum to 1). Add/remove/retune bands freely; more bands =
+  # more variety. Tip: high saturation + high lightness = neon; high saturation + mid lightness =
+  # bright; low saturation + high lightness = pastel; high saturation + low lightness = deep;
+  # low saturation + mid lightness = muted.
+  bands:
+    - {weight: 2.0, saturation: 1.00, lightness: 0.50}
+    - {weight: 0.7, saturation: 1.00, lightness: 0.30}
+    - {weight: 0.7, saturation: 1.00, lightness: 0.70}
+    - {weight: 0.5, saturation: 0.55, lightness: 0.50}
+    - {weight: 0.2, saturation: 0.45, lightness: 0.60}
+    - {weight: 0.3, saturation: 0.45, lightness: 0.40}
+    - {weight: 0.5, saturation: 0.50, lightness: 0.80}

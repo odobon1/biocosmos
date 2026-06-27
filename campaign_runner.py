@@ -20,7 +20,7 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN = "dev2"
+CAMPAIGN = "dev4_error-logs_n-trials-2"
 
 SEED0 = 42
 NUM_SEEDS = 3
@@ -28,21 +28,31 @@ NUM_SEEDS = 3
 # DATASETS = ("bryo", "cub", "lepid", "nymph")
 # DATASETS = ("nymph", "lepid", "cub", "bryo")
 # DATASETS = ("cub", "bryo", "lepid", "nymph")
-DATASETS = ("cub", "bryo")
+DATASETS = ("cub", "nymph")
 # DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
-    # {"batch_size": 32_000, "name": "way-too-big-bs"},
+    {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
     {"loss.targ": "aligned", "name": "iw"},
-    # {"loss.targ": "multipos", "name": "sw"},
+    {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
-def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception) -> None:
-    """Log trial error to both stdout and campaign error log file."""
-    dpath_campaign.mkdir(parents=True, exist_ok=True)
-    fpath_errors = dpath_campaign / "errors.log"
+def _relevant_stderr(stderr: str) -> str:
+    """Drop pre-crash noise (eval progress bars, warnings) by keeping the
+    captured stderr from the first Python traceback onward. tqdm and warnings
+    are emitted while the trial runs, so the first 'Traceback (most recent call
+    last):' marks where the relevant error content begins. Falls back to the
+    full text when no traceback is present (e.g. a bare SIGKILL)."""
+    marker = "Traceback (most recent call last):"
+    idx = stderr.find(marker)
+    return stderr if idx == -1 else stderr[idx:]
+
+def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception) -> None:
+    """Log trial error to stdout and to error.log in the trial-seed's directory."""
+    dpath_trial.mkdir(parents=True, exist_ok=True)
+    fpath_error = dpath_trial / "error.log"
     # Format error message with context
     error_msg = (
         f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
@@ -52,19 +62,17 @@ def _log_trial_error(dpath_campaign: Path, idx_trial: int, n_trials: int, seed: 
     if isinstance(exc, subprocess.CalledProcessError):
         stderr = getattr(exc, "stderr", None)
         if stderr:
-            stderr_lines = stderr.splitlines()
-            stderr_body = "\n".join(stderr_lines)
+            stderr_body = _relevant_stderr(stderr)
     # Print to stdout
     print(error_msg, flush=True)
     # Write to error log file
-    with open(fpath_errors, "a") as f:
+    with open(fpath_error, "w") as f:
         f.write(error_msg + "\n")
         if stderr_body is not None:
             f.write("--- stderr ---\n")
             f.write(stderr_body + "\n")
         else:
             f.write(traceback.format_exc())
-        f.write("\n" + "#"*80 + "\n")
 
 def _dpath_campaign() -> Path:
     return paths["artifacts"] / CAMPAIGN
@@ -303,7 +311,7 @@ def run_campaign() -> None:
                     return
                 except Exception as e:
                     _log_trial_error(
-                        dpath_campaign=_dpath_campaign(),
+                        dpath_trial=dpath_trial,
                         idx_trial=idx_trial,
                         n_trials=n_trials,
                         seed=seed,

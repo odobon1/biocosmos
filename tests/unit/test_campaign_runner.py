@@ -259,10 +259,11 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     assert scheduled[0]["opt"]["beta2"] == 0.88
 
 
-def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> None:
+def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "CAMPAIGN", "cmp_d")
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
+    dpath_trial = cr._dpath_campaign() / "iw" / "cub" / "42"
     err = subprocess.CalledProcessError(
         returncode=1,
         cmd=["torchrun", "..."],
@@ -270,7 +271,7 @@ def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> No
     )
 
     cr._log_trial_error(
-        dpath_campaign=cr._dpath_campaign(),
+        dpath_trial=dpath_trial,
         idx_trial=3,
         n_trials=10,
         seed=42,
@@ -279,12 +280,42 @@ def test_log_trial_error_includes_subprocess_stderr(tmp_path, monkeypatch) -> No
         exc=err,
     )
 
-    log_fpath = Path(tmp_path) / "cmp_d" / "errors.log"
+    log_fpath = dpath_trial / "error.log"
     assert log_fpath.exists()
 
-    with open(log_fpath) as f:
-        text = f.read()
+    text = log_fpath.read_text()
 
     assert "TRIAL FAILED" in text
     assert "stderr" in text
     assert "line3" in text
+
+
+def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_d")
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    dpath_trial = cr._dpath_campaign() / "iw" / "cub" / "42"
+    stderr = (
+        "W0626 21:53:01 site-packages/torch/distributed/run.py:766] warning spam\n"
+        "Eval (val):  50%|#####     | 5/10 [00:01<00:01,  4.5it/s]\n"
+        "Traceback (most recent call last):\n"
+        '  File "campaign_trial_runner.py", line 23, in main\n'
+        "ValueError: batch_size 32000 exceeds training set size 4096\n"
+    )
+    err = subprocess.CalledProcessError(returncode=1, cmd=["torchrun"], stderr=stderr)
+
+    cr._log_trial_error(
+        dpath_trial=dpath_trial,
+        idx_trial=1,
+        n_trials=1,
+        seed=42,
+        dataset="cub",
+        setting="iw",
+        exc=err,
+    )
+
+    text = (dpath_trial / "error.log").read_text()
+    assert "Traceback (most recent call last):" in text
+    assert "ValueError: batch_size 32000 exceeds training set size 4096" in text
+    assert "warning spam" not in text
+    assert "it/s" not in text

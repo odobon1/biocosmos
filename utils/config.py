@@ -62,6 +62,7 @@ class TrainConfig:
     standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
     manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
+    idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep (0 for standalone runs)
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
@@ -92,6 +93,10 @@ class TrainConfig:
                 f"sample_volume ({self.sample_volume}) must be a multiple of chkpt_every "
                 f"({self.chkpt_every}) so the final checkpoint threshold lands on sample_volume"
             )
+
+        n_trials_viz = self.dev["manifold_viz"]["n_trials"]
+        if n_trials_viz < 0:
+            raise ValueError(f"dev.manifold_viz.n_trials must be >= 0, got {n_trials_viz}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")

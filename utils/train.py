@@ -211,6 +211,7 @@ class ArtifactManager:
             del metadata["campaign"]
             del metadata["setting"]
             del metadata["seed"]
+            del metadata["idx_seed"]
             del metadata["dataset"]
             del metadata["split"]
             del metadata["standalone"]
@@ -301,6 +302,8 @@ class ArtifactManager:
     @staticmethod
     def _aggregate_metric_stats(values, percent=True):
         first = values[0]
+        if first is None:  # leaf is None for every trial (e.g. loss_raw["ood"] is never computed)
+            return None
         if isinstance(first, dict):
             return {
                 k: ArtifactManager._aggregate_metric_stats(
@@ -323,11 +326,10 @@ class ArtifactManager:
         dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
         metric_dicts = []
         for dpath_trial in sorted(dpath_dataset.iterdir()):
-            fpath_meta = dpath_trial / "trial_metadata.json"
+            # a written final-eval metrics file is the signal a trial finished; the `complete` flag is
+            # marked later (campaign_runner, after a clean exit) so it can't gate this aggregation
             fpath_metrics = dpath_trial / "evals/final/metrics.json"
-            if not (fpath_meta.exists() and fpath_metrics.exists()):
-                continue
-            if not load_json(fpath_meta).get("complete", False):
+            if not fpath_metrics.exists():
                 continue
             metrics = load_json(fpath_metrics)
             metrics.pop("n_samps_seen", None)

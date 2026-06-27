@@ -17,7 +17,7 @@ def make_train_config_dummy(**overrides):
         "chkpt_every": 100,
         "batch_size": 8,
         "dv_batching": False,
-        "dev": {"logging": False},
+        "dev": {"logging": False, "manifold_viz": {"n_trials": 1}},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
         "loss": {"type": "bce", "sim": "cos", "targ": "aligned", "logits": {"scale_init": None, "bias_init": None}},
@@ -55,6 +55,13 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
         TrainConfig(**make_train_config_dummy(loss2={"type": "bce", "sim": "cos", "targ": "aligned", "mix": 1.5}))
+
+
+def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="dev.manifold_viz.n_trials must be >= 0"):
+        TrainConfig(**make_train_config_dummy(dev={"logging": False, "manifold_viz": {"n_trials": -1}}))
 
 
 def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) -> None:

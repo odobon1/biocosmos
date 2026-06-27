@@ -20,19 +20,21 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN = "dev5"
+CAMPAIGN = "dev2"
 
 SEED0 = 42
-NUM_SEEDS = 1
+NUM_SEEDS = 3
 
 # DATASETS = ("bryo", "cub", "lepid", "nymph")
 # DATASETS = ("nymph", "lepid", "cub", "bryo")
-DATASETS = ("nymph",)
+# DATASETS = ("cub", "bryo", "lepid", "nymph")
+DATASETS = ("cub", "bryo")
+# DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
     # {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    # {"loss.targ": "aligned", "name": "iw"},
+    {"loss.targ": "aligned", "name": "iw"},
     # {"loss.targ": "multipos", "name": "sw"},
 ]
 
@@ -210,6 +212,14 @@ def _check_trial_completion(dpath_trial: Path) -> bool:
         complete = metadata_trial["complete"]
     return complete
 
+def _mark_trial_complete(dpath_trial: Path) -> None:
+    # marked only after a clean subprocess exit + cleanup, so a mid-finalization crash never leaves a
+    # trial falsely flagged complete (which would make a re-run skip it instead of resuming)
+    fpath_metadata_trial = dpath_trial / "trial_metadata.json"
+    metadata_trial = load_json(fpath_metadata_trial)
+    metadata_trial["complete"] = True
+    save_json(metadata_trial, fpath_metadata_trial)
+
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
@@ -255,7 +265,7 @@ def run_campaign() -> None:
     print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
 
     idx_trial = 0
-    for seed in seeds:
+    for idx_seed, seed in enumerate(seeds):
         for dataset in DATASETS:
             for setting, setting_payload in settings:
                 idx_trial += 1
@@ -271,6 +281,7 @@ def run_campaign() -> None:
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
                 cfg_dict["standalone"] = False
+                cfg_dict["idx_seed"] = idx_seed
                 cfg_dict["manifold_viz"] = cfg_manifold_viz
                 cfg_dict["_setting_overrides"] = setting_payload
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
@@ -283,6 +294,7 @@ def run_campaign() -> None:
                 try:
                     _run_trial_subprocess(cfg_dict)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
+                    _mark_trial_complete(dpath_trial)
                 except KeyboardInterrupt:
                     print(
                         f"\n[{idx_trial}/{n_trials}] INTERRUPTED — terminated trial process group; exiting campaign.",

@@ -5,9 +5,9 @@ dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 100_000
+sample_volume: 2_000_000
 chkpt_every: 25_000
-batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
+batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # architecture
@@ -96,14 +96,14 @@ opt:  # optimization
 
 dev:
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
-  viz_manifold: true  # {true, false}; (true) compute and save PCA + t-SNE projections to disk; (false) overrides manifold_viz.plot_Xpanel flags to false
   manifold_viz:
+    n_trials: 1  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false
     plot_2panel: true  # {true, false}; (true) plot 2-panel PCA's + t-SNE's
     plot_4panel: true  # {true, false}; (true) plot 4-panel PCA's + t-SNE's
     plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
     # note: even when all 3 flags are false, projections will still be computed and saved to disk
   logging: true
-  debug_mode: false  # {true, false}
+  debug_mode: true  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000

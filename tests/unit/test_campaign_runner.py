@@ -129,6 +129,79 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     assert data["loss.targ"] == "aligned"
 
 
+def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_complete")
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "NUM_SEEDS", 1)
+    monkeypatch.setattr(cr, "DATASETS", ("cub",))
+    monkeypatch.setattr(cr, "BASELINE_OVERRIDES", [{"loss.targ": "aligned", "name": "iw"}])
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"n_stoch_layers": 1})
+
+    dpath_trial = Path(tmp_path) / "cmp_complete" / "iw" / "cub" / "42"
+
+    # a real trial writes its metadata (complete still False) + leaves a chkpts/in_progress dir behind;
+    # the campaign runner is what cleans up and flips complete=True on a clean exit
+    def _fake_run_trial_subprocess(cfg_dict: dict):
+        (dpath_trial / "chkpts" / "in_progress").mkdir(parents=True)
+        with open(dpath_trial / "trial_metadata.json", "w") as f:
+            json.dump({"dataset": "cub", "complete": False}, f)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign()
+
+    with open(dpath_trial / "trial_metadata.json") as f:
+        assert json.load(f)["complete"] is True
+    assert not (dpath_trial / "chkpts" / "in_progress").exists()
+
+
+def test_run_campaign_leaves_trial_incomplete_when_subprocess_fails(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "CAMPAIGN", "cmp_fail")
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "NUM_SEEDS", 1)
+    monkeypatch.setattr(cr, "DATASETS", ("cub",))
+    monkeypatch.setattr(cr, "BASELINE_OVERRIDES", [{"loss.targ": "aligned", "name": "iw"}])
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda: {"n_stoch_layers": 1})
+
+    dpath_trial = Path(tmp_path) / "cmp_fail" / "iw" / "cub" / "42"
+
+    # trial reaches final eval (writes metadata) then the subprocess crashes during finalization
+    def _fake_run_trial_subprocess(cfg_dict: dict):
+        dpath_trial.mkdir(parents=True)
+        with open(dpath_trial / "trial_metadata.json", "w") as f:
+            json.dump({"dataset": "cub", "complete": False}, f)
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign()
+
+    with open(dpath_trial / "trial_metadata.json") as f:
+        assert json.load(f)["complete"] is False
+
+
 def test_expand_settings_raises_on_duplicate_names() -> None:
     with pytest.raises(ValueError, match="Duplicate BASELINE_OVERRIDES name"):
         cr._expand_settings(

@@ -263,8 +263,6 @@ class ArtifactManager:
             "train": {"mean": mean_time_train, "n": idx_epoch},
             "eval": mean_bucket("eval"),
             "viz_compute": mean_bucket("viz_compute"),
-            "viz_render": mean_bucket("viz_render"),
-            "evolution": fmt(time_tracker.scalar("evolution")),
             "other": fmt(time_other),
             "trial": fmt(time_trial),
         }

@@ -4,7 +4,6 @@ torchrun --standalone --nproc-per-node=auto -m train
 
 import sys
 import shutil
-import traceback
 import random
 import numpy as np
 import torch
@@ -32,7 +31,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.eval import EvaluationPipeline
-from utils.manifold_viz import compute_projections, render_eval, render_evolution, VizContext
+from utils.manifold_viz import compute_projections
 from utils.config import get_config_train
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
@@ -108,7 +107,6 @@ class TrainPipeline:
         self.idx_epoch = 0
         self.timer_train = Timer()
         self.time_tracker = TimeTracker()
-        self._viz_context = VizContext(self.cfg.setting, self.cfg.dataset, self.cfg.split, self.cfg.eval_type)
 
         if dist.get_rank() == 0:
             if resume_state is not None and trial_state is not None:
@@ -208,30 +206,10 @@ class TrainPipeline:
 
     def _viz_eval(self, eval_bundles, eval_name):
         """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
-        evals/<eval_name>/, then render its per-eval plots from the cache (rank 0). The collective compute
-        and the rank-0 render are kept separate so the sharded t-SNE stays a clean all-ranks op."""
+        evals/<eval_name>/. Rendering from the cache is done off-process post-trial by the campaign render
+        worker (tools/manifold_viz.py), so no rank blocks in a collective while rank 0 renders."""
         dpath_eval = ArtifactManager.dpath_trial / "evals" / eval_name
         self._compute_projections_timed(eval_bundles, dpath_eval)
-        self._render_eval_safe(eval_name)
-
-    @rank0
-    def _render_eval_safe(self, eval_name):
-        # best-effort per-eval render: viz must never crash a training run; elapsed folds into viz_render
-        try:
-            with self.time_tracker.measure("viz_render"):
-                render_eval(ArtifactManager.dpath_trial / "evals", eval_name, self.cfg.manifold_viz, self._viz_context, self.cfg.dev["manifold_viz"])
-        except Exception:
-            traceback.print_exc()
-
-    @rank0
-    def _render_evolution_safe(self):
-        # best-effort cross-eval evolution GIFs from the cached projections (once per trial)
-        try:
-            with self.time_tracker.measure("evolution", scalar=True):
-                render_evolution(ArtifactManager.dpath_trial / "evals", ArtifactManager.dpath_trial / "viz",
-                                 self.cfg.manifold_viz, self._viz_context, self.cfg.dev["manifold_viz"])
-        except Exception:
-            traceback.print_exc()
 
     def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
         # NOT @rank0: _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank
@@ -327,8 +305,6 @@ class TrainPipeline:
                     if self._viz_manifold:
                         self._compute_projections_timed(eval_bundles, ArtifactManager.base_eval_cache_dpath())
                 self._copy_base_eval()  # base -> evals/_base (uniform member of the eval sequence)
-                if self._viz_manifold:
-                    self._render_eval_safe("_base")
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
                 if self.data is not None:
@@ -509,9 +485,7 @@ class TrainPipeline:
                         self.n_samps_seen,
                     )
                 if self._viz_manifold:
-                    self._viz_eval(eval_bundles, "final")  # COLLECTIVE compute+cache (+ optional rank-0 render)
-                    if self.cfg.dev["traintime_evals"]:  # no mid-evals -> nothing to evolve across
-                        self._render_evolution_safe()  # before _checkpoint so its time lands in the runtime block
+                    self._viz_eval(eval_bundles, "final")  # COLLECTIVE compute+cache; rendered post-trial off-process
             self._checkpoint(
                 header="Final",
                 idx_batch=-1,

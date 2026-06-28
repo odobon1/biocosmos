@@ -184,36 +184,29 @@ class RunningMean:
 
 class TimeTracker:
     """
-    Per-trial timing registry. MEANS are running means over repeated, homogeneous events
-    (`train` per epoch; `eval`/`viz_compute`/`viz_render` per eval); SCALARS are one-off durations
-    measured once per trial (`evolution`, the evolution-GIF build). A bucket's total time is mean*n
-    for means and the value for scalars; the unattributed remainder of the trial wall-clock
-    (checkpoint I/O, sync, etc.) is reported separately as "other" (trial - attributed()).
+    Per-trial timing registry of running MEANS over repeated, homogeneous events (`train` per epoch;
+    `eval`/`viz_compute` per eval). A bucket's total time is mean*n; the unattributed remainder of the
+    trial wall-clock (checkpoint I/O, sync, etc.) is reported separately as "other" (trial - attributed()).
     """
 
-    MEANS = ("train", "eval", "viz_compute", "viz_render")
-    SCALARS = ("evolution",)
+    MEANS = ("train", "eval", "viz_compute")
 
     def __init__(self):
         self._means = {name: RunningMean() for name in self.MEANS}
-        self._scalars = {name: None for name in self.SCALARS}
 
     def add(self, name, value):
         self._means[name].update(value)
 
-    def set(self, name, value):
-        self._scalars[name] = value
-
     @contextmanager
-    def measure(self, name, scalar=False):
-        """Time the with-block into bucket `name` (running mean via add(), or one-off SCALAR via set()
-        when scalar=True). Records only on a clean exit -- if the block raises, the elapsed time is NOT
-        folded in (so a failed best-effort render doesn't pollute the mean) and the exception propagates."""
+    def measure(self, name):
+        """Time the with-block into bucket `name` (running mean via add()). Records only on a clean exit --
+        if the block raises, the elapsed time is NOT folded in (so a failed eval doesn't pollute the mean)
+        and the exception propagates."""
         timer = Timer()
         timer.start()
         yield
         timer.stop()
-        (self.set if scalar else self.add)(name, timer.get_elapsed_time())
+        self.add(name, timer.get_elapsed_time())
 
     def mean(self, name):
         rm = self._means[name]
@@ -222,30 +215,20 @@ class TimeTracker:
     def n(self, name):
         return self._means[name].n
 
-    def scalar(self, name):
-        return self._scalars[name]
-
     def total(self, name):
-        if name in self._means:
-            rm = self._means[name]
-            return rm.mean * rm.n
-        value = self._scalars[name]
-        return value if value is not None else 0.0
+        rm = self._means[name]
+        return rm.mean * rm.n
 
     def attributed(self):
-        return sum(self.total(name) for name in (*self.MEANS, *self.SCALARS))
+        return sum(self.total(name) for name in self.MEANS)
 
     def state_dict(self):
-        return {
-            "means": {name: (rm.n, rm.mean) for name, rm in self._means.items()},
-            "scalars": dict(self._scalars),
-        }
+        return {"means": {name: (rm.n, rm.mean) for name, rm in self._means.items()}}
 
     def load_state_dict(self, state):
         for name, (n, mean) in state["means"].items():
             self._means[name].n = n
             self._means[name].mean = mean
-        self._scalars.update(state["scalars"])
 
 
 def model_grad_l2_norm(model: torch.nn.Module) -> float:

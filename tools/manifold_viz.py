@@ -10,8 +10,12 @@ python -m tools.manifold_viz <campaign/setting/dataset/seed> evo_only
 
 <campaign/setting/dataset/seed> e.g. dev/hp/lepid/43 (resolved under artifacts/)
 evo_only    re-render only the cross-eval evolution GIFs (per-eval plots left as-is)
+no_evo      render only the per-eval plots, skip the cross-eval evolution GIFs
+snapshot    use the campaign's frozen config snapshot (cfg_manifold_viz.json + cfg_baseline.json under
+            artifacts/<campaign>/) instead of the live config/*.yaml -- used by the campaign render worker
 """
 
+from pathlib import Path
 import sys
 
 from utils.config import load_manifold_viz_config_dict, load_train_config_dict
@@ -30,25 +34,40 @@ def _viz_context(dpath_trial):
         eval_type="val",
     )
 
-def render_trial(dpath_trial, evo_only=False):
+def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=None, plot_flags=None):
     dpath_evals = dpath_trial / "evals"
-    cfg_manifold_viz = load_manifold_viz_config_dict()
-    plot_flags = load_train_config_dict()["dev"]["manifold_viz"]
+    if cfg_manifold_viz is None:
+        cfg_manifold_viz = load_manifold_viz_config_dict()
+    if plot_flags is None:
+        plot_flags = load_train_config_dict()["dev"]["manifold_viz"]
     viz_context = _viz_context(dpath_trial)
 
     if not evo_only:
         for d in _ordered_eval_dirs(dpath_evals):
             render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, plot_flags)
-    render_evolution(dpath_evals, dpath_trial / "viz", cfg_manifold_viz, viz_context, plot_flags)
+    if not skip_evo:
+        render_evolution(dpath_evals, dpath_trial / "viz", cfg_manifold_viz, viz_context, plot_flags)
 
 def main():
     args = sys.argv[1:]
     evo_only = "evo_only" in args
     if evo_only:
         args.remove("evo_only")
+    skip_evo = "no_evo" in args
+    if skip_evo:
+        args.remove("no_evo")
+    snapshot = "snapshot" in args
+    if snapshot:
+        args.remove("snapshot")
     if len(args) != 1:
-        sys.exit("usage: python -m tools.manifold_viz <campaign/setting/dataset/seed> [evo_only]")
-    render_trial(paths["artifacts"] / args[0], evo_only)
+        sys.exit("usage: python -m tools.manifold_viz <campaign/setting/dataset/seed> [evo_only|no_evo] [snapshot]")
+    trial_rel = args[0]
+    cfg_manifold_viz = plot_flags = None
+    if snapshot:
+        dpath_campaign = paths["artifacts"] / Path(trial_rel).parts[0]
+        cfg_manifold_viz = load_json(dpath_campaign / "cfg_manifold_viz.json")
+        plot_flags = load_json(dpath_campaign / "cfg_baseline.json")["dev"]["manifold_viz"]
+    render_trial(paths["artifacts"] / trial_rel, evo_only, skip_evo, cfg_manifold_viz, plot_flags)
 
 
 if __name__ == "__main__":

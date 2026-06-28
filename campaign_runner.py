@@ -6,6 +6,7 @@ from pathlib import Path
 from copy import deepcopy
 import ctypes
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -20,22 +21,22 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN = "dev4_error-logs_n-trials-2"
+CAMPAIGN = "dev2"
 
 SEED0 = 42
 NUM_SEEDS = 3
 
 # DATASETS = ("bryo", "cub", "lepid", "nymph")
-# DATASETS = ("nymph", "lepid", "cub", "bryo")
+DATASETS = ("nymph", "lepid", "cub", "bryo")
 # DATASETS = ("cub", "bryo", "lepid", "nymph")
-DATASETS = ("cub", "nymph")
+# DATASETS = ("cub", "nymph")
 # DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
-    {"batch_size": 32_000, "name": "way-too-big-bs"},
+    # {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    {"loss.targ": "aligned", "name": "iw"},
-    {"loss.targ": "multipos", "name": "sw"},
+    # {"loss.targ": "aligned", "name": "iw"},
+    # {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -136,14 +137,22 @@ def _enable_child_subreaper() -> None:
     except OSError:
         pass
 
-def _reap_subtree(grace: float = 10.0) -> None:
+def _reap_subtree(grace: float = 10.0, spare_root: int | None = None) -> None:
     """SIGKILL and reap every descendant process (torchrun, ranks, DataLoader
     workers). Relies on _enable_child_subreaper so orphaned workers reparent
-    here and show up as descendants."""
+    here and show up as descendants. A background render worker (spare_root and
+    its subtree) is left alone so it can keep rendering through the next trial."""
     parent = psutil.Process()
+    spare: set[int] = set()
+    if spare_root is not None:
+        try:
+            rp = psutil.Process(spare_root)
+            spare = {rp.pid, *(c.pid for c in rp.children(recursive=True))}
+        except psutil.NoSuchProcess:
+            pass
     deadline = time.time() + grace
     while True:
-        procs = parent.children(recursive=True)
+        procs = [p for p in parent.children(recursive=True) if p.pid not in spare]
         if not procs:
             return
         for p in procs:
@@ -155,7 +164,7 @@ def _reap_subtree(grace: float = 10.0) -> None:
         if time.time() >= deadline:
             return
 
-def _run_trial_subprocess(cfg_dict: dict) -> None:
+def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
     cmd = [
         "torchrun",
         "--standalone",
@@ -200,7 +209,7 @@ def _run_trial_subprocess(cfg_dict: dict) -> None:
         # memory budget of later trials) and Ctrl-C / SIGTERM of the campaign
         # (the detached trial would otherwise keep running). A process-group
         # kill is insufficient: elastic puts each rank in its own session.
-        _reap_subtree()
+        _reap_subtree(spare_root=spare_render_pid)
 
     # Bounded: don't re-hang if a worker is wedged in uninterruptible sleep and
     # still holding the pipe; the daemon thread is torn down at interpreter exit.
@@ -227,6 +236,17 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
     metadata_trial = load_json(fpath_metadata_trial)
     metadata_trial["complete"] = True
     save_json(metadata_trial, fpath_metadata_trial)
+
+def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
+    """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
+    trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
+    campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs
+    the training subprocess needs."""
+    cmd = [sys.executable, "-m", "tools.manifold_viz", trial_rel, "snapshot"]
+    if not render_evo:
+        cmd.append("no_evo")
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    return subprocess.Popen(cmd, env=env, start_new_session=True)
 
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
@@ -272,6 +292,9 @@ def run_campaign() -> None:
     n_trials = len(seeds) * len(DATASETS) * len(settings)
     print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
 
+    render_proc: subprocess.Popen | None = None
+    render_evo = cfg_baseline["dev"]["traintime_evals"]  # evolution GIFs need mid-evals to evolve across
+
     idx_trial = 0
     for idx_seed, seed in enumerate(seeds):
         for dataset in DATASETS:
@@ -299,8 +322,9 @@ def run_campaign() -> None:
                 else:
                     print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting}")
 
+                spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
                 try:
-                    _run_trial_subprocess(cfg_dict)
+                    _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
                     _mark_trial_complete(dpath_trial)
                 except KeyboardInterrupt:
@@ -308,6 +332,8 @@ def run_campaign() -> None:
                         f"\n[{idx_trial}/{n_trials}] INTERRUPTED — terminated trial process group; exiting campaign.",
                         flush=True,
                     )
+                    if render_proc is not None and render_proc.poll() is None:
+                        render_proc.terminate()
                     return
                 except Exception as e:
                     _log_trial_error(
@@ -319,6 +345,21 @@ def run_campaign() -> None:
                         setting=setting,
                         exc=e,
                     )
+                    continue
+
+                # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
+                # training. At most one render in flight: wait on the prior one first (near-instant in
+                # practice, since a trial far outlasts a render).
+                if render_proc is not None and render_proc.poll() is None:
+                    render_proc.wait()
+                render_proc = _spawn_render(f"{CAMPAIGN}/{setting}/{dataset}/{seed}", render_evo)
+
+    # let the last trial's render finish before the campaign exits
+    if render_proc is not None:
+        try:
+            render_proc.wait()
+        except KeyboardInterrupt:
+            render_proc.terminate()
 
 
 if __name__ == "__main__":

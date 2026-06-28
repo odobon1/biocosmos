@@ -14,8 +14,8 @@ DATASETS = ["bryo", "cub", "lepid", "nymph"]  # all tests run on each dataset
 def split_data(request):
     dataset = request.param
     split = load_pickle(paths["metadata"][dataset] / "splits/D10/split.pkl")
-    di = split.data_indexes
     enc2cid = split.enc2cid
+    pts = ["train", "val_id", "val_ood", "test_id", "test_ood", "trainval", "whole"]
     return {
         "nshot_val": {
             name: set(split.nshot["buckets"]["train/val"][name])
@@ -26,20 +26,12 @@ def split_data(request):
             for name in split.nshot["names"]
         },
         "rfpaths": {
-            "train":    {d["rfpath"] for d in di["train"]},
-            "trainval": {d["rfpath"] for d in di["trainval"]},
-            "val_id":   {d["rfpath"] for d in di["val"]["id"]},
-            "val_ood":  {d["rfpath"] for d in di["val"]["ood"]},
-            "test_id":  {d["rfpath"] for d in di["test"]["id"]},
-            "test_ood": {d["rfpath"] for d in di["test"]["ood"]},
+            pt: {d["rfpath"] for d in split.get_data(pt)}
+            for pt in pts
         },
         "cids": {
-            "train":    {enc2cid[d["class_enc"]] for d in di["train"]},
-            "trainval": {enc2cid[d["class_enc"]] for d in di["trainval"]},
-            "val_id":   {enc2cid[d["class_enc"]] for d in di["val"]["id"]},
-            "val_ood":  {enc2cid[d["class_enc"]] for d in di["val"]["ood"]},
-            "test_id":  {enc2cid[d["class_enc"]] for d in di["test"]["id"]},
-            "test_ood": {enc2cid[d["class_enc"]] for d in di["test"]["ood"]},
+            pt: {enc2cid[d["class_enc"]] for d in split.get_data(pt)}
+            for pt in pts
         },
     }
 
@@ -50,6 +42,14 @@ def split_data(request):
 def test_trainval_covers_train_and_val_partitions(split_data):
     r = split_data["rfpaths"]
     assert r["trainval"] == r["train"] | r["val_id"] | r["val_ood"]
+
+
+@pytest.mark.integration
+def test_whole_covers_all_partitions(split_data):
+    r = split_data["rfpaths"]
+    assert r["whole"] == (
+        r["train"] | r["val_id"] | r["val_ood"] | r["test_id"] | r["test_ood"]
+    )
 
 
 # ─── rfpath disjointness ──────────────────────────────────────────────────────

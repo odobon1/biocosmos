@@ -2,6 +2,7 @@
 python -m pytest tests/unit/test_split_gen.py
 """
 
+import pytest
 from types import SimpleNamespace
 
 from preprocessing.common.split_gen import (
@@ -9,6 +10,7 @@ from preprocessing.common.split_gen import (
     build_data_indexes,
     build_nshot,
 )
+from utils.data import assemble_data_index
 
 
 def test_add_trainval_unions_partitions() -> None:
@@ -100,16 +102,65 @@ def test_build_data_indexes_partition_size_composition():
         "val_ood":  {("sp_c", 0), ("sp_d", 0)},
         "test_ood": {("sp_e", 0)},
     }
-    skeys_pts["trainval"] = skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
-    skeys_all = skeys_pts["trainval"] | skeys_pts["test_id"] | skeys_pts["test_ood"]
+    skeys_all = (
+        skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
+        | skeys_pts["test_id"] | skeys_pts["test_ood"]
+    )
 
     all_cids = sorted({cid for pt in skeys_pts.values() for cid, _ in pt})
     cid2enc = {cid: i for i, cid in enumerate(all_cids)}
     skey2meta = {skey: None for skey in skeys_all}
     data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
 
-    assert len(data_indexes["trainval"]) == (
-        len(data_indexes["train"])
-        + len(data_indexes["val"]["id"])
-        + len(data_indexes["val"]["ood"])
+    assert "trainval" not in data_indexes
+    assert len(data_indexes["train"]) == len(skeys_pts["train"])
+    assert len(data_indexes["val"]["id"]) == len(skeys_pts["val_id"])
+    assert len(data_indexes["val"]["ood"]) == len(skeys_pts["val_ood"])
+    assert len(data_indexes["test"]["id"]) == len(skeys_pts["test_id"])
+    assert len(data_indexes["test"]["ood"]) == len(skeys_pts["test_ood"])
+
+
+def test_assemble_data_index_composites_and_raw():
+    img_ptrs = {
+        "sp_a": {0: "sp_a/img0.jpg", 1: "sp_a/img1.jpg"},
+        "sp_b": {0: "sp_b/img0.jpg", 1: "sp_b/img1.jpg"},
+        "sp_c": {0: "sp_c/img0.jpg"},
+        "sp_d": {0: "sp_d/img0.jpg"},
+        "sp_e": {0: "sp_e/img0.jpg"},
+    }
+    skeys_pts = {
+        "train":    {("sp_a", 0), ("sp_b", 0)},
+        "val_id":   {("sp_a", 1)},
+        "test_id":  {("sp_b", 1)},
+        "val_ood":  {("sp_c", 0), ("sp_d", 0)},
+        "test_ood": {("sp_e", 0)},
+    }
+    skeys_all = (
+        skeys_pts["train"] | skeys_pts["val_id"] | skeys_pts["val_ood"]
+        | skeys_pts["test_id"] | skeys_pts["test_ood"]
     )
+    all_cids = sorted({cid for pt in skeys_pts.values() for cid, _ in pt})
+    cid2enc = {cid: i for i, cid in enumerate(all_cids)}
+    skey2meta = {skey: None for skey in skeys_all}
+    data_indexes = build_data_indexes(skeys_pts, img_ptrs, cid2enc, skey2meta)
+
+    def rfpaths(part):
+        return {d["rfpath"] for d in assemble_data_index(data_indexes, part)}
+
+    # raw partitions return their underlying lists
+    assert rfpaths("train") == {"sp_a/img0.jpg", "sp_b/img0.jpg"}
+    assert rfpaths("val_ood") == {"sp_c/img0.jpg", "sp_d/img0.jpg"}
+
+    # trainval = train + val(id) + val(ood); whole additionally adds test(id) + test(ood)
+    assert rfpaths("trainval") == rfpaths("train") | rfpaths("val_id") | rfpaths("val_ood")
+    assert rfpaths("whole") == (
+        rfpaths("train") | rfpaths("val_id") | rfpaths("val_ood")
+        | rfpaths("test_id") | rfpaths("test_ood")
+    )
+    # composites concatenate disjoint partitions (no dedup)
+    assert len(assemble_data_index(data_indexes, "whole")) == sum(
+        len(skeys) for skeys in skeys_pts.values()
+    )
+
+    with pytest.raises(KeyError):
+        assemble_data_index(data_indexes, "bogus")

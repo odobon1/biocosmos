@@ -79,7 +79,7 @@ class TrainConfig:
         self.eval_type = "val" if self.train_pt == "train" else None
 
         split = load_split(self.dataset, self.split)
-        size_train = len(split.data_indexes[self.train_pt])
+        size_train = len(split.get_data(self.train_pt))
         if self.batch_size > size_train:
             raise ValueError(f"batch_size {self.batch_size} exceeds training set size {size_train}")
         samps_per_epoch = size_train - size_train % self.batch_size

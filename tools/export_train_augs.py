@@ -53,7 +53,7 @@ def main() -> None:
     cfg = get_config_train()
 
     split = load_split(cfg.dataset, cfg.split)
-    train_rows = list(split.data_indexes["train"])
+    train_rows = list(split.get_data("train"))
     random.shuffle(train_rows)
 
     n_imgs = min(NUM_IMAGES, len(train_rows))

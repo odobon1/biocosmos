@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple, Set, Optional, Any
 from pathlib import Path
 import pandas as pd
 
-from utils.data import Split
+from utils.data import Split, assemble_data_index
 from utils.utils import paths, save_pickle, seed_libs, load_pickle, DATASET_ALIAS2NAME
 from utils.config import get_config_splits
 
@@ -90,7 +90,7 @@ def get_norm_stats(
     dev_cfg = GenSplitDataManager.cfg.dev
     if dev_cfg.get("debug_mode", False) and dev_cfg["debug"].get("skip_norm_stats", False):
         print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
-        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval")}
+        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
     return compute_rgb_norm_stats_by_partition(data_indexes)
 
 def compute_rgb_norm_stats_by_partition(
@@ -103,7 +103,9 @@ def compute_rgb_norm_stats_by_partition(
     groups = [
         ("train",    [d["rfpath"] for d in data_indexes["train"]]),
         ("trainval", [d["rfpath"] for d in data_indexes["val"]["id"]] +
-                     [d["rfpath"] for d in data_indexes["val"]["ood"]])
+                     [d["rfpath"] for d in data_indexes["val"]["ood"]]),
+        ("whole",    [d["rfpath"] for d in data_indexes["test"]["id"]] +
+                     [d["rfpath"] for d in data_indexes["test"]["ood"]]),
     ]
 
     all_means: List = []
@@ -422,12 +424,9 @@ def build_global_cid2enc(skeys_pts):
 
 def build_class_counts_by_partition(data_indexes, n_classes):
     results = {}
-    for pt_name, pt_data in (
-        ("train",    data_indexes["train"]),
-        ("trainval", data_indexes["trainval"]),
-    ):
+    for pt_name in ("train", "trainval", "whole"):
         counts = np.full(n_classes, np.nan)
-        for datum in pt_data:
+        for datum in assemble_data_index(data_indexes, pt_name):
             enc = datum["class_enc"]
             counts[enc] = 1 if np.isnan(counts[enc]) else counts[enc] + 1
         results[pt_name] = counts
@@ -482,7 +481,6 @@ def build_data_indexes(
             "id": build_partition_index("val_id"),
             "ood": build_partition_index("val_ood"),
         },
-        "trainval": build_partition_index("trainval"),
         "test": {
             "id": build_partition_index("test_id"),
             "ood": build_partition_index("test_ood"),

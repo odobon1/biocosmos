@@ -54,7 +54,8 @@ def list_eval_partitions(split: Any, eval_type: str) -> List[str]:
     partitions = []
     seen_partition_ids = set()
 
-    for partition, data_index in split.data_indexes[eval_type].items():
+    for partition in ("id", "ood"):
+        data_index = split.get_data(f"{eval_type}_{partition}")
         data_index_id = id(data_index)
         if data_index_id in seen_partition_ids:
             continue

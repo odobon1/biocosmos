@@ -4,7 +4,6 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 from PIL import Image
 import numpy as np
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Tuple, Union
 from torchvision.transforms import (
     Compose,
@@ -166,14 +165,51 @@ class MaybeToTensor:
             return image
         return to_tensor(image)
 
-@dataclass
+def assemble_data_index(data_indexes: Dict[str, Any], partition: str) -> List[Dict[str, Any]]:
+    """Assemble the flat data-index list for `partition` from the nested data_indexes dict.
+
+    Raw partitions return their underlying list; composite partitions concatenate:
+      - "trainval" = train + val(id) + val(ood)
+      - "whole"    = train + val(id) + val(ood) + test(id) + test(ood)
+    """
+    raw = {
+        "train":    data_indexes["train"],
+        "val_id":   data_indexes["val"]["id"],
+        "val_ood":  data_indexes["val"]["ood"],
+        "test_id":  data_indexes["test"]["id"],
+        "test_ood": data_indexes["test"]["ood"],
+    }
+    if partition in raw:
+        return raw[partition]
+    if partition == "trainval":
+        return raw["train"] + raw["val_id"] + raw["val_ood"]
+    if partition == "whole":
+        return raw["train"] + raw["val_id"] + raw["val_ood"] + raw["test_id"] + raw["test_ood"]
+    raise KeyError(
+        f"Unknown partition '{partition}'; valid: "
+        "train, val_id, val_ood, test_id, test_ood, trainval, whole"
+    )
+
+
 class Split:
-    data_indexes: Dict[str, Any]
-    enc2cid: Dict[int, str]
-    nshot: Dict[str, Any]
-    class_counts: Dict[str, np.ndarray[int]]
-    norm_mean: Dict[str, Tuple[float]]
-    norm_std: Dict[str, Tuple[float]]
+    def __init__(
+        self,
+        data_indexes: Dict[str, Any],
+        enc2cid: Dict[int, str],
+        nshot: Dict[str, Any],
+        class_counts: Dict[str, np.ndarray],
+        norm_mean: Dict[str, Tuple[float]],
+        norm_std: Dict[str, Tuple[float]],
+    ) -> None:
+        self._data_indexes = data_indexes
+        self.enc2cid = enc2cid
+        self.nshot = nshot
+        self.class_counts = class_counts
+        self.norm_mean = norm_mean
+        self.norm_std = norm_std
+
+    def get_data(self, partition: str) -> List[Dict[str, Any]]:
+        return assemble_data_index(self._data_indexes, partition)
 
 class EpochEncodingDistributedSampler(DistributedSampler):
     """DistributedSampler that encodes the epoch into each yielded index.
@@ -408,9 +444,9 @@ def spawn_partition_data(config: EvalConfig, partition: str):
     """
     split = load_split(config.dataset, config.split)
     if partition in ("train", "trainval"):
-        index_data = split.data_indexes[partition]
+        index_data = split.get_data(partition)
     else:
-        index_data = split.data_indexes[config.eval_type][partition]
+        index_data = split.get_data(f"{config.eval_type}_{partition}")
     cid2enc = build_cid2enc(index_data, split.enc2cid)
     return index_data, cid2enc, split.enc2cid
 

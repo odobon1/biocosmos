@@ -21,14 +21,14 @@ import pdb
 
 
 split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
+enc2cid = split_p.enc2cid
 
-partition = ["id"] * len(split_p.data_indexes["val"]["id"]["cids"])
-cids = split_p.data_indexes["val"]["id"]["cids"]
-rfpaths = split_p.data_indexes["val"]["id"]["rfpaths"]
+di_val_id = split_p.get_data("val_id")
+di_val_ood = split_p.get_data("val_ood")
 
-partition += ["ood"] * len(split_p.data_indexes["val"]["ood"]["cids"])
-cids += split_p.data_indexes["val"]["ood"]["cids"]
-rfpaths += split_p.data_indexes["val"]["ood"]["rfpaths"]
+partition = ["id"] * len(di_val_id) + ["ood"] * len(di_val_ood)
+cids = [enc2cid[d["class_enc"]] for d in di_val_id] + [enc2cid[d["class_enc"]] for d in di_val_ood]
+rfpaths = [d["rfpath"] for d in di_val_id] + [d["rfpath"] for d in di_val_ood]
 
 _, device = setup_ddp()
 config_eval = get_config_eval(verbose=(dist.get_rank() == 0))

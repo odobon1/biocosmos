@@ -21,7 +21,7 @@ from utils.config import apply_overrides, apply_train_debug_overrides, load_trai
 from utils.utils import paths, save_pickle, save_json, load_json
 
 
-CAMPAIGN = "dev2"
+CAMPAIGN = "dev3"
 
 SEED0 = 42
 NUM_SEEDS = 3
@@ -240,12 +240,14 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
 def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
     trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
-    campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs
-    the training subprocess needs."""
+    campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs,
+    and RENDER_MAX_WORKERS caps its CPU fan-out to a quarter of the cores so it doesn't oversubscribe the
+    next trial's dataloaders -- the render has the whole next trial to finish, so it can afford to go slow."""
     cmd = [sys.executable, "-m", "tools.manifold_viz", trial_rel, "snapshot"]
     if not render_evo:
         cmd.append("no_evo")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    env.setdefault("RENDER_MAX_WORKERS", str(max(1, len(os.sched_getaffinity(0)) // 4)))
     return subprocess.Popen(cmd, env=env, start_new_session=True)
 
 def _raise_interrupt(signum, frame) -> None:

@@ -523,7 +523,10 @@ def _parallel_render(jobs):
         return
     ctx = multiprocessing.get_context("forkserver")
     ctx.set_forkserver_preload(["utils.manifold_viz"])  # import the stack once in the server, not per worker
-    workers = min(len(jobs), len(os.sched_getaffinity(0)))
+    # RENDER_MAX_WORKERS caps the fan-out (the campaign sets it so a background render shares cores with the
+    # next trial's training instead of oversubscribing them); unset/0 -> every core (manual offline re-render)
+    cap = int(os.environ.get("RENDER_MAX_WORKERS", "0")) or len(os.sched_getaffinity(0))
+    workers = min(len(jobs), cap)
     with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, initializer=_render_init) as pool:
         for fut in [pool.submit(func, *args) for func, args in jobs]:
             fut.result()  # surface any worker exception in the parent
@@ -914,9 +917,7 @@ def _render_grids(tsne_by_perp, pca_projs, perplexities, cids_id, cids_ood, penu
                 fpath = dpath_vis / quad_dir / f"{out_name}.{ext}"
                 fpath.parent.mkdir(parents=True, exist_ok=True)
                 jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style)))
-    _log("rendering plots")
     _parallel_render(jobs)
-    _log("plots complete")
 
 def _compute_projections(embs_id, embs_ood, cfg_tsne):
     """COLLECTIVE -- must be entered by every rank together. Compute the RAW t-SNE (sharded across ranks

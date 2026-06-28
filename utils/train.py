@@ -8,7 +8,6 @@ import time
 import random
 import numpy as np
 import torch
-import torch.distributed as dist
 import shutil
 
 from utils.utils import (
@@ -402,17 +401,7 @@ class ArtifactManager:
             "rng_numpy": np.random.get_state(),
             "rng_random": random.getstate(),
         }
-        world_size = dist.get_world_size()
-        gather_list = [None] * world_size if rank == 0 else None
-        dist.gather_object(rng_state, gather_list, dst=0)
-        if rank == 0:
-            state = torch.load(
-                ArtifactManager.dpath_model_checkpoint / "train_state.pt",
-                map_location="cpu",
-                weights_only=False,
-            )
-            state["rng_states"] = {i: gather_list[i] for i in range(world_size)}
-            torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
+        torch.save(rng_state, ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt")
 
     @staticmethod
     @rank0
@@ -433,12 +422,11 @@ class ArtifactManager:
 
     @staticmethod
     def load_rng_state(rank):
-        state = torch.load(
-            ArtifactManager.dpath_model_checkpoint / "train_state.pt",
+        return torch.load(
+            ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt",
             map_location="cpu",
             weights_only=False,
         )
-        return state["rng_states"][rank]
 
     @staticmethod
     def load_trial_state():

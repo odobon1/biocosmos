@@ -342,7 +342,7 @@ class TrainPipeline:
             elif self._resume_state is not None:
                 # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
                 if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch"] == -1:
-                    if "rng_states" in self._resume_state and self._local_rank in self._resume_state["rng_states"]:
+                    if (ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{self._local_rank}.pt").exists():
                         rng = ArtifactManager.load_rng_state(self._local_rank)
                         torch.set_rng_state(rng["rng_cpu"])
                         torch.cuda.set_rng_state_all(rng["rng_cuda"])

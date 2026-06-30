@@ -171,27 +171,23 @@ def _hbeta_search(D2, perplexity, self_offset=0, tol=1e-5, max_iter=100):
     Pexp = conditionals(beta)
     return Pexp / Pexp.sum(1, keepdim=True).clamp_min(1e-12)
 
-def _tsne_torch(X, init, perplexities, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
-    """Exact (O(n^2)) t-SNE on the GPU via torch, run for each perplexity in `perplexities` and returned
-    as {perplexity: 2D layout}. Dispatches to the multi-rank sharded implementation when running under DDP
-    with world_size > 1 (the N×N matrices are split across ranks so each holds only ~N²/world_size), else
-    the single-process implementation. Both build the perplexity-independent high-dim distance matrix once
-    and reuse it across all perplexities, follow sklearn's schedule, and are structurally equivalent.
-    `init` is the 2D starting layout (the reused PCA init)."""
+def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
+    """Exact (O(n^2)) t-SNE on the GPU via torch, returning the 2D layout. Dispatches to the multi-rank
+    sharded implementation when running under DDP with world_size > 1 (the N×N matrices are split across
+    ranks so each holds only ~N²/world_size), else the single-process implementation. Both build the
+    high-dim distance matrix, follow sklearn's schedule, and are structurally equivalent. `init` is the
+    2D starting layout (the reused PCA init)."""
     if dist.is_initialized() and dist.get_world_size() > 1:
-        return _tsne_torch_sharded(X, init, perplexities, n_iter, exaggeration, explore_iter, device)
-    return _tsne_torch_single(X, init, perplexities, n_iter, exaggeration, explore_iter, device)
+        return _tsne_torch_sharded(X, init, perplexity, n_iter, exaggeration, explore_iter, device)
+    return _tsne_torch_single(X, init, perplexity, n_iter, exaggeration, explore_iter, device)
 
-def _tsne_torch_single(X, init, perplexities, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
+def _tsne_torch_single(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
     """
-    Exact (O(n^2)) t-SNE on the GPU via torch, run for each perplexity in `perplexities` and returned as
-    {perplexity: 2D layout}. The high-dim squared-distance matrix is perplexity-independent, so it (with
-    the PCA init, learning rate, and preallocated work buffers) is built once and reused across all
-    perplexities; only the perplexity-matched affinities P differ per run. Each run minimizes KL(P||Q)
-    under the Student-t low-dim kernel by momentum gradient descent with adaptive gains, following
-    sklearn's schedule (PCA init, early exaggeration for the first `explore_iter` steps, momentum
-    0.5->0.8, learning_rate='auto'), so the result is structurally equivalent to sklearn t-SNE -- not
-    bit-identical. `init` is the 2D starting layout (the reused PCA init).
+    Exact (O(n^2)) t-SNE on the GPU via torch, returning the 2D layout. Minimizes KL(P||Q) under the
+    Student-t low-dim kernel by momentum gradient descent with adaptive gains, following sklearn's
+    schedule (PCA init, early exaggeration for the first `explore_iter` steps, momentum 0.5->0.8,
+    learning_rate='auto'), so the result is structurally equivalent to sklearn t-SNE -- not bit-identical.
+    `init` is the 2D starting layout (the reused PCA init).
 
     Memory is pinned to the n×n distance matrix + exactly 3 live n×n buffers (P, plus two preallocated
     work buffers reused in place every iteration) so it fits large n: early exaggeration is folded into P
@@ -203,58 +199,50 @@ def _tsne_torch_single(X, init, perplexities, n_iter=1000, exaggeration=12.0, ex
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     X = torch.as_tensor(X, dtype=torch.float32, device=dev)
     n = X.shape[0]
-    D2 = torch.cdist(X, X).pow_(2)  # high-dim squared distances; perplexity-independent -> built once, reused
+    D2 = torch.cdist(X, X).pow_(2)  # high-dim squared distances
     lr = max(n / exaggeration / 4.0, 50.0)  # sklearn learning_rate='auto'
-    Y0 = torch.as_tensor(init, dtype=torch.float32, device=dev)  # shared PCA init, cloned per perplexity
-    num = torch.empty((n, n), device=dev)  # preallocated Student-t affinity buffer (reused each iter/perp)
-    Q = torch.empty((n, n), device=dev)    # preallocated PQ-term buffer (reused each iter/perp)
+    num = torch.empty((n, n), device=dev)  # preallocated Student-t affinity buffer (reused each iter)
+    Q = torch.empty((n, n), device=dev)    # preallocated PQ-term buffer (reused each iter)
 
-    out = {}
-    for perplexity in perplexities:
-        P = _hbeta_search(D2, perplexity)
-        P = ((P + P.t()) / (2 * n)).clamp_min(eps)  # symmetrize -> joint, sums to 1
-        P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter) -> no 2nd n×n buffer
-        Y = Y0.clone()
-        update = torch.zeros_like(Y)
-        gains = torch.ones_like(Y)
-        for it in range(n_iter):
-            if it == explore_iter:
-                P.div_(exaggeration)  # end early exaggeration
-            momentum = 0.5 if it < explore_iter else 0.8
-            # Student-t affinities num = 1/(1+||yi-yj||^2), self zeroed, into the reused buffer (gram trick)
-            ry = (Y * Y).sum(1)
-            torch.matmul(Y, Y.t(), out=num)
-            num.mul_(-2.0).add_(ry[:, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
-            num.fill_diagonal_(0.0)
-            torch.div(num, num.sum().clamp_min(eps), out=Q).clamp_min_(eps)
-            Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (the PQ term; P carries the exaggeration)
-            grad = 4.0 * (Q.sum(1, keepdim=True) * Y - Q @ Y)
-            inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
-            gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
-            update = momentum * update - lr * gains * grad
-            Y = Y + update
-            Y = Y - Y.mean(0, keepdim=True)  # keep centered (t-SNE is translation-invariant)
-        out[perplexity] = Y.detach().cpu().numpy()
-    return out
+    P = _hbeta_search(D2, perplexity)
+    P = ((P + P.t()) / (2 * n)).clamp_min(eps)  # symmetrize -> joint, sums to 1
+    P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter) -> no 2nd n×n buffer
+    Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # shared PCA init
+    update = torch.zeros_like(Y)
+    gains = torch.ones_like(Y)
+    for it in range(n_iter):
+        if it == explore_iter:
+            P.div_(exaggeration)  # end early exaggeration
+        momentum = 0.5 if it < explore_iter else 0.8
+        # Student-t affinities num = 1/(1+||yi-yj||^2), self zeroed, into the reused buffer (gram trick)
+        ry = (Y * Y).sum(1)
+        torch.matmul(Y, Y.t(), out=num)
+        num.mul_(-2.0).add_(ry[:, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
+        num.fill_diagonal_(0.0)
+        torch.div(num, num.sum().clamp_min(eps), out=Q).clamp_min_(eps)
+        Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (the PQ term; P carries the exaggeration)
+        grad = 4.0 * (Q.sum(1, keepdim=True) * Y - Q @ Y)
+        inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
+        gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
+        update = momentum * update - lr * gains * grad
+        Y = Y + update
+        Y = Y - Y.mean(0, keepdim=True)  # keep centered (t-SNE is translation-invariant)
+    return Y.detach().cpu().numpy()
 
-def _tsne_torch_sharded(X, init, perplexities, n_iter, exaggeration, explore_iter, device):
+def _tsne_torch_sharded(X, init, perplexity, n_iter, exaggeration, explore_iter, device):
     """
-    Multi-rank exact t-SNE, run for each perplexity in `perplexities` and returned as {perplexity: 2D
-    layout}. The NxN affinity / Student-t matrices are row-sharded across ranks (each rank owns a
-    contiguous block of the N points), so per-rank memory is ~3·N²/world_size instead of 3·N². This both
-    lifts the single-GPU O(N²) memory ceiling and splits the work. This rank's nlxN high-dim
-    squared-distance rows are perplexity-independent, so they (with the shard layout and preallocated
-    buffers) are built once and reused across all perplexities. X is replicated (it is already
-    all-gathered to every rank during eval) and the 2-D layout Y is replicated, all-gathered from the
-    per-rank updated rows every iteration (only Nx2). Each iteration all-reduces the scalar Student-t
-    normalizer Z; the one-time P-symmetrization transpose is a point-to-point all-to-all
-    (_transpose_shard). The per-row optimizer state (gains/update) is sharded with the rows. Same
-    schedule/algorithm as _tsne_torch_single -- structurally equivalent (only the distributed Z
-    reduction differs in floating-point summation order).
+    Multi-rank exact t-SNE, returning the 2D layout. The NxN affinity / Student-t matrices are
+    row-sharded across ranks (each rank owns a contiguous block of the N points), so per-rank memory is
+    ~3·N²/world_size instead of 3·N². This both lifts the single-GPU O(N²) memory ceiling and splits the
+    work. X is replicated (it is already all-gathered to every rank during eval) and the 2-D layout Y is
+    replicated, all-gathered from the per-rank updated rows every iteration (only Nx2). Each iteration
+    all-reduces the scalar Student-t normalizer Z; the one-time P-symmetrization transpose is a
+    point-to-point all-to-all (_transpose_shard). The per-row optimizer state (gains/update) is sharded
+    with the rows. Same schedule/algorithm as _tsne_torch_single -- structurally equivalent (only the
+    distributed Z reduction differs in floating-point summation order).
 
-    Must be entered collectively by every rank (it issues collective ops); the perplexity list is
-    identical across ranks (shared config), so the collectives stay symmetric. X and init must be
-    identical across ranks (they are: X is all-gathered and init is the deterministic shared PCA).
+    Must be entered collectively by every rank (it issues collective ops). X and init must be identical
+    across ranks (they are: X is all-gathered and init is the deterministic shared PCA).
     """
     eps = 1e-12
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -265,59 +253,51 @@ def _tsne_torch_sharded(X, init, perplexities, n_iter, exaggeration, explore_ite
     starts = [sum(counts[:r]) for r in range(world)]
     r0, nl = starts[rank], counts[rank]
     Xr = X[r0:r0 + nl]  # this rank's rows of X (nl × d)
-    D2 = torch.cdist(Xr, X).pow_(2)  # this rank's nl×N squared-distance rows; perplexity-independent -> reused
+    D2 = torch.cdist(Xr, X).pow_(2)  # this rank's nl×N squared-distance rows
     lr = max(n / exaggeration / 4.0, 50.0)  # sklearn learning_rate='auto'
-    Y0 = torch.as_tensor(init, dtype=torch.float32, device=dev)  # N × 2 shared PCA init, cloned per perplexity
-    num = torch.empty((nl, n), device=dev)  # preallocated local Student-t rows (reused each iter/perp)
-    Q = torch.empty((nl, n), device=dev)    # preallocated local PQ-term buffer (reused each iter/perp)
+    num = torch.empty((nl, n), device=dev)  # preallocated local Student-t rows (reused each iter)
+    Q = torch.empty((nl, n), device=dev)    # preallocated local PQ-term buffer (reused each iter)
 
-    out = {}
-    for perplexity in perplexities:
-        # high-dim joint affinities P, row-sharded. The conditional rows come from a per-row perplexity
-        # search (independent across rows -> shards cleanly). Symmetrizing to the joint P needs P's
-        # transpose, i.e. this rank's columns of the full conditional, gathered from every rank's row-block.
-        Pc = _hbeta_search(D2, perplexity, self_offset=r0)  # nl × N conditional
-        P = ((Pc + _transpose_shard(Pc, counts, starts)) / (2 * n)).clamp_min(eps)  # nl × N joint
-        del Pc
-        P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter)
-        Y = Y0.clone()  # N × 2, replicated
-        update = torch.zeros((nl, 2), device=dev)  # per-row optimizer state, sharded with the rows
-        gains = torch.ones((nl, 2), device=dev)
-        for it in range(n_iter):
-            if it == explore_iter:
-                P.div_(exaggeration)  # end early exaggeration
-            momentum = 0.5 if it < explore_iter else 0.8
-            Yr = Y[r0:r0 + nl]
-            # Student-t affinities for the local rows: num[a,j] = 1/(1+||y_{r0+a} - y_j||^2), self zeroed
-            ry = (Y * Y).sum(1)
-            torch.matmul(Yr, Y.t(), out=num)
-            num.mul_(-2.0).add_(ry[r0:r0 + nl, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
-            _zero_self(num, r0)
-            Z = num.sum()
-            dist.all_reduce(Z, op=dist.ReduceOp.SUM)  # global normalizer over all N×N pairs
-            torch.div(num, Z.clamp_min(eps), out=Q).clamp_min_(eps)
-            Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (PQ term; P carries the exaggeration)
-            grad = 4.0 * (Q.sum(1, keepdim=True) * Yr - Q @ Y)  # nl × 2 local-row gradient (needs full Y)
-            inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
-            gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
-            update = momentum * update - lr * gains * grad
-            Y = _allgather_rows(Yr + update, counts)  # stitch the updated local rows back into the full Y
-            Y = Y - Y.mean(0, keepdim=True)  # keep centered (every rank identical after the all-gather)
-        out[perplexity] = Y.detach().cpu().numpy()
-    return out
+    # high-dim joint affinities P, row-sharded. The conditional rows come from a per-row perplexity
+    # search (independent across rows -> shards cleanly). Symmetrizing to the joint P needs P's
+    # transpose, i.e. this rank's columns of the full conditional, gathered from every rank's row-block.
+    Pc = _hbeta_search(D2, perplexity, self_offset=r0)  # nl × N conditional
+    P = ((Pc + _transpose_shard(Pc, counts, starts)) / (2 * n)).clamp_min(eps)  # nl × N joint
+    del Pc
+    P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter)
+    Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # N × 2 shared PCA init, replicated
+    update = torch.zeros((nl, 2), device=dev)  # per-row optimizer state, sharded with the rows
+    gains = torch.ones((nl, 2), device=dev)
+    for it in range(n_iter):
+        if it == explore_iter:
+            P.div_(exaggeration)  # end early exaggeration
+        momentum = 0.5 if it < explore_iter else 0.8
+        Yr = Y[r0:r0 + nl]
+        # Student-t affinities for the local rows: num[a,j] = 1/(1+||y_{r0+a} - y_j||^2), self zeroed
+        ry = (Y * Y).sum(1)
+        torch.matmul(Yr, Y.t(), out=num)
+        num.mul_(-2.0).add_(ry[r0:r0 + nl, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
+        _zero_self(num, r0)
+        Z = num.sum()
+        dist.all_reduce(Z, op=dist.ReduceOp.SUM)  # global normalizer over all N×N pairs
+        torch.div(num, Z.clamp_min(eps), out=Q).clamp_min_(eps)
+        Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (PQ term; P carries the exaggeration)
+        grad = 4.0 * (Q.sum(1, keepdim=True) * Yr - Q @ Y)  # nl × 2 local-row gradient (needs full Y)
+        inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
+        gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
+        update = momentum * update - lr * gains * grad
+        Y = _allgather_rows(Yr + update, counts)  # stitch the updated local rows back into the full Y
+        Y = Y - Y.mean(0, keepdim=True)  # keep centered (every rank identical after the all-gather)
+    return Y.detach().cpu().numpy()
 
-def compute_tsne(embeddings, perplexities, n_iter=1000, init=None):
+def compute_tsne(embeddings, perplexity, init, n_iter=1000):
     """
-    Reduce embedding dimensionality to 2D via GPU t-SNE (`_tsne_torch`), one t-SNE per perplexity in
-    `perplexities` (the high-dim distance matrix is built once and reused across them). Returns
-    {perplexity: 2D layout}. `embeddings` may be a numpy array or a torch tensor (a GPU tensor is passed
-    straight through to the sharded path, no host copy). `init` is the 2D starting layout; when omitted, a
-    PCA init is computed (the caller normally passes the reused PCA).
+    Reduce embedding dimensionality to 2D via GPU t-SNE (`_tsne_torch`). Returns the 2D layout.
+    `embeddings` may be a numpy array or a torch tensor (a GPU tensor is passed straight through to the
+    sharded path, no host copy). `init` is the 2D starting layout (the reused PCA init).
     """
-    _log(f"Running GPU t-SNE on {embeddings.shape[0]} samples (dim={embeddings.shape[1]}) for perplexities {list(perplexities)}...")
-    if init is None:
-        init = _pca_init(compute_pca(np.asarray(embeddings)))
-    return _tsne_torch(embeddings, np.asarray(init), perplexities=perplexities, n_iter=n_iter)
+    _log(f"Running GPU t-SNE on {embeddings.shape[0]} samples (dim={embeddings.shape[1]}) at perplexity {perplexity}...")
+    return _tsne_torch(embeddings, np.asarray(init), perplexity=perplexity, n_iter=n_iter)
 
 def compute_pca(embeddings):
     """
@@ -584,7 +564,6 @@ _GRIDS = [
     ("fullset_ood",   "Full-Set (OOD)",     [["fullset_ood_leaf", "fullset_ood_penult"]]),
     ("fullset_panel", "Full-Set",           _GRID),
 ]
-_GRID_STEMS = {stem for _, _, grid in _GRIDS for row in grid for stem in row if stem}  # every plotted stem
 _COMPOSITE_COL_TITLES = ["OOD", "ID", "ID + OOD", "n-shot"]  # column headers for the 2x4 fullset composite
 
 def _grid_group(out_name):
@@ -600,11 +579,6 @@ def _grid_group(out_name):
 _4PANEL_SUBJECTS = [(out_name, subject, grid[0][0], grid[0][1])
                     for out_name, subject, grid in _GRIDS if out_name != "fullset_panel"]
 _QUAD_METHODS = ["PCA", "t-SNE"]  # figure rows, top -> bottom
-
-def _perp_suffix(perplexities, perp):
-    """Dir suffix for a t-SNE perplexity: '' for a single-perplexity config (current behavior, plain
-    tsne/ and 4panel/), else '_<perp>' so each perplexity gets its own dirs (tsne_15/, 4panel_15/...)."""
-    return "" if len(perplexities) == 1 else f"_{perp}"
 
 _CELL = 6.58  # square plotting-cell size (in)
 
@@ -726,24 +700,23 @@ def _cids_by(cids_id, cids_ood):
     """{proj key: class-id list} for the three projection subjects (fullset = ID followed by OOD)."""
     return {"id": cids_id, "ood": cids_ood, "fullset": cids_id + cids_ood}
 
-def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau, perp):
+def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau):
     """Yield (name, {(method, stem): (proj, point_colors, alpha)}) one eval at a time, loading each cache
     ONCE and resolving it for every method in `methods` -- so a cross-method caller never re-reads a cache
-    per method, and no caller holds more than one eval's data. The t-SNE method uses the `perp` perplexity's
-    cached projection, re-oriented against the orientation reference carried across evals in order (the
-    same sweep render_evolution/render_eval reproduce); PCA is not oriented (and ignores `perp`). Only the
-    panels in `stems` are resolved (the rest of the grid is blank). At most one t-SNE perplexity per call,
-    so the reference keys on the proj key alone."""
+    per method, and no caller holds more than one eval's data. The t-SNE method's cached projection is
+    re-oriented against the orientation reference carried across evals in order (the same sweep
+    render_evolution/render_eval reproduce); PCA is not oriented. Only the panels in `stems` are resolved
+    (the rest of the grid is blank)."""
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot = cmaps
     ref = {}  # running per-class CoM orientation reference per t-SNE proj key, carried across evals (t-SNE only)
     for d, name in zip(evals, names):
-        tsne_by_perp, pca_projs, cids_id, cids_ood, _ = _load_projections(d)
+        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d)
         penults_id = [cid_2_penult[c] for c in cids_id]
         penults_ood = [cid_2_penult[c] for c in cids_ood]
         nshot_id = [cid_2_nshot[c] for c in cids_id]
         resolved = {}
         for method in methods:
-            projs = dict(tsne_by_perp[perp] if method == "t-SNE" else pca_projs)
+            projs = dict(tsne_projs if method == "t-SNE" else pca_projs)
             if method == "t-SNE":  # re-orient raw t-SNE against the running reference (Procrustes) across evals
                 cids_by = _cids_by(cids_id, cids_ood)
                 for k in projs:
@@ -754,17 +727,16 @@ def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau, perp):
                     resolved[(method, stem)] = (proj, np.array([color_map[label] for label in labels]), alpha)
         yield name, resolved
 
-def composite_evolution_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style, perp):
+def composite_evolution_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style):
     """Training-evolution GIF of a flush grid: each eval contributes n_stoch_layers strobe frames, axes
     frozen to the cross-eval union (`limits`, precomputed by render_evolution). Loads + renders one eval's
     cache at a time and streams the frames to disk, so peak memory is independent of the number of
-    evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name. `perp`
-    selects the t-SNE perplexity (ignored for PCA)."""
+    evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name."""
     stems = _stems_of(grid)
     supt = lambda name: _manifold_title(style.method, viz_context, subject, suffix=f", {name}")
     fig, sc_by = _composite_canvas(grid, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: render frames lazily (one eval loaded at a time) so they stream to disk
-        for name, resolved in _resolved_evals(evals, names, stems, (style.method,), cmaps, ema_tau, perp):
+        for name, resolved in _resolved_evals(evals, names, stems, (style.method,), cmaps, ema_tau):
             fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")  # align to the leftmost plot's left edge
             data = {s: (resolved[(style.method, s)][0], _rgba(resolved[(style.method, s)][1], resolved[(style.method, s)][2])) for s in stems}
             for seed in range(style.n_stoch_layers):
@@ -842,16 +814,16 @@ def quad_render(leaf_stem, penult_stem, data, fpath, suptitle, style):
         _save_gif(frames, fpath, style.frame_ms)
 
 def quad_evolution_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
-                       limits, fpath_gif, style, perp):
-    """Cross-method (PCA top / t-SNE bottom) training-evolution GIF for one subject's leaf/penult pair, at
-    t-SNE perplexity `perp`. Sweeps both methods' caches in lockstep (one eval per method loaded at a time)
-    and streams the frames to disk, so peak memory is independent of the eval count; axes frozen to the
-    precomputed cross-eval union (`limits`, keyed (method, stem))."""
+                       limits, fpath_gif, style):
+    """Cross-method (PCA top / t-SNE bottom) training-evolution GIF for one subject's leaf/penult pair.
+    Sweeps both methods' caches in lockstep (one eval per method loaded at a time) and streams the frames
+    to disk, so peak memory is independent of the eval count; axes frozen to the precomputed cross-eval
+    union (`limits`, keyed (method, stem))."""
     stems = {leaf_stem, penult_stem}
     supt = lambda name: _manifold_title("PCA + t-SNE", viz_context, subject, suffix=f", {name}")
     fig, sc_by = _quad_canvas(leaf_stem, penult_stem, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: one cache load per eval, resolved for both methods, streamed to disk
-        for name, resolved in _resolved_evals(evals, names, stems, _QUAD_METHODS, cmaps, ema_tau, perp):
+        for name, resolved in _resolved_evals(evals, names, stems, _QUAD_METHODS, cmaps, ema_tau):
             fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")
             data = {k: (resolved[k][0], _rgba(resolved[k][1], resolved[k][2]))
                     for k in ((m, s) for m in _QUAD_METHODS for s in stems)}
@@ -862,18 +834,16 @@ def quad_evolution_gif(leaf_stem, penult_stem, subject, viz_context, evals, name
     _save_gif_stream(_frames(), fpath_gif, style.frame_ms, palette_sample=style.n_stoch_layers)
     plt.close(fig)
 
-def _render_grids(tsne_by_perp, pca_projs, perplexities, cids_id, cids_ood, penults_id, penults_ood,
+def _render_grids(tsne_projs, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, legend_by_role,
                   dpath_vis, cfg_manifold_viz, viz_context, tag, plot_flags):
-    """Rank-0 render for one eval from ALREADY-ORIENTED PCA + per-perplexity t-SNE projections, into
-    dpath_vis/: the per-method stacked leaf(top)/penult(bottom) pairs (ID-only, OOD-only, the combined
-    ID+OOD projection and its two partition-masked variants) under 2panel/<method>/, the 2x4 fullset
-    composite under 7panel/<method>/, and the cross-method PCA-over-t-SNE 4panel (one per 2panel subject).
-    A t-SNE is rendered for each perplexity in `perplexities`; with more than one, the t-SNE method dir
-    and the 4panel dir are suffixed by perplexity (tsne_15/, 4panel_15/, ...), else they stay plain. PCA is
-    shared. `plot_flags` (dev.manifold_viz) gates which groups are emitted. Each output is a static PNG
-    when n_stoch_layers == 1, else a strobe GIF. Pure renderer -- orientation/coloring/cache are the
-    caller's job (render_eval)."""
+    """Rank-0 render for one eval from ALREADY-ORIENTED PCA + t-SNE projections, into dpath_vis/: the
+    per-method stacked leaf(top)/penult(bottom) pairs (ID-only, OOD-only, the combined ID+OOD projection
+    and its two partition-masked variants) under 2panel/<method>/, the 2x4 fullset composite under
+    7panel/<method>/, and the cross-method PCA-over-t-SNE 4panel (one per 2panel subject) under 4panel/.
+    `plot_flags` (dev.manifold_viz) gates which groups are emitted. Each output is a static PNG when
+    n_stoch_layers == 1, else a strobe GIF. Pure renderer -- orientation/coloring/cache are the caller's
+    job (render_eval)."""
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
     n_stoch_layers = cfg_manifold_viz["n_stoch_layers"]
     frame_ms = cfg_manifold_viz["eval_duration"] / n_stoch_layers  # per-frame ms so each eval's GIF lasts eval_duration
@@ -884,15 +854,12 @@ def _render_grids(tsne_by_perp, pca_projs, perplexities, cids_id, cids_ood, penu
                 for proj, labels, color_map, alpha, stem in _resolve_panels(
                     projs, cids_id, cids_ood, penults_id, penults_ood, color_leaf, color_penult, nshot_id, color_nshot)}
     comp_pca = bake(pca_projs)
-    comp_tsne_by_perp = {perp: bake(tsne_by_perp[perp]) for perp in perplexities}
+    comp_tsne = bake(tsne_projs)
     render = composite_plot if n_stoch_layers == 1 else composite_strobe_gif  # static PNG vs strobe GIF
     ext = "png" if n_stoch_layers == 1 else "gif"
     jobs = []  # render jobs fanned out across cores below
-    # per-method grids: 2panel stacked pairs + 7panel composite, under viz/<group>/<method_dir>/ -- PCA once
-    # plus one t-SNE per perplexity (method_dir suffixed when there's more than one)
-    grid_targets = [("PCA", "pca", comp_pca)] + [
-        ("t-SNE", f"tsne{_perp_suffix(perplexities, perp)}", comp_tsne_by_perp[perp]) for perp in perplexities]
-    for method, method_dir, comp in grid_targets:
+    # per-method grids: 2panel stacked pairs + 7panel composite, under viz/<group>/<method_dir>/
+    for method, method_dir, comp in [("PCA", "pca", comp_pca), ("t-SNE", "tsne", comp_tsne)]:
         for out_name, subject, grid in _GRIDS:
             group, stem = _grid_group(out_name)
             if not plot_flags[f"plot_{group}"]:  # 2panel / 7panel toggles (dev.manifold_viz)
@@ -904,19 +871,16 @@ def _render_grids(tsne_by_perp, pca_projs, perplexities, cids_id, cids_ood, penu
             fpath = dpath_vis / group / method_dir / f"{stem}.{ext}"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((render, (grid, sub, fpath, suptitle, style)))
-    # cross-method 4panel (PCA top / t-SNE bottom): one per perplexity, under viz/4panel{_<perp>}/
+    # cross-method 4panel (PCA top / t-SNE bottom): under viz/4panel/
     if plot_flags["plot_4panel"]:
         quad_style = RenderStyle(None, marker_size, legend_by_role, n_stoch_layers, frame_ms, bg_color)
-        for perp in perplexities:
-            comp_tsne = comp_tsne_by_perp[perp]
-            quad_dir = f"4panel{_perp_suffix(perplexities, perp)}"
-            for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
-                suptitle = _manifold_title("PCA + t-SNE", viz_context, subject, suffix=suffix)
-                data = {("PCA", s): comp_pca[s] for s in (leaf_stem, penult_stem)}
-                data.update({("t-SNE", s): comp_tsne[s] for s in (leaf_stem, penult_stem)})
-                fpath = dpath_vis / quad_dir / f"{out_name}.{ext}"
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style)))
+        for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
+            suptitle = _manifold_title("PCA + t-SNE", viz_context, subject, suffix=suffix)
+            data = {("PCA", s): comp_pca[s] for s in (leaf_stem, penult_stem)}
+            data.update({("t-SNE", s): comp_tsne[s] for s in (leaf_stem, penult_stem)})
+            fpath = dpath_vis / "4panel" / f"{out_name}.{ext}"
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style)))
     _parallel_render(jobs)
 
 def _compute_projections(embs_id, embs_ood, cfg_tsne):
@@ -925,21 +889,14 @@ def _compute_projections(embs_id, embs_ood, cfg_tsne):
     image embeddings (`embs_id`/`embs_ood` are the per-rank GPU tensors, identical on every rank). PCA is
     computed redundantly per rank -- it is deterministic (same input + fixed seed) and feeds the shared
     t-SNE init; the sharded t-SNE all-gathers the full layout each iteration, so every rank returns
-    identical (tsne_by_perp, pca_projs). PCA is shared across perplexities (it only feeds the t-SNE init);
-    a t-SNE is computed for every perplexity in `cfg_tsne["perplexity"]` (a list), all sharing the one
-    high-dim distance matrix built per proj key. Returns (tsne_by_perp, pca_projs) with
-    tsne_by_perp = {perplexity: {id/ood/fullset: proj}}."""
+    identical (tsne_projs, pca_projs), each keyed id/ood/fullset."""
     embs = {"id": embs_id, "ood": embs_ood, "fullset": torch.cat([embs_id, embs_ood], dim=0)}
     pca_projs = {k: compute_pca(e.detach().cpu().numpy()) for k, e in embs.items()}
-    perps = cfg_tsne["perplexity"]
-    # one t-SNE per (key, perplexity); compute_tsne builds the key's high-dim distance matrix once and
-    # reuses it across all perplexities -> {key: {perp: proj}}, regrouped below to {perp: {key: proj}}
-    tsne_by_key = {
-        k: compute_tsne(embs[k], perplexities=perps, init=_pca_init(pca_projs[k]), n_iter=cfg_tsne["n_iter"])
+    tsne_projs = {
+        k: compute_tsne(embs[k], perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), n_iter=cfg_tsne["n_iter"])
         for k in embs
     }
-    tsne_by_perp = {perp: {k: tsne_by_key[k][perp] for k in embs} for perp in perps}
-    return tsne_by_perp, pca_projs
+    return tsne_projs, pca_projs
 
 def _build_color_maps(viz_context, cids_all, cfg_color):
     """Per-dataset color maps + label lookups for the manifold panels, given the eval set's full
@@ -959,32 +916,27 @@ def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifo
     training pipeline's ONLY in-loop viz work; orientation, coloring, and rendering are a separate pass
     over the cache (render_eval / render_evolution), kept off the collective path. Returns None."""
     _log("computing projections")
-    # ALL RANKS: sharded t-SNE (one per perplexity) + PCA projections (collective ops inside)
-    tsne_by_perp, pca_projs = _compute_projections(
+    # ALL RANKS: sharded t-SNE + PCA projections (collective ops inside)
+    tsne_projs, pca_projs = _compute_projections(
         eval_bundle_id["embs_img"], eval_bundle_ood["embs_img"], cfg_manifold_viz["tsne"])
     if dist.is_initialized() and dist.get_rank() != 0:
         return  # non-rank-0 ranks only participate in the collective compute
     dpath_cache.mkdir(parents=True, exist_ok=True)
-    cache = {"cids_id": np.asarray(eval_bundle_id["cids_img"]), "cids_ood": np.asarray(eval_bundle_ood["cids_img"]),
-             "perplexities": np.asarray(list(tsne_by_perp))}
+    cache = {"cids_id": np.asarray(eval_bundle_id["cids_img"]), "cids_ood": np.asarray(eval_bundle_ood["cids_img"])}
     for k in pca_projs:
         cache[f"pca_{k}"] = pca_projs[k]
-    for perp, tsne in tsne_by_perp.items():
-        for k in tsne:
-            cache[f"tsne_{perp}_{k}"] = tsne[k]
+    for k in tsne_projs:
+        cache[f"tsne_{k}"] = tsne_projs[k]
     np.savez(dpath_cache / "projections.npz", **cache)
     _log("projections complete")
 
 def _load_projections(dpath_cache):
     """Load an eval's cached raw projections from dpath_cache/projections.npz:
-    (tsne_by_perp, pca_projs, cids_id, cids_ood, perplexities). tsne_by_perp = {perplexity: {id/ood/fullset:
-    proj}}; pca_projs is keyed id/ood/fullset (shared across perplexities)."""
+    (tsne_projs, pca_projs, cids_id, cids_ood). Both tsne_projs and pca_projs are keyed id/ood/fullset."""
     npz = np.load(dpath_cache / "projections.npz")
     keys = ("id", "ood", "fullset")
-    perplexities = [int(p) for p in npz["perplexities"]]
-    tsne_by_perp = {perp: {k: npz[f"tsne_{perp}_{k}"] for k in keys} for perp in perplexities}
-    return (tsne_by_perp, {k: npz[f"pca_{k}"] for k in keys},
-            list(npz["cids_id"]), list(npz["cids_ood"]), perplexities)
+    return ({k: npz[f"tsne_{k}"] for k in keys}, {k: npz[f"pca_{k}"] for k in keys},
+            list(npz["cids_id"]), list(npz["cids_ood"]))
 
 def _ordered_eval_dirs(dpath_evals):
     """Eval dirs that hold a cached projections.npz, in chronological order (_base, thresholds, final)."""
@@ -996,20 +948,19 @@ def _ema_through(dpath_evals, eval_name, ema_tau):
     seeds `eval_name`'s orientation -- identical to that eval's frame in the evolution GIF (which sweeps
     the same caches in the same order). Recomputed from the on-disk caches each call, so the pipeline
     carries no live/resume orientation state. Returns {key: ref} ({} when `eval_name` is the first eval)."""
-    ref = {}  # keyed (perplexity, proj key) -- each perplexity's t-SNE has its own orientation reference
+    ref = {}  # keyed by proj key -- each t-SNE proj key has its own orientation reference
     for d in _ordered_eval_dirs(dpath_evals):
         if d.name == eval_name:
             break
-        tsne_by_perp, _, cids_id, cids_ood, _ = _load_projections(d)
+        tsne_projs, _, cids_id, cids_ood = _load_projections(d)
         cids_by = _cids_by(cids_id, cids_ood)
-        for perp, tsne in tsne_by_perp.items():
-            for k in tsne:
-                _, ref[(perp, k)] = orient_tsne(tsne[k], cids_by[k], ref.get((perp, k)), ema_tau)
+        for k in tsne_projs:
+            _, ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
     return ref
 
 def _save_orient_ref(dpath_eval, ref, ema_tau):
-    """Cache this eval's OUTGOING orientation reference (the running per-(perplexity, proj key) {class: CoM}
-    through this eval) so the next eval's render reads it in O(1) instead of re-sweeping every prior eval
+    """Cache this eval's OUTGOING orientation reference (the running per-proj-key {class: CoM} through
+    this eval) so the next eval's render reads it in O(1) instead of re-sweeping every prior eval
     (see `_incoming_ref`). ema_tau is stored alongside so a render under a different smoothing factor
     recomputes rather than reusing a stale reference."""
     save_pickle({"ema_tau": ema_tau, "ref": ref}, dpath_eval / "orient_ref.pkl")
@@ -1028,7 +979,7 @@ def _incoming_ref(dpath_evals, eval_name, ema_tau):
     O(1) from the immediately-preceding eval's cached outgoing reference -- the memo of the same
     chronological orient sweep `_ema_through` would do. Falls back to recomputing from the raw caches
     (`_ema_through`) when that cache is absent or was written under a different ema_tau, so the result is
-    always identical to the full sweep. Returns {(perplexity, proj key): {class: CoM}} ({} for the first eval)."""
+    always identical to the full sweep. Returns {proj key: {class: CoM}} ({} for the first eval)."""
     ordered = _ordered_eval_dirs(dpath_evals)
     idx = [d.name for d in ordered].index(eval_name)
     if idx == 0:
@@ -1050,7 +1001,7 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
     if _no_panels_enabled(plot_flags):
         return
     dpath_eval = dpath_evals / eval_name
-    tsne_by_perp, pca_projs, cids_id, cids_ood, perplexities = _load_projections(dpath_eval)
+    tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(dpath_eval)
     cids_all = list(cids_id) + list(cids_ood)
     # color maps span the whole dataset so a class is colored identically in every plot; colors
     # are assigned in order of how many plotted (ID+OOD) samples each class/penult-group has
@@ -1063,13 +1014,11 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
     ref = _incoming_ref(dpath_evals, eval_name, ema_tau)  # reference through the prior evals (O(1) cache read)
     cids_by = _cids_by(cids_id, cids_ood)
     tsne_oriented = {}
-    for perp, tsne in tsne_by_perp.items():
-        tsne_oriented[perp] = {}
-        for k in tsne:
-            tsne_oriented[perp][k], ref[(perp, k)] = orient_tsne(tsne[k], cids_by[k], ref.get((perp, k)), ema_tau)
+    for k in tsne_projs:
+        tsne_oriented[k], ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
     _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
     tag = "base" if eval_name == "_base" else eval_name
-    _render_grids(tsne_oriented, pca_projs, perplexities, cids_id, cids_ood, penults_id, penults_ood,
+    _render_grids(tsne_oriented, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
                   dpath_eval / "viz", cfg_manifold_viz, viz_context, tag, plot_flags)
 
@@ -1088,27 +1037,23 @@ def _evolution_limits(evals, ema_tau):
     bound (running max |coord| over ORIENTED projections -- orientation rotates points about the origin,
     so the bound must be taken post-orientation, with the same orientation sweep as the render). Reuses
     _common_limits/_square_limits on the accumulated extremes so the frozen axes are identical to
-    materializing every eval. PCA is shared across perplexities; t-SNE bounds are accumulated per
-    perplexity. Returns {(method, perp, proj key): (xlim, ylim)} (perp is None for PCA) for proj key in
-    id/ood/fullset."""
+    materializing every eval. Returns {(method, proj key): (xlim, ylim)} for proj key in id/ood/fullset."""
     keys = ("id", "ood", "fullset")
     pca_lo, pca_hi = {k: None for k in keys}, {k: None for k in keys}
-    tsne_absmax = {}  # (perp, k) -> running max |coord| over oriented projections
-    ref = {}          # (perp, k) -> running orientation reference (per-class CoM)
+    tsne_absmax = {k: 0.0 for k in keys}  # proj key -> running max |coord| over oriented projections
+    ref = {}                              # proj key -> running orientation reference (per-class CoM)
     for d in evals:
-        tsne_by_perp, pca_projs, cids_id, cids_ood, _ = _load_projections(d)
+        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d)
         cids_by = _cids_by(cids_id, cids_ood)
         for k in keys:
             lo, hi = pca_projs[k].min(axis=0), pca_projs[k].max(axis=0)
             pca_lo[k] = lo if pca_lo[k] is None else np.minimum(pca_lo[k], lo)
             pca_hi[k] = hi if pca_hi[k] is None else np.maximum(pca_hi[k], hi)
-        for perp, tsne in tsne_by_perp.items():
-            for k in keys:
-                oriented, ref[(perp, k)] = orient_tsne(tsne[k], cids_by[k], ref.get((perp, k)), ema_tau)
-                tsne_absmax[(perp, k)] = max(tsne_absmax.get((perp, k), 0.0), float(np.abs(oriented).max()))
-    limits = {("PCA", None, k): _common_limits([np.stack([pca_lo[k], pca_hi[k]])]) for k in keys}
-    for (perp, k), absmax in tsne_absmax.items():
-        limits[("t-SNE", perp, k)] = _square_limits([np.array([[absmax, absmax]])])
+            oriented, ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
+            tsne_absmax[k] = max(tsne_absmax[k], float(np.abs(oriented).max()))
+    limits = {("PCA", k): _common_limits([np.stack([pca_lo[k], pca_hi[k]])]) for k in keys}
+    for k in keys:
+        limits[("t-SNE", k)] = _square_limits([np.array([[tsne_absmax[k], tsne_absmax[k]]])])
     return limits
 
 def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot_flags):
@@ -1134,7 +1079,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
     frame_ms = cfg_manifold_viz["eval_duration"] / n_stoch_layers  # per-frame ms so each eval shows for eval_duration
     ema_tau = cfg_manifold_viz["tsne"]["ema_tau"]
     # eval set is fixed across checkpoints, so any eval's cids give the same (count-ordered) colors
-    _, _, cids_id, cids_ood, perplexities = _load_projections(evals[-1])
+    _, _, cids_id, cids_ood = _load_projections(evals[-1])
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names = \
         _build_color_maps(viz_context, cids_id + cids_ood, cfg_color)
     cmaps = (color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot)  # shipped to workers (O(classes))
@@ -1142,10 +1087,8 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
     limits_by = _evolution_limits(evals, ema_tau)  # frozen axes per (method, proj key), single streaming pass
 
     jobs = []  # one evolution-GIF job per (render target, grid); fanned out across cores below
-    # per-method grids: PCA once + one t-SNE per perplexity (method dir suffixed when there's more than one)
-    grid_targets = [("PCA", "pca", None)] + [
-        ("t-SNE", f"tsne{_perp_suffix(perplexities, perp)}", perp) for perp in perplexities]
-    for method, method_dir, perp in grid_targets:
+    # per-method grids: PCA + t-SNE, under viz/<group>/<method_dir>/
+    for method, method_dir in [("PCA", "pca"), ("t-SNE", "tsne")]:
         for out_name, subject, grid in _GRIDS:
             group, stem = _grid_group(out_name)
             if not plot_flags[f"plot_{group}"]:  # 2panel / 7panel toggles (dev.manifold_viz)
@@ -1153,23 +1096,21 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
             stems = _stems_of(grid)
             col_titles = _COMPOSITE_COL_TITLES if out_name == "fullset_panel" else None
             style = RenderStyle(method, marker_size, legends, n_stoch_layers, frame_ms, bg_color, col_titles)
-            limits = {s: limits_by[(method, perp, _STEM_PROJKEY[s])] for s in stems}
+            limits = {s: limits_by[(method, _STEM_PROJKEY[s])] for s in stems}
             fpath = dpath_out / group / method_dir / f"{stem}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((composite_evolution_gif, (grid, subject, viz_context, evals, names, cmaps,
-                                                   ema_tau, limits, fpath, style, perp)))
-    # cross-method 4panel evolution GIFs (PCA top / t-SNE bottom): one per perplexity, under viz/4panel{_<perp>}/
+                                                   ema_tau, limits, fpath, style)))
+    # cross-method 4panel evolution GIFs (PCA top / t-SNE bottom): under viz/4panel/
     if plot_flags["plot_4panel"]:
         quad_style = RenderStyle(None, marker_size, legends, n_stoch_layers, frame_ms, bg_color)
-        for perp in perplexities:
-            quad_dir = f"4panel{_perp_suffix(perplexities, perp)}"
-            for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
-                limits = {("PCA", s): limits_by[("PCA", None, _STEM_PROJKEY[s])] for s in (leaf_stem, penult_stem)}
-                limits.update({("t-SNE", s): limits_by[("t-SNE", perp, _STEM_PROJKEY[s])] for s in (leaf_stem, penult_stem)})
-                fpath = dpath_out / quad_dir / f"{out_name}.gif"
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                jobs.append((quad_evolution_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
-                                                  cmaps, ema_tau, limits, fpath, quad_style, perp)))
+        for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
+            limits = {("PCA", s): limits_by[("PCA", _STEM_PROJKEY[s])] for s in (leaf_stem, penult_stem)}
+            limits.update({("t-SNE", s): limits_by[("t-SNE", _STEM_PROJKEY[s])] for s in (leaf_stem, penult_stem)})
+            fpath = dpath_out / "4panel" / f"{out_name}.gif"
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            jobs.append((quad_evolution_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
+                                              cmaps, ema_tau, limits, fpath, quad_style)))
     _log("rendering evolution")
     _parallel_render(jobs)
     _log("evolution complete")

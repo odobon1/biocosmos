@@ -1,10 +1,11 @@
 n_stoch_layers: 7  # sample draw-order shuffles per eval frame (>= 1). =1 -> static PNG; >1 -> strobe GIF
 eval_duration: 1500  # ms each eval is shown in any GIF; per-frame ms = eval_duration / n_stoch_layers
+# n_stoch_layers: 28
+# eval_duration: 6000
 bg_color: "#F5F5DC"  # background color in hex format; null -> white; #F2E8CF (soft warm beige); #F5F5DC (CSS beige); #EAE0C8 (more tan)
 
 tsne:
-  # perplexity: [7, 15, 30, 60, 120]  # list of t-SNE perplexities; a t-SNE is generated at each. >1 -> tsne/ and 4panel/ dirs are suffixed by perplexity (tsne_15, 4panel_15, ...); a single value keeps the unsuffixed tsne/ and 4panel/
-  perplexity: [30]
+  perplexity: 30
   n_iter: 1000
   ema_tau: 0.5  # (0.0, 1.0]; t-SNE orientation smoothing: each eval is aligned (orthogonal Procrustes, rotation + reflection) to a running reference of per-class CoMs, into which this fraction of the eval's oriented CoMs is then mixed (1.0 = align to the previous eval only; smaller damps drift across evals)
 

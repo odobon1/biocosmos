@@ -117,6 +117,28 @@ def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: 
 def _iter_seeds(n_trials: int) -> list[int]:
     return list(range(SEED0, SEED0 + n_trials))
 
+def _check_no_removals(campaign: str, prev_meta: dict, setting_names: list[str], datasets: list[str], seeds: list[int]) -> None:
+    """A campaign's matrix may grow across runs (add settings/datasets/seeds) but never shrink.
+    Compare the planned matrix against the one persisted from a prior run and raise if any
+    previously-run setting, dataset, or seed is missing -- dropping one would orphan its
+    already-computed trials and silently remove them from the campaign."""
+    removed = []
+    for kind, prev_vals, curr_vals in (
+        ("settings", prev_meta["settings"], setting_names),
+        ("datasets", prev_meta["datasets"], datasets),
+        ("seeds", prev_meta["seeds"], seeds),
+    ):
+        missing = [v for v in prev_vals if v not in set(curr_vals)]
+        if missing:
+            removed.append(f"  {kind} removed: {missing}")
+    if removed:
+        raise RuntimeError(
+            f"Campaign '{campaign}' config drops items recorded by a prior run "
+            f"(settings/datasets/seeds may be added across runs but never removed):\n"
+            + "\n".join(removed)
+            + "\nRestore the removed items, or start a new campaign."
+        )
+
 def _enable_child_subreaper() -> None:
     """Become the reaper for orphaned descendants. torch elastic starts each
     rank in its own session, so when a rank is SIGKILLed (e.g. OOM) its
@@ -276,6 +298,10 @@ def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
 def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[dict]) -> None:
+    # Validate the planned matrix before any side effects: every setting needs a unique 'name'.
+    settings = _expand_settings(baseline_overrides)
+    seeds = _iter_seeds(n_trials)
+
     _enable_child_subreaper()
     # Route SIGTERM (e.g. `kill`, SLURM scancel) through the same path as Ctrl-C
     # so the trial's subtree is torn down before the campaign exits.
@@ -290,25 +316,30 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     save_pickle(time_data, dpath_campaign / "time.pkl")
 
     n_gpus = torch.cuda.device_count()
+    setting_names = [name for name, _ in settings]
     fpath_meta = dpath_campaign / "campaign_metadata.json"
     if fpath_meta.exists():
-        existing_meta = load_json(fpath_meta)
-        if existing_meta["n_gpus"] != n_gpus:
+        metadata_camp = load_json(fpath_meta)
+        if metadata_camp["n_gpus"] != n_gpus:
             raise RuntimeError(
                 f"GPU count mismatch: campaign '{campaign}' was run with "
-                f"{existing_meta['n_gpus']} GPUs but current environment has {n_gpus}."
+                f"{metadata_camp['n_gpus']} GPUs but current environment has {n_gpus}."
             )
+        # campaign matrix is additive across runs: items may be added but never removed
+        _check_no_removals(campaign, metadata_camp, setting_names, datasets, seeds)
     else:
         metadata_camp = {
             "duration": "0-00:00:00",
             "n_gpus": n_gpus,
         }
-        save_json(metadata_camp, dpath_campaign / "campaign_metadata.json")
+    # record the (possibly grown) planned matrix so the next run can detect removals
+    metadata_camp["settings"] = setting_names
+    metadata_camp["datasets"] = list(datasets)
+    metadata_camp["seeds"] = seeds
+    save_json(metadata_camp, fpath_meta)
 
     cfg_baseline = _load_or_create_baseline_config(campaign)
     cfg_manifold_viz = _load_or_create_manifold_viz_config(campaign)
-    settings = _expand_settings(baseline_overrides)
-    seeds = _iter_seeds(n_trials)
 
     for setting, setting_payload in settings:
         _write_setting_overrides(campaign, setting, setting_payload)

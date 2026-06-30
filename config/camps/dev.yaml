@@ -1,8 +1,10 @@
 n_trials: 3
-datasets: [bryo, cub, lepid, nymph]
+# datasets: [bryo, cub, lepid, nymph]
+datasets: [cub, nymph]
 
 baseline_overrides:
   - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
+  - {loss2.mix: 0.4, loss2.targ: phylo, name: hp4}
   - {loss.targ: aligned, name: iw}
   - {loss.targ: multipos, name: sw}
 

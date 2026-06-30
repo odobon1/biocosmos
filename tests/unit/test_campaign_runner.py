@@ -6,6 +6,39 @@ import subprocess
 import campaign_runner as cr
 
 
+def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
+    """Wire run_campaign so trials complete cleanly without real subprocesses/renders: each fake trial
+    leaves the chkpts/in_progress dir + incomplete metadata behind (the runner flips complete=True).
+    Returns the list of (setting, dataset, seed) tuples each launched trial was invoked with."""
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "dev": {"traintime_evals": False},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    scheduled: list = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        scheduled.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
+        d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        (d / "chkpts" / "in_progress").mkdir(parents=True)
+        with open(d / "trial_metadata.json", "w") as f:
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    return scheduled
+
+
 def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
@@ -523,3 +556,154 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "iw/cub/42\n"
         "iw/lepid/42\n"
     )
+
+
+def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_grow",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+    )
+
+    with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
+        meta = json.load(f)
+    assert meta["settings"] == ["iw"]
+    assert meta["datasets"] == ["cub"]
+    assert meta["seeds"] == [42]
+    assert scheduled == [("iw", "cub", 42)]
+
+    # relaunch with added settings, datasets, and seeds -> matrix grows, no error
+    n_before = len(scheduled)
+    cr.run_campaign(
+        campaign="cmp_grow",
+        n_trials=2,
+        datasets=("cub", "lepid"),
+        baseline_overrides=[
+            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "phylo", "name": "hp"},
+        ],
+    )
+
+    with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
+        meta = json.load(f)
+    assert meta["settings"] == ["iw", "hp"]
+    assert meta["datasets"] == ["cub", "lepid"]
+    assert meta["seeds"] == [42, 43]
+
+    # the already-completed iw/cub/42 trial is skipped; only the 7 newly-added trials run
+    relaunch_calls = scheduled[n_before:]
+    assert ("iw", "cub", 42) not in relaunch_calls
+    assert len(relaunch_calls) == 7
+
+
+def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
+    # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
+    # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
+        cr.run_campaign(
+            campaign="cmp_dup",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[
+                {"loss.targ": "aligned", "name": "dup"},
+                {"loss.targ": "phylo", "name": "dup"},
+            ],
+        )
+
+    assert not (tmp_path / "cmp_dup").exists()
+
+
+def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path, monkeypatch) -> None:
+    # mirrors production: between launches a trial (utils/train.py update_campaign_time) rewrites
+    # campaign_metadata.json with only 'duration' changed; the matrix keys must survive for the
+    # relaunch's removal check to read them, and the trial-written duration must survive the relaunch
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_roundtrip",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+    )
+
+    fpath_meta = tmp_path / "cmp_roundtrip" / "campaign_metadata.json"
+    meta = json.loads(fpath_meta.read_text())
+    meta["duration"] = "0-01:23:45"  # whole-dict rewrite, duration only (what update_campaign_time does)
+    fpath_meta.write_text(json.dumps(meta))
+
+    # additive relaunch must not error and must preserve the trial-written duration
+    cr.run_campaign(
+        campaign="cmp_roundtrip",
+        n_trials=1,
+        datasets=("cub", "lepid"),
+        baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+    )
+
+    meta = json.loads(fpath_meta.read_text())
+    assert meta["duration"] == "0-01:23:45"
+    assert meta["datasets"] == ["cub", "lepid"]
+
+
+def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_rm_setting",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[
+            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "phylo", "name": "hp"},
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="settings removed.*hp"):
+        cr.run_campaign(
+            campaign="cmp_rm_setting",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+        )
+
+
+def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_rm_dataset",
+        n_trials=1,
+        datasets=("cub", "lepid"),
+        baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+    )
+
+    with pytest.raises(RuntimeError, match="datasets removed.*lepid"):
+        cr.run_campaign(
+            campaign="cmp_rm_dataset",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+        )
+
+
+def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_rm_seed",
+        n_trials=2,
+        datasets=("cub",),
+        baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+    )
+
+    with pytest.raises(RuntimeError, match="seeds removed.*43"):
+        cr.run_campaign(
+            campaign="cmp_rm_seed",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[{"loss.targ": "aligned", "name": "iw"}],
+        )

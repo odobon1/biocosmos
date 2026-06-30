@@ -100,6 +100,10 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
+**Note:** Within a single campaign config, every `baseline_overrides` entry must have a unique `name`; a duplicate raises an error at kickoff.
+
+**Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (`baseline_overrides` entries), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
+
 ## Config Override Layers
 
 Training config is assembled from multiple sources. Layers are listed in increasing priority order — each layer overwrites anything set by earlier layers.

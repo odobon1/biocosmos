@@ -29,7 +29,12 @@ def compute_dataloader_workers_prefetch(
     slurm_alloc = get_slurm_alloc()
 
     n_gpus = max(1, slurm_alloc["n_gpus"])
-    n_workers_auto = max(1, (slurm_alloc["n_cpus"] // n_gpus) - 1)
+    # One rank per GPU. Reserve 2 cores per rank for non-decode load -- the main/DDP process and the
+    # DataLoader pin_memory thread -- so decode workers don't oversubscribe the cores. (Reserving only 1
+    # left no slack for the pin thread: 16 CPUs / 2 GPUs -> 7 workers/rank -> 14 workers + 2 main = 16,
+    # fully packed.) Dividing the live SLURM core count by n_gpus makes this scale across 1/2/4 GPUs
+    # without retuning, for whatever (n_cpus, n_gpus) the alloc actually grants.
+    n_workers_auto = max(1, (slurm_alloc["n_cpus"] // n_gpus) - 2)
 
     if max_n_workers_gpu is None:
         n_workers = n_workers_auto

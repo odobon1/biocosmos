@@ -1,11 +1,11 @@
-mixed_prec:  true  # mixed precision for training and validation
-act_chkpt:   true  # activation checkpointing
+mixed_prec:  true  # {true, false}; mixed precision for training and validation
+act_chkpt: false  # {true, false}; activation checkpointing
 
-prefetch_factor: 1  # dataloader prefetch factor
-max_n_workers_gpu: 4  # max dataloader workers per GPU (null for no cap)
+prefetch_factor: 4  # dataloader prefetch factor
+max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus // n_gpus) - 2, scales with the live alloc
 
-persistent_workers_train: true  # keep train dataloader workers alive across train epochs
-persistent_workers_eval:  true  # keep eval dataloader workers alive across validation epochs
+persistent_workers_train: true  # {true, false}; keep train dataloader workers alive across train epochs
+persistent_workers_eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
 
 chunk_size:
   map_img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}

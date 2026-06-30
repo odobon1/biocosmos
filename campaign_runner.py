@@ -20,16 +20,21 @@ import torch
 from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
 
+# Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
+# hand the training step's reserved-but-unallocated pool to the large O(N^2) t-SNE buffers at eval time,
+# preventing combined-set OOM (e.g. lepid, N~94k). setdefault so an explicit shell override still wins.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-CAMPAIGN = "dev3"
+
+CAMPAIGN = "dev_pf4_mw6"
 
 SEED0 = 42
 NUM_SEEDS = 3
 
 # DATASETS = ("bryo", "cub", "lepid", "nymph")
-DATASETS = ("nymph", "lepid", "cub", "bryo")
+# DATASETS = ("nymph", "lepid", "cub", "bryo")
 # DATASETS = ("cub", "bryo", "lepid", "nymph")
-# DATASETS = ("cub", "nymph")
+DATASETS = ("cub", "lepid")
 # DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [

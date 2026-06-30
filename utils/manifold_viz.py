@@ -189,9 +189,10 @@ def _tsne_torch_single(X, init, perplexity, n_iter=1000, exaggeration=12.0, expl
     learning_rate='auto'), so the result is structurally equivalent to sklearn t-SNE -- not bit-identical.
     `init` is the 2D starting layout (the reused PCA init).
 
-    Memory is pinned to the n×n distance matrix + exactly 3 live n×n buffers (P, plus two preallocated
-    work buffers reused in place every iteration) so it fits large n: early exaggeration is folded into P
-    in-place (no separate P_exag), the diagonal is zeroed instead of multiplying by an n×n mask, and the
+    Memory: the nxn distance matrix is freed right after the perplexity search, leaving exactly 3 live
+    nxn buffers in the optimization loop (P, plus two preallocated work buffers reused in place every
+    iteration) so it fits large n: early exaggeration is folded into P
+    in-place (no separate P_exag), the diagonal is zeroed instead of multiplying by an nxn mask, and the
     low-dim affinities are built via the gram trick into the preallocated buffers (no cdist temporaries
     and no per-iteration allocation churn).
     """
@@ -205,6 +206,7 @@ def _tsne_torch_single(X, init, perplexity, n_iter=1000, exaggeration=12.0, expl
     Q = torch.empty((n, n), device=dev)    # preallocated PQ-term buffer (reused each iter)
 
     P = _hbeta_search(D2, perplexity)
+    del D2  # only feeds the perplexity search; free the n×n distance matrix before the optimization loop
     P = ((P + P.t()) / (2 * n)).clamp_min(eps)  # symmetrize -> joint, sums to 1
     P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter) -> no 2nd n×n buffer
     Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # shared PCA init
@@ -262,6 +264,7 @@ def _tsne_torch_sharded(X, init, perplexity, n_iter, exaggeration, explore_iter,
     # search (independent across rows -> shards cleanly). Symmetrizing to the joint P needs P's
     # transpose, i.e. this rank's columns of the full conditional, gathered from every rank's row-block.
     Pc = _hbeta_search(D2, perplexity, self_offset=r0)  # nl × N conditional
+    del D2  # only feeds the perplexity search; free it before the transpose/optimizer buffers allocate
     P = ((Pc + _transpose_shard(Pc, counts, starts)) / (2 * n)).clamp_min(eps)  # nl × N joint
     del Pc
     P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter)

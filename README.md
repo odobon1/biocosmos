@@ -86,8 +86,24 @@ Note: The full similarity matrix is computed for all model types, including SigL
 1. Define the campaign in `config/camps/<campaign>.yaml`:
     * `n_trials` — number of random seeds per setting/dataset combo
     * `datasets`
-    * `baseline_overrides` — per-setting overrides (each item needs a unique `name`)
+    * `baseline_overrides` — the per-setting config overrides, given as a list of **groups**. Each group is a list of partial settings (a set of overrides plus a `name`). The campaign's settings are the **Cartesian product** across groups: one partial setting is taken from each group and merged into a single setting, named by joining the members' names with `_`. With a single group, its members become the settings directly.
     * `suffix` — appended to the campaign name (`null` for none)
+
+   For example, crossing a loss group with a batch-size group:
+    ```yaml
+    baseline_overrides:
+      - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
+        - {loss.targ: multipos, name: sw}
+      - - {batch_size: 2_048, name: 2k}
+        - {batch_size: 1_024, name: 1k}
+    ```
+   produces four settings — `hp_2k`, `hp_1k`, `sw_2k`, `sw_1k` — each merging one partial setting from every group. A single group expands to its members unchanged:
+    ```yaml
+    baseline_overrides:
+      - - {loss.targ: aligned, name: iw}
+        - {loss.targ: multipos, name: sw}
+    ```
+   produces `iw` and `sw`.
 
    The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`).
 2. Launch the campaign, selecting the config by name:
@@ -100,9 +116,11 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
-**Note:** Within a single campaign config, every `baseline_overrides` entry must have a unique `name`; a duplicate raises an error at kickoff.
+**Note:** Groups are independent dimensions, so the same override key may not appear in more than one group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 
-**Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (`baseline_overrides` entries), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
+**Note:** Every resulting setting `name` must be unique (for crossed groups, the joined name, e.g. `hp_2k`); a duplicate raises an error at kickoff.
+
+**Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (new members within an existing `baseline_overrides` group), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. (Adding a whole new *group* re-joins every setting name, e.g. `hp` → `hp_2k`, so it reads as removing all prior settings — start a new campaign for that.) You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
 
 ## Config Override Layers
 

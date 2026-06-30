@@ -7,6 +7,7 @@ Campaigns are defined in config/camps/<campaign>.yaml, e.g. --dev_basic loads co
 from pathlib import Path
 from copy import deepcopy
 import ctypes
+import itertools
 import json
 import os
 import shutil
@@ -93,18 +94,39 @@ def _load_or_create_manifold_viz_config(campaign: str) -> dict:
     save_json(cfg_manifold_viz, fpath)
     return cfg_manifold_viz
 
-def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict]]:
+def _expand_settings(setting_groups: list[list[dict]]) -> list[tuple[str, dict]]:
+    """Expand the campaign's setting groups into the full list of (name, overrides) settings.
+
+    `baseline_overrides` is a list of groups; each group is a list of partial settings (a dict of
+    dotted-key overrides plus a 'name'). The campaign's settings are the Cartesian product across
+    groups: one partial setting is drawn from each group and merged into one setting, its name the
+    members' names joined by '_' in group order (e.g. 'hp' x '2k' -> 'hp_2k'). A single group expands
+    to its members unchanged. Groups are independent dimensions, so no override key may appear in more
+    than one group -- a shared key would have two values fighting to define it when members merge."""
+    group_keys = [
+        {k for item in group for k in item if k != "name"}
+        for group in setting_groups
+    ]
+    for (i, keys_i), (j, keys_j) in itertools.combinations(enumerate(group_keys), 2):
+        shared = keys_i & keys_j
+        if shared:
+            raise ValueError(
+                f"baseline_overrides key(s) {sorted(shared)} collide between groups {i} and {j}; "
+                f"each override key must belong to exactly one group."
+            )
+
     settings = []
     seen_names: set[str] = set()
-    for item in settings_raw:
-        if "name" not in item:
-            raise ValueError("Each baseline_overrides item must include a 'name' field.")
+    for combo in itertools.product(*setting_groups):
+        for item in combo:
+            if "name" not in item:
+                raise ValueError("Each baseline_overrides item must include a 'name' field.")
 
-        name = item["name"]
+        name = "_".join(item["name"] for item in combo)
         if name in seen_names:
             raise ValueError(f"Duplicate baseline_overrides name: {name}")
         seen_names.add(name)
-        payload = {k: deepcopy(v) for k, v in item.items() if k != "name"}
+        payload = {k: deepcopy(v) for item in combo for k, v in item.items() if k != "name"}
         settings.append((name, payload))
     return settings
 
@@ -297,7 +319,7 @@ def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[dict]) -> None:
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]]) -> None:
     # Validate the planned matrix before any side effects: every setting needs a unique 'name'.
     settings = _expand_settings(baseline_overrides)
     seeds = _iter_seeds(n_trials)
@@ -366,7 +388,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
 
                 dpath_trial = _dpath_campaign(campaign) / setting / dataset / str(seed)
                 if _check_trial_completion(dpath_trial):
-                    print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {setting}/{dataset}/{seed}")
                     continue
 
                 cfg_dict = deepcopy(cfg_baseline)
@@ -381,9 +403,9 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 
                 if dpath_trial.exists():
-                    print(f"[{idx_trial}/{n_trials_total}] RESUME: seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] RESUME: {setting}/{dataset}/{seed}")
                 else:
-                    print(f"[{idx_trial}/{n_trials_total}] seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] {setting}/{dataset}/{seed}")
 
                 _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None

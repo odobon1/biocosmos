@@ -1,5 +1,7 @@
 """
-python -m campaign_runner
+python -m campaign_runner --<campaign>
+
+Campaigns are defined in config/camps/<campaign>.yaml, e.g. --dev_basic loads config/camps/dev_basic.yaml.
 """
 
 from pathlib import Path
@@ -16,6 +18,7 @@ import traceback
 import time
 import psutil
 import torch
+import yaml
 
 from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
@@ -26,23 +29,7 @@ from utils.utils import paths, save_pickle, save_json, load_json
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
-CAMPAIGN = "dev_manifest"
-
-SEED0 = 42
-NUM_SEEDS = 3
-
-# DATASETS = ("bryo", "cub", "lepid", "nymph")
-# DATASETS = ("nymph", "lepid", "cub", "bryo")
-# DATASETS = ("cub", "bryo", "lepid", "nymph")
-DATASETS = ("nymph", "cub")
-# DATASETS = ("lepid",)
-
-BASELINE_OVERRIDES = [
-    {"batch_size": 32_000, "name": "way-too-big-bs"},
-    {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-    # {"loss.targ": "aligned", "name": "iw"},
-    {"loss.targ": "multipos", "name": "sw"},
-]
+SEED0 = 42  # first trial seed; trial seeds are SEED0 .. SEED0 + n_trials - 1
 
 
 def _relevant_stderr(stderr: str) -> str:
@@ -80,11 +67,11 @@ def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int
         else:
             f.write(traceback.format_exc())
 
-def _dpath_campaign() -> Path:
-    return paths["artifacts"] / CAMPAIGN
+def _dpath_campaign(campaign: str) -> Path:
+    return paths["artifacts"] / campaign
 
-def _load_or_create_baseline_config() -> dict:
-    fpath = _dpath_campaign() / "cfg_baseline.json"
+def _load_or_create_baseline_config(campaign: str) -> dict:
+    fpath = _dpath_campaign(campaign) / "cfg_baseline.json"
     if fpath.exists():
         return load_json(fpath)
 
@@ -96,8 +83,8 @@ def _load_or_create_baseline_config() -> dict:
     save_json(cfg_baseline, fpath)
     return cfg_baseline
 
-def _load_or_create_manifold_viz_config() -> dict:
-    fpath = _dpath_campaign() / "cfg_manifold_viz.json"
+def _load_or_create_manifold_viz_config(campaign: str) -> dict:
+    fpath = _dpath_campaign(campaign) / "cfg_manifold_viz.json"
     if fpath.exists():
         return load_json(fpath)
 
@@ -111,24 +98,24 @@ def _expand_settings(settings_raw: list[dict]) -> list[tuple[str, dict]]:
     seen_names: set[str] = set()
     for item in settings_raw:
         if "name" not in item:
-            raise ValueError("Each BASELINE_OVERRIDES item must include a 'name' field.")
+            raise ValueError("Each baseline_overrides item must include a 'name' field.")
 
         name = item["name"]
         if name in seen_names:
-            raise ValueError(f"Duplicate BASELINE_OVERRIDES name: {name}")
+            raise ValueError(f"Duplicate baseline_overrides name: {name}")
         seen_names.add(name)
         payload = {k: deepcopy(v) for k, v in item.items() if k != "name"}
         settings.append((name, payload))
     return settings
 
-def _write_setting_overrides(setting: str, normalized_overrides: dict) -> None:
-    fpath = _dpath_campaign() / setting / "overrides.json"
+def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: dict) -> None:
+    fpath = _dpath_campaign(campaign) / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w") as f:
         json.dump(normalized_overrides, f, indent=2, sort_keys=True)
 
-def _iter_seeds() -> list[int]:
-    return list(range(SEED0, SEED0 + NUM_SEEDS))
+def _iter_seeds(n_trials: int) -> list[int]:
+    return list(range(SEED0, SEED0 + n_trials))
 
 def _enable_child_subreaper() -> None:
     """Become the reaper for orphaned descendants. torch elastic starts each
@@ -242,7 +229,7 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
     metadata_trial["complete"] = True
     save_json(metadata_trial, fpath_metadata_trial)
 
-def _write_manifest(trials: list[tuple[str, str, int]], in_progress: tuple[str, str, int] | None) -> None:
+def _write_manifest(campaign: str, trials: list[tuple[str, str, int]], in_progress: tuple[str, str, int] | None) -> None:
     """Write artifacts/<campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
     into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
     start and finish so it tracks progress. `trials` is the full planned set in launch order; `in_progress`
@@ -253,7 +240,7 @@ def _write_manifest(trials: list[tuple[str, str, int]], in_progress: tuple[str, 
     buckets: dict[str, list[str]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
     for trial in trials:
         setting, dataset, seed = trial
-        dpath_trial = _dpath_campaign() / setting / dataset / str(seed)
+        dpath_trial = _dpath_campaign(campaign) / setting / dataset / str(seed)
         trial_id = f"{setting}/{dataset}/{seed}"
         if _check_trial_completion(dpath_trial):
             buckets["Completed"].append(trial_id)
@@ -270,7 +257,7 @@ def _write_manifest(trials: list[tuple[str, str, int]], in_progress: tuple[str, 
         lines.append(f"{section_emojis[title]} {title}:")
         lines.extend(buckets[title])
         lines.append("")
-    (_dpath_campaign() / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    (_dpath_campaign(campaign) / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
@@ -288,7 +275,7 @@ def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
-def run_campaign() -> None:
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[dict]) -> None:
     _enable_child_subreaper()
     # Route SIGTERM (e.g. `kill`, SLURM scancel) through the same path as Ctrl-C
     # so the trial's subtree is torn down before the campaign exits.
@@ -298,7 +285,7 @@ def run_campaign() -> None:
         "last_updated": time.time(),
         "elapsed": 0.0,
     }
-    dpath_campaign = _dpath_campaign()
+    dpath_campaign = _dpath_campaign(campaign)
     dpath_campaign.mkdir(parents=True, exist_ok=True)
     save_pickle(time_data, dpath_campaign / "time.pkl")
 
@@ -308,7 +295,7 @@ def run_campaign() -> None:
         existing_meta = load_json(fpath_meta)
         if existing_meta["n_gpus"] != n_gpus:
             raise RuntimeError(
-                f"GPU count mismatch: campaign '{CAMPAIGN}' was run with "
+                f"GPU count mismatch: campaign '{campaign}' was run with "
                 f"{existing_meta['n_gpus']} GPUs but current environment has {n_gpus}."
             )
     else:
@@ -318,41 +305,41 @@ def run_campaign() -> None:
         }
         save_json(metadata_camp, dpath_campaign / "campaign_metadata.json")
 
-    cfg_baseline = _load_or_create_baseline_config()
-    cfg_manifold_viz = _load_or_create_manifold_viz_config()
-    settings = _expand_settings(BASELINE_OVERRIDES)
-    seeds = _iter_seeds()
+    cfg_baseline = _load_or_create_baseline_config(campaign)
+    cfg_manifold_viz = _load_or_create_manifold_viz_config(campaign)
+    settings = _expand_settings(baseline_overrides)
+    seeds = _iter_seeds(n_trials)
 
     for setting, setting_payload in settings:
-        _write_setting_overrides(setting, setting_payload)
+        _write_setting_overrides(campaign, setting, setting_payload)
 
-    n_trials = len(seeds) * len(DATASETS) * len(settings)
-    print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
+    n_trials_total = len(seeds) * len(datasets) * len(settings)
+    print(f"Campaign: '{campaign}' ({n_trials_total} trials)")
 
     trials = [
         (setting, dataset, seed)
         for seed in seeds
-        for dataset in DATASETS
+        for dataset in datasets
         for setting, _ in settings
     ]
-    _write_manifest(trials, in_progress=None)
+    _write_manifest(campaign, trials, in_progress=None)
 
     render_proc: subprocess.Popen | None = None
     render_evo = cfg_baseline["dev"]["traintime_evals"]  # evolution GIFs need mid-evals to evolve across
 
     idx_trial = 0
     for idx_seed, seed in enumerate(seeds):
-        for dataset in DATASETS:
+        for dataset in datasets:
             for setting, setting_payload in settings:
                 idx_trial += 1
 
-                dpath_trial = _dpath_campaign() / setting / dataset / str(seed)
+                dpath_trial = _dpath_campaign(campaign) / setting / dataset / str(seed)
                 if _check_trial_completion(dpath_trial):
-                    print(f"[{idx_trial}/{n_trials}] SKIP (completed): seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): seed={seed} dataset={dataset} setting={setting}")
                     continue
 
                 cfg_dict = deepcopy(cfg_baseline)
-                cfg_dict["campaign"] = CAMPAIGN
+                cfg_dict["campaign"] = campaign
                 cfg_dict["setting"] = setting
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
@@ -363,37 +350,37 @@ def run_campaign() -> None:
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 
                 if dpath_trial.exists():
-                    print(f"[{idx_trial}/{n_trials}] RESUME: seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] RESUME: seed={seed} dataset={dataset} setting={setting}")
                 else:
-                    print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting}")
+                    print(f"[{idx_trial}/{n_trials_total}] seed={seed} dataset={dataset} setting={setting}")
 
-                _write_manifest(trials, in_progress=(setting, dataset, seed))
+                _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
                 try:
                     _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
                     _mark_trial_complete(dpath_trial)
-                    _write_manifest(trials, in_progress=None)
+                    _write_manifest(campaign, trials, in_progress=None)
                 except KeyboardInterrupt:
                     print(
-                        f"\n[{idx_trial}/{n_trials}] INTERRUPTED — terminated trial process group; exiting campaign.",
+                        f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
                         flush=True,
                     )
                     if render_proc is not None and render_proc.poll() is None:
                         render_proc.terminate()
-                    _write_manifest(trials, in_progress=None)
+                    _write_manifest(campaign, trials, in_progress=None)
                     return
                 except Exception as e:
                     _log_trial_error(
                         dpath_trial=dpath_trial,
                         idx_trial=idx_trial,
-                        n_trials=n_trials,
+                        n_trials=n_trials_total,
                         seed=seed,
                         dataset=dataset,
                         setting=setting,
                         exc=e,
                     )
-                    _write_manifest(trials, in_progress=None)
+                    _write_manifest(campaign, trials, in_progress=None)
                     continue
 
                 # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
@@ -401,7 +388,7 @@ def run_campaign() -> None:
                 # practice, since a trial far outlasts a render).
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.wait()
-                render_proc = _spawn_render(f"{CAMPAIGN}/{setting}/{dataset}/{seed}", render_evo)
+                render_proc = _spawn_render(f"{campaign}/{setting}/{dataset}/{seed}", render_evo)
 
     # let the last trial's render finish before the campaign exits
     if render_proc is not None:
@@ -411,5 +398,32 @@ def run_campaign() -> None:
             render_proc.terminate()
 
 
+def _parse_campaign_name(argv: list[str]) -> str:
+    if len(argv) != 1:
+        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "camps").glob("*.yaml")))
+        raise SystemExit(f"Usage: python -m campaign_runner --<campaign>\nAvailable campaigns: {avail}")
+    return argv[0].lstrip("-")
+
+def _load_campaign_config(name: str) -> dict:
+    fpath = paths["config"] / "camps" / f"{name}.yaml"
+    if not fpath.exists():
+        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "camps").glob("*.yaml")))
+        raise SystemExit(f"Campaign config not found: {fpath}\nAvailable campaigns: {avail}")
+    with open(fpath) as f:
+        return yaml.safe_load(f)
+
+def main() -> None:
+    name = _parse_campaign_name(sys.argv[1:])
+    cfg = _load_campaign_config(name)
+    suffix = cfg["suffix"]
+    campaign = f"{name}_{suffix}" if suffix is not None else name
+    run_campaign(
+        campaign=campaign,
+        n_trials=cfg["n_trials"],
+        datasets=cfg["datasets"],
+        baseline_overrides=cfg["baseline_overrides"],
+    )
+
+
 if __name__ == "__main__":
-    run_campaign()
+    main()

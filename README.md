@@ -83,20 +83,22 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
 
 ## Run a campaign
-1. Configure campaign matrix in `campaign_runner.py`:
-    * `CAMPAIGN`
-    * `SEED0`, `NUM_SEEDS`
-    * `DATASETS`
-    * `BASELINE_OVERRIDES`
-2. Launch campaign:
+1. Define the campaign in `config/camps/<campaign>.yaml`:
+    * `n_trials` — number of random seeds per setting/dataset combo
+    * `datasets`
+    * `baseline_overrides` — per-setting overrides (each item needs a unique `name`)
+    * `suffix` — appended to the campaign name (`null` for none)
+
+   The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`).
+2. Launch the campaign, selecting the config by name:
     ```
-    torchrun --standalone --nproc-per-node=auto -m campaign_runner
+    python -m campaign_runner --<campaign>   # e.g. python -m campaign_runner --dev_basic
     ```
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
-4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<CAMPAIGN>/<setting>/<dataset>/<seed>/error.log`).
-5. `artifacts/<CAMPAIGN>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. It is regenerated at kickoff and at each trial's start and finish.
+4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<campaign>/<setting>/<dataset>/<seed>/error.log`).
+5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. It is regenerated at kickoff and at each trial's start and finish.
 
-**Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
+**Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
 ## Config Override Layers
 
@@ -108,7 +110,7 @@ Training config is assembled from multiple sources. Layers are listed in increas
 | 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
 | 3 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
 | 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"`, `sample_volume → 20_000`, `chkpt_every → 10_000`, `batch_size → 1_024`. |
-| 5 (highest) | `BASELINE_OVERRIDES` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined at the top of `campaign_runner.py`. |
+| 5 (highest) | `baseline_overrides` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined in the campaign config (`config/camps/<campaign>.yaml`). |
 
 In standalone training (`python -m train`), only layers 1, 3, and 4 apply.
 

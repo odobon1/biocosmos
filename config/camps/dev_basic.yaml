@@ -1,0 +1,9 @@
+n_trials: 3
+datasets: [bryo, cub, lepid, nymph]
+
+baseline_overrides:
+  - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
+  - {loss.targ: aligned, name: iw}
+  - {loss.targ: multipos, name: sw}
+
+suffix: null  # {null, [str]}; no suffix if set to null

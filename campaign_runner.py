@@ -26,7 +26,7 @@ from utils.utils import paths, save_pickle, save_json, load_json
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
-CAMPAIGN = "dev_pf4_mw6"
+CAMPAIGN = "dev_manifest"
 
 SEED0 = 42
 NUM_SEEDS = 3
@@ -34,14 +34,14 @@ NUM_SEEDS = 3
 # DATASETS = ("bryo", "cub", "lepid", "nymph")
 # DATASETS = ("nymph", "lepid", "cub", "bryo")
 # DATASETS = ("cub", "bryo", "lepid", "nymph")
-DATASETS = ("cub", "lepid")
+DATASETS = ("nymph", "cub")
 # DATASETS = ("lepid",)
 
 BASELINE_OVERRIDES = [
-    # {"batch_size": 32_000, "name": "way-too-big-bs"},
+    {"batch_size": 32_000, "name": "way-too-big-bs"},
     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
     # {"loss.targ": "aligned", "name": "iw"},
-    # {"loss.targ": "multipos", "name": "sw"},
+    {"loss.targ": "multipos", "name": "sw"},
 ]
 
 
@@ -242,6 +242,36 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
     metadata_trial["complete"] = True
     save_json(metadata_trial, fpath_metadata_trial)
 
+def _write_manifest(trials: list[tuple[str, str, int]], in_progress: tuple[str, str, int] | None) -> None:
+    """Write artifacts/<campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
+    into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
+    start and finish so it tracks progress. `trials` is the full planned set in launch order; `in_progress`
+    is the trial currently running (None when nothing is). A trial is Completed if its metadata says so,
+    In Progress if it's the running one, Failed if it left an error.log behind, else Queued. Trials run
+    sequentially, so the filesystem can't tell a running trial from a crashed one (both leave
+    chkpts/in_progress); the runner passes the live trial in explicitly."""
+    buckets: dict[str, list[str]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
+    for trial in trials:
+        setting, dataset, seed = trial
+        dpath_trial = _dpath_campaign() / setting / dataset / str(seed)
+        trial_id = f"{setting}/{dataset}/{seed}"
+        if _check_trial_completion(dpath_trial):
+            buckets["Completed"].append(trial_id)
+        elif trial == in_progress:
+            buckets["In Progress"].append(trial_id)
+        elif (dpath_trial / "error.log").exists():
+            buckets["Failed"].append(trial_id)
+        else:
+            buckets["Queued"].append(trial_id)
+
+    section_emojis = {"Failed": "❌", "Completed": "✅", "In Progress": "🏃", "Queued": "⏳"}
+    lines: list[str] = []
+    for title in ("Failed", "Completed", "In Progress", "Queued"):
+        lines.append(f"{section_emojis[title]} {title}:")
+        lines.extend(buckets[title])
+        lines.append("")
+    (_dpath_campaign() / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
 def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
     trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
@@ -299,6 +329,14 @@ def run_campaign() -> None:
     n_trials = len(seeds) * len(DATASETS) * len(settings)
     print(f"Campaign: '{CAMPAIGN}' ({n_trials} trials)")
 
+    trials = [
+        (setting, dataset, seed)
+        for seed in seeds
+        for dataset in DATASETS
+        for setting, _ in settings
+    ]
+    _write_manifest(trials, in_progress=None)
+
     render_proc: subprocess.Popen | None = None
     render_evo = cfg_baseline["dev"]["traintime_evals"]  # evolution GIFs need mid-evals to evolve across
 
@@ -329,11 +367,13 @@ def run_campaign() -> None:
                 else:
                     print(f"[{idx_trial}/{n_trials}] seed={seed} dataset={dataset} setting={setting}")
 
+                _write_manifest(trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
                 try:
                     _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
                     shutil.rmtree(dpath_trial / "chkpts/in_progress")
                     _mark_trial_complete(dpath_trial)
+                    _write_manifest(trials, in_progress=None)
                 except KeyboardInterrupt:
                     print(
                         f"\n[{idx_trial}/{n_trials}] INTERRUPTED — terminated trial process group; exiting campaign.",
@@ -341,6 +381,7 @@ def run_campaign() -> None:
                     )
                     if render_proc is not None and render_proc.poll() is None:
                         render_proc.terminate()
+                    _write_manifest(trials, in_progress=None)
                     return
                 except Exception as e:
                     _log_trial_error(
@@ -352,6 +393,7 @@ def run_campaign() -> None:
                         setting=setting,
                         exc=e,
                     )
+                    _write_manifest(trials, in_progress=None)
                     continue
 
                 # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's

@@ -93,7 +93,8 @@ Note: The full similarity matrix is computed for all model types, including SigL
     torchrun --standalone --nproc-per-node=auto -m campaign_runner
     ```
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
-4. If a trial fails, campaign execution continues and details are appended to `artifacts/<CAMPAIGN>/errors.log`.
+4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<CAMPAIGN>/<setting>/<dataset>/<seed>/error.log`).
+5. `artifacts/<CAMPAIGN>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. It is regenerated at kickoff and at each trial's start and finish.
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<CAMPAIGN>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 

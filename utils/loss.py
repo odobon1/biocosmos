@@ -7,13 +7,22 @@ from utils.phylo import PhyloVCV
 import pdb
 
 
-_phylo_vcv_cache: dict[str, PhyloVCV] = {}
+_phylo_vcv_cache: dict[tuple, PhyloVCV] = {}
+_phylo_shuffle: bool = False
+_phylo_seed: int | None = None
 
+
+def configure_phylo_shuffle(phylo_shuffle: bool, seed: int | None) -> None:
+    """Set phylo-target shuffling for this run; call once at setup before any loss is computed."""
+    global _phylo_shuffle, _phylo_seed
+    _phylo_shuffle = phylo_shuffle
+    _phylo_seed = seed
 
 def get_phylo_vcv(dataset: str) -> PhyloVCV:
-    if dataset not in _phylo_vcv_cache:
-        _phylo_vcv_cache[dataset] = PhyloVCV(dataset=dataset)
-    return _phylo_vcv_cache[dataset]
+    key = (dataset, _phylo_shuffle, _phylo_seed)
+    if key not in _phylo_vcv_cache:
+        _phylo_vcv_cache[key] = PhyloVCV(dataset=dataset, phylo_shuffle=_phylo_shuffle, seed=_phylo_seed)
+    return _phylo_vcv_cache[key]
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
     if targ_type == "aligned":

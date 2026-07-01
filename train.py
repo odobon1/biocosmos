@@ -30,6 +30,7 @@ from utils.utils import (
 )
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
+from utils.loss import configure_phylo_shuffle
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections
 from utils.config import get_config_train
@@ -510,6 +511,7 @@ def run_training(cfg=None):
         cfg = get_config_train()
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
+    configure_phylo_shuffle(cfg.phylo_shuffle, cfg.seed)
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()

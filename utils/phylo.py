@@ -19,7 +19,7 @@ def get_tree(dataset: str) -> Tree:
 
 class PhyloVCV:
 
-    def __init__(self, dataset: str) -> None:
+    def __init__(self, dataset: str, phylo_shuffle: bool = False, seed: int | None = None) -> None:
 
         self.tree: Tree = get_tree(dataset)
         root: Clade = self.tree.root
@@ -43,6 +43,14 @@ class PhyloVCV:
         vcv = self.build_vcv_matrix()
 
         self.corr = vcv / max(np.diag(vcv))
+
+        if phylo_shuffle:
+            # Scramble which species maps to which position in the (already-built) correlation
+            # matrix. corr itself is untouched, so the full set of pairwise phylo distances is
+            # preserved; only the cid -> matrix-index correspondence is randomized. The permutation
+            # is derived from `seed`, so all DDP ranks agree and identically-seeded runs match.
+            perm = np.random.default_rng(seed).permutation(len(self._cids))
+            self._cid_to_idx = {cid: int(perm[i]) for i, cid in enumerate(self._cids)}
 
     def get_cids(self) -> list[str]:
         return self._cids

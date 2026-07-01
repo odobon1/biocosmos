@@ -5,8 +5,8 @@ dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 90_000
-chkpt_every: 30_000
+sample_volume: 4_000_000
+chkpt_every: 200_000
 batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
@@ -17,6 +17,8 @@ arch:  # architecture
 freeze:
   image: false
   text: false
+
+phylo_shuffle: false
 
 loss:  # primary loss
   type: bce  # {infonce1, infonce2, bce}
@@ -30,7 +32,7 @@ loss:  # primary loss
     class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
       beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
   focal:
-    gamma: 0.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
+    gamma: 2.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
   dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
   logits:
@@ -52,7 +54,7 @@ loss2:  # secondary loss
     class_bal:
       beta: 0.9999  # [0.0, 1.0)
   focal:
-    gamma: 0.0  # [0.0, inf)
+    gamma: 2.0  # [0.0, inf)
     comp_type: 1  # {1, 2}
   dsmr: true
   logits:
@@ -65,20 +67,20 @@ aug:  # image augmentation
   rrcrop:  # random resized crop
     scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
     ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
-  hflip: false  # horizontal flip w/ 50% probability
+  hflip: true  # {true, false}; horizontal flip w/ 50% probability
   cjit:  # color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
-  cjit_prob: 0.0
+  cjit_prob: 0.1
   sharpness: [0.75, 1.333]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
-  sharpness_prob: 0.0
+  sharpness_prob: 0.05
   gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
     sigma: [0.0, 1.0]
-  gblur_prob: 0.0
-img_norm: dataset  # {default, dataset}
+  gblur_prob: 0.05
+img_norm: default  # {default, dataset}
 
 text_template:
   train: train
@@ -86,9 +88,9 @@ text_template:
 
 opt:  # optimization
   lr:  # learning rate
-    init: 1.2e-5
-    decay_factor: 1.0e-3  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
-    warmup: 10_000  # sample volume for linear LR warmup
+    init: 3.2e-5
+    decay_factor: 1.0e-4  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
+    warmup: 200_000  # sample volume for linear LR warmup
   l2reg: null  # if `null`, resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
   beta2: null  # if `null`, resolved from model-specific default hyperparam config

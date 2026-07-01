@@ -9,7 +9,7 @@ def import_loss_module():
     fake_phylo = types.ModuleType("utils.phylo")
 
     class DummyPhyloVCV:
-        def __init__(self, dataset: str) -> None:
+        def __init__(self, dataset: str, phylo_shuffle: bool = False, seed: int | None = None) -> None:
             self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):

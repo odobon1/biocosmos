@@ -17,6 +17,7 @@ def make_train_config_dummy(**overrides):
         "chkpt_every": 100,
         "batch_size": 8,
         "dv_batching": False,
+        "phylo_shuffle": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1}},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
@@ -71,6 +72,35 @@ def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ValueError, match="dev.manifold_viz.n_trials must be >= 0"):
         TrainConfig(**make_train_config_dummy(dev={"logging": False, "manifold_viz": {"n_trials": -1}}))
+
+
+def test_train_config_rejects_phylo_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires an active phylo target"):
+        TrainConfig(**make_train_config_dummy(phylo_shuffle=True))
+
+
+def test_train_config_accepts_phylo_shuffle_with_secondary_phylo(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(
+        phylo_shuffle=True,
+        loss2={"type": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale_init": None, "bias_init": None}},
+    ))
+
+    assert cfg.phylo_shuffle is True
+
+
+def test_train_config_rejects_phylo_shuffle_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires a non-null seed"):
+        TrainConfig(**make_train_config_dummy(
+            phylo_shuffle=True,
+            seed=None,
+            loss={"type": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale_init": None, "bias_init": None}},
+        ))
 
 
 def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) -> None:

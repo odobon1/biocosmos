@@ -66,7 +66,7 @@ class TrainConfig:
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
-    hw: dict = field(init=False, default_factory=dict)
+    hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, standalone injects it live (converted to HardwareConfig in __post_init__)
 
     def __post_init__(self):
 
@@ -137,10 +137,10 @@ class TrainConfig:
             self.aug.pop("gblur", None)
             self.aug.pop("gblur_prob", None)
 
-        cfg_hw = get_config_hardware()
+        self.hw = HardwareConfig(**self.hw)
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
-            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
-            prefetch_factor=cfg_hw.prefetch_factor,
+            max_n_workers_gpu=self.hw.max_n_workers_gpu,
+            prefetch_factor=self.hw.prefetch_factor,
         )
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
@@ -204,7 +204,7 @@ def _resolve_model_family(model_type: str) -> str:
         "Expected a CLIP or SigLIP model type."
     )
 
-def apply_model_specific_opt_defaults(cfg_dict: dict) -> dict:
+def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dict | None = None) -> dict:
     cfg_out = deepcopy(cfg_dict)
     opt = cfg_out.get("opt", {})
 
@@ -222,7 +222,8 @@ def apply_model_specific_opt_defaults(cfg_dict: dict) -> dict:
 
     model_type = arch["model_type"]
     family = _resolve_model_family(model_type)
-    model_specific_config = load_model_specific_config_dict()
+    if model_specific_config is None:  # standalone reads live; campaign trials pass the frozen snapshot
+        model_specific_config = load_model_specific_config_dict()
     family_defaults = model_specific_config.get(family)
 
     if not isinstance(family_defaults, dict):
@@ -243,12 +244,13 @@ def apply_model_specific_opt_defaults(cfg_dict: dict) -> dict:
 
 def build_train_config(cfg_dict: dict) -> TrainConfig:
     setting_overrides = cfg_dict.pop("_setting_overrides", None)
+    model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; standalone reads live
     cfg_dict = apply_train_debug_overrides(cfg_dict)
-    cfg_dict = apply_model_specific_opt_defaults(cfg_dict)
+    cfg_dict = apply_model_specific_opt_defaults(cfg_dict, model_specific)
     if setting_overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
+    cfg_dict.setdefault("hw", load_hardware_config_dict())  # standalone reads live; campaign trials freeze hw into the baseline
     cfg = TrainConfig(**cfg_dict)
-    cfg.hw = get_config_hardware()
     if cfg.manifold_viz is None:  # standalone runs: campaign trials inject the snapshotted config
         cfg.manifold_viz = asdict(get_config_manifold_viz())
     return cfg
@@ -271,11 +273,12 @@ class HardwareConfig:
     chunk_size: dict
 
 
-def get_config_hardware():
+def load_hardware_config_dict() -> dict:
     with open(paths["config"] / "hardware.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    cfg = HardwareConfig(**cfg_dict)
-    return cfg
+        return yaml.safe_load(f)
+
+def get_config_hardware():
+    return HardwareConfig(**load_hardware_config_dict())
 
 
 @dataclass

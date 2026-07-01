@@ -24,6 +24,8 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled: list = []
@@ -61,6 +63,57 @@ def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> 
     assert out_second == baseline_a
 
 
+def test_load_or_create_baseline_keeps_model_specific_nulls(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    train_cfg = {
+        "campaign": "dev",
+        "arch": {"model_type": "siglip_vitb16"},
+        "opt": {"l2reg": None, "beta2": None},
+    }
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
+
+    baseline = cr._load_or_create_baseline_config("cmp_ms")
+
+    # model-family defaults are NOT resolved into the baseline -- they stay null so a per-setting
+    # arch.model_type override can pick up the matching family per trial (resolution happens in the
+    # trial, from the cached model-specific snapshot).
+    assert baseline["opt"]["l2reg"] is None
+    assert baseline["opt"]["beta2"] is None
+
+
+def test_load_or_create_model_specific_reuses_existing_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    cfg_a = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
+    cfg_b = {"siglip": {"l2reg": 0.1, "beta2": 0.5}, "clip": {"l2reg": 0.3, "beta2": 0.7}}
+
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: cfg_a)
+    out_first = cr._load_or_create_model_specific_config("cmp_ms")
+
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: cfg_b)
+    out_second = cr._load_or_create_model_specific_config("cmp_ms")
+
+    assert out_first == cfg_a
+    assert out_second == cfg_a
+
+
+def test_load_or_create_hardware_reuses_existing_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    cfg_a = {"mixed_prec": True, "prefetch_factor": 4}
+    cfg_b = {"mixed_prec": False, "prefetch_factor": 2}
+
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: cfg_a)
+    out_first = cr._load_or_create_hardware_config("cmp_hw")
+
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: cfg_b)
+    out_second = cr._load_or_create_hardware_config("cmp_hw")
+
+    assert out_first == cfg_a
+    assert out_second == cfg_a
+
+
 def test_load_or_create_manifold_viz_reuses_existing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
@@ -92,6 +145,8 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     scheduled = []
 
@@ -136,6 +191,8 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_dict, spare_render_pid=None: None)
 
     cr.run_campaign(
@@ -171,6 +228,8 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     dpath_trial = Path(tmp_path) / "cmp_complete" / "iw" / "cub" / "42"
@@ -211,6 +270,8 @@ def test_run_campaign_leaves_trial_incomplete_when_subprocess_fails(tmp_path, mo
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     dpath_trial = Path(tmp_path) / "cmp_fail" / "iw" / "cub" / "42"
 
@@ -337,6 +398,8 @@ def test_run_campaign_expands_setting_groups(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     scheduled = []
 
@@ -390,6 +453,8 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     scheduled = []
 
@@ -577,6 +642,8 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     # keep the post-trial render off the real subprocess path
     class _FakeProc:
@@ -647,6 +714,8 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
     }
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
 
     dpath_campaign = Path(tmp_path) / "cmp_manifest_interrupt"
 

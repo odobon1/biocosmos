@@ -21,7 +21,7 @@ import psutil
 import torch
 import yaml
 
-from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict
+from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
@@ -72,6 +72,18 @@ def _dpath_campaign(campaign: str) -> Path:
     return paths["artifacts"] / campaign
 
 def _load_or_create_baseline_config(campaign: str) -> dict:
+    """Load the campaign's frozen baseline config, creating it on first launch.
+
+    On first launch the baseline is derived from `config/train.yaml` (with `debug_mode` overrides folded
+    in and the per-trial keys 'setting'/'seed'/'dataset' stripped) and snapshotted to
+    `artifacts/<campaign>/cfg_baseline.json`. The sibling config files (`hardware.yaml`,
+    `model_specific.yaml`, `manifold_viz.yaml`) are cached to their own `cfg_*.json` snapshots and
+    injected per trial. Model-family `opt` defaults are left unresolved here (kept `null`) and filled
+    per trial from the cached model-specific snapshot (see `_load_or_create_model_specific_config`), so
+    a per-setting `arch.model_type` override still picks up the matching family's defaults. Every later
+    relaunch (resume or matrix extension) reloads that snapshot rather than re-reading `config/train.yaml`,
+    so edits to the YAML after a campaign's first launch never alter that campaign's baseline -- all of
+    its trials, original or added later, train against the same baseline."""
     fpath = _dpath_campaign(campaign) / "cfg_baseline.json"
     if fpath.exists():
         return load_json(fpath)
@@ -93,6 +105,26 @@ def _load_or_create_manifold_viz_config(campaign: str) -> dict:
     fpath.parent.mkdir(parents=True, exist_ok=True)
     save_json(cfg_manifold_viz, fpath)
     return cfg_manifold_viz
+
+def _load_or_create_model_specific_config(campaign: str) -> dict:
+    fpath = _dpath_campaign(campaign) / "cfg_model_specific.json"
+    if fpath.exists():
+        return load_json(fpath)
+
+    cfg_model_specific = load_model_specific_config_dict()
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    save_json(cfg_model_specific, fpath)
+    return cfg_model_specific
+
+def _load_or_create_hardware_config(campaign: str) -> dict:
+    fpath = _dpath_campaign(campaign) / "cfg_hardware.json"
+    if fpath.exists():
+        return load_json(fpath)
+
+    cfg_hardware = load_hardware_config_dict()
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    save_json(cfg_hardware, fpath)
+    return cfg_hardware
 
 def _expand_settings(setting_groups: list[list[dict]]) -> list[tuple[str, dict]]:
     """Expand the campaign's setting groups into the full list of (name, overrides) settings.
@@ -362,6 +394,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
 
     cfg_baseline = _load_or_create_baseline_config(campaign)
     cfg_manifold_viz = _load_or_create_manifold_viz_config(campaign)
+    cfg_model_specific = _load_or_create_model_specific_config(campaign)
+    cfg_hardware = _load_or_create_hardware_config(campaign)
 
     for setting, setting_payload in settings:
         _write_setting_overrides(campaign, setting, setting_payload)
@@ -399,6 +433,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 cfg_dict["standalone"] = False
                 cfg_dict["idx_seed"] = idx_seed
                 cfg_dict["manifold_viz"] = cfg_manifold_viz
+                cfg_dict["model_specific"] = cfg_model_specific
+                cfg_dict["hw"] = cfg_hardware
                 cfg_dict["_setting_overrides"] = setting_payload
                 cfg_dict = apply_overrides(cfg_dict, setting_payload)
 

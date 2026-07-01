@@ -30,7 +30,16 @@ def make_train_config_dummy(**overrides):
             "eps": 1.0e-6,
         },
         "freeze": {"text": False, "image": True},
-        "text_template": {"train": "train", "eval": "sci"}
+        "text_template": {"train": "train", "eval": "sci"},
+        "hw": {
+            "mixed_prec": True,
+            "act_chkpt": False,
+            "prefetch_factor": 4,
+            "max_n_workers_gpu": None,
+            "persistent_workers_train": True,
+            "persistent_workers_eval": True,
+            "chunk_size": {"map_img2img": 512, "map_cross_modal": 512},
+        },
     }
     config.update(overrides)
     return config
@@ -73,6 +82,26 @@ def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) 
     assert cfg.prefetch_factor == 2
     assert cfg.n_gpus == 1
     assert str(cfg.device) == "cuda"
+
+
+def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    # hw comes from cfg_dict (frozen baseline / hw.* override), not re-read live from hardware.yaml
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(hw={
+        "mixed_prec": False,
+        "act_chkpt": True,
+        "prefetch_factor": 8,
+        "max_n_workers_gpu": 3,
+        "persistent_workers_train": False,
+        "persistent_workers_eval": False,
+        "chunk_size": {"map_img2img": 1024, "map_cross_modal": 1024},
+    }))
+
+    assert cfg.hw.mixed_prec is False
+    assert cfg.hw.act_chkpt is True
+    assert cfg.hw.prefetch_factor == 8
+    assert cfg.hw.max_n_workers_gpu == 3
 
 
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:
@@ -206,3 +235,21 @@ def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pyte
 
     with pytest.raises(ValueError, match="Could not resolve model family"):
         apply_model_specific_opt_defaults(cfg_in)
+
+
+def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a campaign trial passes the frozen snapshot; the live model_specific.yaml must not be read
+    def _boom():
+        raise AssertionError("model_specific.yaml must not be read when a snapshot is passed")
+    monkeypatch.setattr("utils.config.load_model_specific_config_dict", _boom)
+
+    cfg_in = make_train_config_dummy(
+        arch={"model_type": "clip_vitb16", "non_causal": False},
+        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+    )
+
+    snapshot = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
+    out = apply_model_specific_opt_defaults(cfg_in, snapshot)
+
+    assert out["opt"]["l2reg"] == 0.2
+    assert out["opt"]["beta2"] == 0.98

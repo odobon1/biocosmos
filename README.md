@@ -85,7 +85,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 ## Run a campaign
 1. Define the campaign in `config/camps/<campaign>.yaml`:
     * `n_trials` — number of random seeds per setting/dataset combo
-    * `datasets`
+    * `datasets` — the datasets to train on, a list of dataset names (e.g. `bryo`, `cub`, `lepid`, `nymph`); every setting is trained on each one
     * `baseline_overrides` — the per-setting config overrides, given as a list of **groups**. Each group is a list of partial settings (a set of overrides plus a `name`). The campaign's settings are the **Cartesian product** across groups: one partial setting is taken from each group and merged into a single setting, named by joining the members' names with `_`. With a single group, its members become the settings directly.
     * `suffix` — appended to the campaign name (`null` for none)
 
@@ -105,7 +105,23 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
    produces `iw` and `sw`.
 
+   Each resulting **setting** — a member of this Cartesian product, not a single `baseline_overrides` item (they coincide only for a single group) — is trained for `n_trials` seeds on every dataset, so the campaign runs *settings × datasets × `n_trials`* trials in total.
+
    The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`).
+
+   Putting it together, a complete single-group campaign (`config/camps/foobar.yaml`):
+    ```yaml
+    n_trials: 5
+    datasets: [cub, lepid]
+
+    baseline_overrides:
+      - - {loss.targ: aligned,  name: iw}
+        - {loss.targ: multipos, name: sw}
+        - {loss.targ: phylo,    name: hp}
+
+    suffix: null
+    ```
+   Launched with `python -m campaign_runner --foobar`, this runs **30 trials**: 3 settings (`iw`, `sw`, `hp`) × 2 datasets (`cub`, `lepid`) × 5 seeds (`42`–`46` — trial seeds are `SEED0 .. SEED0 + n_trials - 1`, and `SEED0 = 42`). Each trial's artifacts land under `artifacts/foobar/<setting>/<dataset>/<seed>/`.
 2. Launch the campaign, selecting the config by name:
     ```
     python -m campaign_runner --<campaign>   # e.g. python -m campaign_runner --dev_basic
@@ -115,6 +131,10 @@ Note: The full similarity matrix is computed for all model types, including SigL
 5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. It is regenerated at kickoff and at each trial's start and finish.
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
+
+**Note:** A campaign's config is **frozen at first launch**, one snapshot per source file. `config/train.yaml` (with `debug_mode` overrides folded in, per-trial keys stripped) is snapshotted to `artifacts/<campaign>/cfg_baseline.json`, and each sibling config file is cached to its own snapshot alongside it: `config/hardware.yaml` → `cfg_hardware.json`, `config/model_specific.yaml` → `cfg_model_specific.json`, `config/manifold_viz.yaml` → `cfg_manifold_viz.json`. Every trial starts from the baseline snapshot, has the sibling snapshots injected (as `hw`, `model_specific`, `manifold_viz`), and layers its setting's `baseline_overrides` on top. Model-family `opt` defaults (`opt.l2reg`/`opt.beta2`) are left `null` in the baseline and resolved per trial from the cached model-specific snapshot, so a per-setting `arch.model_type` override still picks up the matching family's defaults. On any relaunch — resuming, or extending the matrix with added settings/datasets/seeds — the snapshots are read back from disk rather than re-read from the YAML, so edits to any of these config files after a campaign's first launch don't affect it: every trial (original or added later) uses the same frozen config. The one part still computed live per trial is the dataloader/GPU scaling (`n_workers`/`n_gpus`/`n_cpus`/`ram`), derived from the SLURM allocation so a resume adapts to the node; the static `hw` knobs (`mixed_prec`, `act_chkpt`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers_*`, `chunk_size`) are frozen and overridable per setting via `hw.*` in `baseline_overrides`.
+
+**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: aligned` is listed even if `config/train.yaml` already sets it).
 
 **Note:** Groups are independent dimensions, so the same override key may not appear in more than one group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 
@@ -129,12 +149,13 @@ Training config is assembled from multiple sources. Layers are listed in increas
 | Priority | Source | Applied by | Description |
 |----------|--------|-----------|-------------|
 | 1 (lowest) | `config/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
-| 2 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
-| 3 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
-| 4 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"`, `sample_volume → 20_000`, `chkpt_every → 10_000`, `batch_size → 1_024`. |
-| 5 (highest) | `baseline_overrides` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined in the campaign config (`config/camps/<campaign>.yaml`). |
+| 2 | `config/hardware.yaml` | `load_hardware_config_dict()` (→ `hw`) | Static hardware knobs (`mixed_prec`, `act_chkpt`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers_*`, `chunk_size`) under the `hw` key. Cached to `cfg_hardware.json` at first launch and injected per trial; the live `n_workers`/`n_gpus`/`n_cpus`/`ram` scaling is computed separately from the SLURM allocation. |
+| 3 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
+| 4 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
+| 5 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"` + overrides specified in `dev.debug`. |
+| 6 (highest) | `baseline_overrides` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined in the campaign config (`config/camps/<campaign>.yaml`); dot-paths reach any field, including `hw.*`. |
 
-In standalone training (`python -m train`), only layers 1, 3, and 4 apply.
+In standalone training (`python -m train`), only layers 1, 2, 4, and 5 apply.
 
 <br>
 

@@ -22,12 +22,20 @@ cd biocosmos
 
 ## Environment
 
-Create and activate environment:
+Two environments are provided; they differ only in their PyTorch/CUDA build, which determines the GPU architectures each supports. Pick the one matching the GPU you're running on:
+
+| Environment file | Env name | PyTorch / CUDA | Supported GPUs |
+|---|---|---|---|
+| `environment_b200.yaml` | `biocosmos_b200` | 2.7.1 / cu128 | A100, H100/H200, **B200** |
+| `environment.yaml` | `biocosmos` | 2.5.1 / cu121 | **V100**, A100, H100/H200 |
+
+B200 requires `biocosmos_b200` (only it carries Blackwell `sm_100` kernels); V100 requires `biocosmos` (only it carries Volta `sm_70` kernels). A100 and H100/H200 run on either.
+
+Create and activate the one you need, e.g. for B200:
 ```
 conda env create -f environment_b200.yaml
 conda activate biocosmos_b200
 ```
-Note: `environment.yaml` can be used for non-B200 jobs.
 
 ## Preprocessing
 

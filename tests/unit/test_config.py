@@ -40,6 +40,8 @@ def make_train_config_dummy(**overrides):
             "persistent_workers_train": True,
             "persistent_workers_eval": True,
             "chunk_size": {"map_img2img": 512, "map_cross_modal": 512},
+            "pg_timeout": 300,
+            "max_retries": 2,
         },
     }
     config.update(overrides)
@@ -126,6 +128,8 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
         "persistent_workers_train": False,
         "persistent_workers_eval": False,
         "chunk_size": {"map_img2img": 1024, "map_cross_modal": 1024},
+        "pg_timeout": 300,
+        "max_retries": 2,
     }))
 
     assert cfg.hw.mixed_prec is False

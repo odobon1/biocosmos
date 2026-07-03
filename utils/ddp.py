@@ -1,9 +1,10 @@
 import torch
 import torch.distributed as dist
 import os
+from datetime import timedelta
 
 
-def setup_ddp():
+def setup_ddp(pg_timeout=None):
     assert torch.cuda.is_available(), "CUDA is not available!"
     assert dist.is_available(), "torch.distributed is not available!"
 
@@ -11,7 +12,12 @@ def setup_ddp():
     torch.cuda.set_device(local_gpu_rank)
     device = torch.device("cuda", local_gpu_rank)
 
-    dist.init_process_group("nccl", device_id=device)
+    # pg_timeout is the NCCL collective watchdog timeout in seconds (see hardware.yaml). None -> PyTorch
+    # default (10 min); training passes cfg.hw.pg_timeout, short-lived eval/tool entrypoints leave it default.
+    pg_kwargs = {"device_id": device}
+    if pg_timeout is not None:
+        pg_kwargs["timeout"] = timedelta(seconds=pg_timeout)
+    dist.init_process_group("nccl", **pg_kwargs)
     assert dist.is_initialized(), "torch.distributed failed to initialize!"
 
     return local_gpu_rank, device

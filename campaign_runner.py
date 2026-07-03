@@ -243,6 +243,21 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
         json.dumps(cfg_dict),
     ]
 
+    # Enable the NCCL flight recorder for this trial: a per-rank ring buffer of the most recent collectives
+    # that is dumped on a watchdog timeout, so a hang leaves a trace naming which collective each rank was
+    # stuck on (and its state: scheduled/started/completed) — far more than the one-line "last enqueued/
+    # completed" the crash log otherwise gives. Dumps go under the campaign dir (survives trial-dir wipes on
+    # resume); the per-trial prefix keeps trials from clobbering each other. Analyze with `torchfrtrace`.
+    dpath_traces = _dpath_campaign(cfg_dict["campaign"]) / "nccl_traces"
+    dpath_traces.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("TORCH_NCCL_TRACE_BUFFER_SIZE", "2000")  # collectives retained per rank
+    env.setdefault("TORCH_NCCL_DUMP_ON_TIMEOUT", "1")
+    env.setdefault(
+        "TORCH_NCCL_DEBUG_INFO_TEMP_FILE",
+        str(dpath_traces / f"{cfg_dict['setting']}_{cfg_dict['dataset']}_{cfg_dict['seed']}_rank"),
+    )
+
     # start_new_session isolates torchrun from the terminal's Ctrl-C so the
     # campaign drives teardown itself (via _reap_subtree) rather than racing
     # torchrun's own signal handling.
@@ -251,6 +266,7 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
         stdout=None,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        env=env,
     )
 
     # Drain stderr in a thread: when a rank is SIGKILLed (e.g. OOM), its
@@ -396,6 +412,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     cfg_manifold_viz = _load_or_create_manifold_viz_config(campaign)
     cfg_model_specific = _load_or_create_model_specific_config(campaign)
     cfg_hardware = _load_or_create_hardware_config(campaign)
+    max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
 
     for setting, setting_payload in settings:
         _write_setting_overrides(campaign, setting, setting_payload)
@@ -445,31 +462,54 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
 
                 _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
-                try:
-                    _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
-                    shutil.rmtree(dpath_trial / "chkpts/in_progress")
-                    _mark_trial_complete(dpath_trial)
-                    _write_manifest(campaign, trials, in_progress=None)
-                except KeyboardInterrupt:
-                    print(
-                        f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
-                        flush=True,
-                    )
-                    if render_proc is not None and render_proc.poll() is None:
-                        render_proc.terminate()
-                    _write_manifest(campaign, trials, in_progress=None)
-                    return
-                except Exception as e:
-                    _log_trial_error(
-                        dpath_trial=dpath_trial,
-                        idx_trial=idx_trial,
-                        n_trials=n_trials_total,
-                        seed=seed,
-                        dataset=dataset,
-                        setting=setting,
-                        exc=e,
-                    )
-                    _write_manifest(campaign, trials, in_progress=None)
+
+                # Retry-with-resume loop: a crash mid-training costs only the work since the last checkpoint,
+                # not the whole trial. `stalled` counts consecutive attempts that didn't advance the
+                # checkpoint; any attempt that does reset it, so distinct flakes recover indefinitely.
+                fpath_ckpt = dpath_trial / "chkpts/in_progress/train_state.pt"
+                stalled = 0
+                succeeded = False
+                while True:
+                    ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
+                    try:
+                        _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
+                        shutil.rmtree(dpath_trial / "chkpts/in_progress")
+                        _mark_trial_complete(dpath_trial)
+                        _write_manifest(campaign, trials, in_progress=None)
+                        succeeded = True
+                        break
+                    except KeyboardInterrupt:
+                        print(
+                            f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
+                            flush=True,
+                        )
+                        if render_proc is not None and render_proc.poll() is None:
+                            render_proc.terminate()
+                        _write_manifest(campaign, trials, in_progress=None)
+                        return
+                    except Exception as e:
+                        made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
+                        stalled = 0 if made_progress else stalled + 1
+                        if stalled > max_retries:
+                            _log_trial_error(
+                                dpath_trial=dpath_trial,
+                                idx_trial=idx_trial,
+                                n_trials=n_trials_total,
+                                seed=seed,
+                                dataset=dataset,
+                                setting=setting,
+                                exc=e,
+                            )
+                            _write_manifest(campaign, trials, in_progress=None)
+                            break
+                        reason = "resumed past last checkpoint" if made_progress else f"no progress {stalled}/{max_retries}"
+                        print(
+                            f"\n[{idx_trial}/{n_trials_total}] TRIAL FAILED ({reason}) — retrying with resume: {setting}/{dataset}/{seed}",
+                            flush=True,
+                        )
+                        _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
+
+                if not succeeded:
                     continue
 
                 # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's

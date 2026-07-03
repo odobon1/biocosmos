@@ -282,6 +282,8 @@ class HardwareConfig:
     persistent_workers_train: bool
     persistent_workers_eval: bool
     chunk_size: dict
+    pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
+    max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 
 
 def load_hardware_config_dict() -> dict:

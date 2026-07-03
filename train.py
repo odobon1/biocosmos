@@ -505,10 +505,9 @@ class TrainPipeline:
             PrintLog.close_logs()
 
 def run_training(cfg=None):
-    local_gpu_rank, device = setup_ddp()
-
     if cfg is None:
-        cfg = get_config_train()
+        cfg = get_config_train()  # DDP-independent (reads splits + SLURM env); built first so setup_ddp gets the PG timeout
+    local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
     configure_phylo_shuffle(cfg.phylo_shuffle, cfg.seed)

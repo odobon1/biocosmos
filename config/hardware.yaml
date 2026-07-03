@@ -10,3 +10,10 @@ persistent_workers_eval: true  # {true, false}; keep eval dataloader workers ali
 chunk_size:
   map_img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
   map_cross_modal: 512
+
+pg_timeout: 600  # NCCL collective watchdog timeout, in seconds. A hang aborts (and dumps its flight-recorder
+                 # trace) after this; the campaign runner then resumes the trial from its last checkpoint. Keep
+                 # it above the longest legit gap between collectives -- the per-partition eval embedding pass
+                 # -- or large-dataset evals false-timeout. (PyTorch default is 600s)
+max_retries: 2  # max *consecutive* trial retries that make no forward progress before giving up; retries that
+                # advance the checkpoint reset this, so genuine flakes at different points recover unbounded.

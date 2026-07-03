@@ -1,9 +1,19 @@
 from pathlib import Path
 import json
+import os
 import pytest
 import subprocess
 
 import campaign_runner as cr
+
+
+def _leave_completed_trial(tmp_path, cfg_dict) -> None:
+    """Mimic a real successful trial subprocess: leave chkpts/in_progress + incomplete metadata behind so
+    run_campaign's success path (rmtree in_progress + flip complete=True) has something to act on."""
+    d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+    (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
+    with open(d / "trial_metadata.json", "w") as f:
+        json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
 
 
 def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
@@ -25,7 +35,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled: list = []
@@ -146,12 +156,15 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append((cfg_dict["seed"], cfg_dict["dataset"], cfg_dict["setting"], cfg_dict["loss"]["targ"]))
+        _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -192,8 +205,13 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda _cfg_dict, spare_render_pid=None: None)
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cr,
+        "_run_trial_subprocess",
+        lambda cfg_dict, spare_render_pid=None: _leave_completed_trial(tmp_path, cfg_dict),
+    )
 
     cr.run_campaign(
         campaign="cmp_c",
@@ -229,7 +247,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     dpath_trial = Path(tmp_path) / "cmp_complete" / "iw" / "cub" / "42"
@@ -255,7 +273,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     assert not (dpath_trial / "chkpts" / "in_progress").exists()
 
 
-def test_run_campaign_leaves_trial_incomplete_when_subprocess_fails(tmp_path, monkeypatch) -> None:
+def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
@@ -271,13 +289,16 @@ def test_run_campaign_leaves_trial_incomplete_when_subprocess_fails(tmp_path, mo
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
 
     dpath_trial = Path(tmp_path) / "cmp_fail" / "iw" / "cub" / "42"
 
-    # trial reaches final eval (writes metadata) then the subprocess crashes during finalization
+    # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
+    # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
+    calls = []
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        dpath_trial.mkdir(parents=True)
+        calls.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
+        dpath_trial.mkdir(parents=True, exist_ok=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
             json.dump({"dataset": "cub", "complete": False}, f)
         raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
@@ -291,8 +312,65 @@ def test_run_campaign_leaves_trial_incomplete_when_subprocess_fails(tmp_path, mo
         baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
     )
 
+    # one initial attempt + max_retries (2, from the injected hardware config) no-progress resume attempts
+    assert len(calls) == 2 + 1
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["complete"] is False
+    assert (dpath_trial / "error.log").exists()
+
+
+def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path, monkeypatch) -> None:
+    # a trial that flakes repeatedly but advances its checkpoint each time is resumed indefinitely: the
+    # no-progress counter resets on every forward step, so more flakes than the cap still recover.
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "dev": {"traintime_evals": False},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
+    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
+    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    dpath_trial = Path(tmp_path) / "cmp_flaky" / "iw" / "cub" / "42"
+    fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
+
+    # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
+    # checkpoint before each crash; succeed on the next. Each flake made progress, so none count as stalled.
+    n_flakes = 2 + 1
+    calls = {"n": 0}
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls["n"] += 1
+        fpath_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        fpath_ckpt.write_text(f"state-{calls['n']}")
+        os.utime(fpath_ckpt, (calls["n"] * 1000, calls["n"] * 1000))  # strictly-increasing mtime = progress
+        with open(dpath_trial / "trial_metadata.json", "w") as f:
+            json.dump({"dataset": "cub", "complete": False}, f)
+        if calls["n"] <= n_flakes:
+            raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign(
+        campaign="cmp_flaky",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+    )
+
+    assert calls["n"] == n_flakes + 1  # every progressing flake was retried; final attempt completed
+    with open(dpath_trial / "trial_metadata.json") as f:
+        assert json.load(f)["complete"] is True
+    assert not fpath_ckpt.parent.exists()  # chkpts/in_progress removed on success
+    assert not (dpath_trial / "error.log").exists()
 
 
 def test_expand_settings_raises_on_duplicate_names() -> None:
@@ -399,12 +477,15 @@ def test_run_campaign_expands_setting_groups(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append((cfg_dict["setting"], cfg_dict["loss"]["targ"], cfg_dict["loss"]["sim"]))
+        _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -454,12 +535,15 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append(cfg_dict)
+        _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -643,7 +727,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
 
     # keep the post-trial render off the real subprocess path
     class _FakeProc:
@@ -659,12 +743,12 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     # the run so an AssertionError here can't be swallowed by run_campaign's per-trial except Exception.
     in_progress_snapshots = []
 
-    # cub completes cleanly; lepid crashes during the run
+    # cub completes cleanly; lepid crashes without progress on every attempt (retried up to the cap)
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
         cur = f"{cfg_dict['setting']}/{cfg_dict['dataset']}/{cfg_dict['seed']}"
         in_progress_snapshots.append((cur, (dpath_campaign / "manifest.log").read_text()))
         d = dpath_campaign / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
-        (d / "chkpts" / "in_progress").mkdir(parents=True)
+        (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
         if cfg_dict["dataset"] == "lepid":
@@ -679,8 +763,10 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
     )
 
-    # each trial showed under In Progress while it was running
-    assert [cur for cur, _ in in_progress_snapshots] == ["iw/cub/42", "iw/lepid/42"]
+    # each trial showed under In Progress while it was running (lepid appears once per retry; collapse them)
+    order = [cur for cur, _ in in_progress_snapshots]
+    distinct_order = [cur for i, cur in enumerate(order) if i == 0 or cur != order[i - 1]]
+    assert distinct_order == ["iw/cub/42", "iw/lepid/42"]
     for cur, snapshot in in_progress_snapshots:
         assert f"🏃 In Progress:\n{cur}\n" in snapshot
 
@@ -715,7 +801,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
     monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
     monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {})
+    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
 
     dpath_campaign = Path(tmp_path) / "cmp_manifest_interrupt"
 

@@ -22,7 +22,7 @@ import torch
 import yaml
 
 from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
-from utils.utils import paths, save_pickle, save_json, load_json
+from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
 # hand the training step's reserved-but-unallocated pool to the large O(N^2) t-SNE buffers at eval time,
@@ -321,36 +321,6 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
     metadata_trial["complete"] = True
     save_json(metadata_trial, fpath_metadata_trial)
 
-def _write_manifest(campaign: str, trials: list[tuple[str, str, int]], in_progress: tuple[str, str, int] | None) -> None:
-    """Write artifacts/<campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
-    into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
-    start and finish so it tracks progress. `trials` is the full planned set in launch order; `in_progress`
-    is the trial currently running (None when nothing is). A trial is Completed if its metadata says so,
-    In Progress if it's the running one, Failed if it left an error.log behind, else Queued. Trials run
-    sequentially, so the filesystem can't tell a running trial from a crashed one (both leave
-    chkpts/in_progress); the runner passes the live trial in explicitly."""
-    buckets: dict[str, list[str]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
-    for trial in trials:
-        setting, dataset, seed = trial
-        dpath_trial = _dpath_campaign(campaign) / setting / dataset / str(seed)
-        trial_id = f"{setting}/{dataset}/{seed}"
-        if _check_trial_completion(dpath_trial):
-            buckets["Completed"].append(trial_id)
-        elif trial == in_progress:
-            buckets["In Progress"].append(trial_id)
-        elif (dpath_trial / "error.log").exists():
-            buckets["Failed"].append(trial_id)
-        else:
-            buckets["Queued"].append(trial_id)
-
-    section_emojis = {"Failed": "❌", "Completed": "✅", "In Progress": "🏃", "Queued": "⏳"}
-    lines: list[str] = []
-    for title in ("Failed", "Completed", "In Progress", "Queued"):
-        lines.append(f"{section_emojis[title]} {title}:")
-        lines.extend(buckets[title])
-        lines.append("")
-    (_dpath_campaign(campaign) / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-
 def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
     trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
@@ -426,7 +396,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
         for dataset in datasets
         for setting, _ in settings
     ]
-    _write_manifest(campaign, trials, in_progress=None)
+    PrintLog.manifest(dpath_campaign, trials, in_progress=None)
 
     render_proc: subprocess.Popen | None = None
     render_evo = cfg_baseline["dev"]["traintime_evals"]  # evolution GIFs need mid-evals to evolve across
@@ -460,7 +430,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 else:
                     print(f"[{idx_trial}/{n_trials_total}] {setting}/{dataset}/{seed}")
 
-                _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
+                PrintLog.manifest(dpath_campaign, trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
 
                 # Retry-with-resume loop: a crash mid-training costs only the work since the last checkpoint,
@@ -475,7 +445,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                         _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
                         shutil.rmtree(dpath_trial / "chkpts/in_progress")
                         _mark_trial_complete(dpath_trial)
-                        _write_manifest(campaign, trials, in_progress=None)
+                        PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                         succeeded = True
                         break
                     except KeyboardInterrupt:
@@ -485,7 +455,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                         )
                         if render_proc is not None and render_proc.poll() is None:
                             render_proc.terminate()
-                        _write_manifest(campaign, trials, in_progress=None)
+                        PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                         return
                     except Exception as e:
                         made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
@@ -500,14 +470,14 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                                 setting=setting,
                                 exc=e,
                             )
-                            _write_manifest(campaign, trials, in_progress=None)
+                            PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                             break
                         reason = "resumed past last checkpoint" if made_progress else f"no progress {stalled}/{max_retries}"
                         print(
                             f"\n[{idx_trial}/{n_trials_total}] TRIAL FAILED ({reason}) — retrying with resume: {setting}/{dataset}/{seed}",
                             flush=True,
                         )
-                        _write_manifest(campaign, trials, in_progress=(setting, dataset, seed))
+                        PrintLog.manifest(dpath_campaign, trials, in_progress=(setting, dataset, seed))
 
                 if not succeeded:
                     continue

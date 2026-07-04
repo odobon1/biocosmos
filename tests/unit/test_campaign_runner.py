@@ -5,6 +5,7 @@ import pytest
 import subprocess
 
 import campaign_runner as cr
+from utils.utils import PrintLog
 
 
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
@@ -13,7 +14,7 @@ def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
-        json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
+        json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
 
 
 def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
@@ -45,7 +46,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
     return scheduled
@@ -257,7 +258,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         (dpath_trial / "chkpts" / "in_progress").mkdir(parents=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -300,7 +301,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         calls.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
         dpath_trial.mkdir(parents=True, exist_ok=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
         raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -353,7 +354,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         fpath_ckpt.write_text(f"state-{calls['n']}")
         os.utime(fpath_ckpt, (calls["n"] * 1000, calls["n"] * 1000))  # strictly-increasing mtime = progress
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
         if calls["n"] <= n_flakes:
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -621,21 +622,27 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
     assert "it/s" not in text
 
 
-def test_write_manifest_buckets_and_formats(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
-    def _make_trial(setting, dataset, seed, complete=None, errored=False):
+    def _make_trial(setting, dataset, seed, complete=None, errored=False, runtime=None, n_samps_seen=0):
         d = dpath_campaign / setting / dataset / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
             with open(d / "trial_metadata.json", "w") as f:
-                json.dump({"dataset": dataset, "complete": complete}, f)
+                json.dump({
+                    "dataset": dataset,
+                    "complete": complete,
+                    "runtime": {"trial": runtime},
+                    "progress": {"n_samps_seen": n_samps_seen, "sample_volume": 4_000_000},
+                }, f)
         if errored:
             (d / "error.log").write_text("boom")
 
-    _make_trial("hp", "cub", 42, complete=True)            # completed
-    _make_trial("hp", "lepid", 42, complete=False, errored=True)  # failed
+    _make_trial("hp", "cub", 42, complete=True, runtime="113723.9", n_samps_seen=4_000_000)  # completed
+    _make_trial("hp", "lepid", 42, complete=False, errored=True, runtime="3723.4", n_samps_seen=2_200_000)  # failed
+    # hp/moss/42 -> failed before ever writing metadata (e.g. crashed at startup): no runtime to show
+    _make_trial("hp", "moss", 42, errored=True)
     # hp/nymph/42 -> in progress: it's a resume-after-failure, so it carries a stale error.log; the
     # running trial (passed explicitly) must outrank that error.log and bucket as In Progress, not Failed
     _make_trial("hp", "nymph", 42, errored=True)
@@ -644,18 +651,22 @@ def test_write_manifest_buckets_and_formats(tmp_path, monkeypatch) -> None:
     trials = [
         ("hp", "cub", 42),
         ("hp", "lepid", 42),
+        ("hp", "moss", 42),
         ("hp", "nymph", 42),
         ("hp", "bryo", 42),
     ]
-    cr._write_manifest("cmp_manifest", trials, in_progress=("hp", "nymph", 42))
+    PrintLog.manifest(dpath_campaign, trials, in_progress=("hp", "nymph", 42))
 
+    # Completed/Failed entries carry the trial wall-clock, dash-padded per section (min 3 dashes at the
+    # longest trial id) so the times line up
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "hp/lepid/42\n"
+        "hp/lepid/42 --- 0-01:02:03 --- 2.2M/4.0M\n"
+        "hp/moss/42 ---- n/a\n"
         "\n"
         "✅ Completed:\n"
-        "hp/cub/42\n"
+        "hp/cub/42 --- 1-07:35:23\n"
         "\n"
         "🏃 In Progress:\n"
         "hp/nymph/42\n"
@@ -665,24 +676,28 @@ def test_write_manifest_buckets_and_formats(tmp_path, monkeypatch) -> None:
     )
 
 
-def test_write_manifest_completed_beats_stale_error_log(tmp_path, monkeypatch) -> None:
+def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
     # a trial that failed once then succeeded on resume keeps its old error.log; complete=True wins
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
     dpath_campaign = Path(tmp_path) / "cmp_manifest_resume"
     d = dpath_campaign / "hp" / "cub" / "42"
     d.mkdir(parents=True)
     with open(d / "trial_metadata.json", "w") as f:
-        json.dump({"dataset": "cub", "complete": True}, f)
+        json.dump({
+            "dataset": "cub",
+            "complete": True,
+            "runtime": {"trial": "45296.0"},
+            "progress": {"n_samps_seen": 4_000_000, "sample_volume": 4_000_000},
+        }, f)
     (d / "error.log").write_text("old failure")
 
-    cr._write_manifest("cmp_manifest_resume", [("hp", "cub", 42)], in_progress=None)
+    PrintLog.manifest(dpath_campaign, [("hp", "cub", 42)], in_progress=None)
 
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
         "\n"
         "✅ Completed:\n"
-        "hp/cub/42\n"
+        "hp/cub/42 --- 0-12:34:56\n"
         "\n"
         "🏃 In Progress:\n"
         "\n"
@@ -690,12 +705,11 @@ def test_write_manifest_completed_beats_stale_error_log(tmp_path, monkeypatch) -
     )
 
 
-def test_write_manifest_shows_all_headers_at_kickoff(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+def test_manifest_shows_all_headers_at_kickoff(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest_kickoff"
     dpath_campaign.mkdir(parents=True)
 
-    cr._write_manifest("cmp_manifest_kickoff", [("hp", "cub", 42), ("hp", "lepid", 42)], in_progress=None)
+    PrintLog.manifest(dpath_campaign, [("hp", "cub", 42), ("hp", "lepid", 42)], in_progress=None)
 
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
@@ -750,7 +764,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         d = dpath_campaign / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
         if cfg_dict["dataset"] == "lepid":
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -773,10 +787,10 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "iw/lepid/42\n"
+        "iw/lepid/42 --- 0-01:01:01 --- 0.2M/4.0M\n"
         "\n"
         "✅ Completed:\n"
-        "iw/cub/42\n"
+        "iw/cub/42 --- 0-01:01:01\n"
         "\n"
         "🏃 In Progress:\n"
         "\n"
@@ -810,7 +824,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         d = dpath_campaign / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)

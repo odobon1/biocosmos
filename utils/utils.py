@@ -16,8 +16,8 @@ from utils.ddp import rank0
 import pdb
 
 
-# CLUSTER = "pace"  # PACE
-CLUSTER = "hpg"  # HiPerGator
+CLUSTER = "pace"  # PACE
+# CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":
@@ -273,6 +273,61 @@ class PrintLog:
         PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
 
     @staticmethod
+    def manifest(dpath_campaign: Path, trials: List[tuple], in_progress: Optional[tuple]) -> None:
+        """Write <dpath_campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
+        into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
+        start and finish so it tracks progress. `trials` is the full planned set of (setting, dataset, seed)
+        tuples in launch order; `in_progress` is the trial currently running (None when nothing is). A trial
+        is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
+        error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
+        as 'trial_id --- D-HH:MM:SS', dash-aligned per section; Failed entries additionally carry sample
+        progress as ' --- X.XM/X.XM' (samples seen / sample_volume). A trial that failed before ever
+        writing metadata shows 'n/a'. Trials run sequentially, so the filesystem can't tell a running trial
+        from a crashed one (both leave chkpts/in_progress); the runner passes the live trial in explicitly."""
+
+        def fmt_trial_time(metadata_trial):
+            seconds = int(float(metadata_trial["runtime"]["trial"]))
+            days, seconds = divmod(seconds, 86400)
+            hours, seconds = divmod(seconds, 3600)
+            minutes, seconds = divmod(seconds, 60)
+            return f"{days}-{hours:02}:{minutes:02}:{seconds:02}"
+
+        def fmt_trial_progress(metadata_trial):
+            progress = metadata_trial["progress"]
+            return f"{progress['n_samps_seen'] / 1e6:.1f}M/{progress['sample_volume'] / 1e6:.1f}M"
+
+        buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
+        for trial in trials:
+            setting, dataset, seed = trial
+            dpath_trial = dpath_campaign / setting / dataset / str(seed)
+            trial_id = f"{setting}/{dataset}/{seed}"
+            fpath_metadata_trial = dpath_trial / "trial_metadata.json"
+            metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
+            if metadata_trial is not None and metadata_trial["complete"]:
+                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial)))
+            elif trial == in_progress:
+                buckets["In Progress"].append(trial_id)
+            elif (dpath_trial / "error.log").exists():
+                if metadata_trial is None:
+                    buckets["Failed"].append((trial_id, "n/a"))
+                else:
+                    buckets["Failed"].append((trial_id, f"{fmt_trial_time(metadata_trial)} --- {fmt_trial_progress(metadata_trial)}"))
+            else:
+                buckets["Queued"].append(trial_id)
+
+        section_emojis = {"Failed": "❌", "Completed": "✅", "In Progress": "🏃", "Queued": "⏳"}
+        lines: List[str] = []
+        for title in ("Failed", "Completed", "In Progress", "Queued"):
+            lines.append(f"{section_emojis[title]} {title}:")
+            if title in ("Failed", "Completed"):
+                if buckets[title]:
+                    lines.append(PrintLog._dash_aligned_lines(buckets[title]))
+            else:
+                lines.extend(buckets[title])
+            lines.append("")
+        (dpath_campaign / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    @staticmethod
     @rank0
     def texts(texts_sb):
         if PrintLog.logging:
@@ -313,7 +368,7 @@ class PrintLog:
 
         lines_epoch = [
             PrintLog._make_epoch_header(idx_epoch, n_epochs, width=SECTION_WIDTH),
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Loss", f"{loss_train_avg:.3e}"),
                 ("Raw Loss", f"{loss_train_raw_avg:.3e}"),
                 ("Samples Seen", f"{n_samps_seen:,}"),
@@ -408,7 +463,7 @@ class PrintLog:
                 ("I2I", f"{map_scores['i2i']:.4f}"),
                 *((p.upper(), f"{map_scores[p]:.4f}") for p in partitions),
             ]
-            return f"{title:-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(pairs) + "\n"
+            return f"{title:-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(pairs) + "\n"
         
         partitions = eval_pipe.partitions
 
@@ -439,7 +494,7 @@ class PrintLog:
             for partition in partitions
             if eval_metrics["loss_raw"][partition] is not None
         ]
-        lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._block_metric_lines(loss_pairs) + "\n") if loss_pairs else ""
+        lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(loss_pairs) + "\n") if loss_pairs else ""
 
         lines_info = ""
         info = []
@@ -452,7 +507,7 @@ class PrintLog:
             info.append(("Time", time_str))
         if len(info) > 0:
             lines_info += f"{' Info ':=^{SECTION_WIDTH}}\n"
-            lines_info += PrintLog._block_metric_lines(info) + "\n"
+            lines_info += PrintLog._dash_aligned_lines(info) + "\n"
 
         eval_header = f" Eval ({header}) " if header is not None else " Eval "
         eval_printout = (
@@ -473,7 +528,7 @@ class PrintLog:
 
         lines = [
             "",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Campaign", cfg_train.campaign),
                 ("Setting", cfg_train.setting),
                 ("Dataset", cfg_train.dataset),
@@ -481,7 +536,7 @@ class PrintLog:
                 ("Seed", cfg_train.seed),
             )),
             "",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Sample Volume", f"{cfg_train.sample_volume:,}"),
                 ("Checkpoint Every", f"{cfg_train.chkpt_every:,} samples"),
                 ("Batch Size", f"{cfg_train.batch_size}"),
@@ -489,7 +544,7 @@ class PrintLog:
             )),
             "",
             "=== Architecture ===",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Model Type", cfg_train.arch['model_type']),
                 ("Non-Causal", cfg_train.arch['non_causal']),
             )),
@@ -498,7 +553,7 @@ class PrintLog:
 
         lines.extend([  # freeze block
             "=== Freeze ===",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Image", cfg_train.freeze["image"]),
                 ("Text", cfg_train.freeze["text"]),
             )),
@@ -514,7 +569,7 @@ class PrintLog:
 
         lines.extend([  # text templates block
             "=== Text Templates ===",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Train", cfg_train.text_template["train"]),
                 ("Eval", cfg_train.text_template["eval"]),
             )),
@@ -524,12 +579,12 @@ class PrintLog:
         lines.extend([  # optimization block
             "=== Optimization ===",
             "LR",
-            PrintLog._block_metric_lines([
+            PrintLog._dash_aligned_lines([
                 ("- Init",         cfg_train.opt["lr"]["init"]),
                 ("- Decay Factor", cfg_train.opt["lr"]["decay_factor"]),
                 ("- Warmup",       f"{cfg_train.opt['lr']['warmup']:,}"),
             ]),
-            PrintLog._block_metric_lines([
+            PrintLog._dash_aligned_lines([
                 ("L2 Reg", cfg_train.opt['l2reg']),
                 ("β1",     cfg_train.opt['beta1']),
                 ("β2",     cfg_train.opt['beta2']),
@@ -549,7 +604,7 @@ class PrintLog:
         chunk_size = cfg_train.hw.chunk_size
         lines_hw = [
             "=== Hardware ===",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Num. GPUs", cfg_train.n_gpus),
                 ("Num. CPUs", cfg_train.n_cpus),
                 ("RAM", f"{cfg_train.ram} GB"),
@@ -558,7 +613,7 @@ class PrintLog:
                 ("Device", cfg_train.device),
             )),
             "Chunk Size",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("- img-to-img mAP", f"{chunk_size['map_img2img']:,}"),
                 ("- cross-modal mAP", f"{chunk_size['map_cross_modal']:,}"),
             )),
@@ -572,7 +627,7 @@ class PrintLog:
             "",
             f"Checkpoint: {cfg_eval.rdpath_model}/",
             "",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Dataset", cfg_eval.dataset),
                 ("Split", cfg_eval.split),
                 ("Eval Type", cfg_eval.eval_type),
@@ -581,7 +636,7 @@ class PrintLog:
             f"Batch Size --- {cfg_eval.batch_size}",
             "",
             "=== Architecture ===",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("Model Type", cfg_eval.arch['model_type']),
                 ("Non-Causal", cfg_eval.arch['non_causal']),
             )),
@@ -613,14 +668,14 @@ class PrintLog:
         info.append(("Type", cfg_loss["type"]))
         info.append(("Sim", cfg_loss["sim"]))
         info.append(("Targs", cfg_loss["targ"]))
-        lines.append(PrintLog._block_metric_lines(info))
+        lines.append(PrintLog._dash_aligned_lines(info))
 
         wting = cfg_loss.get("wting", {}).get("type") is not None
         if wting:
             cw_type = cfg_loss["wting"]["type"]
             lines_cw = [
                 "Class Weighting",
-                PrintLog._block_metric_lines((
+                PrintLog._dash_aligned_lines((
                     ("- Type", cw_type),
                     *((("- gamma", cfg_loss["wting"]["inv_freq"]["gamma"]),) if cw_type == "inv_freq" else ()),
                     *((("- beta", cfg_loss["wting"]["class_bal"]["beta"]),) if cw_type == "class_bal" else ()),
@@ -633,7 +688,7 @@ class PrintLog:
         if focal:
             lines_focal = [
                 "Focal",
-                PrintLog._block_metric_lines((
+                PrintLog._dash_aligned_lines((
                     ("- gamma", cfg_loss["focal"]["gamma"]),
                     ("- comp_type", cfg_loss["focal"]["comp_type"]),
                 )),
@@ -646,7 +701,7 @@ class PrintLog:
         cfg_logits = cfg_loss["logits"]
         lines_logits = [
             "Logits",
-            PrintLog._block_metric_lines((
+            PrintLog._dash_aligned_lines((
                 ("- Scale Init", cfg_logits["scale_init"]),
                 ("- Bias Init", cfg_logits["bias_init"]),
                 ("- Freeze Scale", cfg_logits["freeze_scale"]),
@@ -664,7 +719,7 @@ class PrintLog:
         lines = ["=== Image Augmentation ==="]
 
         lines.append("RRCrop")
-        lines.append(PrintLog._block_metric_lines([
+        lines.append(PrintLog._dash_aligned_lines([
             ("- Scale", aug["rrcrop"]["scale"]),
             ("- Ratio", aug["rrcrop"]["ratio"]),
         ]))
@@ -674,7 +729,7 @@ class PrintLog:
 
         if "cjit_prob" in aug:
             lines.append(f"Color Jitter (p={aug['cjit_prob']})")
-            lines.append(PrintLog._block_metric_lines([
+            lines.append(PrintLog._dash_aligned_lines([
                 ("- Brightness", aug["cjit"]["brightness"]),
                 ("- Contrast",   aug["cjit"]["contrast"]),
                 ("- Saturation", aug["cjit"]["saturation"]),
@@ -682,13 +737,13 @@ class PrintLog:
             ]))
 
         if "sharpness_prob" in aug:
-            lines.append(PrintLog._block_metric_lines([
+            lines.append(PrintLog._dash_aligned_lines([
                 (f"Sharpness (p={aug['sharpness_prob']})", aug["sharpness"]),
             ]))
 
         if "gblur_prob" in aug:
             lines.append(f"Gaussian Blur (p={aug['gblur_prob']})")
-            lines.append(PrintLog._block_metric_lines([
+            lines.append(PrintLog._dash_aligned_lines([
                 ("- Kernel Size", aug["gblur"]["kernel_size"]),
                 ("- Sigma",       aug["gblur"]["sigma"]),
             ]))
@@ -697,7 +752,7 @@ class PrintLog:
         return lines
 
     @staticmethod
-    def _block_metric_lines(metric_pairs):
+    def _dash_aligned_lines(metric_pairs):
         labels, values = zip(*metric_pairs)
         max_len = max(len(label) for label in labels)
         n_dashes = [3 + (max_len - len(label)) for label in labels]

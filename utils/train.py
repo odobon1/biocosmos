@@ -271,18 +271,21 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, n_samps_seen: int, sample_volume: int, init_flag=False):
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
+        progress_data = {"n_samps_seen": n_samps_seen, "sample_volume": sample_volume}
         if init_flag:
             metadata_trial = {
                 "dataset": ArtifactManager.dataset,
                 "split": ArtifactManager.split,
                 "runtime": runtime_data,
+                "progress": progress_data,
                 "complete": False,
             }
         else:
             metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
             metadata_trial["runtime"] = runtime_data
+            metadata_trial["progress"] = progress_data
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
     @staticmethod

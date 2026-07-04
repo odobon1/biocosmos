@@ -136,7 +136,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
 4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<campaign>/<setting>/<dataset>/<seed>/error.log`).
-5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. It is regenerated at kickoff and at each trial's start and finish.
+5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. Completed and Failed entries also show the trial's recorded wall-clock, and Failed entries additionally show sample progress (`<setting>/<dataset>/<seed> --- D-HH:MM:SS --- X.XM/X.XM`, samples seen / `sample_volume`; `n/a` for a trial that failed before ever writing metadata). It is regenerated at kickoff and at each trial's start and finish.
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 

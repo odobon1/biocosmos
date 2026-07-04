@@ -245,7 +245,7 @@ class TrainPipeline:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data()
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume)
         if not self.cfg.standalone:
             ArtifactManager.update_campaign_time()
 
@@ -286,7 +286,7 @@ class TrainPipeline:
         try:
 
             if self._resume_state is None:
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 

@@ -33,10 +33,12 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled: list = []
@@ -52,29 +54,38 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     return scheduled
 
 
-def test_load_or_create_baseline_reuses_existing_file(tmp_path, monkeypatch) -> None:
+def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
-    baseline_a = {
-        "campaign": "dev",
-        "split": "D10",
-    }
-    baseline_b = {
-        "campaign": "changed",
-        "split": "dev",
-    }
+    train_a = {"campaign": "dev", "split": "D10"}
+    hw_a = {"mixed_prec": True, "prefetch_factor": 4}
+    mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
+    ms_a = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
 
-    monkeypatch.setattr(cr, "load_train_config_dict", lambda: baseline_a)
-    out_first = cr._load_or_create_baseline_config("cmp_a")
+    train_b = {"campaign": "changed", "split": "dev"}
+    hw_b = {"mixed_prec": False, "prefetch_factor": 2}
+    mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
+    ms_b = {"siglip": {"l2reg": 0.1, "beta2": 0.5}, "clip": {"l2reg": 0.3, "beta2": 0.7}}
 
-    monkeypatch.setattr(cr, "load_train_config_dict", lambda: baseline_b)
-    out_second = cr._load_or_create_baseline_config("cmp_a")
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
+    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: mviz_a)
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_a)
+    out_first = cr._load_or_create_campaign_config("cmp_a")
 
-    assert out_first == baseline_a
-    assert out_second == baseline_a
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_b)
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_b)
+    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: mviz_b)
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_b)
+    out_second = cr._load_or_create_campaign_config("cmp_a")
+
+    # the four sources are bundled into one snapshot and frozen on first launch
+    expected = {"train": train_a, "hardware": hw_a, "manifold_viz": mviz_a, "model_specific": ms_a}
+    assert out_first == expected
+    assert out_second == expected
 
 
-def test_load_or_create_baseline_keeps_model_specific_nulls(tmp_path, monkeypatch) -> None:
+def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
     train_cfg = {
@@ -83,62 +94,17 @@ def test_load_or_create_baseline_keeps_model_specific_nulls(tmp_path, monkeypatc
         "opt": {"l2reg": None, "beta2": None},
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2})
+    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"l2reg": 0.0, "beta2": 0.95}})
 
-    baseline = cr._load_or_create_baseline_config("cmp_ms")
+    snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
-    # model-family defaults are NOT resolved into the baseline -- they stay null so a per-setting
+    # model-family defaults are NOT resolved into the train snapshot -- they stay null so a per-setting
     # arch.model_type override can pick up the matching family per trial (resolution happens in the
-    # trial, from the cached model-specific snapshot).
-    assert baseline["opt"]["l2reg"] is None
-    assert baseline["opt"]["beta2"] is None
-
-
-def test_load_or_create_model_specific_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
-
-    cfg_a = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
-    cfg_b = {"siglip": {"l2reg": 0.1, "beta2": 0.5}, "clip": {"l2reg": 0.3, "beta2": 0.7}}
-
-    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: cfg_a)
-    out_first = cr._load_or_create_model_specific_config("cmp_ms")
-
-    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: cfg_b)
-    out_second = cr._load_or_create_model_specific_config("cmp_ms")
-
-    assert out_first == cfg_a
-    assert out_second == cfg_a
-
-
-def test_load_or_create_hardware_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
-
-    cfg_a = {"mixed_prec": True, "prefetch_factor": 4}
-    cfg_b = {"mixed_prec": False, "prefetch_factor": 2}
-
-    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: cfg_a)
-    out_first = cr._load_or_create_hardware_config("cmp_hw")
-
-    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: cfg_b)
-    out_second = cr._load_or_create_hardware_config("cmp_hw")
-
-    assert out_first == cfg_a
-    assert out_second == cfg_a
-
-
-def test_load_or_create_manifold_viz_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
-
-    cfg_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
-    cfg_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
-
-    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: cfg_a)
-    out_first = cr._load_or_create_manifold_viz_config("cmp_mviz")
-
-    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: cfg_b)
-    out_second = cr._load_or_create_manifold_viz_config("cmp_mviz")
-
-    assert out_first == cfg_a
-    assert out_second == cfg_a
+    # trial, from the model_specific snapshot).
+    assert snapshot["train"]["opt"]["l2reg"] is None
+    assert snapshot["train"]["opt"]["beta2"] is None
 
 
 def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
@@ -154,10 +120,12 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "model_specific": {},
+    })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -203,10 +171,12 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "model_specific": {},
+    })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     monkeypatch.setattr(
         cr,
@@ -245,10 +215,12 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     dpath_trial = Path(tmp_path) / "cmp_complete" / "iw" / "cub" / "42"
@@ -287,10 +259,12 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
 
     dpath_trial = Path(tmp_path) / "cmp_fail" / "iw" / "cub" / "42"
 
@@ -335,10 +309,12 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     dpath_trial = Path(tmp_path) / "cmp_flaky" / "iw" / "cub" / "42"
@@ -475,10 +451,12 @@ def test_run_campaign_expands_setting_groups(tmp_path, monkeypatch) -> None:
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "model_specific": {},
+    })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -533,10 +511,12 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         },
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "model_specific": {},
+    })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -738,10 +718,12 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
 
     # keep the post-trial render off the real subprocess path
     class _FakeProc:
@@ -812,10 +794,12 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
-    monkeypatch.setattr(cr, "_load_or_create_baseline_config", lambda campaign: baseline)
-    monkeypatch.setattr(cr, "_load_or_create_manifold_viz_config", lambda campaign: {"n_stoch_layers": 1})
-    monkeypatch.setattr(cr, "_load_or_create_model_specific_config", lambda campaign: {})
-    monkeypatch.setattr(cr, "_load_or_create_hardware_config", lambda campaign: {"max_retries": 2})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
 
     dpath_campaign = Path(tmp_path) / "cmp_manifest_interrupt"
 

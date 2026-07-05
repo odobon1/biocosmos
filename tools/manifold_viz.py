@@ -11,8 +11,9 @@ python -m tools.manifold_viz <campaign/setting/dataset/seed> evo_only
 <campaign/setting/dataset/seed> e.g. dev/hp/lepid/43 (resolved under artifacts/)
 evo_only    re-render only the cross-eval evolution GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolution GIFs
-snapshot    use the campaign's frozen config snapshot (cfg_manifold_viz.json + cfg_baseline.json under
-            artifacts/<campaign>/) instead of the live config/*.yaml -- used by the campaign render worker
+snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under artifacts/<campaign>/,
+            reading its manifold_viz + train.dev.manifold_viz fields) instead of the live config/*.yaml --
+            used by the campaign render worker
 """
 
 from pathlib import Path
@@ -65,8 +66,9 @@ def main():
     cfg_manifold_viz = plot_flags = None
     if snapshot:
         dpath_campaign = paths["artifacts"] / Path(trial_rel).parts[0]
-        cfg_manifold_viz = load_json(dpath_campaign / "cfg_manifold_viz.json")
-        plot_flags = load_json(dpath_campaign / "cfg_baseline.json")["dev"]["manifold_viz"]
+        cfg_snapshot = load_json(dpath_campaign / "cfg_baseline.json")
+        cfg_manifold_viz = cfg_snapshot["manifold_viz"]
+        plot_flags = cfg_snapshot["train"]["dev"]["manifold_viz"]
     render_trial(paths["artifacts"] / trial_rel, evo_only, skip_evo, cfg_manifold_viz, plot_flags)
 
 

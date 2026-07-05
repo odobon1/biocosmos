@@ -65,21 +65,23 @@ loss2:  # secondary loss
 
 aug:  # image augmentation
   rrcrop:  # random resized crop
-    scale: [0.9, 1.0]  # down-scale wrt area; OpenCLIP default: [0.9, 1.0]
-    ratio: [1.0, 1.0]  # aspect ratio; OpenCLIP default: [0.75, 1.3333]
+    scale_min: 0.9  # down-scale wrt area, scale randomly picked from [scale_min, 1.0]; OpenCLIP default: [0.9, 1.0]
   hflip: true  # {true, false}; horizontal flip w/ 50% probability
   cjit:  # color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
-  cjit_prob: 0.1
-  sharpness: [0.75, 1.333]  # 1.0 means no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
-  sharpness_prob: 0.05
+    prob: 0.1
+  sharpness:
+    factor: 1.333  # (1.0, inf); sharpness range = [1.0 / factor, factor]; 1.0 --> no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
+    prob: 0.05
   gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
-    sigma: [0.0, 1.0]
-  gblur_prob: 0.05
+    sigma:
+      min: 0.0
+      max: 1.0
+    prob: 0.05
 img_norm: default  # {default, dataset}
 
 text_template:
@@ -105,9 +107,9 @@ dev:
     plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
     # note: with n_trials >= 1 and all 3 flags = false, projections will still be computed and saved to disk
   logging: true
-  debug_mode: false  # {true, false}
+  debug_mode: true  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000
-    batch_size: 1024
+    batch_size: 128
     # maybe add activation checkpointing and etc.

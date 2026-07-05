@@ -720,15 +720,14 @@ class PrintLog:
 
         lines.append("RRCrop")
         lines.append(PrintLog._dash_aligned_lines([
-            ("- Scale", aug["rrcrop"]["scale"]),
-            ("- Ratio", aug["rrcrop"]["ratio"]),
+            ("- Scale", (aug["rrcrop"]["scale_min"], 1.0)),
         ]))
 
         if aug.get("hflip", False):
             lines.append("Horizontal Flip Enabled")
 
-        if "cjit_prob" in aug:
-            lines.append(f"Color Jitter (p={aug['cjit_prob']})")
+        if "cjit" in aug:
+            lines.append(f"Color Jitter (p={aug['cjit']['prob']})")
             lines.append(PrintLog._dash_aligned_lines([
                 ("- Brightness", aug["cjit"]["brightness"]),
                 ("- Contrast",   aug["cjit"]["contrast"]),
@@ -736,16 +735,16 @@ class PrintLog:
                 ("- Hue",        aug["cjit"]["hue"]),
             ]))
 
-        if "sharpness_prob" in aug:
+        if "sharpness" in aug:
             lines.append(PrintLog._dash_aligned_lines([
-                (f"Sharpness (p={aug['sharpness_prob']})", aug["sharpness"]),
+                (f"Sharpness (p={aug['sharpness']['prob']})", aug["sharpness"]["factor"]),
             ]))
 
-        if "gblur_prob" in aug:
-            lines.append(f"Gaussian Blur (p={aug['gblur_prob']})")
+        if "gblur" in aug:
+            lines.append(f"Gaussian Blur (p={aug['gblur']['prob']})")
             lines.append(PrintLog._dash_aligned_lines([
                 ("- Kernel Size", aug["gblur"]["kernel_size"]),
-                ("- Sigma",       aug["gblur"]["sigma"]),
+                ("- Sigma",       (aug["gblur"]["sigma"]["min"], aug["gblur"]["sigma"]["max"])),
             ]))
 
         lines.append("")

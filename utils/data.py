@@ -49,15 +49,15 @@ def build_train_augmentation_transforms(
     transforms = [
         RandomResizedCrop(
             size=img_res,
-            scale=tuple(aug_cfg["rrcrop"]["scale"]),
-            ratio=tuple(aug_cfg["rrcrop"]["ratio"]),
+            scale=(aug_cfg["rrcrop"]["scale_min"], 1.0),
+            ratio=(1.0, 1.0),
             interpolation=InterpolationMode.BICUBIC,
         )
     ]
     if aug_cfg.get("hflip", False):
         transforms.append(RandomHorizontalFlip())
 
-    if aug_cfg["cjit_prob"] != 0.0:
+    if aug_cfg["cjit"]["prob"] != 0.0:
         transforms.append(RandomApply([
             ColorJitter(
                 brightness=aug_cfg["cjit"]["brightness"],
@@ -65,10 +65,12 @@ def build_train_augmentation_transforms(
                 saturation=aug_cfg["cjit"]["saturation"],
                 hue=aug_cfg["cjit"]["hue"],
             )
-        ], p=aug_cfg["cjit_prob"]))
+        ], p=aug_cfg["cjit"]["prob"]))
 
-    if aug_cfg["sharpness_prob"] != 0.0:
-        sharpness_min, sharpness_max = tuple(aug_cfg["sharpness"])
+    if aug_cfg["sharpness"]["prob"] != 0.0:
+        sharpness_factor = aug_cfg["sharpness"]["factor"]
+        sharpness_min = 1.0 / sharpness_factor
+        sharpness_max = sharpness_factor
         transforms.append(RandomApply([
             Lambda(
                 lambda img: F.adjust_sharpness(
@@ -76,16 +78,17 @@ def build_train_augmentation_transforms(
                     sharpness_factor=random.uniform(sharpness_min, sharpness_max),
                 )
             )
-        ], p=aug_cfg["sharpness_prob"]))
+        ], p=aug_cfg["sharpness"]["prob"]))
 
-    if aug_cfg["gblur_prob"] != 0.0:
+    if aug_cfg["gblur"]["prob"] != 0.0:
         kernel_size_gb = int(aug_cfg["gblur"]["kernel_size"])
-        sigma_min, sigma_max = tuple(aug_cfg["gblur"]["sigma"])
+        sigma_min = aug_cfg["gblur"]["sigma"]["min"]
+        sigma_max = aug_cfg["gblur"]["sigma"]["max"]
         sigma_min = max(float(sigma_min), 1.0e-6)
         sigma_max = max(float(sigma_max), sigma_min)
         transforms.append(RandomApply([
             GaussianBlur(kernel_size_gb, sigma=(sigma_min, sigma_max))
-        ], p=aug_cfg["gblur_prob"]))
+        ], p=aug_cfg["gblur"]["prob"]))
 
     return Compose(transforms)
 

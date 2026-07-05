@@ -14,8 +14,7 @@ import pdb
 def _default_train_aug_cfg() -> dict:
     return {
         "rrcrop": {
-            "scale": [0.9, 1.0],
-            "ratio": [0.75, 1.3333],
+            "scale_min": 0.9,
         },
         "hflip": False,
         "cjit": {
@@ -23,15 +22,14 @@ def _default_train_aug_cfg() -> dict:
             "contrast": 0.0,
             "saturation": 0.0,
             "hue": 0.0,
+            "prob": 0.0,
         },
-        "cjit_prob": 0.0,
-        "sharpness": [1.0, 1.0],
-        "sharpness_prob": 0.0,
+        "sharpness": {"factor": 1.0, "prob": 0.0},
         "gblur": {
             "kernel_size": 3,
-            "sigma": [0.0, 0.0],
+            "sigma": {"min": 0.0, "max": 0.0},
+            "prob": 0.0,
         },
-        "gblur_prob": 0.0,
     }
 
 @dataclass
@@ -137,15 +135,12 @@ class TrainConfig:
             if logits["scale_init"] is not None or logits["bias_init"] is not None:
                 print(f"\nWARNING: logit scale/bias overridden!\n")
 
-        if self.aug.get("cjit_prob", 0.0) == 0.0:
+        if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
-            self.aug.pop("cjit_prob", None)
-        if self.aug.get("sharpness_prob", 0.0) == 0.0:
+        if self.aug.get("sharpness", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("sharpness", None)
-            self.aug.pop("sharpness_prob", None)
-        if self.aug.get("gblur_prob", 0.0) == 0.0:
+        if self.aug.get("gblur", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("gblur", None)
-            self.aug.pop("gblur_prob", None)
 
         self.hw = HardwareConfig(**self.hw)
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(

@@ -213,7 +213,6 @@ class ArtifactManager:
             del metadata["idx_seed"]
             del metadata["dataset"]
             del metadata["split"]
-            del metadata["standalone"]
 
             del metadata["dev"]
             

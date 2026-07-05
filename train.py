@@ -1,7 +1,3 @@
-"""
-torchrun --standalone --nproc-per-node=auto -m train
-"""
-
 import sys
 import shutil
 import random
@@ -25,15 +21,12 @@ from utils.utils import (
     TimeTracker,
     PrintLog,
     model_grad_l2_norm,
-    load_json,
-    save_json,
 )
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_phylo_shuffle
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections
-from utils.config import get_config_train
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -89,8 +82,7 @@ class TrainPipeline:
         )
 
         self.eval_enabled = self.cfg.train_pt != "trainval"
-        # manifold viz runs for the first dev.manifold_viz.n_trials seeds of each setting/dataset group;
-        # idx_seed defaults to 0 for standalone runs, so viz happens iff n_trials >= 1
+        # manifold viz runs for the first dev.manifold_viz.n_trials seeds of each setting/dataset group
         self._viz_manifold = self.cfg.idx_seed < self.cfg.dev["manifold_viz"]["n_trials"]
         if self.eval_enabled:
             text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
@@ -246,19 +238,12 @@ class TrainPipeline:
             self._print_log_eval(header)
             self._save_eval_data()
         ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume)
-        if not self.cfg.standalone:
-            ArtifactManager.update_campaign_time()
+        ArtifactManager.update_campaign_time()
 
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
         plot_metrics(self.data, ArtifactManager.dpath_trial)
-
-    @rank0
-    def mark_complete(self):
-        metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
-        metadata_trial["complete"] = True
-        save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.mixed_prec:
@@ -504,9 +489,7 @@ class TrainPipeline:
         finally:
             PrintLog.close_logs()
 
-def run_training(cfg=None):
-    if cfg is None:
-        cfg = get_config_train()  # DDP-independent (reads splits + SLURM env); built first so setup_ddp gets the PG timeout
+def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
@@ -546,16 +529,5 @@ def run_training(cfg=None):
     )
     train_pipe.train()
     ArtifactManager.update_metric_stats()
-    # campaign trials are marked complete by campaign_runner, only after a clean subprocess exit; standalone
-    # runs have no such orchestrator, so they mark their own completion here as the last step
-    if cfg.standalone:
-        train_pipe.mark_complete()
 
     cleanup_ddp()
-
-def main():
-    run_training()
-
-
-if __name__ == "__main__":
-    main()

@@ -60,14 +60,13 @@ class TrainConfig:
 
     dev: dict
 
-    standalone: bool = True
     aug: dict = field(default_factory=_default_train_aug_cfg)
     manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
-    idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep (0 for standalone runs)
+    idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
-    hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, standalone injects it live (converted to HardwareConfig in __post_init__)
+    hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, otherwise loaded live (converted to HardwareConfig in __post_init__)
 
     def __post_init__(self):
 
@@ -233,7 +232,7 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
 
     model_type = arch["model_type"]
     family = _resolve_model_family(model_type)
-    if model_specific_config is None:  # standalone reads live; campaign trials pass the frozen snapshot
+    if model_specific_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
         model_specific_config = load_model_specific_config_dict()
     family_defaults = model_specific_config.get(family)
 
@@ -255,14 +254,14 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
 
 def build_train_config(cfg_dict: dict) -> TrainConfig:
     setting_overrides = cfg_dict.pop("_setting_overrides", None)
-    model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; standalone reads live
+    model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; otherwise read live
     cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg_dict = apply_model_specific_opt_defaults(cfg_dict, model_specific)
     if setting_overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
-    cfg_dict.setdefault("hw", load_hardware_config_dict())  # standalone reads live; campaign trials freeze hw into the baseline
+    cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live
     cfg = TrainConfig(**cfg_dict)
-    if cfg.manifold_viz is None:  # standalone runs: campaign trials inject the snapshotted config
+    if cfg.manifold_viz is None:  # load live when campaign trials haven't injected the snapshot
         cfg.manifold_viz = asdict(get_config_manifold_viz())
     return cfg
 

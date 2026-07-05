@@ -65,11 +65,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 1. Edit `config/train.yaml`:
     * `model_type`, `loss_type`, `targ_type`, `lr_sched_type`, etc.
     * Mixed precision & activation checkpointing can be toggled: `mixed_prec`, `act_chkpt`
-2. Run:
-    ```
-    torchrun --standalone --nproc-per-node=auto -m train
-    ```
-    This reads `config/train/train.yaml`, seeds, builds the model, applies class weighting (if enabled) and trains.
+2. Training runs through campaigns — see [Run a campaign](#run-a-campaign) below. `config/train.yaml` is the base config (layer 1) every campaign trial starts from. For a single one-off run, use a minimal campaign (e.g. `config/camps/dev.yaml`).
 
     Tip: Cosine LR scheduler parameters are in `config/train.yaml` under `opt.lr`.
 
@@ -158,12 +154,10 @@ Training config is assembled from multiple sources. Layers are listed in increas
 |----------|--------|-----------|-------------|
 | 1 (lowest) | `config/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
 | 2 | `config/hardware.yaml` | `load_hardware_config_dict()` (→ `hw`) | Static hardware knobs (`mixed_prec`, `act_chkpt`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers_*`, `chunk_size`) under the `hw` key. Cached to `cfg_hardware.json` at first launch and injected per trial; the live `n_workers`/`n_gpus`/`n_cpus`/`ram` scaling is computed separately from the SLURM allocation. |
-| 3 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset`, `standalone` from the campaign matrix. Not applicable in standalone training. |
+| 3 | Campaign runner injections | `run_campaign()` | Overwrites `campaign`, `setting`, `seed`, `dataset` from the campaign matrix. |
 | 4 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.l2reg` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
 | 5 | `debug_mode` overrides | `apply_train_debug_overrides()` | If `dev.debug_mode: true`, forces `split → "dev"` + overrides specified in `dev.debug`. |
 | 6 (highest) | `baseline_overrides` (campaign) | `build_train_config()` via `_setting_overrides` | Per-setting overrides defined in the campaign config (`config/camps/<campaign>.yaml`); dot-paths reach any field, including `hw.*`. |
-
-In standalone training (`python -m train`), only layers 1, 2, 4, and 5 apply.
 
 <br>
 

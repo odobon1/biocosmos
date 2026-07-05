@@ -417,7 +417,6 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 cfg_dict["setting"] = setting
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
-                cfg_dict["standalone"] = False
                 cfg_dict["idx_seed"] = idx_seed
                 cfg_dict["manifold_viz"] = cfg_manifold_viz
                 cfg_dict["model_specific"] = cfg_model_specific

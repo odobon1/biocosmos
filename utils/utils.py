@@ -16,8 +16,8 @@ from utils.ddp import rank0
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 if CLUSTER == "pace":

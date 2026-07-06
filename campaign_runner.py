@@ -21,7 +21,7 @@ import psutil
 import torch
 import yaml
 
-from utils.config import apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
@@ -103,35 +103,45 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     save_json(cfg_snapshot, fpath)
     return cfg_snapshot
 
-def _expand_settings(setting_groups: list[list[dict]]) -> list[tuple[str, dict]]:
-    """Expand the campaign's setting groups into the full list of (name, overrides) settings.
+def _derive_item_name(item: dict) -> str:
+    """Name an unnamed `baseline_overrides` item by its overrides: 'key-value' pairs joined by '_',
+    with keys and values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES (per original
+    key) when an alias exists, e.g. {'batch_size': 2048} -> 'bs-2k'."""
+    return "_".join(
+        f"{CFG_PARAM_ALIASES.get(k, k)}-{CFG_PARAM_VALUE_ALIASES.get(k, {}).get(v, v)}"
+        for k, v in item.items()
+    )
 
-    `baseline_overrides` is a list of groups; each group is a list of partial settings (a dict of
-    dotted-key overrides plus a 'name'). The campaign's settings are the Cartesian product across
-    groups: one partial setting is drawn from each group and merged into one setting, its name the
-    members' names joined by '_' in group order (e.g. 'hp' x '2k' -> 'hp_2k'). A single group expands
-    to its members unchanged. Groups are independent dimensions, so no override key may appear in more
-    than one group -- a shared key would have two values fighting to define it when members merge."""
+def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
+    """Expand the campaign's combo groups into the full list of (name, overrides) settings.
+
+    `baseline_overrides` is a list of combo groups; each combo group is a list of partial settings
+    (a dict of dotted-key overrides plus an optional 'name'; an item without one is named from its
+    overrides via _derive_item_name, e.g. {'loss.targ': 'multipos'} -> 'L1T-multipos'). The
+    campaign's settings are the Cartesian product across combo groups: one partial setting is drawn
+    from each combo group and merged into one setting, its name the members' names joined by '_' in
+    combo-group order (e.g. 'hp' x '2k' -> 'hp_2k'). A single combo group expands to its members
+    unchanged. Combo groups are independent dimensions, so no override key may appear in more than
+    one combo group -- a shared key would have two values fighting to define it when members merge."""
     group_keys = [
         {k for item in group for k in item if k != "name"}
-        for group in setting_groups
+        for group in combo_groups
     ]
     for (i, keys_i), (j, keys_j) in itertools.combinations(enumerate(group_keys), 2):
         shared = keys_i & keys_j
         if shared:
             raise ValueError(
-                f"baseline_overrides key(s) {sorted(shared)} collide between groups {i} and {j}; "
-                f"each override key must belong to exactly one group."
+                f"baseline_overrides key(s) {sorted(shared)} collide between combo groups {i} and {j}; "
+                f"each override key must belong to exactly one combo group."
             )
 
     settings = []
     seen_names: set[str] = set()
-    for combo in itertools.product(*setting_groups):
-        for item in combo:
-            if "name" not in item:
-                raise ValueError("Each baseline_overrides item must include a 'name' field.")
-
-        name = "_".join(item["name"] for item in combo)
+    for combo in itertools.product(*combo_groups):
+        name = "_".join(
+            item["name"] if "name" in item else _derive_item_name(item)
+            for item in combo
+        )
         if name in seen_names:
             raise ValueError(f"Duplicate baseline_overrides name: {name}")
         seen_names.add(name)
@@ -315,7 +325,7 @@ def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
 def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]]) -> None:
-    # Validate the planned matrix before any side effects: every setting needs a unique 'name'.
+    # Validate the planned matrix before any side effects: every setting's name must be unique.
     settings = _expand_settings(baseline_overrides)
     seeds = _iter_seeds(n_trials)
 

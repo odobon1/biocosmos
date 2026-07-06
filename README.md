@@ -64,10 +64,8 @@ Note: The full similarity matrix is computed for all model types, including SigL
 ## Train
 1. Edit `config/train.yaml`:
     * `model_type`, `loss_type`, `targ_type`, `lr_sched_type`, etc.
-    * Mixed precision & activation checkpointing can be toggled: `mixed_prec`, `act_chkpt`
+    * Mixed precision & activation checkpointing can be toggled in `config/hardware.yaml`: `mixed_prec`, `act_chkpt`
 2. Training runs through campaigns — see [Run a campaign](#run-a-campaign) below. `config/train.yaml` is the base config (layer 1) every campaign trial starts from. For a single one-off run, use a minimal campaign (e.g. `config/camps/dev.yaml`).
-
-    Tip: Cosine LR scheduler parameters are in `config/train.yaml` under `opt.lr`.
 
 ## Evaluate a trained model
 1. In `config/eval.yaml`, set `rdpath_model` to checkpointed model directory (e.g. `artifacts/dev/iw/lepid/42/chkpts/final`).
@@ -90,10 +88,10 @@ Note: The full similarity matrix is computed for all model types, including SigL
 1. Define the campaign in `config/camps/<campaign>.yaml`:
     * `n_trials` — number of random seeds per setting/dataset combo
     * `datasets` — the datasets to train on, a list of dataset names (e.g. `bryo`, `cub`, `lepid`, `nymph`); every setting is trained on each one
-    * `baseline_overrides` — the per-setting config overrides, given as a list of **groups**. Each group is a list of partial settings (a set of overrides plus a `name`). The campaign's settings are the **Cartesian product** across groups: one partial setting is taken from each group and merged into a single setting, named by joining the members' names with `_`. With a single group, its members become the settings directly.
+    * `baseline_overrides` — the per-setting config overrides, given as a list of **combo groups**. Each combo group is a list of partial settings (a set of overrides plus an optional `name`; when `name` is omitted, it is derived from the overrides as `key-value` pairs joined by `_`, with keys and values mapped through the alias tables `CFG_PARAM_ALIASES` / `CFG_PARAM_VALUE_ALIASES` in `utils/config.py` — value aliases are per original key — and anything without an alias passing through verbatim, e.g. `{batch_size: 2_048}` → `bs-2k`, `{loss2.mix: 0.3, loss2.targ: phylo}` → `loss2.mix-0.3_loss2.targ-phylo`). The campaign's settings are the **Cartesian product** across combo groups: one partial setting is taken from each combo group and merged into a single setting, named by joining the members' names with `_`. With a single combo group, its members become the settings directly.
     * `suffix` — appended to the campaign name (`null` for none)
 
-   For example, crossing a loss group with a batch-size group:
+   For example, crossing a loss combo group with a batch-size combo group:
     ```yaml
     baseline_overrides:
       - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
@@ -101,7 +99,15 @@ Note: The full similarity matrix is computed for all model types, including SigL
       - - {batch_size: 2_048, name: 2k}
         - {batch_size: 1_024, name: 1k}
     ```
-   produces four settings — `hp_2k`, `hp_1k`, `sw_2k`, `sw_1k` — each merging one partial setting from every group. A single group expands to its members unchanged:
+   produces four settings — `hp_2k`, `hp_1k`, `sw_2k`, `sw_1k` — each merging one partial setting from every combo group. It is equivalent to spelling out the product as a single combo group:
+    ```yaml
+    baseline_overrides:
+      - - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 2_048, name: hp_2k}
+        - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 1_024, name: hp_1k}
+        - {loss.targ: multipos, batch_size: 2_048, name: sw_2k}
+        - {loss.targ: multipos, batch_size: 1_024, name: sw_1k}
+    ```
+   A single combo group expands to its members unchanged:
     ```yaml
     baseline_overrides:
       - - {loss.targ: aligned, name: iw}
@@ -109,11 +115,11 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```
    produces `iw` and `sw`.
 
-   Each resulting **setting** — a member of this Cartesian product, not a single `baseline_overrides` item (they coincide only for a single group) — is trained for `n_trials` seeds on every dataset, so the campaign runs *settings × datasets × `n_trials`* trials in total.
+   Each resulting **setting** — a member of this Cartesian product, not a single `baseline_overrides` item (they coincide only for a single combo group) — is trained for `n_trials` seeds on every dataset, so the campaign runs *settings × datasets × `n_trials`* trials in total.
 
    The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`).
 
-   Putting it together, a complete single-group campaign (`config/camps/foobar.yaml`):
+   Putting it together, a complete single-combo-group campaign (`config/camps/foobar.yaml`):
     ```yaml
     n_trials: 5
     datasets: [cub, lepid]
@@ -140,11 +146,11 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 **Note:** Each setting's declared overrides are written to `artifacts/<campaign>/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: aligned` is listed even if `config/train.yaml` already sets it).
 
-**Note:** Groups are independent dimensions, so the same override key may not appear in more than one group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
+**Note:** Combo groups are independent dimensions, so the same override key may not appear in more than one combo group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 
-**Note:** Every resulting setting `name` must be unique (for crossed groups, the joined name, e.g. `hp_2k`); a duplicate raises an error at kickoff.
+**Note:** Every resulting setting `name` must be unique (for crossed combo groups, the joined name, e.g. `hp_2k`); a duplicate raises an error at kickoff.
 
-**Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (new members within an existing `baseline_overrides` group), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. (Adding a whole new *group* re-joins every setting name, e.g. `hp` → `hp_2k`, so it reads as removing all prior settings — start a new campaign for that.) You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
+**Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (new members within an existing `baseline_overrides` combo group), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. (Adding a whole new *combo group* re-joins every setting name, e.g. `hp` → `hp_2k`, so it reads as removing all prior settings — start a new campaign for that.) You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
 
 ## Config Override Layers
 

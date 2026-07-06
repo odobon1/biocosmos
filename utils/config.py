@@ -10,6 +10,29 @@ from utils.hardware import compute_dataloader_workers_prefetch
 import pdb
 
 
+# Aliases used when deriving a setting name from an unnamed `baseline_overrides` item:
+# keys map through CFG_PARAM_ALIASES and values through CFG_PARAM_VALUE_ALIASES (per original
+# key); anything without an alias passes through verbatim.
+CFG_PARAM_ALIASES = {
+    "batch_size": "bs",
+    "loss.targ": "L1T",
+    "loss2.targ": "L2T",
+}
+
+CFG_PARAM_VALUE_ALIASES = {
+    "batch_size": {
+        1_024: "1k",
+        2_048: "2k",
+    },
+    "loss.targ": {
+        "phylo": "hp",
+    },
+    "loss2.targ": {
+        "phylo": "hp",
+    },
+}
+
+
 # equivalent to OpenCLIP default train preprocessor
 def _default_train_aug_cfg() -> dict:
     return {

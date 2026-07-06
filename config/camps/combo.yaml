@@ -11,19 +11,3 @@ baseline_overrides:
     - {opt.lr.init: 7.0e-6, name: LR-init-7.0e-6}
 
 suffix: null  # {null, [str]}; no suffix if set to null
-
-###############################################################################
-
-# baseline_overrides:
-#   - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
-#     - {loss.targ: multipos, name: sw}
-#   - - {batch_size: 2_048, name: 2k}
-#     - {batch_size: 1_024, name: 1k}
-
-# # the above is equivalent to specifying:
-
-# baseline_overrides:
-#   - - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 2_048, name: hp_2k}
-#     - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 1_024, name: hp_1k}
-#     - {loss.targ: multipos, batch_size: 2_048, name: sw_2k}
-#     - {loss.targ: multipos, batch_size: 1_024, name: sw_1k}

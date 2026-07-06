@@ -362,8 +362,8 @@ def test_expand_settings_raises_on_duplicate_names() -> None:
         )
 
 
-def test_expand_settings_single_group_unchanged() -> None:
-    # one group -> members expand unchanged: names are not joined and payloads carry through as-is
+def test_expand_settings_single_combo_group_unchanged() -> None:
+    # one combo group -> members expand unchanged: names are not joined and payloads carry through as-is
     settings = cr._expand_settings(
         [
             [
@@ -378,8 +378,52 @@ def test_expand_settings_single_group_unchanged() -> None:
     ]
 
 
+def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
+    # an item without a 'name' is named by its overrides: 'key-value' pairs joined by '_', with
+    # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists.
+    # value aliases are per original key: 'phylo' under loss2.targ (unaliased) stays 'phylo'.
+    settings = cr._expand_settings(
+        [
+            [
+                {"loss2.mix": 0.3, "loss2.targ": "phylo"},
+                {"loss.targ": "multipos"},
+                {"loss.targ": "aligned", "name": "iw"},
+            ]
+        ]
+    )
+    assert settings == [
+        ("loss2.mix-0.3_loss2.targ-phylo", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
+        ("L1T-multipos", {"loss.targ": "multipos"}),
+        ("iw", {"loss.targ": "aligned"}),
+    ]
+
+
+def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -> None:
+    # derived names compose with explicit ones the same way in the cross-combo-group join
+    settings = cr._expand_settings(
+        [
+            [
+                {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.targ": "multipos"},
+            ],
+            [
+                {"batch_size": 2048, "name": "2k"},
+                {"batch_size": 1024},
+            ],
+        ]
+    )
+
+    assert len(settings) == 4
+    assert dict(settings) == {
+        "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
+        "hp_bs-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
+        "L1T-multipos_2k": {"loss.targ": "multipos", "batch_size": 2048},
+        "L1T-multipos_bs-1k": {"loss.targ": "multipos", "batch_size": 1024},
+    }
+
+
 def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
-    # two groups -> every cross-group combination; payloads merge, names join with '_' in group order
+    # two combo groups -> every cross-combo-group combination; payloads merge, names join with '_' in combo-group order
     settings = cr._expand_settings(
         [
             [
@@ -402,7 +446,7 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
     }
 
 
-def test_expand_settings_generalizes_to_three_groups() -> None:
+def test_expand_settings_generalizes_to_three_combo_groups() -> None:
     settings = cr._expand_settings(
         [
             [{"a": 1, "name": "x"}, {"a": 2, "name": "y"}],
@@ -419,9 +463,9 @@ def test_expand_settings_generalizes_to_three_groups() -> None:
     assert dict(settings)["y_q_n"] == {"a": 2, "b": 2, "c": 2}
 
 
-def test_expand_settings_raises_on_cross_group_key_collision() -> None:
-    # the same override key appears in two groups -> two values would fight to define it when merged
-    with pytest.raises(ValueError, match="collide between groups"):
+def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
+    # the same override key appears in two combo groups -> two values would fight to define it when merged
+    with pytest.raises(ValueError, match="collide between combo groups"):
         cr._expand_settings(
             [
                 [
@@ -436,7 +480,7 @@ def test_expand_settings_raises_on_cross_group_key_collision() -> None:
         )
 
 
-def test_run_campaign_expands_setting_groups(tmp_path, monkeypatch) -> None:
+def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     # the Cartesian product flows through run_campaign: each combined setting schedules and gets its
     # own merged overrides.json
     monkeypatch.setattr(cr, "SEED0", 42)

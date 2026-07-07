@@ -112,4 +112,3 @@ dev:
     sample_volume: 6_000
     chkpt_every: 3_000
     batch_size: 128
-    # maybe add activation checkpointing and etc.

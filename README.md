@@ -68,7 +68,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 2. Training runs through campaigns — see [Run a campaign](#run-a-campaign) below. `config/train.yaml` is the base config (layer 1) every campaign trial starts from. For a single one-off run, use a minimal campaign (e.g. `config/camps/dev.yaml`).
 
 ## Evaluate a trained model
-1. In `config/eval.yaml`, set `rdpath_model` to checkpointed model directory (e.g. `artifacts/dev/iw/lepid/42/chkpts/final`).
+1. In `config/eval.yaml`, set `rdpath_model` to checkpointed model directory (e.g. `artifacts/dev/settings/iw/lepid/42/chkpts/final`).
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
@@ -131,20 +131,20 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
     suffix: null
     ```
-   Launched with `python -m campaign_runner --foobar`, this runs **30 trials**: 3 settings (`iw`, `sw`, `hp`) × 2 datasets (`cub`, `lepid`) × 5 seeds (`42`–`46` — trial seeds are `SEED0 .. SEED0 + n_trials - 1`, and `SEED0 = 42`). Each trial's artifacts land under `artifacts/foobar/<setting>/<dataset>/<seed>/`.
+   Launched with `python -m campaign_runner --foobar`, this runs **30 trials**: 3 settings (`iw`, `sw`, `hp`) × 2 datasets (`cub`, `lepid`) × 5 seeds (`42`–`46` — trial seeds are `SEED0 .. SEED0 + n_trials - 1`, and `SEED0 = 42`). Each trial's artifacts land under `artifacts/foobar/settings/<setting>/<dataset>/<seed>/`.
 2. Launch the campaign, selecting the config by name:
     ```
     python -m campaign_runner --<campaign>   # e.g. python -m campaign_runner --dev_basic
     ```
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
-4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<campaign>/<setting>/<dataset>/<seed>/error.log`).
+4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<campaign>/settings/<setting>/<dataset>/<seed>/error.log`).
 5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. Completed and Failed entries also show the trial's recorded wall-clock, and Failed entries additionally show sample progress (`<setting>/<dataset>/<seed> --- D-HH:MM:SS --- X.XM/X.XM`, samples seen / `sample_volume`; `n/a` for a trial that failed before ever writing metadata). It is regenerated at kickoff and at each trial's start and finish.
 
 **Note:** When resuming a campaign, the environment must allocate the same number of GPUs as the original run. The GPU count is saved to `artifacts/<campaign>/campaign_metadata.json` on first launch; a mismatch on resume raises an error before any trials execute.
 
 **Note:** A campaign's config is **frozen at first launch**, bundled into a single snapshot. `config/train.yaml` (with `debug_mode` overrides folded in, per-trial keys stripped) and its three sibling config files are snapshotted together to `artifacts/<campaign>/cfg_baseline.json`, under the keys `train`, `hardware`, `manifold_viz`, `model_specific` (`config/hardware.yaml` → `hardware`, `config/model_specific.yaml` → `model_specific`, `config/manifold_viz.yaml` → `manifold_viz`). Every trial starts from the `train` snapshot, has the sibling snapshots injected (as `hw`, `model_specific`, `manifold_viz`), and layers its setting's `baseline_overrides` on top. Model-family `opt` defaults (`opt.l2reg`/`opt.beta2`) are left `null` in the baseline and resolved per trial from the cached `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching family's defaults. On any relaunch — resuming, or extending the matrix with added settings/datasets/seeds — the snapshot is read back from disk rather than re-read from the YAML, so edits to any of these config files after a campaign's first launch don't affect it: every trial (original or added later) uses the same frozen config. The one part still computed live per trial is the dataloader/GPU scaling (`n_workers`/`n_gpus`/`n_cpus`/`ram`), derived from the SLURM allocation so a resume adapts to the node; the static `hw` knobs (`mixed_prec`, `act_chkpt`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers_*`, `chunk_size`) are frozen and overridable per setting via `hw.*` in `baseline_overrides`.
 
-**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: aligned` is listed even if `config/train.yaml` already sets it).
+**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/settings/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: aligned` is listed even if `config/train.yaml` already sets it).
 
 **Note:** Combo groups are independent dimensions, so the same override key may not appear in more than one combo group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 
@@ -247,7 +247,7 @@ The base-model evaluation at the start of each trial (the untrained model's perf
 The cached scores are reproducible across single-GPU and multi-GPU runs: performance metrics are computed on the full set of embeddings gathered from all ranks, so the complete evaluation set, and thus the resulting scores, are identical regardless of `world_size`. A cache written on one GPU count is therefore safe to reuse on another.
 
 ## Train-Time Eval Snapshots
-`dev.traintime_evals` controls whether evaluations run at the checkpoint thresholds during training: when `true`, each threshold eval runs and persists under `artifacts/<campaign>/<setting>/<dataset>/<seed>/evals/<thresh>/`; when `false`, only the base and final evals run (so the learning curves carry just those two eval points). Each eval that runs writes a `metrics.json`, and — when `dev.viz_manifold` is on (the manifold-viz master switch, see below) — caches its **raw** t-SNE/PCA projections to `projections.npz` and renders its plots to `viz/`; `evals/_base/` (copied from the base-model cache) and `evals/final/` are always written, with `evals/<thresh>/` snapshots in between when `traintime_evals` is on.
+`dev.traintime_evals` controls whether evaluations run at the checkpoint thresholds during training: when `true`, each threshold eval runs and persists under `artifacts/<campaign>/settings/<setting>/<dataset>/<seed>/evals/<thresh>/`; when `false`, only the base and final evals run (so the learning curves carry just those two eval points). Each eval that runs writes a `metrics.json`, and — when `dev.viz_manifold` is on (the manifold-viz master switch, see below) — caches its **raw** t-SNE/PCA projections to `projections.npz` and renders its plots to `viz/`; `evals/_base/` (copied from the base-model cache) and `evals/final/` are always written, with `evals/<thresh>/` snapshots in between when `traintime_evals` is on.
 
 Within each eval dir, `projections.npz` is the durable cache (the sharded t-SNE that produced it runs once, collectively across ranks, reusing the eval embeddings) and the `viz/` plots are rendered from it on rank 0 — a separation that keeps the collective compute off the render path and lets each eval's t-SNE orientation be derived from the on-disk caches rather than carried as live state across evals.
 

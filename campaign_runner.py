@@ -189,7 +189,7 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
     return settings
 
 def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: dict) -> None:
-    fpath = _dpath_campaign(campaign) / setting / "overrides.json"
+    fpath = _dpath_campaign(campaign) / "settings" / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w") as f:
         json.dump(normalized_overrides, f, indent=2, sort_keys=True)
@@ -434,7 +434,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             for setting, setting_payload in settings:
                 idx_trial += 1
 
-                dpath_trial = _dpath_campaign(campaign) / setting / dataset / str(seed)
+                dpath_trial = _dpath_campaign(campaign) / "settings" / setting / dataset / str(seed)
                 if _check_trial_completion(dpath_trial):
                     print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {setting}/{dataset}/{seed}")
                     continue
@@ -513,7 +513,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 # practice, since a trial far outlasts a render).
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.wait()
-                render_proc = _spawn_render(f"{campaign}/{setting}/{dataset}/{seed}", render_evo)
+                render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}", render_evo)
 
     # let the last trial's render finish before the campaign exits
     if render_proc is not None:

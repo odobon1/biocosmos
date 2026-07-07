@@ -5,10 +5,10 @@ CURRENT config/manifold_viz.yaml (so edits to colors/bg_color/eval_duration/n_st
 take effect; the cached t-SNE/PCA coords are reused, so perplexity/n_iter cannot change here). Which
 panel groups are generated follows train.yaml's dev.manifold_viz.plot_2panel/plot_4panel/plot_7panel.
 
-python -m tools.manifold_viz <campaign/setting/dataset/seed>
-python -m tools.manifold_viz <campaign/setting/dataset/seed> evo_only
+python -m tools.manifold_viz <campaign>/settings/<setting>/<dataset>/<seed>
+python -m tools.manifold_viz <campaign>/settings/<setting>/<dataset>/<seed> evo_only
 
-<campaign/setting/dataset/seed> e.g. dev/hp/lepid/43 (resolved under artifacts/)
+<campaign>/settings/<setting>/<dataset>/<seed> e.g. dev/settings/hp/lepid/43 (resolved under artifacts/)
 evo_only    re-render only the cross-eval evolution GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolution GIFs
 snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under artifacts/<campaign>/,
@@ -25,7 +25,7 @@ from utils.utils import load_json, paths
 
 
 def _viz_context(dpath_trial):
-    # dataset/split from the trial metadata, setting from the path (campaign/setting/dataset/seed).
+    # dataset/split from the trial metadata, setting from the path (<campaign>/settings/<setting>/<dataset>/<seed>).
     # Training manifold viz is only produced for eval-enabled trials (train_pt="train" -> eval_type="val").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
@@ -61,7 +61,7 @@ def main():
     if snapshot:
         args.remove("snapshot")
     if len(args) != 1:
-        sys.exit("usage: python -m tools.manifold_viz <campaign/setting/dataset/seed> [evo_only|no_evo] [snapshot]")
+        sys.exit("usage: python -m tools.manifold_viz <campaign>/settings/<setting>/<dataset>/<seed> [evo_only|no_evo] [snapshot]")
     trial_rel = args[0]
     cfg_manifold_viz = plot_flags = None
     if snapshot:

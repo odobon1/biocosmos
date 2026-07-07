@@ -11,7 +11,7 @@ from utils.utils import PrintLog
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     """Mimic a real successful trial subprocess: leave chkpts/in_progress + incomplete metadata behind so
     run_campaign's success path (rmtree in_progress + flip complete=True) has something to act on."""
-    d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+    d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
@@ -45,7 +45,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
-        d = tmp_path / cfg_dict["campaign"] / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
@@ -193,7 +193,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         ]],
     )
 
-    fpath = Path(tmp_path) / "cmp_c" / "iw" / "overrides.json"
+    fpath = Path(tmp_path) / "cmp_c" / "settings" / "iw" / "overrides.json"
     assert fpath.exists()
 
     with open(fpath) as f:
@@ -223,7 +223,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_complete" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_complete" / "settings" / "iw" / "cub" / "42"
 
     # a real trial writes its metadata (complete still False) + leaves a chkpts/in_progress dir behind;
     # the campaign runner is what cleans up and flips complete=True on a clean exit
@@ -266,7 +266,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "model_specific": {},
     })
 
-    dpath_trial = Path(tmp_path) / "cmp_fail" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_fail" / "settings" / "iw" / "cub" / "42"
 
     # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
     # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
@@ -317,7 +317,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_flaky" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_flaky" / "settings" / "iw" / "cub" / "42"
     fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
 
     # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
@@ -576,7 +576,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         ("hp_l2", "phylo", "l2"),
     }
 
-    with open(Path(tmp_path) / "cmp_groups" / "hp_l2" / "overrides.json") as f:
+    with open(Path(tmp_path) / "cmp_groups" / "settings" / "hp_l2" / "overrides.json") as f:
         data = json.load(f)
     assert data == {"loss.targ": "phylo", "loss.sim": "l2"}
 
@@ -697,7 +697,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
     def _make_trial(setting, dataset, seed, complete=None, errored=False, runtime=None, n_samps_seen=0):
-        d = dpath_campaign / setting / dataset / str(seed)
+        d = dpath_campaign / "settings" / setting / dataset / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
             with open(d / "trial_metadata.json", "w") as f:
@@ -750,7 +750,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
 def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
     # a trial that failed once then succeeded on resume keeps its old error.log; complete=True wins
     dpath_campaign = Path(tmp_path) / "cmp_manifest_resume"
-    d = dpath_campaign / "hp" / "cub" / "42"
+    d = dpath_campaign / "settings" / "hp" / "cub" / "42"
     d.mkdir(parents=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({
@@ -834,7 +834,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
         cur = f"{cfg_dict['setting']}/{cfg_dict['dataset']}/{cfg_dict['seed']}"
         in_progress_snapshots.append((cur, (dpath_campaign / "manifest.log").read_text()))
-        d = dpath_campaign / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
@@ -896,7 +896,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
 
     # the trial gets killed mid-run: leaves chkpts/in_progress + incomplete metadata, no error.log
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
-        d = dpath_campaign / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)

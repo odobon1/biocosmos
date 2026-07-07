@@ -140,7 +140,7 @@ class ArtifactManager:
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign
-        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / cfg_train.setting
+        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "settings" / cfg_train.setting
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
         ArtifactManager.model_type = cfg_train.arch["model_type"]

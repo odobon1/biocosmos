@@ -1,5 +1,5 @@
 rdpath_model: null  # relative dirpath to checkpoint directory (contains model.pt; set null for base model)
-# rdpath_model: artifacts/devdev/hp/nymph/42/chkpts/final  # dataset, split, model_type, non_causal, img_norm are overridden if rdpath_model is specified
+# rdpath_model: artifacts/devdev/settings/hp/nymph/42/chkpts/final  # dataset, split, model_type, non_causal, img_norm are overridden if rdpath_model is specified
 dataset: nymph  # {bryo, cub, lepid, nymph}
 split: D10  # {D10, dev}
 eval_type: val  # {val, test}

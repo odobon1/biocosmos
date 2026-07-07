@@ -380,8 +380,8 @@ def test_expand_settings_single_combo_group_unchanged() -> None:
 
 def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
     # an item without a 'name' is named by its overrides: 'key-value' pairs joined by '_', with
-    # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists.
-    # value aliases are per original key: 'phylo' under loss2.targ (unaliased) stays 'phylo'.
+    # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists
+    # and anything unaliased (e.g. loss2.mix) passing through verbatim
     settings = cr._expand_settings(
         [
             [
@@ -392,9 +392,56 @@ def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
         ]
     )
     assert settings == [
-        ("loss2.mix-0.3_loss2.targ-phylo", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
+        ("loss2.mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
         ("L1T-multipos", {"loss.targ": "multipos"}),
         ("iw", {"loss.targ": "aligned"}),
+    ]
+
+
+def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
+    # a list-valued override is a combo list: the item expands to one setting per list value, the
+    # (aliased) 'key-value' pair appended to the explicit 'name'
+    settings = cr._expand_settings(
+        [
+            [
+                {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
+                {"loss.targ": "multipos", "batch_size": [1024, 2048], "name": "sw"},
+            ]
+        ]
+    )
+    assert settings == [
+        ("hp_bs-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
+        ("hp_bs-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
+        ("sw_bs-1k", {"loss.targ": "multipos", "batch_size": 1024}),
+        ("sw_bs-2k", {"loss.targ": "multipos", "batch_size": 2048}),
+    ]
+
+
+def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
+    # several combo lists in one item cross with each other, the last-listed key varying fastest;
+    # scientific-notation floats read like the YAML that declared them (7e-06 -> '7.0e-6')
+    settings = cr._expand_settings(
+        [
+            [
+                {"loss2.mix": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 1.2e-5], "name": "hp"},
+            ]
+        ]
+    )
+    assert [name for name, _ in settings] == [
+        "hp_bs-1k_opt.lr.init-7.0e-6",
+        "hp_bs-1k_opt.lr.init-1.2e-5",
+        "hp_bs-2k_opt.lr.init-7.0e-6",
+        "hp_bs-2k_opt.lr.init-1.2e-5",
+    ]
+    assert dict(settings)["hp_bs-2k_opt.lr.init-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
+
+
+def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
+    # in an unnamed item the expanded value is named like any other override, in declared position
+    settings = cr._expand_settings([[{"loss.targ": "multipos", "batch_size": [1024, 2048]}]])
+    assert settings == [
+        ("L1T-multipos_bs-1k", {"loss.targ": "multipos", "batch_size": 1024}),
+        ("L1T-multipos_bs-2k", {"loss.targ": "multipos", "batch_size": 2048}),
     ]
 
 

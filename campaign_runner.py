@@ -103,26 +103,65 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     save_json(cfg_snapshot, fpath)
     return cfg_snapshot
 
+def _fmt_name_value(v) -> str:
+    """Format an override value for use in a setting name. Floats that Python renders in scientific
+    notation are normalized to read like the YAML that declared them: '7e-06' -> '7.0e-6' (mantissa
+    keeps a decimal point, exponent drops zero-padding)."""
+    s = str(v)
+    if isinstance(v, float) and "e" in s:
+        mant, exp = s.split("e")
+        if "." not in mant:
+            mant += ".0"
+        s = f"{mant}e{int(exp)}"
+    return s
+
+def _alias_pair(k: str, v) -> str:
+    """Render one override as a 'key-value' name component, with the key mapped through
+    CFG_PARAM_ALIASES and the value through CFG_PARAM_VALUE_ALIASES (per original key) when an
+    alias exists, e.g. ('batch_size', 2048) -> 'bs-2k'."""
+    v_aliased = CFG_PARAM_VALUE_ALIASES.get(k, {}).get(v, v)
+    return f"{CFG_PARAM_ALIASES.get(k, k)}-{_fmt_name_value(v_aliased)}"
+
 def _derive_item_name(item: dict) -> str:
-    """Name an unnamed `baseline_overrides` item by its overrides: 'key-value' pairs joined by '_',
-    with keys and values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES (per original
-    key) when an alias exists, e.g. {'batch_size': 2048} -> 'bs-2k'."""
-    return "_".join(
-        f"{CFG_PARAM_ALIASES.get(k, k)}-{CFG_PARAM_VALUE_ALIASES.get(k, {}).get(v, v)}"
-        for k, v in item.items()
-    )
+    """Name an unnamed `baseline_overrides` item by its overrides: _alias_pair components joined
+    by '_', e.g. {'loss.targ': 'multipos', 'batch_size': 2048} -> 'L1T-multipos_bs-2k'."""
+    return "_".join(_alias_pair(k, v) for k, v in item.items())
+
+def _expand_combo_lists(item: dict) -> list[dict]:
+    """Expand an item's combo lists (list-valued overrides) into scalar items, one per combination
+    of list values; several combo lists in one item cross with each other, the last-listed key
+    varying fastest. The chosen 'key-value' pairs always show in the setting name: appended to an
+    explicit 'name' (e.g. {'batch_size': [1024, 2048], 'name': 'hp'} -> 'hp_bs-1k', 'hp_bs-2k'),
+    or picked up by _derive_item_name like any other override when the item is unnamed."""
+    list_keys = [k for k, v in item.items() if k != "name" and isinstance(v, list)]
+    if not list_keys:
+        return [item]
+    expanded = []
+    for values in itertools.product(*(item[k] for k in list_keys)):
+        chosen = dict(zip(list_keys, values))
+        scalar_item = {k: chosen.get(k, v) for k, v in item.items()}
+        if "name" in item:
+            scalar_item["name"] = "_".join([item["name"], *(_alias_pair(k, chosen[k]) for k in list_keys)])
+        expanded.append(scalar_item)
+    return expanded
 
 def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
     """Expand the campaign's combo groups into the full list of (name, overrides) settings.
 
     `baseline_overrides` is a list of combo groups; each combo group is a list of partial settings
     (a dict of dotted-key overrides plus an optional 'name'; an item without one is named from its
-    overrides via _derive_item_name, e.g. {'loss.targ': 'multipos'} -> 'L1T-multipos'). The
-    campaign's settings are the Cartesian product across combo groups: one partial setting is drawn
-    from each combo group and merged into one setting, its name the members' names joined by '_' in
-    combo-group order (e.g. 'hp' x '2k' -> 'hp_2k'). A single combo group expands to its members
-    unchanged. Combo groups are independent dimensions, so no override key may appear in more than
-    one combo group -- a shared key would have two values fighting to define it when members merge."""
+    overrides via _derive_item_name, e.g. {'loss.targ': 'multipos'} -> 'L1T-multipos'). An override
+    value given as a list is a combo list: the item is first expanded into one partial setting per
+    combination of its list values, named per _expand_combo_lists. The campaign's settings are the
+    Cartesian product across combo groups: one partial setting is drawn from each combo group and
+    merged into one setting, its name the members' names joined by '_' in combo-group order (e.g.
+    'hp' x '2k' -> 'hp_2k'). A single combo group expands to its members unchanged. Combo groups
+    are independent dimensions, so no override key may appear in more than one combo group -- a
+    shared key would have two values fighting to define it when members merge."""
+    combo_groups = [
+        [scalar_item for item in group for scalar_item in _expand_combo_lists(item)]
+        for group in combo_groups
+    ]
     group_keys = [
         {k for item in group for k in item if k != "name"}
         for group in combo_groups

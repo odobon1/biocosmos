@@ -10,9 +10,10 @@ from utils.hardware import compute_dataloader_workers_prefetch
 import pdb
 
 
-# Aliases used when deriving a setting name from an unnamed `baseline_overrides` item:
-# keys map through CFG_PARAM_ALIASES and values through CFG_PARAM_VALUE_ALIASES (per original
-# key); anything without an alias passes through verbatim.
+# Aliases used when building setting names from `baseline_overrides` keys/values (derived names
+# for unnamed items, and combo-list name components): keys map through CFG_PARAM_ALIASES and
+# values through CFG_PARAM_VALUE_ALIASES (per original key); anything without an alias passes
+# through verbatim.
 CFG_PARAM_ALIASES = {
     "batch_size": "bs",
     "loss.targ": "L1T",

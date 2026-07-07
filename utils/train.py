@@ -216,6 +216,7 @@ class ArtifactManager:
             del metadata["split"]
 
             del metadata["dev"]
+            del metadata["stats"]
             
             metadata["loss"].pop("wting", None)
             metadata["loss"].pop("focal", None)
@@ -367,6 +368,72 @@ class ArtifactManager:
         dpath_stats.mkdir(parents=True, exist_ok=True)
         save_json(stats, dpath_stats / "metrics.json")
         save_json_listview(listview, dpath_stats / "metrics_listview.json")
+
+    @staticmethod
+    def _map_table_grid(setting_comp_maps):
+        """Build the composite-mAP table's cell grid from [(setting, [comp map dict per completed
+        trial]), ...]: a header row of 'Composite mAP' + '<setting> (n_trials)' columns, then one
+        row per composite key (All/OOD/ID/I2T/I2I/T2I) with each cell '-' (0 trials),
+        'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX' (>1 trial, mean ± std)."""
+        grid = [["Composite mAP", *(f"{setting} ({len(comp_maps)})" for setting, comp_maps in setting_comp_maps)]]
+        for label in ("All", "OOD", "ID", "I2T", "I2I", "T2I"):
+            row = [label]
+            for _, comp_maps in setting_comp_maps:
+                nums = np.array([float(comp_map[label.lower()]) for comp_map in comp_maps]) * 100
+                if len(nums) == 0:
+                    row.append("-")
+                elif len(nums) == 1:
+                    row.append(f"{nums[0]:.2f}")
+                else:
+                    row.append(f"{nums.mean():.2f} ± {nums.std(ddof=1):.2f}")
+            grid.append(row)
+        return grid
+
+    @staticmethod
+    @rank0
+    def update_map_table(table_eval_group):
+        """Render the campaign-level composite-mAP summary table for this trial's dataset to
+        artifacts/<campaign>/stats/<dataset>/map.png: one column per setting (all settings planned
+        in campaign_metadata.json, including ones with no trials yet), stats aggregated across each
+        setting's completed trials. Re-rendered at each trial completion."""
+        set_key, grp = {
+            "closed_standard": ("closed_set", "standard"),
+            "closed_macro": ("closed_set", "per_class"),
+            "full_standard": ("full_set", "standard"),
+            "full_macro": ("full_set", "per_class"),
+        }[table_eval_group]
+
+        settings = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
+        setting_comp_maps = []
+        for setting in settings:
+            dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / ArtifactManager.dataset
+            comp_maps = []
+            if dpath_dataset.exists():
+                for dpath_trial in sorted(dpath_dataset.iterdir()):
+                    # same completion signal as update_metric_stats: a written final-eval metrics file
+                    fpath_metrics = dpath_trial / "evals/final/metrics.json"
+                    if fpath_metrics.exists():
+                        comp_maps.append(load_json(fpath_metrics)["scores"][set_key][grp]["comp"]["map"])
+            setting_comp_maps.append((setting, comp_maps))
+
+        grid = ArtifactManager._map_table_grid(setting_comp_maps)
+
+        fig, ax = plt.subplots(figsize=(1.2 + 1.5 * len(setting_comp_maps), 0.7 + 0.3 * len(grid)))
+        ax.axis("off")
+        ax.set_title(f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} -- {table_eval_group}", fontsize=11, pad=12)
+        table = ax.table(cellText=grid, loc="center", cellLoc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 1.5)
+        table.auto_set_column_width(list(range(len(grid[0]))))
+        for (row, col), cell in table.get_celld().items():
+            if row == 0 or col == 0:
+                cell.set_text_props(fontweight="bold")
+                cell.set_facecolor("#eaeaea")
+        fpath = ArtifactManager.dpath_campaign / "stats" / ArtifactManager.dataset / "map.png"
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(fpath, dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
     @staticmethod
     def base_eval_cache_dpath():

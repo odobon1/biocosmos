@@ -79,6 +79,7 @@ class TrainConfig:
     text_template: dict
     img_norm: str
     opt: dict
+    stats: dict
 
     dev: dict
 
@@ -153,6 +154,12 @@ class TrainConfig:
 
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
+
+        if self.stats["table_eval_group"] not in ("closed_standard", "closed_macro", "full_standard", "full_macro"):
+            raise ValueError(
+                f"Unknown stats.table_eval_group: '{self.stats['table_eval_group']}', "
+                f"must be one of {{closed_standard, closed_macro, full_standard, full_macro}}"
+            )
 
         for loss in [self.loss, self.loss2]:
             logits = loss["logits"]

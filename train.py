@@ -529,5 +529,6 @@ def run_training(cfg):
     )
     train_pipe.train()
     ArtifactManager.update_metric_stats()
+    ArtifactManager.update_map_table(cfg.stats["table_eval_group"])
 
     cleanup_ddp()

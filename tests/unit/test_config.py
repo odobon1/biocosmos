@@ -32,6 +32,7 @@ def make_train_config_dummy(**overrides):
         },
         "freeze": {"text": False, "image": True},
         "text_template": {"train": "train", "eval": "sci"},
+        "stats": {"table_eval_group": "closed_standard"},
         "hw": {
             "mixed_prec": True,
             "act_chkpt": False,

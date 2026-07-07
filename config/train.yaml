@@ -94,6 +94,9 @@ opt:  # optimization
   beta2: null  # if `null`, resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
+stats:
+  table_eval_group: closed_standard  # {closed_standard, closed_macro, full_standard, full_macro}
+
 dev:
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
   manifold_viz:

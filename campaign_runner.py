@@ -76,8 +76,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
 
     On first launch four config sources are bundled into a single `artifacts/<campaign>/cfg_baseline.json`
     under the keys `train`, `hardware`, `manifold_viz`, `model_specific`. The `train` snapshot is derived
-    from `config/train.yaml` (with `debug_mode` overrides folded in and the per-trial keys
-    'setting'/'seed'/'dataset' stripped); the other three are `config/hardware.yaml`,
+    from `config/train.yaml` (with `debug_mode` overrides folded in); the other three are `config/hardware.yaml`,
     `config/manifold_viz.yaml`, and `config/model_specific.yaml` verbatim. Every trial starts from the
     `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manifold_viz`,
     `model_specific`). Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled
@@ -91,8 +90,6 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
         return load_json(fpath)
 
     cfg_train = apply_train_debug_overrides(load_train_config_dict())
-    for key in ("setting", "seed", "dataset"):
-        cfg_train.pop(key, None)
     cfg_snapshot = {
         "train": cfg_train,
         "hardware": load_hardware_config_dict(),

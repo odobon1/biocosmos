@@ -271,7 +271,7 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
     cfg_out["opt"] = opt
     return cfg_out
 
-def build_train_config(cfg_dict: dict) -> TrainConfig:
+def get_config_train(cfg_dict: dict) -> TrainConfig:
     setting_overrides = cfg_dict.pop("_setting_overrides", None)
     model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; otherwise read live
     cfg_dict = apply_train_debug_overrides(cfg_dict)
@@ -283,11 +283,6 @@ def build_train_config(cfg_dict: dict) -> TrainConfig:
     if cfg.manifold_viz is None:  # load live when campaign trials haven't injected the snapshot
         cfg.manifold_viz = asdict(get_config_manifold_viz())
     return cfg
-
-def get_config_train(cfg_dict: dict | None = None):
-    if cfg_dict is None:
-        cfg_dict = load_train_config_dict()
-    return build_train_config(cfg_dict)
 
 
 @dataclass

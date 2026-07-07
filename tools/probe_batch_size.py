@@ -10,9 +10,12 @@ import gc
 from typing import List
 
 from models import VLMWrapper, CLIP_MODELS, SIGLIP_MODELS
-from utils.config import get_config_train
+from utils.config import get_config_train, load_train_config_dict
 
 import pdb
+
+
+DATASET = "bryo"
 
 
 def simulate_batch_train(
@@ -48,7 +51,9 @@ def probe_model(
 ):
     print(f"\n=== {model_id} ===")
 
-    config_train = get_config_train()
+    cfg_dict = load_train_config_dict()
+    cfg_dict.update({"campaign": "tool", "setting": "tool", "seed": None, "dataset": DATASET})
+    config_train = get_config_train(cfg_dict)
     # bandaid ~ override target types to be aligned
     config_train.loss["targ"]  = "aligned"
     config_train.loss2["targ"] = "aligned"

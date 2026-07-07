@@ -1,7 +1,3 @@
-campaign: dev
-setting: dev
-seed: 42
-dataset: bryo  # {bryo, cub, lepid, nymph}
 split: D10
 train_pt: train  # {train, trainval}
 

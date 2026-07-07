@@ -14,12 +14,13 @@ from PIL import Image
 
 from models import CLIP_MODELS, SIGLIP_MODELS
 from utils.data import MaybeConvertMode, build_train_augmentation_transforms
-from utils.config import get_config_train
+from utils.config import get_config_train, load_train_config_dict
 from utils.utils import load_split, paths
 
 
 NUM_IMAGES = 10
 NUM_AUGS = 8
+DATASET = "bryo"
 OUTPUT_DIR = Path("tools/image_aug")
 
 
@@ -50,7 +51,9 @@ def main() -> None:
     if NUM_AUGS <= 0:
         raise ValueError("NUM_AUGS must be greater than 0")
 
-    cfg = get_config_train()
+    cfg_dict = load_train_config_dict()
+    cfg_dict.update({"campaign": "tool", "setting": "tool", "seed": None, "dataset": DATASET})
+    cfg = get_config_train(cfg_dict)
 
     split = load_split(cfg.dataset, cfg.split)
     train_rows = list(split.get_data("train"))

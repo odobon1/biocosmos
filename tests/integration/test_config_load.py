@@ -18,7 +18,10 @@ def test_get_config_train_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) ->
         lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
 
-    cfg = get_config_train()
+    cfg_dict = load_train_config_dict()
+    cfg_dict.update({"campaign": "test", "setting": "test", "seed": 42, "dataset": "bryo"})
+
+    cfg = get_config_train(cfg_dict)
 
     assert cfg.hw
     assert cfg.opt["l2reg"] == 0.0
@@ -33,6 +36,7 @@ def test_get_config_train_resolves_clip_model_opt_defaults(monkeypatch: pytest.M
     )
 
     cfg_dict = load_train_config_dict()
+    cfg_dict.update({"campaign": "test", "setting": "test", "seed": 42, "dataset": "bryo"})
     cfg_dict["arch"]["model_type"] = "clip_vitb16"
     cfg_dict["opt"]["l2reg"] = None
     cfg_dict["opt"]["beta2"] = None

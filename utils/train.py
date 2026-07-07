@@ -15,6 +15,7 @@ from utils.utils import (
     save_pickle,
     load_pickle,
     save_json,
+    save_json_listview,
     load_json,
     TimeTracker,
     Timer,
@@ -316,8 +317,24 @@ class ArtifactManager:
         mean = nums.mean()
         std = nums.std(ddof=1)
         if percent:
-            return f"{mean * 100:.2f}% ± {std * 100:.2f}%"
+            return f"{mean * 100:.2f} ± {std * 100:.2f}"
         return f"{mean:.4f} ± {std:.4f}"
+
+    @staticmethod
+    def _listview_metric_stats(values, percent=True):
+        first = values[0]
+        if first is None:  # leaf is None for every trial (mirrors _aggregate_metric_stats)
+            return None
+        if isinstance(first, dict):
+            return {
+                k: ArtifactManager._listview_metric_stats(
+                    [v[k] for v in values], percent=percent and k != "loss_raw"
+                )
+                for k in first
+            }
+        if percent:
+            return [f"{float(v) * 100:.2f}" for v in values]
+        return [f"{float(v):.4f}" for v in values]
 
     @staticmethod
     @rank0
@@ -337,11 +354,19 @@ class ArtifactManager:
         if not metric_dicts:
             return
 
+        n_trials = len(metric_dicts)
         stats = {
-            "n_trials": len(metric_dicts),
+            "n_trials": n_trials,
             **ArtifactManager._aggregate_metric_stats(metric_dicts),
         }
-        save_json(stats, dpath_dataset / "metric_stats.json")
+        listview = {
+            "n_trials": n_trials,
+            **ArtifactManager._listview_metric_stats(metric_dicts),
+        }
+        dpath_stats = dpath_dataset / "stats"
+        dpath_stats.mkdir(parents=True, exist_ok=True)
+        save_json(stats, dpath_stats / "metrics.json")
+        save_json_listview(listview, dpath_stats / "metrics_listview.json")
 
     @staticmethod
     def base_eval_cache_dpath():

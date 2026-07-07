@@ -135,6 +135,21 @@ def save_json(data, fpath):
     with open(fpath, "w") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
+def _json_flat_leaves(obj, indent):
+    # indent=4 nested dicts, but each leaf (a list of per-trial values) stays on a single line
+    if isinstance(obj, dict) and obj:
+        pad = " " * (indent + 4)
+        body = ",\n".join(
+            f"{pad}{json.dumps(k, ensure_ascii=False)}: {_json_flat_leaves(v, indent + 4)}"
+            for k, v in obj.items()
+        )
+        return "{\n" + body + "\n" + " " * indent + "}"
+    return json.dumps(obj, ensure_ascii=False)
+
+def save_json_listview(data, fpath):
+    with open(fpath, "w") as f:
+        f.write(_json_flat_leaves(data, 0))
+
 def load_json(fpath):
     with open(fpath, "r") as f:
         data = json.load(f)

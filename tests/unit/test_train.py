@@ -15,7 +15,7 @@ def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
 
     assert out["loss_raw"]["ood"] is None
     assert out["loss_raw"]["id"] == "0.7017 ± 0.0017"
-    assert out["scores"]["comp"]["map"]["all"] == "55.00% ± 7.07%"
+    assert out["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
 
 
 def test_aggregate_metric_stats_single_trial_returns_leaves_verbatim() -> None:
@@ -45,7 +45,16 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
 
     ArtifactManager.update_metric_stats()
 
-    stats = json.loads((dpath_dataset / "metric_stats.json").read_text())
+    stats = json.loads((dpath_dataset / "stats" / "metrics.json").read_text())
     assert stats["n_trials"] == 2
     assert stats["loss_raw"]["ood"] is None
-    assert stats["scores"]["comp"]["map"]["all"] == "55.00% ± 7.07%"
+    assert stats["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
+
+    listview_text = (dpath_dataset / "stats" / "metrics_listview.json").read_text()
+    listview = json.loads(listview_text)
+    assert listview["n_trials"] == 2
+    assert listview["loss_raw"]["ood"] is None
+    assert listview["loss_raw"]["id"] == ["0.7000", "0.7000"]
+    assert listview["scores"]["comp"]["map"]["all"] == ["50.00", "60.00"]
+    # each leaf list stays on a single line
+    assert '"all": ["50.00", "60.00"]' in listview_text

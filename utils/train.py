@@ -301,14 +301,19 @@ class ArtifactManager:
         save_json(metadata, fpath_meta)
 
     @staticmethod
-    def _aggregate_metric_stats(values, percent=True):
+    def _spread(nums, spread_type):
+        spread = nums.std(ddof=1)
+        return spread / np.sqrt(len(nums)) if spread_type == "ste" else spread
+
+    @staticmethod
+    def _aggregate_metric_stats(values, spread_type, percent=True):
         first = values[0]
         if first is None:  # leaf is None for every trial (e.g. loss_raw["ood"] is never computed)
             return None
         if isinstance(first, dict):
             return {
                 k: ArtifactManager._aggregate_metric_stats(
-                    [v[k] for v in values], percent=percent and k != "loss_raw"
+                    [v[k] for v in values], spread_type, percent=percent and k != "loss_raw"
                 )
                 for k in first
             }
@@ -316,10 +321,10 @@ class ArtifactManager:
             return values[0]
         nums = np.array([float(v) for v in values])
         mean = nums.mean()
-        std = nums.std(ddof=1)
+        spread = ArtifactManager._spread(nums, spread_type)
         if percent:
-            return f"{mean * 100:.2f} ± {std * 100:.2f}"
-        return f"{mean:.4f} ± {std:.4f}"
+            return f"{mean * 100:.2f} ± {spread * 100:.2f}"
+        return f"{mean:.4f} ± {spread:.4f}"
 
     @staticmethod
     def _listview_metric_stats(values, percent=True):
@@ -339,7 +344,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def update_metric_stats():
+    def update_metric_stats(spread_type):
         dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
         metric_dicts = []
         for dpath_trial in sorted(dpath_dataset.iterdir()):
@@ -358,7 +363,7 @@ class ArtifactManager:
         n_trials = len(metric_dicts)
         stats = {
             "n_trials": n_trials,
-            **ArtifactManager._aggregate_metric_stats(metric_dicts),
+            **ArtifactManager._aggregate_metric_stats(metric_dicts, spread_type),
         }
         listview = {
             "n_trials": n_trials,
@@ -370,11 +375,11 @@ class ArtifactManager:
         save_json_listview(listview, dpath_stats / "metrics_listview.json")
 
     @staticmethod
-    def _stats_table_grid(corner, row_labels, setting_score_maps):
+    def _stats_table_grid(corner, row_labels, setting_score_maps, spread_type):
         """Build a composite-score table's cell grid from [(setting, [score dict per completed
         trial]), ...]: a header row of `corner` + '<setting> (n_trials)' columns, then one row per
         label in `row_labels` (each read from the score dicts by its lowercased key) with each cell
-        '-' (0 trials), 'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX' (>1 trial, mean ± std)."""
+        '-' (0 trials), 'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX' (>1 trial, mean ± spread)."""
         grid = [[corner, *(f"{setting} ({len(score_maps)})" for setting, score_maps in setting_score_maps)]]
         for label in row_labels:
             row = [label]
@@ -385,7 +390,7 @@ class ArtifactManager:
                 elif len(nums) == 1:
                     row.append(f"{nums[0]:.2f}")
                 else:
-                    row.append(f"{nums.mean():.2f} ± {nums.std(ddof=1):.2f}")
+                    row.append(f"{nums.mean():.2f} ± {ArtifactManager._spread(nums, spread_type):.2f}")
             grid.append(row)
         return grid
 
@@ -408,7 +413,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def update_stats_tables(table_eval_group):
+    def update_stats_tables(table_eval_group, spread_type):
         """Render the campaign-level composite-score summary tables for this trial's dataset to
         artifacts/<campaign>/stats/<dataset>/map.png (comp mAP: All/OOD/ID/I2T/I2I/T2I rows) and
         acc.png (comp I2T accuracy: single row): one column per setting (all settings planned in
@@ -442,6 +447,7 @@ class ArtifactManager:
             "Composite mAP",
             ("All", "OOD", "ID", "I2T", "I2I", "T2I"),
             [(setting, [comp["map"] for comp in comps]) for setting, comps in setting_comps],
+            spread_type,
         )
         ArtifactManager._render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map.png")
 
@@ -449,6 +455,7 @@ class ArtifactManager:
             "Composite I2T Accuracy",
             ("I2T",),
             [(setting, [comp["acc"] for comp in comps]) for setting, comps in setting_comps],
+            spread_type,
         )
         ArtifactManager._render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc.png")
 

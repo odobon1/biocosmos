@@ -528,7 +528,7 @@ def run_training(cfg):
         local_rank=local_gpu_rank,
     )
     train_pipe.train()
-    ArtifactManager.update_metric_stats()
-    ArtifactManager.update_stats_tables(cfg.stats["table_eval_group"])
+    ArtifactManager.update_metric_stats(cfg.stats["spread_type"])
+    ArtifactManager.update_stats_tables(cfg.stats["table_eval_group"], cfg.stats["spread_type"])
 
     cleanup_ddp()

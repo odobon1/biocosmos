@@ -155,6 +155,9 @@ class TrainConfig:
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
+        if self.stats["spread_type"] not in ("std", "ste"):
+            raise ValueError(f"Unknown stats.spread_type: '{self.stats['spread_type']}', must be one of {{std, ste}}")
+
         if self.stats["table_eval_group"] not in ("closed_standard", "closed_macro", "full_standard", "full_macro"):
             raise ValueError(
                 f"Unknown stats.table_eval_group: '{self.stats['table_eval_group']}', "

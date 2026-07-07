@@ -11,17 +11,29 @@ def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
         {"scores": {"comp": {"map": {"all": "0.60"}}}, "loss_raw": {"id": "0.7005", "ood": None}},
     ]
 
-    out = ArtifactManager._aggregate_metric_stats(trials)
+    out = ArtifactManager._aggregate_metric_stats(trials, "std")
 
     assert out["loss_raw"]["ood"] is None
     assert out["loss_raw"]["id"] == "0.7017 ± 0.0017"
     assert out["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
 
 
+def test_aggregate_metric_stats_ste_spread() -> None:
+    # ste = std / sqrt(n): 7.07 / sqrt(2) = 5.00
+    trials = [
+        {"scores": {"comp": {"map": {"all": "0.50"}}}},
+        {"scores": {"comp": {"map": {"all": "0.60"}}}},
+    ]
+
+    out = ArtifactManager._aggregate_metric_stats(trials, "ste")
+
+    assert out["scores"]["comp"]["map"]["all"] == "55.00 ± 5.00"
+
+
 def test_aggregate_metric_stats_single_trial_returns_leaves_verbatim() -> None:
     trials = [{"loss_raw": {"id": "0.7029", "ood": None}}]
 
-    out = ArtifactManager._aggregate_metric_stats(trials)
+    out = ArtifactManager._aggregate_metric_stats(trials, "std")
 
     assert out == {"loss_raw": {"id": "0.7029", "ood": None}}
 
@@ -43,7 +55,7 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    ArtifactManager.update_metric_stats()
+    ArtifactManager.update_metric_stats("std")
 
     stats = json.loads((dpath_dataset / "stats" / "metrics.json").read_text())
     assert stats["n_trials"] == 2
@@ -83,6 +95,7 @@ def test_stats_table_grid_formats_by_trial_count() -> None:
             ("sw", [_comp(0.50)["map"]]),
             ("iw", []),
         ],
+        "std",
     )
 
     assert grid[0] == ["Composite mAP", "hp (2)", "sw (1)", "iw (0)"]
@@ -93,11 +106,23 @@ def test_stats_table_grid_formats_by_trial_count() -> None:
     assert grid[2][1] == "56.00 ± 7.07"  # "OOD" row reads score key "ood"
 
 
+def test_stats_table_grid_ste_spread() -> None:
+    grid = ArtifactManager._stats_table_grid(
+        "Composite mAP",
+        ("All",),
+        [("hp", [_comp(0.50)["map"], _comp(0.60)["map"]])],
+        "ste",
+    )
+
+    assert grid[1][1] == "55.00 ± 5.00"  # ste = std / sqrt(n): 7.07 / sqrt(2)
+
+
 def test_stats_table_grid_single_acc_row() -> None:
     grid = ArtifactManager._stats_table_grid(
         "Composite I2T Accuracy",
         ("I2T",),
         [("hp", [_comp(0.50)["acc"], _comp(0.60)["acc"]])],
+        "std",
     )
 
     assert grid == [["Composite I2T Accuracy", "hp (2)"], ["I2T", "61.00 ± 7.07"]]
@@ -117,7 +142,7 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    ArtifactManager.update_stats_tables("closed_standard")
+    ArtifactManager.update_stats_tables("closed_standard", "std")
 
     assert (tmp_path / "stats" / dataset / "map.png").exists()
     assert (tmp_path / "stats" / dataset / "acc.png").exists()

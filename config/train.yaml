@@ -95,6 +95,7 @@ opt:  # optimization
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
 stats:
+  spread_type: std  # {std, ste}
   table_eval_group: closed_standard  # {closed_standard, closed_macro, full_standard, full_macro}
 
 dev:

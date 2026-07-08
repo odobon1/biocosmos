@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter
 from dataclasses import asdict
+from datetime import datetime, timezone
 import time
 import random
 import numpy as np
@@ -275,18 +276,22 @@ class ArtifactManager:
     def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, n_samps_seen: int, sample_volume: int, init_flag=False):
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         progress_data = {"n_samps_seen": n_samps_seen, "sample_volume": sample_volume}
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if init_flag:
             metadata_trial = {
                 "dataset": ArtifactManager.dataset,
                 "split": ArtifactManager.split,
                 "runtime": runtime_data,
                 "progress": progress_data,
+                "datetime_start": now,
+                "datetime_last_seen": now,
                 "complete": False,
             }
         else:
             metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
             metadata_trial["runtime"] = runtime_data
             metadata_trial["progress"] = progress_data
+            metadata_trial["datetime_last_seen"] = now
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
     @staticmethod

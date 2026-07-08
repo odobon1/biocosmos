@@ -22,6 +22,7 @@ import torch
 import yaml
 
 from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.hardware import get_slurm_alloc
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
@@ -379,6 +380,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     save_pickle(time_data, dpath_campaign / "time.pkl")
 
     n_gpus = torch.cuda.device_count()
+    slurm_alloc = get_slurm_alloc()
     setting_names = [name for name, _ in settings]
     fpath_meta = dpath_campaign / "campaign_metadata.json"
     if fpath_meta.exists():
@@ -394,6 +396,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
         metadata_camp = {
             "duration": "0-00:00:00",
             "n_gpus": n_gpus,
+            "n_cpus": slurm_alloc["n_cpus"],
+            "ram": slurm_alloc["ram"],
         }
     # record the (possibly grown) planned matrix so the next run can detect removals
     metadata_camp["settings"] = setting_names

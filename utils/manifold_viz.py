@@ -667,13 +667,18 @@ def _composite_canvas(grid, limits, suptitle, dpi, style):
     return fig, sc_by
 
 def _composite_frame(sc_by, data, marker_size, order_seed):
-    """Push one strobe frame onto every panel: a fresh draw-order shuffle (order_seed) at marker_size."""
+    """Push one strobe frame onto every panel: a fresh draw-order shuffle (order_seed) at marker_size.
+    Fully-transparent points (the partition a masked panel hides) are dropped from the draw rather than
+    painted invisibly -- the survivors keep their relative draw order (the shuffle restricted to them) and
+    axes are frozen independently of the plotted subset (see _evolution_limits/_limits_for), so geometry and
+    ordering are unchanged; only the wasted per-point rasterization goes away."""
     for stem, sc in sc_by.items():
         proj, rgba = data[stem]
         order = np.random.default_rng(order_seed).permutation(len(rgba))
+        order = order[rgba[order, 3] > 0]  # keep only visible points, preserving the shuffle's relative order
         sc.set_offsets(proj[order])
         sc.set_facecolors(rgba[order])
-        sc.set_sizes(np.full(len(rgba), marker_size))
+        sc.set_sizes(np.full(len(order), marker_size))
 
 def composite_plot(grid, comp, fpath_png, suptitle, style):
     """Static flush-grid PNG (single frame at the given marker size). `comp` maps stem -> (proj, rgba)."""

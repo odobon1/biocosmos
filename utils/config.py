@@ -121,6 +121,10 @@ class TrainConfig:
         if n_trials_viz < 0:
             raise ValueError(f"dev.manifold_viz.n_trials must be >= 0, got {n_trials_viz}")
 
+        pooled_budget = self.dev["manifold_viz"]["pooled"]["budget"]
+        if pooled_budget <= 0:
+            raise ValueError(f"dev.manifold_viz.pooled.budget must be > 0, got {pooled_budget}")
+
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 

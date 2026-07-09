@@ -1,7 +1,7 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 4_000_000
+sample_volume: 1_000_000
 chkpt_every: 200_000
 batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
@@ -106,6 +106,9 @@ dev:
     plot_4panel: true  # {true, false}; (true) plot 4-panel PCA's + t-SNE's
     plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
     # note: with n_trials >= 1 and all 3 flags = false, projections will still be computed and saved to disk
+    pooled:  # "pooled" shared-frame manifold viz: one PCA + t-SNE fit on all eval thresholds' embeddings pooled, then each threshold plotted as a masked subset of the shared layout (plot_Xpanel flags select the same groups, rendered under viz_pooled/)
+      enabled: true  # {true, false}; (true) cache per-eval embeddings, compute the pooled projection at end-of-trial, and render the pooled plots
+      budget: 1.0  # pooled t-SNE point budget as a multiple of one eval's full-set size (N_id + N_ood); the pool is class-stratified subsampled to ~budget * N_full points across all thresholds. 1.0 ~= one eval's cost; 2.0 ~= 2x (needs proportionally more GPU memory)
   logging: true
   debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`

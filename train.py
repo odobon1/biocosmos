@@ -26,7 +26,7 @@ from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_htarg_shuf
 from utils.eval import EvaluationPipeline
-from utils.manifold_viz import compute_projections
+from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -84,6 +84,9 @@ class TrainPipeline:
         self.eval_enabled = self.cfg.train_pt != "trainval"
         # manifold viz runs for the first dev.manifold_viz.n_trials seeds of each setting/dataset group
         self._viz_manifold = self.cfg.idx_seed < self.cfg.dev["manifold_viz"]["n_trials"]
+        # pooled shared-frame viz (dev.manifold_viz.pooled.enabled): cache each eval's embeddings and fit
+        # one pooled projection over all thresholds at end-of-trial (compute_pooled_projections)
+        self._pooled_manifold = self._viz_manifold and self.cfg.dev["manifold_viz"]["pooled"]["enabled"]
         if self.eval_enabled:
             text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
             self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
@@ -190,6 +193,10 @@ class TrainPipeline:
         shutil.copy2(src / "metrics.json", dst / "metrics.json")
         if self._viz_manifold:
             shutil.copy2(src / "projections.npz", dst / "projections.npz")
+        # pooled needs base embeddings too; absent when the shared cache predates pooling -> base is then
+        # simply excluded from the pool (the embs.npz sweep in compute_pooled_projections skips it)
+        if self._pooled_manifold and (src / "embs.npz").exists():
+            shutil.copy2(src / "embs.npz", dst / "embs.npz")
 
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
         # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.
@@ -200,7 +207,8 @@ class TrainPipeline:
         # reservation is still held. empty_cache is a local allocator op (no collective) so it can't desync.
         torch.cuda.empty_cache()
         with self.time_tracker.measure("viz_compute"):
-            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz)
+            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz,
+                                cache_embs=self._pooled_manifold)
 
     def _viz_eval(self, eval_bundles, eval_name):
         """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
@@ -208,6 +216,15 @@ class TrainPipeline:
         worker (tools/manifold_viz.py), so no rank blocks in a collective while rank 0 renders."""
         dpath_eval = ArtifactManager.dpath_trial / "evals" / eval_name
         self._compute_projections_timed(eval_bundles, dpath_eval)
+
+    def _pooled_eval(self):
+        """Fit the pooled shared-frame projection over every threshold's cached embeddings (COLLECTIVE --
+        sharded t-SNE, every rank must enter) and cache the per-threshold masked blocks under evals/*/,
+        rendered post-trial off-process. Runs once at end-of-trial, after every per-eval cache is written."""
+        torch.cuda.empty_cache()  # release the training step's reserved pool before the pooled t-SNE buffers
+        budget = self.cfg.dev["manifold_viz"]["pooled"]["budget"]
+        with self.time_tracker.measure("viz_compute"):
+            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget)
 
     def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
         # NOT @rank0: _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank
@@ -484,7 +501,10 @@ class TrainPipeline:
             if self.data is not None:
                 self.modelw.save(ArtifactManager.dpath_model_final)
             ArtifactManager.save_rng_states(self._local_rank)
-            dist.barrier()
+            dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
+
+            if self._pooled_manifold:
+                self._pooled_eval()  # COLLECTIVE: pooled shared-frame projection over all cached embeddings
 
         finally:
             PrintLog.close_logs()

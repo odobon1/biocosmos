@@ -49,6 +49,16 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     if not skip_evo:
         render_evolution(dpath_evals, dpath_trial / "viz", cfg_manifold_viz, viz_context, plot_flags)
 
+    # pooled shared-frame plots: one t-SNE/PCA fit over all thresholds pooled, each threshold rendered as
+    # a masked subset of the single layout (no orientation), under viz_pooled/. Present only when the
+    # end-of-trial pooled compute wrote projections_pooled.npz (dev.manifold_viz.pooled.enabled).
+    if plot_flags["pooled"]["enabled"]:
+        if not evo_only:
+            for d in _ordered_eval_dirs(dpath_evals, "projections_pooled.npz"):
+                render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, plot_flags, orient=False, fname="projections_pooled.npz")
+        if not skip_evo:
+            render_evolution(dpath_evals, dpath_trial / "viz_pooled", cfg_manifold_viz, viz_context, plot_flags, orient=False, fname="projections_pooled.npz")
+
 def main():
     args = sys.argv[1:]
     evo_only = "evo_only" in args

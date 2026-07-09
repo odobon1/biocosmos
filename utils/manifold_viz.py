@@ -708,24 +708,25 @@ def _cids_by(cids_id, cids_ood):
     """{proj key: class-id list} for the three projection subjects (fullset = ID followed by OOD)."""
     return {"id": cids_id, "ood": cids_ood, "fullset": cids_id + cids_ood}
 
-def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau):
+def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau, orient=True, fname="projections.npz"):
     """Yield (name, {(method, stem): (proj, point_colors, alpha)}) one eval at a time, loading each cache
     ONCE and resolving it for every method in `methods` -- so a cross-method caller never re-reads a cache
-    per method, and no caller holds more than one eval's data. The t-SNE method's cached projection is
-    re-oriented against the orientation reference carried across evals in order (the same sweep
-    render_evolution/render_eval reproduce); PCA is not oriented. Only the panels in `stems` are resolved
-    (the rest of the grid is blank)."""
+    per method, and no caller holds more than one eval's data. When `orient`, the t-SNE method's cached
+    projection is re-oriented against the orientation reference carried across evals in order (the same
+    sweep render_evolution/render_eval reproduce); PCA is not oriented. `orient=False` (pooled mode) skips
+    orientation entirely -- the pooled projections already share one frame across thresholds. `fname`
+    selects the per-eval or pooled cache. Only the panels in `stems` are resolved (rest of grid blank)."""
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot = cmaps
     ref = {}  # running per-class CoM orientation reference per t-SNE proj key, carried across evals (t-SNE only)
     for d, name in zip(evals, names):
-        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d)
+        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d, fname)
         penults_id = [cid_2_penult[c] for c in cids_id]
         penults_ood = [cid_2_penult[c] for c in cids_ood]
         nshot_id = [cid_2_nshot[c] for c in cids_id]
         resolved = {}
         for method in methods:
             projs = dict(tsne_projs if method == "t-SNE" else pca_projs)
-            if method == "t-SNE":  # re-orient raw t-SNE against the running reference (Procrustes) across evals
+            if method == "t-SNE" and orient:  # re-orient raw t-SNE against the running reference (Procrustes) across evals
                 cids_by = _cids_by(cids_id, cids_ood)
                 for k in projs:
                     projs[k], ref[k] = orient_tsne(projs[k], cids_by[k], ref.get(k), ema_tau)
@@ -735,16 +736,18 @@ def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau):
                     resolved[(method, stem)] = (proj, np.array([color_map[label] for label in labels]), alpha)
         yield name, resolved
 
-def composite_evolution_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style):
+def composite_evolution_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style,
+                            orient=True, fname="projections.npz"):
     """Training-evolution GIF of a flush grid: each eval contributes n_stoch_layers strobe frames, axes
     frozen to the cross-eval union (`limits`, precomputed by render_evolution). Loads + renders one eval's
     cache at a time and streams the frames to disk, so peak memory is independent of the number of
-    evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name."""
+    evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name.
+    `orient`/`fname` select per-eval (oriented) vs pooled (shared-frame, `orient=False`) sources."""
     stems = _stems_of(grid)
     supt = lambda name: _manifold_title(style.method, viz_context, subject, suffix=f", {name}")
     fig, sc_by = _composite_canvas(grid, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: render frames lazily (one eval loaded at a time) so they stream to disk
-        for name, resolved in _resolved_evals(evals, names, stems, (style.method,), cmaps, ema_tau):
+        for name, resolved in _resolved_evals(evals, names, stems, (style.method,), cmaps, ema_tau, orient, fname):
             fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")  # align to the leftmost plot's left edge
             data = {s: (resolved[(style.method, s)][0], _rgba(resolved[(style.method, s)][1], resolved[(style.method, s)][2])) for s in stems}
             for seed in range(style.n_stoch_layers):
@@ -822,16 +825,17 @@ def quad_render(leaf_stem, penult_stem, data, fpath, suptitle, style):
         _save_gif(frames, fpath, style.frame_ms)
 
 def quad_evolution_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
-                       limits, fpath_gif, style):
+                       limits, fpath_gif, style, orient=True, fname="projections.npz"):
     """Cross-method (PCA top / t-SNE bottom) training-evolution GIF for one subject's leaf/penult pair.
     Sweeps both methods' caches in lockstep (one eval per method loaded at a time) and streams the frames
     to disk, so peak memory is independent of the eval count; axes frozen to the precomputed cross-eval
-    union (`limits`, keyed (method, stem))."""
+    union (`limits`, keyed (method, stem)). `orient`/`fname` select per-eval (oriented) vs pooled
+    (shared-frame, `orient=False`) sources."""
     stems = {leaf_stem, penult_stem}
     supt = lambda name: _manifold_title("PCA + t-SNE", viz_context, subject, suffix=f", {name}")
     fig, sc_by = _quad_canvas(leaf_stem, penult_stem, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: one cache load per eval, resolved for both methods, streamed to disk
-        for name, resolved in _resolved_evals(evals, names, stems, _QUAD_METHODS, cmaps, ema_tau):
+        for name, resolved in _resolved_evals(evals, names, stems, _QUAD_METHODS, cmaps, ema_tau, orient, fname):
             fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")
             data = {k: (resolved[k][0], _rgba(resolved[k][1], resolved[k][2]))
                     for k in ((m, s) for m in _QUAD_METHODS for s in stems)}
@@ -918,11 +922,15 @@ def _build_color_maps(viz_context, cids_all, cfg_color):
     color_nshot = nshot_color_map(nst_names)  # bucket colors matching the learning curves (+ OOD black)
     return color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names
 
-def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifold_viz):
+def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifold_viz, cache_embs=False):
     """COLLECTIVE -- every rank must enter. Compute the raw (sharded) t-SNE + PCA from the live,
     all-gathered eval embeddings and, on rank 0, cache them to dpath_cache/projections.npz. This is the
     training pipeline's ONLY in-loop viz work; orientation, coloring, and rendering are a separate pass
-    over the cache (render_eval / render_evolution), kept off the collective path. Returns None."""
+    over the cache (render_eval / render_evolution), kept off the collective path. Returns None.
+
+    `cache_embs` (pooled mode) additionally persists the raw eval embeddings to dpath_cache/embs.npz
+    (float16 + cids) so the end-of-trial pooled projection can re-fit one shared t-SNE/PCA over every
+    threshold's embeddings pooled (compute_pooled_projections)."""
     _log("computing projections")
     # ALL RANKS: sharded t-SNE + PCA projections (collective ops inside)
     tsne_projs, pca_projs = _compute_projections(
@@ -936,19 +944,111 @@ def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifo
     for k in tsne_projs:
         cache[f"tsne_{k}"] = tsne_projs[k]
     np.savez(dpath_cache / "projections.npz", **cache)
+    if cache_embs:  # persist raw embeddings (float16) for the end-of-trial pooled projection
+        np.savez(dpath_cache / "embs.npz",
+                 embs_id=eval_bundle_id["embs_img"].detach().cpu().to(torch.float16).numpy(),
+                 embs_ood=eval_bundle_ood["embs_img"].detach().cpu().to(torch.float16).numpy(),
+                 cids_id=np.asarray(eval_bundle_id["cids_img"]),
+                 cids_ood=np.asarray(eval_bundle_ood["cids_img"]))
     _log("projections complete")
 
-def _load_projections(dpath_cache):
-    """Load an eval's cached raw projections from dpath_cache/projections.npz:
-    (tsne_projs, pca_projs, cids_id, cids_ood). Both tsne_projs and pca_projs are keyed id/ood/fullset."""
-    npz = np.load(dpath_cache / "projections.npz")
+_POOLED_SEED = 42  # fixed seed for the pooled subsample: every rank must draw the SAME points so the
+                   # pool (and thus the collective sharded t-SNE input) is identical across ranks
+
+def _stratified_subsample(cids, m, seed):
+    """~m row indices class-stratified over `cids` (each class contributes ~proportionally to its size),
+    deterministic given (cids, seed); returns sorted indices, or all indices when m >= len(cids). Reused
+    across thresholds -- the eval set is in identical per-sample order at every threshold, so the same
+    indices select the SAME physical samples in every frame, and the pooled plots track those samples
+    migrating through the one shared layout."""
+    cids = np.asarray(cids)
+    n = len(cids)
+    if m >= n:
+        return np.arange(n)
+    rng = np.random.default_rng(seed)
+    picks = []
+    for c in np.unique(cids):  # sorted -> deterministic class order
+        idx_c = np.where(cids == c)[0]
+        k = min(len(idx_c), int(round(m * len(idx_c) / n)))
+        if k > 0:
+            picks.append(rng.choice(idx_c, size=k, replace=False))
+    return np.sort(np.concatenate(picks)) if picks else np.arange(0)
+
+def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
+    """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
+    embeddings pooled (read from each eval's embs.npz) and, on rank 0, write per-threshold masked blocks
+    to <eval>/projections_pooled.npz. The geometry is shared, so each threshold is a masked subset of the
+    single layout (no orientation needed) and the plots show the eval set migrating through a fixed frame
+    as training progresses.
+
+    Exact t-SNE is O(N^2), so the pool is class-stratified subsampled to ~budget * N_full points total
+    (N_full = one eval's ID+OOD size); budget=1.0 makes the pooled t-SNE cost ~one eval. The subsample
+    indices are fixed across thresholds (identical eval order), so a point is the SAME sample in every
+    frame. id/ood/fullset are fit independently (mirroring the per-eval compute). Rows are laid out in
+    per-threshold contiguous blocks ([threshold0, threshold1, ...]; each fullset block is its ID rows then
+    its OOD rows) so a threshold's block is a single contiguous slice.
+
+    Deterministic subsample + deterministic PCA init => the pool and init are identical on every rank, as
+    the collective sharded t-SNE requires."""
+    dirs = _ordered_eval_dirs(dpath_evals, "embs.npz")
+    if not dirs:
+        return
+    T = len(dirs)
+    embs = [np.load(d / "embs.npz") for d in dirs]  # lazy npz handles; per-subject arrays pulled below
+    cids_id, cids_ood = np.asarray(embs[0]["cids_id"]), np.asarray(embs[0]["cids_ood"])  # eval set fixed across thresholds
+    n_id, n_ood, n_full = len(cids_id), len(cids_ood), len(cids_id) + len(cids_ood)
+    per_thresh = budget * n_full / T  # target pooled full-set points per threshold
+    idx_id = _stratified_subsample(cids_id, min(n_id, int(round(per_thresh * n_id / n_full))), _POOLED_SEED)
+    idx_ood = _stratified_subsample(cids_ood, min(n_ood, int(round(per_thresh * n_ood / n_full))), _POOLED_SEED)
+    m_id, m_ood = len(idx_id), len(idx_ood)  # actual per-threshold counts (uniform across thresholds)
+    _log(f"pooling {T} thresholds -> t-SNE on {T * (m_id + m_ood)} pts (id {T * m_id}, ood {T * m_ood}) at budget {budget}")
+
+    # per-threshold subsample blocks (float16 on disk -> float32 for compute), pooled into id / ood /
+    # fullset. Reading e["embs_*"] materializes one threshold's full embeddings transiently, then indexes
+    # down to the subsample, so peak memory is ~one threshold's embeddings plus the (small) subsample pool.
+    id_blocks = [e["embs_id"][idx_id].astype(np.float32) for e in embs]
+    ood_blocks = [e["embs_ood"][idx_ood].astype(np.float32) for e in embs]
+    for e in embs:  # close the npz file handles now that the subsample rows are materialized
+        e.close()
+    pools = {
+        "id": np.concatenate(id_blocks, axis=0),
+        "ood": np.concatenate(ood_blocks, axis=0),
+        "fullset": np.concatenate([np.concatenate([i, o], axis=0) for i, o in zip(id_blocks, ood_blocks)], axis=0),
+    }
+    del id_blocks, ood_blocks  # free the (duplicated in fullset) block lists before the t-SNE buffers allocate
+    cfg_tsne = cfg_manifold_viz["tsne"]
+    tsne_projs, pca_projs = {}, {}
+    for k, pool in pools.items():  # collective sharded t-SNE per subject (id/ood/fullset), one at a time
+        pca_projs[k] = compute_pca(pool)
+        tsne_projs[k] = compute_tsne(pool, perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), n_iter=cfg_tsne["n_iter"])
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return  # non-rank-0 ranks only participate in the collective compute
+    # split each pooled projection into per-threshold blocks; cache them (projections.npz schema) per eval
+    sub_cids_id, sub_cids_ood = cids_id[idx_id], cids_ood[idx_ood]
+    for t, d in enumerate(dirs):
+        cache = {"cids_id": sub_cids_id, "cids_ood": sub_cids_ood}
+        for k, blk in (("id", m_id), ("ood", m_ood), ("fullset", m_id + m_ood)):
+            sl = slice(t * blk, (t + 1) * blk)
+            cache[f"pca_{k}"] = pca_projs[k][sl]
+            cache[f"tsne_{k}"] = tsne_projs[k][sl]
+        np.savez(d / "projections_pooled.npz", **cache)
+    _log("pooled projections complete")
+
+def _load_projections(dpath_cache, fname="projections.npz"):
+    """Load an eval's cached raw projections from dpath_cache/<fname>:
+    (tsne_projs, pca_projs, cids_id, cids_ood). Both tsne_projs and pca_projs are keyed id/ood/fullset.
+    `fname` selects the per-eval independent cache (projections.npz) or the pooled shared-frame cache
+    (projections_pooled.npz), which share this schema."""
+    npz = np.load(dpath_cache / fname)
     keys = ("id", "ood", "fullset")
     return ({k: npz[f"tsne_{k}"] for k in keys}, {k: npz[f"pca_{k}"] for k in keys},
             list(npz["cids_id"]), list(npz["cids_ood"]))
 
-def _ordered_eval_dirs(dpath_evals):
-    """Eval dirs that hold a cached projections.npz, in chronological order (_base, thresholds, final)."""
-    return sorted((d for d in dpath_evals.iterdir() if (d / "projections.npz").exists()),
+def _ordered_eval_dirs(dpath_evals, fname="projections.npz"):
+    """Eval dirs that hold a cached <fname>, in chronological order (_base, thresholds, final). `fname`
+    selects the per-eval cache (projections.npz), the pooled cache (projections_pooled.npz), or the raw
+    embedding cache (embs.npz, swept by the pooled compute)."""
+    return sorted((d for d in dpath_evals.iterdir() if (d / fname).exists()),
                   key=lambda d: _eval_sort_key(d.name))
 
 def _ema_through(dpath_evals, eval_name, ema_tau):
@@ -1001,34 +1101,48 @@ def _no_panels_enabled(plot_flags):
     return not (plot_flags["plot_2panel"] or plot_flags["plot_4panel"] or plot_flags["plot_7panel"])
 
 @rank0
-def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flags):
-    """Rank-0. Render one eval's per-eval plots from its cached projections
-    (dpath_evals/<eval_name>/projections.npz) into <eval_name>/viz/. The t-SNE orientation uses the
-    reference accumulated over the prior evals on disk, so it matches that eval's frame in the evolution
-    GIF -- and needs no live state. `plot_flags` (dev.manifold_viz) gates which panel groups are emitted."""
+def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flags, orient=True, fname="projections.npz"):
+    """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz(_pooled)/.
+
+    Default (per-eval, `orient=True`, projections.npz): the independently-fit t-SNE is re-oriented against
+    the reference accumulated over the prior evals on disk, so it matches that eval's frame in the
+    evolution GIF -- and needs no live state.
+
+    Pooled (`orient=False`, fname=projections_pooled.npz): the projection already shares one frame across
+    thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz_pooled/. The
+    cache holds only this threshold's subsample, so colors are still built from the FULL eval set
+    (projections.npz) -- coloring by the subsample would reorder the count-ranked hues and break color
+    correspondence with the other plots. `plot_flags` (dev.manifold_viz) gates which panel groups."""
     if _no_panels_enabled(plot_flags):
         return
     dpath_eval = dpath_evals / eval_name
-    tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(dpath_eval)
-    cids_all = list(cids_id) + list(cids_ood)
-    # color maps span the whole dataset so a class is colored identically in every plot; colors
-    # are assigned in order of how many plotted (ID+OOD) samples each class/penult-group has
+    tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(dpath_eval, fname)
+    # color maps span the whole dataset so a class is colored identically in every plot; colors are
+    # assigned in order of how many plotted (ID+OOD) samples each class/penult-group has -> always the
+    # FULL eval set (projections.npz), so pooled's subsample keeps each class's per-eval-plot color
+    if fname == "projections.npz":
+        cids_id_full, cids_ood_full = cids_id, cids_ood
+    else:
+        _, _, cids_id_full, cids_ood_full = _load_projections(dpath_eval)
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names = \
-        _build_color_maps(viz_context, cids_all, cfg_manifold_viz["color"])
+        _build_color_maps(viz_context, list(cids_id_full) + list(cids_ood_full), cfg_manifold_viz["color"])
     penults_id = [cid_2_penult[c] for c in cids_id]
     penults_ood = [cid_2_penult[c] for c in cids_ood]
     nshot_id = [cid_2_nshot[c] for c in cids_id]  # OOD samples are drawn black, not bucketed
-    ema_tau = cfg_manifold_viz["tsne"]["ema_tau"]
-    ref = _incoming_ref(dpath_evals, eval_name, ema_tau)  # reference through the prior evals (O(1) cache read)
-    cids_by = _cids_by(cids_id, cids_ood)
-    tsne_oriented = {}
-    for k in tsne_projs:
-        tsne_oriented[k], ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
-    _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
+    if orient:
+        ema_tau = cfg_manifold_viz["tsne"]["ema_tau"]
+        ref = _incoming_ref(dpath_evals, eval_name, ema_tau)  # reference through the prior evals (O(1) cache read)
+        cids_by = _cids_by(cids_id, cids_ood)
+        tsne_render = {}
+        for k in tsne_projs:
+            tsne_render[k], ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
+        _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
+    else:  # pooled: shared frame across thresholds -> no orientation
+        tsne_render = tsne_projs
     tag = "base" if eval_name == "_base" else eval_name
-    _render_grids(tsne_oriented, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
+    _render_grids(tsne_render, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
-                  dpath_eval / "viz", cfg_manifold_viz, viz_context, tag, plot_flags)
+                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag, plot_flags)
 
 def _eval_sort_key(name):
     """Chronological order of eval dirs: _base first, numeric thresholds ascending, final last."""
@@ -1039,43 +1153,51 @@ def _eval_sort_key(name):
     return (1, int(name[:-1]) * 1000 if name.endswith("k") else int(name))
 
 @rank0
-def _evolution_limits(evals, ema_tau):
+def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
     """One streaming pass over the caches accumulating the cross-eval axis bounds per (method, proj key)
     while holding only one eval at a time: the PCA bounding box (running min/max) and the t-SNE square
     bound (running max |coord| over ORIENTED projections -- orientation rotates points about the origin,
     so the bound must be taken post-orientation, with the same orientation sweep as the render). Reuses
     _common_limits/_square_limits on the accumulated extremes so the frozen axes are identical to
-    materializing every eval. Returns {(method, proj key): (xlim, ylim)} for proj key in id/ood/fullset."""
+    materializing every eval. `orient=False`/`fname` (pooled mode) take the bound over the raw pooled
+    projections (already one shared frame). Returns {(method, proj key): (xlim, ylim)} for id/ood/fullset."""
     keys = ("id", "ood", "fullset")
     pca_lo, pca_hi = {k: None for k in keys}, {k: None for k in keys}
     tsne_absmax = {k: 0.0 for k in keys}  # proj key -> running max |coord| over oriented projections
     ref = {}                              # proj key -> running orientation reference (per-class CoM)
     for d in evals:
-        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d)
+        tsne_projs, pca_projs, cids_id, cids_ood = _load_projections(d, fname)
         cids_by = _cids_by(cids_id, cids_ood)
         for k in keys:
             lo, hi = pca_projs[k].min(axis=0), pca_projs[k].max(axis=0)
             pca_lo[k] = lo if pca_lo[k] is None else np.minimum(pca_lo[k], lo)
             pca_hi[k] = hi if pca_hi[k] is None else np.maximum(pca_hi[k], hi)
-            oriented, ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
+            if orient:  # pooled t-SNE already shares one frame -> take the bound over the raw projection
+                oriented, ref[k] = orient_tsne(tsne_projs[k], cids_by[k], ref.get(k), ema_tau)
+            else:
+                oriented = tsne_projs[k]
             tsne_absmax[k] = max(tsne_absmax[k], float(np.abs(oriented).max()))
     limits = {("PCA", k): _common_limits([np.stack([pca_lo[k], pca_hi[k]])]) for k in keys}
     for k in keys:
         limits[("t-SNE", k)] = _square_limits([np.array([[tsne_absmax[k], tsne_absmax[k]]])])
     return limits
 
-def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot_flags):
+def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot_flags, orient=True, fname="projections.npz"):
     """Rank-0. Assemble one GIF per grid (`_GRIDS`) showing the training evolution
     (_base -> ... -> final): each eval contributes the strobe schedule's frames, then the GIF hard-cuts
     to the next eval, axes/gridlines frozen across evals so only the points move. Reads each eval's
-    cached projections.npz and writes the per-method grids under dpath_out/{2panel,7panel}/<method>/ plus
-    the cross-method PCA-over-t-SNE 4panel under dpath_out/4panel/. Re-orients t-SNE by aligning each eval
-    to a running reference swept across evals -- the same orientation `render_eval` reproduces per eval. Caches
-    are streamed one eval at a time (frozen limits precomputed in a single pass; each render worker then
-    loads + renders one cache at a time), so peak memory doesn't scale with the number of checkpoints."""
+    cached <fname> and writes the per-method grids under dpath_out/{2panel,7panel}/<method>/ plus
+    the cross-method PCA-over-t-SNE 4panel under dpath_out/4panel/.
+
+    Default (per-eval, projections.npz) re-orients t-SNE by aligning each eval to a running reference swept
+    across evals -- the same orientation `render_eval` reproduces per eval. Pooled (`orient=False`,
+    projections_pooled.npz, dpath_out=viz_pooled) skips orientation: the pooled projections already share
+    one frame, so the GIF just masks the single layout to each threshold's subsample. Colors always come
+    from the FULL eval set (projections.npz) so class colors match the other plots. Caches are streamed one
+    eval at a time (frozen limits precomputed in a single pass), so peak memory doesn't scale with the number of checkpoints."""
     if _no_panels_enabled(plot_flags):
         return
-    evals = _ordered_eval_dirs(dpath_evals)
+    evals = _ordered_eval_dirs(dpath_evals, fname)
     if not evals:
         return
     names = ["base" if d.name == "_base" else d.name for d in evals]
@@ -1086,16 +1208,17 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
     n_stoch_layers = cfg_manifold_viz["n_stoch_layers"]
     frame_ms = cfg_manifold_viz["eval_duration"] / n_stoch_layers  # per-frame ms so each eval shows for eval_duration
     ema_tau = cfg_manifold_viz["tsne"]["ema_tau"]
-    # eval set is fixed across checkpoints, so any eval's cids give the same (count-ordered) colors
-    _, _, cids_id, cids_ood = _load_projections(evals[-1])
+    # eval set is fixed across checkpoints, so any eval's cids give the same (count-ordered) colors; always
+    # the FULL eval set (projections.npz, explicit -- NOT the pooled subsample) so a class keeps its color
+    _, _, cids_id, cids_ood = _load_projections(evals[-1], "projections.npz")
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names = \
         _build_color_maps(viz_context, cids_id + cids_ood, cfg_color)
     cmaps = (color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot)  # shipped to workers (O(classes))
     legends = _legend_specs(color_nshot, nst_names)  # per-color-role coloring legend for every panel
-    limits_by = _evolution_limits(evals, ema_tau)  # frozen axes per (method, proj key), single streaming pass
+    limits_by = _evolution_limits(evals, ema_tau, orient, fname)  # frozen axes per (method, proj key), single streaming pass
 
     jobs = []  # one evolution-GIF job per (render target, grid); fanned out across cores below
-    # per-method grids: PCA + t-SNE, under viz/<group>/<method_dir>/
+    # per-method grids: PCA + t-SNE, under <dpath_out>/<group>/<method_dir>/
     for method, method_dir in [("PCA", "pca"), ("t-SNE", "tsne")]:
         for out_name, subject, grid in _GRIDS:
             group, stem = _grid_group(out_name)
@@ -1108,8 +1231,8 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
             fpath = dpath_out / group / method_dir / f"{stem}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((composite_evolution_gif, (grid, subject, viz_context, evals, names, cmaps,
-                                                   ema_tau, limits, fpath, style)))
-    # cross-method 4panel evolution GIFs (PCA top / t-SNE bottom): under viz/4panel/
+                                                   ema_tau, limits, fpath, style, orient, fname)))
+    # cross-method 4panel evolution GIFs (PCA top / t-SNE bottom): under <dpath_out>/4panel/
     if plot_flags["plot_4panel"]:
         quad_style = RenderStyle(None, marker_size, legends, n_stoch_layers, frame_ms, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
@@ -1118,7 +1241,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
             fpath = dpath_out / "4panel" / f"{out_name}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((quad_evolution_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
-                                              cmaps, ema_tau, limits, fpath, quad_style)))
+                                              cmaps, ema_tau, limits, fpath, quad_style, orient, fname)))
     _log("rendering evolution")
     _parallel_render(jobs)
     _log("evolution complete")

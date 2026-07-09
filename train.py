@@ -24,7 +24,7 @@ from utils.utils import (
 )
 from models import VLMWrapper
 from utils.data import spawn_dataloader, spawn_partition_data
-from utils.loss import configure_phylo_shuffle
+from utils.loss import configure_htarg_shuf
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
@@ -493,7 +493,7 @@ def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
-    configure_phylo_shuffle(cfg.phylo_shuffle, cfg.seed)
+    configure_htarg_shuf(cfg.htarg_shuf, cfg.seed)
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()

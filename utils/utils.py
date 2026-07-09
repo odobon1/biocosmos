@@ -16,13 +16,13 @@ from utils.ddp import rank0
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
+dpath_root = Path(os.getcwd())
 if CLUSTER == "pace":
 
-    dpath_root = Path(os.getcwd())
     dpath_haag = Path("/storage/ice-shared/cs8903onl")
     dpath_lepid = dpath_haag / "butterflies"
     dpath_hf_cache = dpath_haag / "huggingface_cache"
@@ -61,15 +61,10 @@ if CLUSTER == "pace":
                 "imgs": dpath_lepid / "metadata/data_meta-clean_rot_512-butterflies_whole_specimen-v2025_05_07.csv",
                 "tax": dpath_lepid / "metadata/data_tree_meta.csv",
             },
-            "nymph": {
-                "imgs": None,  # rip
-                "tax": None,  # rip
-            },
         },
     }
 elif CLUSTER == "hpg":
 
-    dpath_root = Path(os.getcwd())
     dpath_group = Path("/lustre/blue2/arthur.porto")
     dpath_data = dpath_group / "data"
     dpath_nymph = dpath_data / "datasets/nymphalidae_whole_specimen-v250613"

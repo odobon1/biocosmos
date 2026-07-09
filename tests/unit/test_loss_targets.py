@@ -9,7 +9,7 @@ def import_loss_module():
     fake_phylo = types.ModuleType("utils.phylo")
 
     class DummyPhyloVCV:
-        def __init__(self, dataset: str, phylo_shuffle: bool = False, seed: int | None = None) -> None:
+        def __init__(self, dataset: str, htarg_shuf: bool = False, seed: int | None = None) -> None:
             self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):
@@ -22,18 +22,18 @@ def import_loss_module():
     return importlib.import_module("utils.loss")
 
 
-def test_compute_targs_aligned_is_identity() -> None:
+def test_compute_targs_iw_is_identity() -> None:
     loss_mod = import_loss_module()
 
-    targs = loss_mod.compute_targs_aligned(3)
+    targs = loss_mod.compute_targs_iw(3)
 
     assert torch.equal(targs, torch.eye(3))
 
 
-def test_compute_targs_multipos_marks_matching_classes() -> None:
+def test_compute_targs_sw_marks_matching_classes() -> None:
     loss_mod = import_loss_module()
 
-    targs = loss_mod.compute_targs_multipos(torch.tensor([0, 1, 0]))
+    targs = loss_mod.compute_targs_sw(torch.tensor([0, 1, 0]))
 
     expected = torch.tensor(
         [

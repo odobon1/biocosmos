@@ -19,7 +19,7 @@ def get_tree(dataset: str) -> Tree:
 
 class PhyloVCV:
 
-    def __init__(self, dataset: str, phylo_shuffle: bool = False, seed: int | None = None) -> None:
+    def __init__(self, dataset: str, htarg_shuf: bool = False, seed: int | None = None) -> None:
 
         self.tree: Tree = get_tree(dataset)
         root: Clade = self.tree.root
@@ -44,7 +44,7 @@ class PhyloVCV:
 
         self.corr = vcv / max(np.diag(vcv))
 
-        if phylo_shuffle:
+        if htarg_shuf:
             # Scramble which species maps to which position in the (already-built) correlation
             # matrix. corr itself is untouched, so the full set of pairwise phylo distances is
             # preserved; only the cid -> matrix-index correspondence is randomized. The permutation

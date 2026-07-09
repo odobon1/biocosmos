@@ -4,7 +4,7 @@ datasets: [cub, nymph]
 
 baseline_overrides:
   - - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: [1_024, 2_048], opt.lr.init: [7.0e-6, 1.2e-5], name: hp}
-    - {loss.targ: multipos, batch_size: [1_024, 2_048], opt.lr.init: [7.0e-6, 1.2e-5], name: sw}
+    - {loss.targ: sw, batch_size: [1_024, 2_048], opt.lr.init: [7.0e-6, 1.2e-5], name: sw}
   - - {loss.wting.type: inv_freq}
     - {loss.wting.type: class_bal}
 

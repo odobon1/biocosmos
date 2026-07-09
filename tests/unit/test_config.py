@@ -17,12 +17,12 @@ def make_train_config_dummy(**overrides):
         "chkpt_every": 100,
         "batch_size": 8,
         "dv_batching": False,
-        "phylo_shuffle": False,
+        "htarg_shuf": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1}},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
-        "loss": {"type": "bce", "sim": "cos", "targ": "aligned", "logits": {"scale_init": None, "bias_init": None}},
-        "loss2": {"type": "bce", "sim": "cos", "targ": "aligned", "mix": 0.0, "logits": {"scale_init": None, "bias_init": None}},
+        "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale_init": None, "bias_init": None}},
+        "loss2": {"type": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale_init": None, "bias_init": None}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "l2reg": 0.0,
@@ -67,7 +67,7 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
-        TrainConfig(**make_train_config_dummy(loss2={"type": "bce", "sim": "cos", "targ": "aligned", "mix": 1.5}))
+        TrainConfig(**make_train_config_dummy(loss2={"type": "bce", "sim": "cos", "targ": "iw", "mix": 1.5}))
 
 
 def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,30 +77,30 @@ def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPa
         TrainConfig(**make_train_config_dummy(dev={"logging": False, "manifold_viz": {"n_trials": -1}}))
 
 
-def test_train_config_rejects_phylo_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_rejects_htarg_shuf_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="requires an active phylo target"):
-        TrainConfig(**make_train_config_dummy(phylo_shuffle=True))
+        TrainConfig(**make_train_config_dummy(htarg_shuf=True))
 
 
-def test_train_config_accepts_phylo_shuffle_with_secondary_phylo(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(
-        phylo_shuffle=True,
+        htarg_shuf=True,
         loss2={"type": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale_init": None, "bias_init": None}},
     ))
 
-    assert cfg.phylo_shuffle is True
+    assert cfg.htarg_shuf is True
 
 
-def test_train_config_rejects_phylo_shuffle_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="requires a non-null seed"):
         TrainConfig(**make_train_config_dummy(
-            phylo_shuffle=True,
+            htarg_shuf=True,
             seed=None,
             loss={"type": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale_init": None, "bias_init": None}},
         ))
@@ -142,24 +142,24 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:
     base = {
         "loss": {
-            "targ": "aligned",
+            "targ": "iw",
             "sim": "cos",
         }
     }
     overrides = {
-        "loss.targ": "multipos",
+        "loss.targ": "sw",
     }
 
     out = apply_overrides(base, overrides)
 
-    assert out["loss"]["targ"] == "multipos"
+    assert out["loss"]["targ"] == "sw"
     assert out["loss"]["sim"] == "cos"
 
 
 def test_apply_overrides_dot_path_navigates_nested_dict() -> None:
     base = {
         "loss": {
-            "targ": "aligned",
+            "targ": "iw",
             "sim": "cos",
         }
     }

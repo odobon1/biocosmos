@@ -4,7 +4,7 @@ datasets: [nymph, lepid]
 # datasets: [cub, nymph]
 
 baseline_overrides:
-  - - {loss2.mix: 0.3, loss2.targ: phylo, phylo_shuffle: true, name: shuffle}
-    - {loss2.mix: 0.3, loss2.targ: phylo, phylo_shuffle: false, name: no-shuffle}
+  - - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: true, name: shuffle}
+    - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: false, name: no-shuffle}
 
 suffix: null  # {null, [str]}; no suffix if set to null

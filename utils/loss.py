@@ -8,27 +8,27 @@ import pdb
 
 
 _phylo_vcv_cache: dict[tuple, PhyloVCV] = {}
-_phylo_shuffle: bool = False
+_htarg_shuf: bool = False
 _phylo_seed: int | None = None
 
 
-def configure_phylo_shuffle(phylo_shuffle: bool, seed: int | None) -> None:
+def configure_htarg_shuf(htarg_shuf: bool, seed: int | None) -> None:
     """Set phylo-target shuffling for this run; call once at setup before any loss is computed."""
-    global _phylo_shuffle, _phylo_seed
-    _phylo_shuffle = phylo_shuffle
+    global _htarg_shuf, _phylo_seed
+    _htarg_shuf = htarg_shuf
     _phylo_seed = seed
 
 def get_phylo_vcv(dataset: str) -> PhyloVCV:
-    key = (dataset, _phylo_shuffle, _phylo_seed)
+    key = (dataset, _htarg_shuf, _phylo_seed)
     if key not in _phylo_vcv_cache:
-        _phylo_vcv_cache[key] = PhyloVCV(dataset=dataset, phylo_shuffle=_phylo_shuffle, seed=_phylo_seed)
+        _phylo_vcv_cache[key] = PhyloVCV(dataset=dataset, htarg_shuf=_htarg_shuf, seed=_phylo_seed)
     return _phylo_vcv_cache[key]
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
-    if targ_type == "aligned":
-        targs = compute_targs_aligned(batch_size)
-    elif targ_type == "multipos":
-        targs = compute_targs_multipos(class_encs_b)
+    if targ_type == "iw":
+        targs = compute_targs_iw(batch_size)
+    elif targ_type == "sw":
+        targs = compute_targs_sw(class_encs_b)
     elif targ_type == "tax":
         targs = compute_targs_tax(targ_data_b)
     elif targ_type == "phylo":
@@ -37,11 +37,11 @@ def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
 
     return targs
 
-def compute_targs_aligned(batch_size):
+def compute_targs_iw(batch_size):
     targs = torch.eye(batch_size)
     return targs
 
-def compute_targs_multipos(class_encs_b):
+def compute_targs_sw(class_encs_b):
     targs = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
     return targs
 

@@ -14,12 +14,12 @@ freeze:
   image: false
   text: false
 
-phylo_shuffle: false
+htarg_shuf: false
 
 loss:  # primary loss
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: multipos  # {aligned, multipos, tax, phylo}
+  targ: sw  # {iw, sw, tax, phylo}
   wting:
     cp_type: 1  # {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
     type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
@@ -41,7 +41,7 @@ loss2:  # secondary loss
   mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: phylo  # {aligned, multipos, tax, phylo}
+  targ: phylo  # {iw, sw, tax, phylo}
   wting:
     cp_type: 1  # {1, 2}
     type: inv_freq  # {inv_freq, class_bal, null}
@@ -107,7 +107,7 @@ dev:
     plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
     # note: with n_trials >= 1 and all 3 flags = false, projections will still be computed and saved to disk
   logging: true
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000

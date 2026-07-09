@@ -95,7 +95,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
     ```yaml
     baseline_overrides:
       - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
-        - {loss.targ: multipos, name: sw}
+        - {loss.targ: sw, name: sw}
       - - {batch_size: 2_048, name: 2k}
         - {batch_size: 1_024, name: 1k}
     ```
@@ -104,14 +104,14 @@ Note: The full similarity matrix is computed for all model types, including SigL
     baseline_overrides:
       - - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 2_048, name: hp_2k}
         - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 1_024, name: hp_1k}
-        - {loss.targ: multipos, batch_size: 2_048, name: sw_2k}
-        - {loss.targ: multipos, batch_size: 1_024, name: sw_1k}
+        - {loss.targ: sw, batch_size: 2_048, name: sw_2k}
+        - {loss.targ: sw, batch_size: 1_024, name: sw_1k}
     ```
    A single combo group expands to its members unchanged:
     ```yaml
     baseline_overrides:
-      - - {loss.targ: aligned, name: iw}
-        - {loss.targ: multipos, name: sw}
+      - - {loss.targ: iw, name: iw}
+        - {loss.targ: sw, name: sw}
     ```
    produces `iw` and `sw`.
 
@@ -125,8 +125,8 @@ Note: The full similarity matrix is computed for all model types, including SigL
     datasets: [cub, lepid]
 
     baseline_overrides:
-      - - {loss.targ: aligned,  name: iw}
-        - {loss.targ: multipos, name: sw}
+      - - {loss.targ: iw,  name: iw}
+        - {loss.targ: sw, name: sw}
         - {loss.targ: phylo,    name: hp}
 
     suffix: null
@@ -144,7 +144,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
 **Note:** A campaign's config is **frozen at first launch**, bundled into a single snapshot. `config/train.yaml` (with `debug_mode` overrides folded in) and its three sibling config files are snapshotted together to `artifacts/<campaign>/cfg_baseline.json`, under the keys `train`, `hardware`, `manifold_viz`, `model_specific` (`config/hardware.yaml` → `hardware`, `config/model_specific.yaml` → `model_specific`, `config/manifold_viz.yaml` → `manifold_viz`). Every trial starts from the `train` snapshot, has the sibling snapshots injected (as `hw`, `model_specific`, `manifold_viz`), and layers its setting's `baseline_overrides` on top. Model-family `opt` defaults (`opt.l2reg`/`opt.beta2`) are left `null` in the baseline and resolved per trial from the cached `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching family's defaults. On any relaunch — resuming, or extending the matrix with added settings/datasets/seeds — the snapshot is read back from disk rather than re-read from the YAML, so edits to any of these config files after a campaign's first launch don't affect it: every trial (original or added later) uses the same frozen config. The one part still computed live per trial is the dataloader/GPU scaling (`n_workers`/`n_gpus`/`n_cpus`/`ram`), derived from the SLURM allocation so a resume adapts to the node; the static `hw` knobs (`mixed_prec`, `act_chkpt`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers_*`, `chunk_size`) are frozen and overridable per setting via `hw.*` in `baseline_overrides`.
 
-**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/settings/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: aligned` is listed even if `config/train.yaml` already sets it).
+**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/settings/<setting>/overrides.json` before any trial runs. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: iw` is listed even if `config/train.yaml` already sets it).
 
 **Note:** Combo groups are independent dimensions, so the same override key may not appear in more than one combo group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 

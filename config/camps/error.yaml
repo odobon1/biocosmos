@@ -4,7 +4,7 @@ datasets: [bryo, cub, lepid, nymph]
 baseline_overrides:
   - - {batch_size: 32_000, name: way-too-big-bs}
     - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
-    - {loss.targ: aligned, name: iw}
-    - {loss.targ: multipos, name: sw}
+    - {loss.targ: iw, name: iw}
+    - {loss.targ: sw, name: sw}
 
 suffix: null  # {null, [str]}; no suffix if set to null

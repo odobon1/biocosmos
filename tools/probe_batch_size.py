@@ -55,8 +55,8 @@ def probe_model(
     cfg_dict.update({"campaign": "tool", "setting": "tool", "seed": None, "dataset": DATASET})
     config_train = get_config_train(cfg_dict)
     # bandaid ~ override target types to be aligned
-    config_train.loss["targ"]  = "aligned"
-    config_train.loss2["targ"] = "aligned"
+    config_train.loss["targ"]  = "iw"
+    config_train.loss2["targ"] = "iw"
 
     config_train.model_type = model_id
     config_train.loss_type  = loss_type

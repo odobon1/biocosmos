@@ -30,7 +30,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -117,7 +117,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -142,7 +142,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         n_trials=2,
         datasets=("cub", "lepid"),
         baseline_overrides=[[
-            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "iw", "name": "iw"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
     )
@@ -153,12 +153,12 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         (seed, dataset, setting, targ)
         for seed in (42, 43)
         for dataset in ("cub", "lepid")
-        for setting, targ in (("iw", "aligned"), ("hp", "phylo"))
+        for setting, targ in (("iw", "iw"), ("hp", "phylo"))
     }
 
 
 
-def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) -> None:
+def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 7)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
 
@@ -168,7 +168,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -189,7 +189,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "iw", "name": "iw"},
         ]],
     )
 
@@ -199,7 +199,7 @@ def test_run_campaign_writes_explicit_aligned_override(tmp_path, monkeypatch) ->
     with open(fpath) as f:
         data = json.load(f)
 
-    assert data["loss.targ"] == "aligned"
+    assert data["loss.targ"] == "iw"
 
 
 def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatch) -> None:
@@ -212,7 +212,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -238,7 +238,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         campaign="cmp_complete",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     with open(dpath_trial / "trial_metadata.json") as f:
@@ -256,7 +256,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -284,7 +284,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         campaign="cmp_fail",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     # one initial attempt + max_retries (2, from the injected hardware config) no-progress resume attempts
@@ -306,7 +306,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -340,7 +340,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         campaign="cmp_flaky",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     assert calls["n"] == n_flakes + 1  # every progressing flake was retried; final attempt completed
@@ -355,7 +355,7 @@ def test_expand_settings_raises_on_duplicate_names() -> None:
         cr._expand_settings(
             [
                 [
-                    {"loss.targ": "aligned", "name": "dup"},
+                    {"loss.targ": "iw", "name": "dup"},
                     {"loss.targ": "phylo", "name": "dup"},
                 ]
             ]
@@ -368,13 +368,13 @@ def test_expand_settings_single_combo_group_unchanged() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "aligned", "name": "iw"},
+                {"loss.targ": "iw", "name": "iw"},
             ]
         ]
     )
     assert settings == [
         ("hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("iw", {"loss.targ": "aligned"}),
+        ("iw", {"loss.targ": "iw"}),
     ]
 
 
@@ -386,15 +386,15 @@ def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo"},
-                {"loss.targ": "multipos"},
-                {"loss.targ": "aligned", "name": "iw"},
+                {"loss.targ": "sw"},
+                {"loss.targ": "iw", "name": "iw"},
             ]
         ]
     )
     assert settings == [
         ("loss2.mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("L1T-multipos", {"loss.targ": "multipos"}),
-        ("iw", {"loss.targ": "aligned"}),
+        ("L1T-sw", {"loss.targ": "sw"}),
+        ("iw", {"loss.targ": "iw"}),
     ]
 
 
@@ -405,15 +405,15 @@ def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
-                {"loss.targ": "multipos", "batch_size": [1024, 2048], "name": "sw"},
+                {"loss.targ": "sw", "batch_size": [1024, 2048], "name": "sw"},
             ]
         ]
     )
     assert settings == [
         ("hp_bs-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
         ("hp_bs-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
-        ("sw_bs-1k", {"loss.targ": "multipos", "batch_size": 1024}),
-        ("sw_bs-2k", {"loss.targ": "multipos", "batch_size": 2048}),
+        ("sw_bs-1k", {"loss.targ": "sw", "batch_size": 1024}),
+        ("sw_bs-2k", {"loss.targ": "sw", "batch_size": 2048}),
     ]
 
 
@@ -438,10 +438,10 @@ def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
 
 def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
     # in an unnamed item the expanded value is named like any other override, in declared position
-    settings = cr._expand_settings([[{"loss.targ": "multipos", "batch_size": [1024, 2048]}]])
+    settings = cr._expand_settings([[{"loss.targ": "sw", "batch_size": [1024, 2048]}]])
     assert settings == [
-        ("L1T-multipos_bs-1k", {"loss.targ": "multipos", "batch_size": 1024}),
-        ("L1T-multipos_bs-2k", {"loss.targ": "multipos", "batch_size": 2048}),
+        ("L1T-sw_bs-1k", {"loss.targ": "sw", "batch_size": 1024}),
+        ("L1T-sw_bs-2k", {"loss.targ": "sw", "batch_size": 2048}),
     ]
 
 
@@ -451,7 +451,7 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "multipos"},
+                {"loss.targ": "sw"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -464,8 +464,8 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_bs-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "L1T-multipos_2k": {"loss.targ": "multipos", "batch_size": 2048},
-        "L1T-multipos_bs-1k": {"loss.targ": "multipos", "batch_size": 1024},
+        "L1T-sw_2k": {"loss.targ": "sw", "batch_size": 2048},
+        "L1T-sw_bs-1k": {"loss.targ": "sw", "batch_size": 1024},
     }
 
 
@@ -475,7 +475,7 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "multipos", "name": "sw"},
+                {"loss.targ": "sw", "name": "sw"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -488,8 +488,8 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "sw_2k": {"loss.targ": "multipos", "batch_size": 2048},
-        "sw_1k": {"loss.targ": "multipos", "batch_size": 1024},
+        "sw_2k": {"loss.targ": "sw", "batch_size": 2048},
+        "sw_1k": {"loss.targ": "sw", "batch_size": 1024},
     }
 
 
@@ -517,11 +517,11 @@ def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
             [
                 [
                     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                    {"loss.targ": "multipos", "name": "sw"},
+                    {"loss.targ": "sw", "name": "sw"},
                 ],
                 [
                     {"loss2.mix": 0.4, "loss2.targ": "phylo", "name": "hp4"},
-                    {"loss.targ": "multipos", "name": "sw2"},
+                    {"loss.targ": "sw", "name": "sw2"},
                 ],
             ]
         )
@@ -539,7 +539,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -564,14 +564,14 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[
-            [{"loss.targ": "aligned", "name": "iw"}, {"loss.targ": "phylo", "name": "hp"}],
+            [{"loss.targ": "iw", "name": "iw"}, {"loss.targ": "phylo", "name": "hp"}],
             [{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}],
         ],
     )
 
     assert set(scheduled) == {
-        ("iw_cos", "aligned", "cos"),
-        ("iw_l2", "aligned", "l2"),
+        ("iw_cos", "iw", "cos"),
+        ("iw_l2", "iw", "l2"),
         ("hp_cos", "phylo", "cos"),
         ("hp_l2", "phylo", "l2"),
     }
@@ -591,7 +591,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
@@ -806,7 +806,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -847,7 +847,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         campaign="cmp_manifest_run",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     # each trial showed under In Progress while it was running (lepid appears once per retry; collapse them)
@@ -882,7 +882,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "aligned", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -908,7 +908,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         campaign="cmp_manifest_interrupt",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     text = (dpath_campaign / "manifest.log").read_text()
@@ -932,7 +932,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_grow",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
@@ -949,7 +949,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         n_trials=2,
         datasets=("cub", "lepid"),
         baseline_overrides=[[
-            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "iw", "name": "iw"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
     )
@@ -977,7 +977,7 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
             n_trials=1,
             datasets=("cub",),
             baseline_overrides=[[
-                {"loss.targ": "aligned", "name": "dup"},
+                {"loss.targ": "iw", "name": "dup"},
                 {"loss.targ": "phylo", "name": "dup"},
             ]],
         )
@@ -995,7 +995,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     fpath_meta = tmp_path / "cmp_roundtrip" / "campaign_metadata.json"
@@ -1008,7 +1008,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     meta = json.loads(fpath_meta.read_text())
@@ -1024,7 +1024,7 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"loss.targ": "aligned", "name": "iw"},
+            {"loss.targ": "iw", "name": "iw"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
     )
@@ -1034,7 +1034,7 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_setting",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
         )
 
 
@@ -1045,7 +1045,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_dataset",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     with pytest.raises(RuntimeError, match="datasets removed.*lepid"):
@@ -1053,7 +1053,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_dataset",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
         )
 
 
@@ -1064,7 +1064,7 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_seed",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
     )
 
     with pytest.raises(RuntimeError, match="seeds removed.*43"):
@@ -1072,5 +1072,5 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_seed",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "aligned", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
         )

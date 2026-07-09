@@ -73,7 +73,7 @@ class TrainConfig:
 
     arch: dict
     freeze: dict
-    phylo_shuffle: bool
+    htarg_shuf: bool
     loss: dict
     loss2: dict
     text_template: dict
@@ -124,15 +124,15 @@ class TrainConfig:
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
-        if self.phylo_shuffle:
+        if self.htarg_shuf:
             phylo_active = self.loss["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss2["mix"] != 0.0)
             if not phylo_active:
                 raise ValueError(
-                    "phylo_shuffle=True requires an active phylo target: "
+                    "htarg_shuf=True requires an active phylo target: "
                     "loss.targ must be 'phylo', or loss2.targ must be 'phylo' with loss2.mix != 0.0"
                 )
             if self.seed is None:
-                raise ValueError("phylo_shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
+                raise ValueError("htarg_shuf=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
         if self.loss["type"] not in ("infonce1", "infonce2", "bce"):
             raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce}}")
@@ -144,10 +144,10 @@ class TrainConfig:
         if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
         
-        if self.loss["targ"] not in ("aligned", "multipos", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
-        if self.loss2["targ"] not in ("aligned", "multipos", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{aligned, multipos, tax, phylo}}")
+        if self.loss["targ"] not in ("iw", "sw", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{iw, sw, tax, phylo}}")
+        if self.loss2["targ"] not in ("iw", "sw", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{iw, sw, tax, phylo}}")
         
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")

@@ -993,8 +993,8 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
     single layout (no orientation needed) and the plots show the eval set migrating through a fixed frame
     as training progresses.
 
-    Exact t-SNE is O(N^2), so the pool is class-stratified subsampled to ~budget * N_full points total
-    (N_full = one eval's ID+OOD size); budget=1.0 makes the pooled t-SNE cost ~one eval. The subsample
+    Exact t-SNE is O(N^2), so the pool is class-stratified subsampled to ~budget total points across all
+    thresholds (all samples used when the full pool (N_id+N_ood)*n_thresholds <= budget). The subsample
     indices are fixed across thresholds (identical eval order), so a point is the SAME sample in every
     frame. id/ood/fullset are fit independently (mirroring the per-eval compute). Rows are laid out in
     per-threshold contiguous blocks ([threshold0, threshold1, ...]; each fullset block is its ID rows then
@@ -1009,7 +1009,7 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
     embs = [np.load(d / "embs.npz") for d in dirs]  # lazy npz handles; per-subject arrays pulled below
     cids_id, cids_ood = np.asarray(embs[0]["cids_id"]), np.asarray(embs[0]["cids_ood"])  # eval set fixed across thresholds
     n_id, n_ood, n_full = len(cids_id), len(cids_ood), len(cids_id) + len(cids_ood)
-    per_thresh = budget * n_full / T  # target pooled full-set points per threshold
+    per_thresh = min(n_full * T, budget) / T  # target pooled full-set points per threshold (all samples used when the full pool <= budget)
     idx_id = _stratified_subsample(cids_id, min(n_id, int(round(per_thresh * n_id / n_full))), _POOLED_SEED)
     idx_ood = _stratified_subsample(cids_ood, min(n_ood, int(round(per_thresh * n_ood / n_full))), _POOLED_SEED)
     m_id, m_ood = len(idx_id), len(idx_ood)  # actual per-threshold counts (uniform across thresholds)

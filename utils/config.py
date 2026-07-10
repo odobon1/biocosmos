@@ -18,18 +18,25 @@ CFG_PARAM_ALIASES = {
     "batch_size": "bs",
     "loss.targ": "L1T",
     "loss2.targ": "L2T",
+    "opt.lr.init": "LR0",
+    "img_norm": "norm",
 }
 
 CFG_PARAM_VALUE_ALIASES = {
     "batch_size": {
         1_024: "1k",
         2_048: "2k",
+        4_096: "4k",
     },
     "loss.targ": {
         "phylo": "hp",
     },
     "loss2.targ": {
         "phylo": "hp",
+    },
+    "img_norm": {
+        "default": "def",
+        "dataset": "ds",
     },
 }
 

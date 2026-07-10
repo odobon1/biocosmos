@@ -527,6 +527,60 @@ def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
         )
 
 
+def test_expand_settings_null_name_skips_component() -> None:
+    # an item with an explicit `name: null` contributes no name component; the override still applies,
+    # so the setting is named by the other combo groups alone (e.g. 'hp' x null -> 'hp')
+    settings = cr._expand_settings(
+        [
+            [
+                {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.targ": "sw", "name": "sw"},
+            ],
+            [
+                {"loss.wting.type": "inv_freq", "name": "if"},
+                {"loss.wting.type": "class_bal", "name": None},
+            ],
+        ]
+    )
+    assert dict(settings) == {
+        "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.type": "inv_freq"},
+        "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.type": "class_bal"},
+        "sw_if": {"loss.targ": "sw", "loss.wting.type": "inv_freq"},
+        "sw": {"loss.targ": "sw", "loss.wting.type": "class_bal"},
+    }
+
+
+def test_expand_settings_raises_on_multiple_null_names_in_group() -> None:
+    # two null-named items in one combo group would give two settings the same joined name
+    with pytest.raises(ValueError, match="at most one item per combo group may set"):
+        cr._expand_settings(
+            [
+                [
+                    {"loss.targ": "sw", "name": "sw"},
+                    {"loss.targ": "iw", "name": None},
+                    {"loss.targ": "phylo", "name": None},
+                ]
+            ]
+        )
+
+
+def test_expand_settings_raises_when_every_combo_group_has_null_name() -> None:
+    # a null item in every combo group -> the all-null combination yields an empty setting name
+    with pytest.raises(ValueError, match="at least one combo group must have"):
+        cr._expand_settings(
+            [
+                [
+                    {"loss.targ": "sw", "name": "sw"},
+                    {"loss.targ": "iw", "name": None},
+                ],
+                [
+                    {"batch_size": 2048, "name": "2k"},
+                    {"batch_size": 1024, "name": None},
+                ],
+            ]
+        )
+
+
 def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     # the Cartesian product flows through run_campaign: each combined setting schedules and gets its
     # own merged overrides.json

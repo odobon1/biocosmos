@@ -125,6 +125,12 @@ def _derive_item_name(item: dict) -> str:
     by '_', e.g. {'loss.targ': 'sw', 'batch_size': 2048} -> 'L1T-sw_bs-2k'."""
     return "_".join(_alias_pair(k, v) for k, v in item.items())
 
+def _item_name(item: dict) -> str | None:
+    """The setting-name component an item contributes: its explicit 'name', or a name derived from
+    its overrides via _derive_item_name when 'name' is absent. An explicit 'name: null' returns
+    None -- the item contributes no component and is skipped when member names are joined."""
+    return item["name"] if "name" in item else _derive_item_name(item)
+
 def _expand_combo_lists(item: dict) -> list[dict]:
     """Expand an item's combo lists (list-valued overrides) into scalar items, one per combination
     of list values; several combo lists in one item cross with each other, the last-listed key
@@ -138,7 +144,7 @@ def _expand_combo_lists(item: dict) -> list[dict]:
     for values in itertools.product(*(item[k] for k in list_keys)):
         chosen = dict(zip(list_keys, values))
         scalar_item = {k: chosen.get(k, v) for k, v in item.items()}
-        if "name" in item:
+        if item.get("name") is not None:
             scalar_item["name"] = "_".join([item["name"], *(_alias_pair(k, chosen[k]) for k in list_keys)])
         expanded.append(scalar_item)
     return expanded
@@ -155,7 +161,12 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
     merged into one setting, its name the members' names joined by '_' in combo-group order (e.g.
     'hp' x '2k' -> 'hp_2k'). A single combo group expands to its members unchanged. Combo groups
     are independent dimensions, so no override key may appear in more than one combo group -- a
-    shared key would have two values fighting to define it when members merge."""
+    shared key would have two values fighting to define it when members merge.
+
+    An item may set 'name' explicitly to null: it then contributes no name component and is skipped
+    in the join (e.g. 'hp' x null -> 'hp'). At most one item per combo group may be null (two would
+    give two settings the same name), and at least one combo group must have all its items named
+    (else the all-null combination would yield an empty setting name)."""
     combo_groups = [
         [scalar_item for item in group for scalar_item in _expand_combo_lists(item)]
         for group in combo_groups
@@ -172,12 +183,27 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
                 f"each override key must belong to exactly one combo group."
             )
 
+    null_counts = [
+        sum("name" in item and item["name"] is None for item in group)
+        for group in combo_groups
+    ]
+    for i, n_null in enumerate(null_counts):
+        if n_null > 1:
+            raise ValueError(
+                f"combo group {i} has {n_null} items with `name: null`; at most one item per combo "
+                f"group may set `name: null`."
+            )
+    if null_counts and all(n_null > 0 for n_null in null_counts):
+        raise ValueError(
+            "every combo group has an item with `name: null`; at least one combo group must have "
+            "all its items named, else the all-null combination yields an empty setting name."
+        )
+
     settings = []
     seen_names: set[str] = set()
     for combo in itertools.product(*combo_groups):
         name = "_".join(
-            item["name"] if "name" in item else _derive_item_name(item)
-            for item in combo
+            part for item in combo if (part := _item_name(item)) is not None
         )
         if name in seen_names:
             raise ValueError(f"Duplicate baseline_overrides name: {name}")

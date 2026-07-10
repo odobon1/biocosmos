@@ -18,7 +18,7 @@ def make_train_config_dummy(**overrides):
         "batch_size": 8,
         "dv_batching": False,
         "htarg_shuf": False,
-        "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0}}},
+        "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
         "arch": {"model_type": "clip_vitb16", "non_causal": False},
         "img_norm": "dataset",
         "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale_init": None, "bias_init": None}},
@@ -83,6 +83,14 @@ def test_train_config_rejects_nonpositive_pooled_budget(monkeypatch: pytest.Monk
     with pytest.raises(ValueError, match="dev.manifold_viz.pooled.budget must be > 0"):
         TrainConfig(**make_train_config_dummy(
             dev={"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 0.0}}}))
+
+
+def test_train_config_rejects_invalid_pca_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="dev.manifold_viz.pooled.pca_bounds must be null or 'final'"):
+        TrainConfig(**make_train_config_dummy(
+            dev={"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": "first"}}}))
 
 
 def test_train_config_rejects_htarg_shuf_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:

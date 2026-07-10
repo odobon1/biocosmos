@@ -680,21 +680,27 @@ def _composite_frame(sc_by, data, marker_size, order_seed):
         sc.set_facecolors(rgba[order])
         sc.set_sizes(np.full(len(order), marker_size))
 
-def composite_plot(grid, comp, fpath_png, suptitle, style):
-    """Static flush-grid PNG (single frame at the given marker size). `comp` maps stem -> (proj, rgba)."""
+def composite_plot(grid, comp, fpath_png, suptitle, style, limits=None):
+    """Static flush-grid PNG (single frame at the given marker size). `comp` maps stem -> (proj, rgba).
+    `limits` (stem -> (xlim, ylim)) overrides the per-panel auto-fit -- the pooled pca_bounds='final'
+    frame; None auto-fits each panel to its own points."""
     stems = _stems_of(grid)
-    limits = {s: _limits_for(style.method, [comp[s][0]]) for s in stems}
+    if limits is None:
+        limits = {s: _limits_for(style.method, [comp[s][0]]) for s in stems}
     data = {s: (comp[s][0], comp[s][1]) for s in stems}
     fig, sc_by = _composite_canvas(grid, limits, suptitle, _GIF_DPI, style)
     _composite_frame(sc_by, data, style.marker_size, order_seed=0)
     fig.savefig(fpath_png, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-def composite_strobe_gif(grid, comp, fpath_gif, suptitle, style):
+def composite_strobe_gif(grid, comp, fpath_gif, suptitle, style, limits=None):
     """Sample-order strobe GIF of a flush grid: n_stoch_layers frames, each a fresh draw-order shuffle
-    at the fixed marker size, all panels reshuffled together. `comp` maps stem -> (proj, rgba)."""
+    at the fixed marker size, all panels reshuffled together. `comp` maps stem -> (proj, rgba). `limits`
+    (stem -> (xlim, ylim)) overrides the per-panel auto-fit -- the pooled pca_bounds='final' frame; None
+    auto-fits each panel to its own points."""
     stems = _stems_of(grid)
-    limits = {s: _limits_for(style.method, [comp[s][0]]) for s in stems}
+    if limits is None:
+        limits = {s: _limits_for(style.method, [comp[s][0]]) for s in stems}
     data = {s: (comp[s][0], comp[s][1]) for s in stems}
     fig, sc_by = _composite_canvas(grid, limits, suptitle, _GIF_DPI, style)
     frames = []
@@ -807,10 +813,12 @@ def _quad_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
                         wspace=0, hspace=0)
     return fig, sc_by
 
-def quad_render(leaf_stem, penult_stem, data, fpath, suptitle, style):
+def quad_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=None):
     """Static PNG (n_stoch_layers == 1) or sample-order strobe GIF (>1) of the 2x2 cross-method grid.
-    `data` maps (method, stem) -> (proj, rgba). Per-cell axis limits come from each cell's own method."""
-    limits = {k: _limits_for(k[0], [data[k][0]]) for k in data}  # k = (method, stem)
+    `data` maps (method, stem) -> (proj, rgba). Per-cell axis limits come from each cell's own method,
+    except cells whose (method, stem) is in `limits` -- the pooled pca_bounds='final' frame overriding the
+    PCA row; t-SNE cells always auto-fit."""
+    limits = {**{k: _limits_for(k[0], [data[k][0]]) for k in data}, **(limits or {})}  # k = (method, stem)
     fig, sc_by = _quad_canvas(leaf_stem, penult_stem, limits, suptitle, _GIF_DPI, style)
     if style.n_stoch_layers == 1:
         _composite_frame(sc_by, data, style.marker_size, order_seed=0)
@@ -848,13 +856,15 @@ def quad_evolution_gif(leaf_stem, penult_stem, subject, viz_context, evals, name
 
 def _render_grids(tsne_projs, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, legend_by_role,
-                  dpath_vis, cfg_manifold_viz, viz_context, tag, plot_flags):
+                  dpath_vis, cfg_manifold_viz, viz_context, tag, plot_flags, pca_limits=None):
     """Rank-0 render for one eval from ALREADY-ORIENTED PCA + t-SNE projections, into dpath_vis/: the
     per-method stacked leaf(top)/penult(bottom) pairs (ID-only, OOD-only, the combined ID+OOD projection
     and its two partition-masked variants) under 2panel/<method>/, the 2x4 fullset composite under
     7panel/<method>/, and the cross-method PCA-over-t-SNE 4panel (one per 2panel subject) under 4panel/.
     `plot_flags` (dev.manifold_viz) gates which groups are emitted. Each output is a static PNG when
-    n_stoch_layers == 1, else a strobe GIF. Pure renderer -- orientation/coloring/cache are the caller's
+    n_stoch_layers == 1, else a strobe GIF. `pca_limits` (proj key -> (xlim, ylim)) freezes every PCA
+    panel to that box instead of auto-fitting to this eval's points -- the pooled pca_bounds='final'
+    frame (t-SNE panels always auto-fit). Pure renderer -- orientation/coloring/cache are the caller's
     job (render_eval)."""
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
     n_stoch_layers = cfg_manifold_viz["n_stoch_layers"]
@@ -880,9 +890,10 @@ def _render_grids(tsne_projs, pca_projs, cids_id, cids_ood, penults_id, penults_
             col_titles = _COMPOSITE_COL_TITLES if out_name == "fullset_panel" else None
             style = RenderStyle(method, marker_size, legend_by_role, n_stoch_layers, frame_ms, bg_color, col_titles)
             sub = {s: comp[s] for s in _stems_of(grid)}  # only this grid's panels (smaller to ship to a worker)
+            limits = {s: pca_limits[_STEM_PROJKEY[s]] for s in sub} if method == "PCA" and pca_limits else None
             fpath = dpath_vis / group / method_dir / f"{stem}.{ext}"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((render, (grid, sub, fpath, suptitle, style)))
+            jobs.append((render, (grid, sub, fpath, suptitle, style, limits)))
     # cross-method 4panel (PCA top / t-SNE bottom): under viz/4panel/
     if plot_flags["plot_4panel"]:
         quad_style = RenderStyle(None, marker_size, legend_by_role, n_stoch_layers, frame_ms, bg_color)
@@ -890,9 +901,10 @@ def _render_grids(tsne_projs, pca_projs, cids_id, cids_ood, penults_id, penults_
             suptitle = _manifold_title("PCA + t-SNE", viz_context, subject, suffix=suffix)
             data = {("PCA", s): comp_pca[s] for s in (leaf_stem, penult_stem)}
             data.update({("t-SNE", s): comp_tsne[s] for s in (leaf_stem, penult_stem)})
+            limits = {("PCA", s): pca_limits[_STEM_PROJKEY[s]] for s in (leaf_stem, penult_stem)} if pca_limits else None
             fpath = dpath_vis / "4panel" / f"{out_name}.{ext}"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style)))
+            jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style, limits)))
     _parallel_render(jobs)
 
 def _compute_projections(embs_id, embs_ood, cfg_tsne):
@@ -1100,6 +1112,14 @@ def _no_panels_enabled(plot_flags):
     render passes then short-circuit, doing no setup/render and writing no (empty) viz dirs."""
     return not (plot_flags["plot_2panel"] or plot_flags["plot_4panel"] or plot_flags["plot_7panel"])
 
+def _final_pca_limits(dpath_final, fname):
+    """PCA axis limits per proj key frozen to the FINAL eval's pooled projection (id/ood/fullset each its
+    own bounding box) -- the dev.manifold_viz.pooled.pca_bounds='final' frame shared by every pooled PCA
+    plot, so the per-threshold plots and the evolution GIF all sit in the converged final layout's box
+    (earlier thresholds' points can fall outside it)."""
+    _, pca_projs, _, _ = _load_projections(dpath_final, fname)
+    return {k: _common_limits([pca_projs[k]]) for k in ("id", "ood", "fullset")}
+
 @rank0
 def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flags, orient=True, fname="projections.npz"):
     """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz(_pooled)/.
@@ -1140,9 +1160,12 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
     else:  # pooled: shared frame across thresholds -> no orientation
         tsne_render = tsne_projs
     tag = "base" if eval_name == "_base" else eval_name
+    pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
+                  if not orient and plot_flags["pooled"]["pca_bounds"] == "final" else None)
     _render_grids(tsne_render, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
-                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag, plot_flags)
+                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag, plot_flags,
+                  pca_limits)
 
 def _eval_sort_key(name):
     """Chronological order of eval dirs: _base first, numeric thresholds ascending, final last."""
@@ -1216,6 +1239,9 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
     cmaps = (color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot)  # shipped to workers (O(classes))
     legends = _legend_specs(color_nshot, nst_names)  # per-color-role coloring legend for every panel
     limits_by = _evolution_limits(evals, ema_tau, orient, fname)  # frozen axes per (method, proj key), single streaming pass
+    if not orient and plot_flags["pooled"]["pca_bounds"] == "final":  # freeze pooled PCA to the final threshold's box
+        for k, lim in _final_pca_limits(evals[-1], fname).items():
+            limits_by[("PCA", k)] = lim
 
     jobs = []  # one evolution-GIF job per (render target, grid); fanned out across cores below
     # per-method grids: PCA + t-SNE, under <dpath_out>/<group>/<method_dir>/

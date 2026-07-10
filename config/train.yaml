@@ -109,6 +109,7 @@ dev:
     pooled:  # "pooled" shared-frame manifold viz: one PCA + t-SNE fit on all eval thresholds' embeddings pooled, then each threshold plotted as a masked subset of the shared layout (plot_Xpanel flags select the same groups, rendered under viz_pooled/)
       enabled: true  # {true, false}; (true) cache per-eval embeddings, compute the pooled projection at end-of-trial, and render the pooled plots
       budget: 1.0  # pooled t-SNE point budget as a multiple of one eval's full-set size (N_id + N_ood); the pool is class-stratified subsampled to ~budget * N_full points across all thresholds. 1.0 ~= one eval's cost; 2.0 ~= 2x (needs proportionally more GPU memory)
+      pca_bounds: final  # {null, final}
   logging: true
   debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`

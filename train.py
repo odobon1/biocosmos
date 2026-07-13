@@ -550,5 +550,6 @@ def run_training(cfg):
     train_pipe.train()
     ArtifactManager.update_metric_stats(cfg.stats["spread_type"])
     ArtifactManager.update_stats_tables(cfg.stats["table_eval_group"], cfg.stats["spread_type"])
+    ArtifactManager.update_metrics_xlsx(cfg.stats["table_eval_group"], cfg.stats["spread_type"], cfg.stats["xlsx"]["bold_high"], cfg.stats["xlsx"]["ordered"], cfg.stats["xlsx"]["heatmap"])
 
     cleanup_ddp()

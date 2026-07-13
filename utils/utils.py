@@ -261,6 +261,7 @@ class PrintLog:
     log_batch_general = None
     log_batch_grad_norm = None
     log_batch_temp_bias = None
+    log_batch_similarity = None
     log_epoch = None
     log_eval = None
     log_init = None
@@ -276,6 +277,7 @@ class PrintLog:
         PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
         PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
         PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
+        PrintLog.log_batch_similarity = open(dpath_batch_logs / "similarity.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
@@ -369,6 +371,7 @@ class PrintLog:
             PrintLog.log_batch_general.write(header_epoch)
             PrintLog.log_batch_grad_norm.write(header_epoch)
             PrintLog.log_batch_temp_bias.write(header_epoch)
+            PrintLog.log_batch_similarity.write(header_epoch)
 
     @staticmethod
     @rank0
@@ -393,7 +396,7 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model):
+    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, batch_stats):
 
         def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
             if x is None:
@@ -451,6 +454,14 @@ class PrintLog:
             PrintLog.log_batch_temp_bias.write(
                 f"{batch_str:<10} "
                 f"{line_logits_param}"
+                f"\n"
+            )
+            PrintLog.log_batch_similarity.write(
+                f"{batch_str:<10} "
+                f"sim: min={batch_stats['sim_min']:+.4f} max={batch_stats['sim_max']:+.4f} "
+                f"med={batch_stats['sim_median']:+.4f} mean={batch_stats['sim_mean']:+.4f}  |  "
+                f"targ: min={batch_stats['targ_min']:+.4f} max={batch_stats['targ_max']:+.4f} "
+                f"med={batch_stats['targ_median']:+.4f} mean={batch_stats['targ_mean']:+.4f}"
                 f"\n"
             )
 
@@ -775,6 +786,7 @@ class PrintLog:
             PrintLog.log_batch_general,
             PrintLog.log_batch_grad_norm,
             PrintLog.log_batch_temp_bias,
+            PrintLog.log_batch_similarity,
             PrintLog.log_epoch,
             PrintLog.log_eval,
             PrintLog.log_init,

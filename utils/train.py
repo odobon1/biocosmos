@@ -2,6 +2,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -57,6 +58,14 @@ class TrialData:
             "loss_train": [],
             "loss_raw_train": [],
             "grad_norm_model": [],
+            "sim_min": [],
+            "sim_max": [],
+            "sim_median": [],
+            "sim_mean": [],
+            "targ_min": [],
+            "targ_max": [],
+            "targ_median": [],
+            "targ_mean": [],
         }
         self.data_eval = {
             "n_samps_seen": [],
@@ -74,7 +83,7 @@ class TrialData:
         self.timer_trial = Timer()
         self.timer_trial.start()
 
-    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None):
+    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None, batch_stats=None):
 
         self.data_epoch["n_samps_seen"].append(n_samps_seen)
 
@@ -86,6 +95,9 @@ class TrialData:
             self.data_epoch["loss_raw_train"].append(loss_raw_train)
         if grad_norm_model is not None:
             self.data_epoch["grad_norm_model"].append(grad_norm_model)
+        if batch_stats is not None:
+            for stat_key, stat_value in batch_stats.items():
+                self.data_epoch[stat_key].append(stat_value)
 
     def update_eval(self, n_samps_seen):
 
@@ -708,7 +720,7 @@ def plot_metrics(
         fontsize_legend=8,
         subplot_border_width=1,
         figsize=(10, 16),
-        height_ratios=[2, 2, 2, 2, 2, 1, 1],
+        height_ratios=[2, 2, 2, 2, 2, 1, 1, 1],
     ):
     data = data_tracker.data
     data_epoch = data["epoch"]
@@ -969,22 +981,48 @@ def plot_composite_metrics(
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax6 = fig.add_subplot(gs[6, 0], sharex=ax0)
-    if len(data_epoch.get("lr", [])) == len(x_train):
-        ax6.plot(x_train, data_epoch["lr"])
-    ax6.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax6.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax6.yaxis.set_offset_position("right")
-    ax6.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax6.yaxis.get_offset_text().set_visible(False)
-    ax6.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
-    ax6.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    color_sim = "tab:blue"
+    color_targ = "tab:orange"
+    # targets first, then similarity; min/max solid, mean dashed, median dotted
+    for stat_prefix, stat_color in (("targ", color_targ), ("sim", color_sim)):
+        for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
+            stat_key = f"{stat_prefix}_{stat_name}"
+            if len(data_epoch.get(stat_key, [])) == len(x_train):
+                ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle)
+    ax6.set_ylabel("Similarity / Target", fontsize=fontsize_axes, fontweight="bold")
+    ax6.set_ylim(-1, 1)
+    ax6.legend(
+        handles=[
+            Line2D([0], [0], color=color_sim, lw=1.5, label="Similarity"),
+            Line2D([0], [0], color=color_targ, lw=1.5, label="Target"),
+            Line2D([0], [0], color="gray", lw=1.5, linestyle="-", label="Min/Max"),
+            Line2D([0], [0], color="gray", lw=1.5, linestyle="--", label="Mean"),
+            Line2D([0], [0], color="gray", lw=1.5, linestyle=":", label="Median"),
+        ],
+        loc="upper center",
+        ncol=5,
+        fontsize=fontsize_legend,
+    )
     ax6.grid(True)
-    ax6.tick_params(labelsize=fontsize_ticks)
+    ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    for ax in (ax0, ax1, ax2, ax3, ax4, ax5, ax6):
+    ax7 = fig.add_subplot(gs[7, 0], sharex=ax0)
+    if len(data_epoch.get("lr", [])) == len(x_train):
+        ax7.plot(x_train, data_epoch["lr"])
+    ax7.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax7.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax7.yaxis.set_offset_position("right")
+    ax7.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax7.yaxis.get_offset_text().set_visible(False)
+    ax7.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
+    ax7.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    ax7.grid(True)
+    ax7.tick_params(labelsize=fontsize_ticks)
+
+    for ax in (ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7):
         ax.label_outer()
 
-    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5, ax6)):
+    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7)):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")

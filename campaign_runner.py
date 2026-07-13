@@ -1,5 +1,5 @@
 """
-python -m campaign_runner --<campaign>
+python -m campaign_runner --dev
 
 Campaigns are defined in config/camps/<campaign>.yaml, e.g. --dev_basic loads config/camps/dev_basic.yaml.
 """

@@ -265,17 +265,17 @@ class TrainPipeline:
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.mixed_prec:
             with autocast(device_type=self.cfg.device.type):
-                loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+                loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb
                 )
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.opt)
         else:
-            loss, loss_raw, embs_img_b, embs_txt_b, logits, _ = self.modelw.batch_step(
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
             loss.backward()
-        return loss, loss_raw, embs_img_b, embs_txt_b, logits
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
 
     def _step_optimizer(self):
         if self.cfg.hw.mixed_prec:
@@ -389,15 +389,15 @@ class TrainPipeline:
                     lr = self._update_lr_warmup() if self.lr_warmup > 0 else self.opt.param_groups[0]["lr"]
 
                     self.opt.zero_grad(set_to_none=True)
-                    loss, loss_raw, embs_img_b, embs_txt_b, logits = self._step_train(
-                        imgs_sb, 
-                        texts_sb, 
-                        class_encs_sb, 
+                    loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats = self._step_train(
+                        imgs_sb,
+                        texts_sb,
+                        class_encs_sb,
                         targ_data_sb,
                     )
                     with torch.no_grad():
                         grad_norm_model = model_grad_l2_norm(self.modelw.model)
-                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model)
+                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model, batch_stats)
                     self._step_optimizer()
 
                     if self.n_samps_seen >= self.lr_warmup:
@@ -417,6 +417,7 @@ class TrainPipeline:
                             loss_train=loss,
                             loss_raw_train=loss_raw,
                             grad_norm_model=grad_norm_model,
+                            batch_stats=batch_stats,
                         )
 
                     if self.n_samps_seen >= self.chkpt_thresh:

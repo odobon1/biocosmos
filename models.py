@@ -67,6 +67,39 @@ class _AllGather(torch.autograd.Function):
         grad_input = grad_stack[dist.get_rank()]
         return grad_input
 
+def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor) -> Dict[str, float]:
+    """
+    Per-batch distribution stats over the full BxB similarity and (mix-blended) target
+    matrices; drives the batch-level learning-curve strip and similarity.log.
+
+    - sim ---- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
+    - targs -- target matrix on [0, 1]; rescaled to [-1, 1] so it shares sim's range
+
+    Returns min/max/median/mean for each as flat keys. Reductions are stacked so the
+    device->host transfer is a single .cpu() sync. The [0, 1] -> [-1, 1] rescale is applied
+    to the four target scalars (affine, so it commutes with min/max/median/mean).
+    """
+    with torch.no_grad():
+        s = sim.detach()
+        t = targs.detach()
+        reductions = [
+            s.min(), s.max(), s.median(), s.mean(),
+            t.min(), t.max(), t.median(), t.mean(),
+        ]
+        vals = torch.stack([r.float() for r in reductions]).cpu().tolist()
+    sim_vals = vals[:4]
+    targ_vals = [2.0 * v - 1.0 for v in vals[4:]]  # [0, 1] -> [-1, 1]
+    return {
+        "sim_min":     sim_vals[0],
+        "sim_max":     sim_vals[1],
+        "sim_median":  sim_vals[2],
+        "sim_mean":    sim_vals[3],
+        "targ_min":    targ_vals[0],
+        "targ_max":    targ_vals[1],
+        "targ_median": targ_vals[2],
+        "targ_mean":   targ_vals[3],
+    }
+
 class VLMWrapper(abc.ABC):
     """
     Base class for all vision-language model wrappers. Dispatches to an appropriate subclass based on model_type and
@@ -325,17 +358,17 @@ class VLMWrapper(abc.ABC):
         Computes loss for a batch given logits and target data.
         """
         cw, cpw = (self.class_wts, self.class_pair_wts) if not secondary else (self.class_wts2, self.class_pair_wts2)
-        loss, loss_raw = compute_loss(
+        loss, loss_raw, targs = compute_loss(
             cfg_loss,
-            logits, 
+            logits,
             class_encs_b,
             targ_data_b,
-            cw, 
-            cpw, 
+            cw,
+            cpw,
             self.device,
             train=self.model.training,
         )
-        return loss, loss_raw
+        return loss, loss_raw, targs
 
     def freeze(self, freeze_txt: bool, freeze_img: bool) -> None:
         """
@@ -373,9 +406,9 @@ class VLMWrapper(abc.ABC):
         """
         sim = compute_sim(embs_img_all, embs_txt_all, cfg_loss["sim"])
         logits = self.compute_logits(sim, secondary=secondary)
-        loss, loss_raw = self.compute_batch_loss(logits, class_encs_all, targ_data_all, cfg_loss, secondary=secondary)
+        loss, loss_raw, targs = self.compute_batch_loss(logits, class_encs_all, targ_data_all, cfg_loss, secondary=secondary)
 
-        return loss, loss_raw, logits
+        return loss, loss_raw, logits, sim, targs
 
     def _global_batch_loss(
         self,
@@ -396,9 +429,9 @@ class VLMWrapper(abc.ABC):
         )
 
         if not loss_flag:
-            return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b
+            return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b, None
 
-        loss1, loss1_raw, logits1 = self._loss_for_cfg_full_batch(
+        loss1, loss1_raw, logits1, sim1, targs1 = self._loss_for_cfg_full_batch(
             embs_img_b,
             embs_txt_b,
             class_encs_b,
@@ -411,7 +444,7 @@ class VLMWrapper(abc.ABC):
 
         mix = self.cfg.loss2["mix"]
         if mix != 0.0:
-            loss2, loss2_raw, logits2 = self._loss_for_cfg_full_batch(
+            loss2, loss2_raw, logits2, sim2, targs2 = self._loss_for_cfg_full_batch(
                 embs_img_b,
                 embs_txt_b,
                 class_encs_b,
@@ -425,9 +458,15 @@ class VLMWrapper(abc.ABC):
             loss = (1.0 - mix) * loss1 + mix * loss2
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
 
-            return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b
+            # similarity is shared across loss configs (same embeddings, same sim_type in practice);
+            # the tracked target matrix is the mix-blend of the two configs' targets
+            targs_stat = (1.0 - mix) * targs1 + mix * targs2
+            batch_stats = sim_targ_batch_stats(sim1, targs_stat)
 
-        return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b
+            return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats
+
+        batch_stats = sim_targ_batch_stats(sim1, targs1)
+        return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats
 
     def _gather_batch(
         self,
@@ -520,6 +559,7 @@ class VLMWrapper(abc.ABC):
         - embs_txt_b ----- Batch of normalized text embeddings; pt[B, D]
         - logits --------- (logits1, logits2); Logits computed for the batch; Tuple[pt[B, B], pt[B, B] | None]
         - class_encs_b --- Batch of class encodings; pt[B]
+        - batch_stats ---- Per-batch sim/target distribution stats (flat dict), or None if loss_flag is False
         """
         toks_sb = self.txt_pp(txts_sb)
         output = self.model(imgs_sb, toks_sb)
@@ -532,7 +572,7 @@ class VLMWrapper(abc.ABC):
         if embs_txt_sb.requires_grad:
             embs_txt_sb.retain_grad()  # for batch-level logging of text embeddings gradient norm
 
-        loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b = self._global_batch_loss(
+        loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b, batch_stats = self._global_batch_loss(
             embs_img_sb,
             embs_txt_sb,
             class_encs_sb,
@@ -540,7 +580,7 @@ class VLMWrapper(abc.ABC):
             loss_flag=loss_flag,
         )
 
-        return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b, batch_stats
 
     def batch_step_local(
         self,
@@ -605,12 +645,12 @@ class VLMWrapper(abc.ABC):
         n_samps = 0
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
-            _, loss_raw, _ = self._loss_for_cfg_full_batch(
+            _, loss_raw, _, _, _ = self._loss_for_cfg_full_batch(
                 embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss, secondary=False,
             )
             mix = self.cfg.loss2["mix"]
             if mix != 0.0:
-                _, loss2_raw, _ = self._loss_for_cfg_full_batch(
+                _, loss2_raw, _, _, _ = self._loss_for_cfg_full_batch(
                     embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss2, secondary=True,
                 )
                 loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw

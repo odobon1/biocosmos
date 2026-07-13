@@ -57,51 +57,51 @@ def compute_targs_phylo(targ_data_b):
 
 def compute_loss(config_loss, logits, class_encs_b, targ_data_b, class_wts, class_pair_wts, device, train):
     if config_loss['type'] == "infonce1":
-        loss, loss_raw = compute_loss_infonce(
-            config_loss, 
-            logits, 
+        loss, loss_raw, targs = compute_loss_infonce(
+            config_loss,
+            logits,
             class_encs_b,
             targ_data_b,
-            class_wts, 
+            class_wts,
             device,
             train,
         )
     elif config_loss['type'] == "infonce2":
-        loss, loss_raw = compute_loss_infonce_2Dwtd(
-            config_loss, 
-            logits, 
+        loss, loss_raw, targs = compute_loss_infonce_2Dwtd(
+            config_loss,
+            logits,
             class_encs_b,
             targ_data_b,
-            class_pair_wts, 
+            class_pair_wts,
             device,
             train,
         )
     elif config_loss['type'] == "bce":
-        loss, loss_raw = compute_loss_bce(
-            config_loss, 
-            logits, 
+        loss, loss_raw, targs = compute_loss_bce(
+            config_loss,
+            logits,
             class_encs_b,
             targ_data_b,
-            class_pair_wts, 
+            class_pair_wts,
             device,
             train,
         )
-    return loss, loss_raw
+    return loss, loss_raw, targs
 
 def compute_loss_infonce(config_loss, logits, class_encs_b, targ_data_b, class_wts, device, train):
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
     B = logits.size(0)
-    targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
-    targs = targs / targs.sum(dim=1, keepdim=True)
+    targs_raw = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
+    targs = targs_raw / targs_raw.sum(dim=1, keepdim=True)
 
     loss_i2t_raw_b = F.cross_entropy(logits, targs, reduction="none")  # pt[B]
     loss_t2i_raw_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # pt[B]
     loss_raw = 0.5 * (loss_i2t_raw_b.mean() + loss_t2i_raw_b.mean())
 
     if not train:
-        return loss_raw, loss_raw
+        return loss_raw, loss_raw, targs_raw
 
     W_cb = class_wts[class_encs_b]  # class-balancing weights
 
@@ -132,15 +132,15 @@ def compute_loss_infonce(config_loss, logits, class_encs_b, targ_data_b, class_w
 
     loss = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
-    return loss, loss_raw
+    return loss, loss_raw, targs_raw
 
 def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, class_pair_wts, device, train):
     """
     Note: may need to be adjusted for multiple GPUs (wrt reduction)
     """
     B = logits.size(0)
-    targs = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
-    targs = targs / targs.sum(dim=1, keepdim=True)
+    targs_raw = compute_targets(config_loss['targ'], B, class_encs_b, targ_data_b, device)
+    targs = targs_raw / targs_raw.sum(dim=1, keepdim=True)
 
     log_p_i2t = F.log_softmax(logits,   dim=-1)
     log_p_t2i = F.log_softmax(logits.T, dim=-1)
@@ -151,7 +151,7 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
     loss_raw = 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
 
     if not train:
-        return loss_raw, loss_raw
+        return loss_raw, loss_raw, targs_raw
 
     W_cb = class_pair_wts[class_encs_b][:, class_encs_b]  # class-balancing weights; pt[B, B]
 
@@ -175,7 +175,7 @@ def compute_loss_infonce_2Dwtd(config_loss, logits, class_encs_b, targ_data_b, c
 
     loss = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
 
-    return loss, loss_raw
+    return loss, loss_raw, targs_raw
 
 def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_wts, device, train):
 
@@ -219,7 +219,7 @@ def compute_loss_bce(config_loss, logits, class_encs_b, targ_data_b, class_pair_
         norm = loss_raw / loss
     loss = norm * loss
 
-    return loss, loss_raw
+    return loss, loss_raw, targs
 
 def focal_2d(preds, targs, cfg_focal):
 

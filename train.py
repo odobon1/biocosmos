@@ -201,10 +201,9 @@ class TrainPipeline:
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
         # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.
         # All ranks spend ~the same wall time here; only rank-0's tracker is persisted.
-        # Return the training step's reserved-but-unallocated allocator pool to CUDA before the O(N^2)
-        # t-SNE buffers allocate. The large combined-set t-SNE (e.g. lepid, N~94k -> ~18GB per nl×N
-        # buffer) fits at base eval (clean memory) but OOMs at mid-training evals where training's peak
-        # reservation is still held. empty_cache is a local allocator op (no collective) so it can't desync.
+        # Return the training step's reserved-but-unallocated allocator pool to CUDA before the t-SNE's
+        # transient kNN/repulsion chunk buffers allocate. empty_cache is a local allocator op (no
+        # collective) so it can't desync.
         torch.cuda.empty_cache()
         with self.time_tracker.measure("viz_compute"):
             compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz,

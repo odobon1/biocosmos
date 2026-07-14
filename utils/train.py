@@ -996,7 +996,7 @@ def plot_composite_metrics(
             if len(data_epoch.get(stat_key, [])) == len(x_train):
                 ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle)
     ax6.set_ylabel("Similarity / Target", fontsize=fontsize_axes, fontweight="bold")
-    ax6.set_ylim(-1, 1)
+    ax6.set_ylim(-1.03, 1.03)
     ax6.legend(
         handles=[
             Line2D([0], [0], color=color_sim, lw=1.5, label="Similarity"),

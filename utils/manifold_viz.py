@@ -107,54 +107,52 @@ def _zero_self(M, offset=0):
     a = torch.arange(M.shape[0], device=M.device)
     M[a, offset + a] = 0.0
 
-def _transpose_shard(Pc, counts, starts):
-    """All-to-all transpose of a row-sharded matrix. `Pc` is this rank's row-block (n_local x N) of the
-    full N x N conditional; returns PcT (n_local x N) holding this rank's COLUMNS of the full matrix
-    transposed -- PcT[a, j] = Pc_full[j, local_row a] -- assembled from the matching column-block of
-    every rank's row-block. Implemented with batch_isend_irecv so it runs on both gloo and NCCL; the
-    rank's own block is copied locally (no send)."""
-    rank, world = dist.get_rank(), dist.get_world_size()
-    nl = counts[rank]
-    send = [Pc[:, starts[r]:starts[r] + counts[r]].contiguous() for r in range(world)]  # block -> dest r
-    recv = [torch.empty((counts[q], nl), device=Pc.device) for q in range(world)]        # block <- src q
-    recv[rank] = send[rank]
-    ops = [dist.P2POp(dist.irecv, recv[q], q) for q in range(world) if q != rank]
-    ops += [dist.P2POp(dist.isend, send[r], r) for r in range(world) if r != rank]
-    if ops:  # empty only at world_size 1 (own block already copied); batch_isend_irecv rejects []
-        for req in dist.batch_isend_irecv(ops):
-            req.wait()
-    return torch.cat(recv, dim=0).t().contiguous()  # (N x n_local) -> (n_local x N)
+_CHUNK_ELEMS = 1 << 28  # elements per transient (chunk, N) buffer: 2^28 fp32 = 1 GiB
+
+def _knn(Xr, X, k, r0, chunk):
+    """Chunked exact k-nearest-neighbor search for the local rows `Xr` against the full `X`, self
+    excluded (the local rows are X[r0:r0+len(Xr)]): returns (d2, idx) -- (n_local, k) squared
+    distances and global neighbor column indices. Row-chunked so the transient distance buffer is
+    (chunk, N), never (n_local, N)."""
+    nl = Xr.shape[0]
+    dev = X.device
+    d2 = torch.empty((nl, k), device=dev)
+    idx = torch.empty((nl, k), dtype=torch.long, device=dev)
+    for s in range(0, nl, chunk):
+        Dc = torch.cdist(Xr[s:s + chunk], X).pow_(2)  # (c, N)
+        a = torch.arange(Dc.shape[0], device=dev)
+        Dc[a, r0 + s + a] = float("inf")  # exclude self from the neighbor set
+        d2[s:s + chunk], idx[s:s + chunk] = Dc.topk(k, dim=1, largest=False)
+    return d2, idx
 
 def _allgather_rows(Yr, counts):
-    """All-gather the variable-height local row blocks `Yr` (n_local x d) into the full layout (N x d).
-    Pads each block to the max height (shards can differ by one row) for the uniform-shape all_gather,
-    then slices each rank's real rows back out."""
+    """All-gather the variable-height local row blocks `Yr` (n_local x d, any dtype) into the full
+    (N x d). Pads each block to the max height (shards can differ by one row) for the uniform-shape
+    all_gather, then slices each rank's real rows back out."""
     world = dist.get_world_size()
     maxc, d = max(counts), Yr.shape[1]
-    buf = torch.zeros((maxc, d), device=Yr.device)
+    buf = torch.zeros((maxc, d), dtype=Yr.dtype, device=Yr.device)
     buf[:Yr.shape[0]] = Yr
-    parts = [torch.empty((maxc, d), device=Yr.device) for _ in range(world)]
+    parts = [torch.empty((maxc, d), dtype=Yr.dtype, device=Yr.device) for _ in range(world)]
     dist.all_gather(parts, buf)
     return torch.cat([parts[q][:counts[q]] for q in range(world)], dim=0)
 
-def _hbeta_search(D2, perplexity, self_offset=0, tol=1e-5, max_iter=100):
+def _hbeta_search(D2, perplexity, tol=1e-5, max_iter=100):
     """Per-point Gaussian precision (beta = 1/2sigma^2) tuned so each row of the conditional
     affinity matrix has the target `perplexity`, via vectorized binary search over all points at
-    once. `D2` is the (rows, N) squared-distance matrix (rows == N for the single-GPU path, or a
-    row-shard for the sharded path); returns the row-normalized conditionals P_{j|i} (self-affinity
-    zeroed -- column `self_offset + row` for each row). Mirrors sklearn's _binary_search_perplexity."""
+    once. `D2` is the (rows, k) squared distances from each point to its k nearest neighbors (self
+    excluded, see `_knn`); returns the row-normalized conditionals P_{j|i} over those neighbors.
+    Mirrors sklearn's _binary_search_perplexity in its default (Barnes-Hut) mode: conditionals are
+    restricted to the k = 3*perplexity nearest neighbors, whose dropped tail decays like
+    exp(-beta*d^2) and is numerically negligible."""
     n = D2.shape[0]
     dev = D2.device
     beta = torch.ones(n, 1, device=dev)
     betamin = torch.full((n, 1), -float("inf"), device=dev)
     betamax = torch.full((n, 1), float("inf"), device=dev)
     logU = math.log(perplexity)
-    def conditionals(beta):  # exp(-D2*beta) with self-affinity zeroed, no extra N×N mask
-        Pexp = torch.exp(-D2 * beta)
-        _zero_self(Pexp, self_offset)
-        return Pexp
     for _ in range(max_iter):
-        Pexp = conditionals(beta)
+        Pexp = torch.exp(-D2 * beta)
         sumP = Pexp.sum(1, keepdim=True).clamp_min(1e-12)
         H = torch.log(sumP) + beta * (D2 * Pexp).sum(1, keepdim=True) / sumP  # row entropy
         diff = H - logU
@@ -168,136 +166,125 @@ def _hbeta_search(D2, perplexity, self_offset=0, tol=1e-5, max_iter=100):
         )
         if diff.abs().max() < tol:
             break
-    Pexp = conditionals(beta)
+    Pexp = torch.exp(-D2 * beta)
     return Pexp / Pexp.sum(1, keepdim=True).clamp_min(1e-12)
 
-def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
-    """Exact (O(n^2)) t-SNE on the GPU via torch, returning the 2D layout. Dispatches to the multi-rank
-    sharded implementation when running under DDP with world_size > 1 (the N×N matrices are split across
-    ranks so each holds only ~N²/world_size), else the single-process implementation. Both build the
-    high-dim distance matrix, follow sklearn's schedule, and are structurally equivalent. `init` is the
-    2D starting layout (the reused PCA init)."""
+def _sparse_joint_p(d2, idx, perplexity, n, r0, counts):
+    """kNN conditionals -> symmetrized joint P for this rank's rows, as CSR pieces.
+
+    Runs the perplexity search on the (n_local, k) neighbor distances, then symmetrizes to the
+    joint P = (P_cond + P_cond^T) / (2n) (sums to 1 globally). The transpose contribution for a
+    local row i -- P_{i|j} for every j that selected i as a neighbor -- lives on j's rank, so under
+    DDP every rank's conditional edges are all-gathered first (edge counts per rank are static:
+    counts[q] * k). Symmetrization is a COO coalesce: each edge is emitted with its transpose and
+    duplicate coordinates sum. Returns (rowptr, cols, vals): this rank's rows of the joint P in CSR
+    form with local row indexing (coalesce yields row-major sorted indices, so the mask-slice below
+    preserves CSR order)."""
+    nl, k = d2.shape
+    dev = d2.device
+    Pc = _hbeta_search(d2, perplexity)
+    rows = (r0 + torch.arange(nl, device=dev)).repeat_interleave(k)
+    cols = idx.reshape(-1)
+    vals = Pc.reshape(-1)
     if dist.is_initialized() and dist.get_world_size() > 1:
-        return _tsne_torch_sharded(X, init, perplexity, n_iter, exaggeration, explore_iter, device)
-    return _tsne_torch_single(X, init, perplexity, n_iter, exaggeration, explore_iter, device)
+        edge_counts = [c * k for c in counts]
+        rows = _allgather_rows(rows[:, None], edge_counts)[:, 0]
+        cols = _allgather_rows(cols[:, None], edge_counts)[:, 0]
+        vals = _allgather_rows(vals[:, None], edge_counts)[:, 0]
+    indices = torch.stack([torch.cat([rows, cols]), torch.cat([cols, rows])])
+    P = torch.sparse_coo_tensor(indices, torch.cat([vals, vals]), (n, n)).coalesce()
+    r, c = P.indices()
+    keep = (r >= r0) & (r < r0 + nl)
+    r = r[keep] - r0
+    rowptr = torch.zeros(nl + 1, dtype=torch.long, device=dev)
+    rowptr[1:] = torch.bincount(r, minlength=nl).cumsum(0)
+    return rowptr, c[keep].contiguous(), (P.values()[keep] / (2 * n)).contiguous()
 
-def _tsne_torch_single(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
+def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
     """
-    Exact (O(n^2)) t-SNE on the GPU via torch, returning the 2D layout. Minimizes KL(P||Q) under the
-    Student-t low-dim kernel by momentum gradient descent with adaptive gains, following sklearn's
-    schedule (PCA init, early exaggeration for the first `explore_iter` steps, momentum 0.5->0.8,
-    learning_rate='auto'), so the result is structurally equivalent to sklearn t-SNE -- not bit-identical.
-    `init` is the 2D starting layout (the reused PCA init).
+    Barnes-Hut-style t-SNE on the GPU via torch, returning the 2D layout. Minimizes KL(P||Q) under
+    the Student-t low-dim kernel by momentum gradient descent with adaptive gains, following
+    sklearn's schedule (PCA init, early exaggeration for the first `explore_iter` steps, momentum
+    0.5->0.8, learning_rate='auto') and sklearn's default sparse-affinity approximation: the
+    high-dim conditionals are restricted to each point's k = 3*perplexity nearest neighbors (the
+    dropped tail is numerically ~0), so results are structurally equivalent to default sklearn
+    TSNE -- not bit-identical. The pairwise repulsion term stays exact, recomputed each iteration
+    from the current layout in row chunks. `init` is the 2D starting layout (the reused PCA init).
 
-    Memory: the nxn distance matrix is freed right after the perplexity search, leaving exactly 3 live
-    nxn buffers in the optimization loop (P, plus two preallocated work buffers reused in place every
-    iteration) so it fits large n: early exaggeration is folded into P
-    in-place (no separate P_exag), the diagonal is zeroed instead of multiplying by an nxn mask, and the
-    low-dim affinities are built via the gram trick into the preallocated buffers (no cdist temporaries
-    and no per-iteration allocation churn).
-    """
-    eps = 1e-12
-    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    X = torch.as_tensor(X, dtype=torch.float32, device=dev)
-    n = X.shape[0]
-    D2 = torch.cdist(X, X).pow_(2)  # high-dim squared distances
-    lr = max(n / exaggeration / 4.0, 50.0)  # sklearn learning_rate='auto'
-    num = torch.empty((n, n), device=dev)  # preallocated Student-t affinity buffer (reused each iter)
-    Q = torch.empty((n, n), device=dev)    # preallocated PQ-term buffer (reused each iter)
+    Memory: O(N*k) for the sparse joint P plus one transient (chunk, N) work buffer (~1 GiB) -- no
+    N x N matrix is ever materialized, so N is bounded by compute time (O(N^2) per iteration,
+    bandwidth-bound), not by GPU memory.
 
-    P = _hbeta_search(D2, perplexity)
-    del D2  # only feeds the perplexity search; free the n×n distance matrix before the optimization loop
-    P = ((P + P.t()) / (2 * n)).clamp_min(eps)  # symmetrize -> joint, sums to 1
-    P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter) -> no 2nd n×n buffer
-    Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # shared PCA init
-    update = torch.zeros_like(Y)
-    gains = torch.ones_like(Y)
-    for it in range(n_iter):
-        if it == explore_iter:
-            P.div_(exaggeration)  # end early exaggeration
-        momentum = 0.5 if it < explore_iter else 0.8
-        # Student-t affinities num = 1/(1+||yi-yj||^2), self zeroed, into the reused buffer (gram trick)
-        ry = (Y * Y).sum(1)
-        torch.matmul(Y, Y.t(), out=num)
-        num.mul_(-2.0).add_(ry[:, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
-        num.fill_diagonal_(0.0)
-        torch.div(num, num.sum().clamp_min(eps), out=Q).clamp_min_(eps)
-        Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (the PQ term; P carries the exaggeration)
-        grad = 4.0 * (Q.sum(1, keepdim=True) * Y - Q @ Y)
-        inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
-        gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
-        update = momentum * update - lr * gains * grad
-        Y = Y + update
-        Y = Y - Y.mean(0, keepdim=True)  # keep centered (t-SNE is translation-invariant)
-    return Y.detach().cpu().numpy()
-
-def _tsne_torch_sharded(X, init, perplexity, n_iter, exaggeration, explore_iter, device):
-    """
-    Multi-rank exact t-SNE, returning the 2D layout. The NxN affinity / Student-t matrices are
-    row-sharded across ranks (each rank owns a contiguous block of the N points), so per-rank memory is
-    ~3·N²/world_size instead of 3·N². This both lifts the single-GPU O(N²) memory ceiling and splits the
-    work. X is replicated (it is already all-gathered to every rank during eval) and the 2-D layout Y is
-    replicated, all-gathered from the per-rank updated rows every iteration (only Nx2). Each iteration
-    all-reduces the scalar Student-t normalizer Z; the one-time P-symmetrization transpose is a
-    point-to-point all-to-all (_transpose_shard). The per-row optimizer state (gains/update) is sharded
-    with the rows. Same schedule/algorithm as _tsne_torch_single -- structurally equivalent (only the
-    distributed Z reduction differs in floating-point summation order).
-
-    Must be entered collectively by every rank (it issues collective ops). X and init must be identical
-    across ranks (they are: X is all-gathered and init is the deterministic shared PCA).
+    Under DDP with world_size > 1 the points are row-sharded: each rank owns its rows' P edges,
+    gradient, and optimizer state, all-gathers the (N x 2) layout every iteration and all-reduces
+    the scalar Student-t normalizer Z. Must then be entered collectively by every rank with
+    identical X and init (they are: X is all-gathered during eval and init is the deterministic
+    shared PCA); world_size 1 degenerates to the same code with no collective ops.
     """
     eps = 1e-12
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    rank, world = dist.get_rank(), dist.get_world_size()
+    ddp = dist.is_initialized() and dist.get_world_size() > 1
+    rank, world = (dist.get_rank(), dist.get_world_size()) if ddp else (0, 1)
     X = torch.as_tensor(X, dtype=torch.float32, device=dev)
     n = X.shape[0]
     counts = _shard_counts(n, world)
-    starts = [sum(counts[:r]) for r in range(world)]
-    r0, nl = starts[rank], counts[rank]
-    Xr = X[r0:r0 + nl]  # this rank's rows of X (nl × d)
-    D2 = torch.cdist(Xr, X).pow_(2)  # this rank's nl×N squared-distance rows
+    r0, nl = sum(counts[:rank]), counts[rank]
+    k = min(int(3 * perplexity), n - 1)  # sklearn Barnes-Hut neighbor count
+    chunk = max(1, _CHUNK_ELEMS // n)  # rows per transient (chunk, N) buffer
     lr = max(n / exaggeration / 4.0, 50.0)  # sklearn learning_rate='auto'
-    num = torch.empty((nl, n), device=dev)  # preallocated local Student-t rows (reused each iter)
-    Q = torch.empty((nl, n), device=dev)    # preallocated local PQ-term buffer (reused each iter)
 
-    # high-dim joint affinities P, row-sharded. The conditional rows come from a per-row perplexity
-    # search (independent across rows -> shards cleanly). Symmetrizing to the joint P needs P's
-    # transpose, i.e. this rank's columns of the full conditional, gathered from every rank's row-block.
-    Pc = _hbeta_search(D2, perplexity, self_offset=r0)  # nl × N conditional
-    del D2  # only feeds the perplexity search; free it before the transpose/optimizer buffers allocate
-    P = ((Pc + _transpose_shard(Pc, counts, starts)) / (2 * n)).clamp_min(eps)  # nl × N joint
-    del Pc
-    P.mul_(exaggeration)  # early exaggeration folded into P (undone at explore_iter)
-    Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # N × 2 shared PCA init, replicated
+    d2, idx = _knn(X[r0:r0 + nl], X, k, r0, chunk)
+    rowptr, pcols, pvals = _sparse_joint_p(d2, idx, perplexity, n, r0, counts)
+    del d2, idx
+    prows = torch.repeat_interleave(torch.arange(nl, device=dev), rowptr.diff())  # local row per edge
+    pvals.mul_(exaggeration)  # early exaggeration folded into the P values (undone at explore_iter)
+
+    Y = torch.as_tensor(init, dtype=torch.float32, device=dev)  # N x 2 shared PCA init, replicated
     update = torch.zeros((nl, 2), device=dev)  # per-row optimizer state, sharded with the rows
     gains = torch.ones((nl, 2), device=dev)
+    Wc = torch.empty((min(chunk, max(nl, 1)), n), device=dev)  # reused (chunk, N) repulsion buffer
+    ones = torch.ones((n, 1), device=dev)
+    rep = torch.empty((nl, 2), device=dev)
     for it in range(n_iter):
         if it == explore_iter:
-            P.div_(exaggeration)  # end early exaggeration
+            pvals.div_(exaggeration)  # end early exaggeration
         momentum = 0.5 if it < explore_iter else 0.8
         Yr = Y[r0:r0 + nl]
-        # Student-t affinities for the local rows: num[a,j] = 1/(1+||y_{r0+a} - y_j||^2), self zeroed
+        # attraction over the sparse P edges: F_i = sum_j p_ij w_ij (y_i - y_j), w = 1/(1+|yi-yj|^2).
+        # Row-aggregated with one CSR matmul against [Y | 1] (deterministic -- no scatter atomics):
+        # cols [:2] give sum_j pw_ij y_j, col [2:] gives sum_j pw_ij.
+        pw = pvals / (1.0 + (Yr[prows] - Y[pcols]).pow(2).sum(1))
+        agg = torch.sparse_csr_tensor(rowptr, pcols, pw, size=(nl, n)) @ torch.cat([Y, ones], dim=1)
+        attr = agg[:, 2:] * Yr - agg[:, :2]
+        # repulsion, exact and chunked: F_i = [(sum_j w_ij^2) y_i - W.^2 @ Y] / Z with Z = sum_ij w_ij;
+        # W rows are built by the gram trick into the reused buffer, self zeroed, squared in place
+        # after accumulating Z. Never materializes more than (chunk, N).
         ry = (Y * Y).sum(1)
-        torch.matmul(Yr, Y.t(), out=num)
-        num.mul_(-2.0).add_(ry[r0:r0 + nl, None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
-        _zero_self(num, r0)
-        Z = num.sum()
-        dist.all_reduce(Z, op=dist.ReduceOp.SUM)  # global normalizer over all N×N pairs
-        torch.div(num, Z.clamp_min(eps), out=Q).clamp_min_(eps)
-        Q.neg_().add_(P).mul_(num)  # in-place: Q := (P - Q) * num  (PQ term; P carries the exaggeration)
-        grad = 4.0 * (Q.sum(1, keepdim=True) * Yr - Q @ Y)  # nl × 2 local-row gradient (needs full Y)
+        Z = torch.zeros((), device=dev)
+        for s in range(0, nl, chunk):
+            W = Wc[: min(chunk, nl - s)]
+            torch.matmul(Yr[s:s + W.shape[0]], Y.t(), out=W)
+            W.mul_(-2.0).add_(ry[r0 + s:r0 + s + W.shape[0], None]).add_(ry[None, :]).clamp_min_(0.0).add_(1.0).reciprocal_()
+            _zero_self(W, r0 + s)
+            Z += W.sum()
+            W.pow_(2)
+            rep[s:s + W.shape[0]] = W.sum(1, keepdim=True) * Yr[s:s + W.shape[0]] - W @ Y
+        if ddp:
+            dist.all_reduce(Z, op=dist.ReduceOp.SUM)  # global normalizer over all N x N pairs
+        grad = 4.0 * (attr - rep / Z.clamp_min(eps))  # nl x 2 local-row gradient
         inc = (update * grad) < 0  # adaptive gains: grow when sign flips, shrink otherwise
         gains = torch.where(inc, gains + 0.2, gains * 0.8).clamp_min(0.01)
         update = momentum * update - lr * gains * grad
-        Y = _allgather_rows(Yr + update, counts)  # stitch the updated local rows back into the full Y
+        Yl = Yr + update
+        Y = _allgather_rows(Yl, counts) if ddp else Yl  # stitch the updated rows back into the full Y
         Y = Y - Y.mean(0, keepdim=True)  # keep centered (every rank identical after the all-gather)
     return Y.detach().cpu().numpy()
 
 def compute_tsne(embeddings, perplexity, init, n_iter=1000):
     """
     Reduce embedding dimensionality to 2D via GPU t-SNE (`_tsne_torch`). Returns the 2D layout.
-    `embeddings` may be a numpy array or a torch tensor (a GPU tensor is passed straight through to the
-    sharded path, no host copy). `init` is the 2D starting layout (the reused PCA init).
+    `embeddings` may be a numpy array or a torch tensor (a GPU tensor is used in place, no host
+    copy). `init` is the 2D starting layout (the reused PCA init).
     """
     _log(f"Running GPU t-SNE on {embeddings.shape[0]} samples (dim={embeddings.shape[1]}) at perplexity {perplexity}...")
     return _tsne_torch(embeddings, np.asarray(init), perplexity=perplexity, n_iter=n_iter)
@@ -993,8 +980,9 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
     single layout (no orientation needed) and the plots show the eval set migrating through a fixed frame
     as training progresses.
 
-    Exact t-SNE is O(N^2), so the pool is class-stratified subsampled to ~budget total points across all
-    thresholds (all samples used when the full pool (N_id+N_ood)*n_thresholds <= budget). The subsample
+    The t-SNE's per-iteration repulsion compute is O(N^2) (memory is linear and not a constraint), so to
+    bound the pooled fit's runtime the pool is class-stratified subsampled to ~budget total points across
+    all thresholds (all samples used when the full pool (N_id+N_ood)*n_thresholds <= budget). The subsample
     indices are fixed across thresholds (identical eval order), so a point is the SAME sample in every
     frame. id/ood/fullset are fit independently (mirroring the per-eval compute). Rows are laid out in
     per-threshold contiguous blocks ([threshold0, threshold1, ...]; each fullset block is its ID rows then

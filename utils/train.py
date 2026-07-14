@@ -634,9 +634,15 @@ class ArtifactManager:
         return ArtifactManager.base_eval_cache_dpath() / "metrics.json"
 
     @staticmethod
-    def load_base_eval_cache():
+    def load_base_eval_cache(require_projections):
+        # `require_projections` (viz trials) additionally demands projections.npz: a crash between
+        # the metrics write and the projections write leaves a partial cache, which must read as a
+        # miss (recompute both) rather than trip _copy_base_eval on the missing file downstream.
+        # Metrics-only caches stay valid for non-viz trials.
         fpath = ArtifactManager.base_eval_cache_path()
         if not fpath.exists():
+            return None
+        if require_projections and not (ArtifactManager.base_eval_cache_dpath() / "projections.npz").exists():
             return None
         return load_json(fpath)
 

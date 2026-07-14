@@ -295,7 +295,7 @@ class TrainPipeline:
             # BASE EVAL
 
             if self._resume_state is None and self.eval_enabled:
-                cached = ArtifactManager.load_base_eval_cache()
+                cached = ArtifactManager.load_base_eval_cache(require_projections=self._viz_manifold)
                 if cached is not None:
                     scores = parse_scores(cached["scores"])
                     eval_metrics = {

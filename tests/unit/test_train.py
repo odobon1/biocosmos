@@ -347,3 +347,20 @@ def test_update_metrics_xlsx_heatmap_fixed(tmp_path, monkeypatch) -> None:
     assert _fill_rgb(ws, 3, 2) == "FFDDD6"  # 20 -> t=0.20
     assert _fill_rgb(ws, 3, 3) == "FFAA99"  # 50 -> t=0.50
     assert _fill_rgb(ws, 3, 4) == "FF775C"  # 80 -> t=0.80
+
+
+def test_load_base_eval_cache_requires_projections_for_viz_trials(tmp_path, monkeypatch) -> None:
+    # a crash between the metrics write and the projections write leaves metrics.json without
+    # projections.npz -- a viz trial must read that as a miss (recompute) rather than hit the
+    # missing projections.npz downstream in _copy_base_eval; non-viz trials still reuse the metrics
+    monkeypatch.setattr(ArtifactManager, "base_eval_cache_dpath", lambda: tmp_path)
+    metrics = {"scores": {"comp": {"map": {"all": "0.50"}}}}
+
+    assert ArtifactManager.load_base_eval_cache(require_projections=False) is None  # no cache at all
+
+    (tmp_path / "metrics.json").write_text(json.dumps(metrics))
+    assert ArtifactManager.load_base_eval_cache(require_projections=True) is None  # partial cache
+    assert ArtifactManager.load_base_eval_cache(require_projections=False) == metrics
+
+    (tmp_path / "projections.npz").write_bytes(b"")
+    assert ArtifactManager.load_base_eval_cache(require_projections=True) == metrics

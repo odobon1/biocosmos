@@ -386,7 +386,7 @@ class PartitionEvaluationPipeline:
         nshot_bucket_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
 
-        chunk_size = self.cfg.hw.chunk_size
+        map_chunk_size = self.cfg.hw.eval["map_chunk_size"]
 
         scores_i2t = compute_map_cross_modal(
             embs_q=embs_img_q.cpu(),
@@ -394,7 +394,7 @@ class PartitionEvaluationPipeline:
             embs_g=embs_text_g.cpu(),
             class_encs_g=class_encs_text_g.cpu(),
             compute_accuracy=True,
-            chunk_size=chunk_size["map_cross_modal"],
+            chunk_size=map_chunk_size["cross_modal"],
         )
         scores_i2i = compute_map_img2img(
             embs_q=embs_img_q,
@@ -402,14 +402,14 @@ class PartitionEvaluationPipeline:
             embs_g=embs_img_g,
             class_encs_g=class_encs_img_g,
             self_match_idxs_g=self_match_idxs_g,
-            chunk_size=chunk_size["map_img2img"],
+            chunk_size=map_chunk_size["img2img"],
         )
         scores_t2i = compute_map_cross_modal(
             embs_q=embs_text_q.cpu(),
             class_encs_q=class_encs_text_q.cpu(),
             embs_g=embs_img_g.cpu(),
             class_encs_g=class_encs_img_g.cpu(),
-            chunk_size=chunk_size["map_cross_modal"],
+            chunk_size=map_chunk_size["cross_modal"],
         )
 
         return self._build_metric_views(

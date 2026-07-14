@@ -319,7 +319,7 @@ class HardwareConfig:
     max_n_workers_gpu: int | None
     persistent_workers_train: bool
     persistent_workers_eval: bool
-    chunk_size: dict
+    eval: dict  # {map_chunk_size: {img2img, cross_modal}, tsne_chunk_log2: int} -- mAP sim-matrix chunking + t-SNE GPU-buffer tiling (buffer = 2^X fp32)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 

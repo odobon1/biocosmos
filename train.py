@@ -207,7 +207,7 @@ class TrainPipeline:
         torch.cuda.empty_cache()
         with self.time_tracker.measure("viz_compute"):
             compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz,
-                                cache_embs=self._pooled_manifold)
+                                1 << self.cfg.hw.eval["tsne_chunk_log2"], cache_embs=self._pooled_manifold)
 
     def _viz_eval(self, eval_bundles, eval_name):
         """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
@@ -223,7 +223,8 @@ class TrainPipeline:
         torch.cuda.empty_cache()  # release the training step's reserved pool before the pooled t-SNE buffers
         budget = self.cfg.dev["manifold_viz"]["pooled"]["budget"]
         with self.time_tracker.measure("viz_compute"):
-            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget)
+            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget,
+                                       1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
     def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
         # NOT @rank0: _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank

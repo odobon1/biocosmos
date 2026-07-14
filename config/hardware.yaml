@@ -7,9 +7,13 @@ max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus /
 persistent_workers_train: true  # {true, false}; keep train dataloader workers alive across train epochs
 persistent_workers_eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
 
-chunk_size:
-  map_img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
-  map_cross_modal: 512
+eval:
+  map_chunk_size:
+    img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
+    cross_modal: 512
+  # t-SNE transient GPU buffer = 2^X fp32 (X=28 -> 1 GiB, each +1 doubles it). Pure memory<->speed,
+  # doesn't change the projection: bigger X = faster if you have VRAM, smaller X if it OOMs.
+  tsne_chunk_log2: 30
 
 pg_timeout: 600  # NCCL collective watchdog timeout, in seconds. A hang aborts (and dumps its flight-recorder
                  # trace) after this; the campaign runner then resumes the trial from its last checkpoint. Keep

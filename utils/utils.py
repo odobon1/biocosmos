@@ -622,7 +622,7 @@ class PrintLog:
 
     @staticmethod
     def _format_hw_block(cfg_train):
-        chunk_size = cfg_train.hw.chunk_size
+        map_chunk_size = cfg_train.hw.eval["map_chunk_size"]
         lines_hw = [
             "=== Hardware ===",
             PrintLog._dash_aligned_lines((
@@ -635,8 +635,8 @@ class PrintLog:
             )),
             "Chunk Size",
             PrintLog._dash_aligned_lines((
-                ("- img-to-img mAP", f"{chunk_size['map_img2img']:,}"),
-                ("- cross-modal mAP", f"{chunk_size['map_cross_modal']:,}"),
+                ("- img-to-img mAP", f"{map_chunk_size['img2img']:,}"),
+                ("- cross-modal mAP", f"{map_chunk_size['cross_modal']:,}"),
             )),
             "",
         ]

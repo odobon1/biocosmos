@@ -40,7 +40,7 @@ def make_train_config_dummy(**overrides):
             "max_n_workers_gpu": None,
             "persistent_workers_train": True,
             "persistent_workers_eval": True,
-            "chunk_size": {"map_img2img": 512, "map_cross_modal": 512},
+            "eval": {"map_chunk_size": {"img2img": 512, "cross_modal": 512}, "tsne_chunk_log2": 28},
             "pg_timeout": 300,
             "max_retries": 2,
         },
@@ -144,7 +144,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
         "max_n_workers_gpu": 3,
         "persistent_workers_train": False,
         "persistent_workers_eval": False,
-        "chunk_size": {"map_img2img": 1024, "map_cross_modal": 1024},
+        "eval": {"map_chunk_size": {"img2img": 1024, "cross_modal": 1024}, "tsne_chunk_log2": 30},
         "pg_timeout": 300,
         "max_retries": 2,
     }))
@@ -153,6 +153,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     assert cfg.hw.act_chkpt is True
     assert cfg.hw.prefetch_factor == 8
     assert cfg.hw.max_n_workers_gpu == 3
+    assert cfg.hw.eval["tsne_chunk_log2"] == 30
 
 
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:

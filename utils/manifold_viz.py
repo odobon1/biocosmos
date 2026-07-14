@@ -107,8 +107,6 @@ def _zero_self(M, offset=0):
     a = torch.arange(M.shape[0], device=M.device)
     M[a, offset + a] = 0.0
 
-_CHUNK_ELEMS = 1 << 28  # elements per transient (chunk, N) buffer: 2^28 fp32 = 1 GiB
-
 def _knn(Xr, X, k, r0, chunk):
     """Chunked exact k-nearest-neighbor search for the local rows `Xr` against the full `X`, self
     excluded (the local rows are X[r0:r0+len(Xr)]): returns (d2, idx) -- (n_local, k) squared
@@ -200,7 +198,7 @@ def _sparse_joint_p(d2, idx, perplexity, n, r0, counts):
     rowptr[1:] = torch.bincount(r, minlength=nl).cumsum(0)
     return rowptr, c[keep].contiguous(), (P.values()[keep] / (2 * n)).contiguous()
 
-def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
+def _tsne_torch(X, init, perplexity, chunk_elems, n_iter=1000, exaggeration=12.0, explore_iter=250, device=None):
     """
     Barnes-Hut-style t-SNE on the GPU via torch, returning the 2D layout. Minimizes KL(P||Q) under
     the Student-t low-dim kernel by momentum gradient descent with adaptive gains, following
@@ -211,9 +209,10 @@ def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_ite
     TSNE -- not bit-identical. The pairwise repulsion term stays exact, recomputed each iteration
     from the current layout in row chunks. `init` is the 2D starting layout (the reused PCA init).
 
-    Memory: O(N*k) for the sparse joint P plus one transient (chunk, N) work buffer (~1 GiB) -- no
-    N x N matrix is ever materialized, so N is bounded by compute time (O(N^2) per iteration,
-    bandwidth-bound), not by GPU memory.
+    Memory: O(N*k) for the sparse joint P plus one transient (chunk, N) work buffer sized by
+    `chunk_elems` (chunk = chunk_elems // N rows; default ~1 GiB) -- no N x N matrix is ever
+    materialized, so N is bounded by compute time (O(N^2) per iteration, bandwidth-bound), not by GPU
+    memory.
 
     Under DDP with world_size > 1 the points are row-sharded: each rank owns its rows' P edges,
     gradient, and optimizer state, all-gathers the (N x 2) layout every iteration and all-reduces
@@ -230,7 +229,7 @@ def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_ite
     counts = _shard_counts(n, world)
     r0, nl = sum(counts[:rank]), counts[rank]
     k = min(int(3 * perplexity), n - 1)  # sklearn Barnes-Hut neighbor count
-    chunk = max(1, _CHUNK_ELEMS // n)  # rows per transient (chunk, N) buffer
+    chunk = max(1, chunk_elems // n)  # rows per transient (chunk, N) buffer (chunk_elems = 2^hw.eval.tsne_chunk_log2)
     lr = max(n / exaggeration / 4.0, 50.0)  # sklearn learning_rate='auto'
 
     d2, idx = _knn(X[r0:r0 + nl], X, k, r0, chunk)
@@ -280,14 +279,15 @@ def _tsne_torch(X, init, perplexity, n_iter=1000, exaggeration=12.0, explore_ite
         Y = Y - Y.mean(0, keepdim=True)  # keep centered (every rank identical after the all-gather)
     return Y.detach().cpu().numpy()
 
-def compute_tsne(embeddings, perplexity, init, n_iter=1000):
+def compute_tsne(embeddings, perplexity, init, chunk_elems, n_iter=1000):
     """
     Reduce embedding dimensionality to 2D via GPU t-SNE (`_tsne_torch`). Returns the 2D layout.
     `embeddings` may be a numpy array or a torch tensor (a GPU tensor is used in place, no host
-    copy). `init` is the 2D starting layout (the reused PCA init).
+    copy). `init` is the 2D starting layout (the reused PCA init). `chunk_elems`
+    (2^hw.eval.tsne_chunk_log2) tiles the transient GPU buffers -- memory <-> speed only.
     """
     _log(f"Running GPU t-SNE on {embeddings.shape[0]} samples (dim={embeddings.shape[1]}) at perplexity {perplexity}...")
-    return _tsne_torch(embeddings, np.asarray(init), perplexity=perplexity, n_iter=n_iter)
+    return _tsne_torch(embeddings, np.asarray(init), perplexity=perplexity, chunk_elems=chunk_elems, n_iter=n_iter)
 
 def compute_pca(embeddings):
     """
@@ -894,7 +894,7 @@ def _render_grids(tsne_projs, pca_projs, cids_id, cids_ood, penults_id, penults_
             jobs.append((quad_render, (leaf_stem, penult_stem, data, fpath, suptitle, quad_style, limits)))
     _parallel_render(jobs)
 
-def _compute_projections(embs_id, embs_ood, cfg_tsne):
+def _compute_projections(embs_id, embs_ood, cfg_tsne, chunk_elems):
     """COLLECTIVE -- must be entered by every rank together. Compute the RAW t-SNE (sharded across ranks
     when world_size > 1, see `_tsne_torch`) and PCA projections for id/ood/fullset from the all-gathered
     image embeddings (`embs_id`/`embs_ood` are the per-rank GPU tensors, identical on every rank). PCA is
@@ -904,7 +904,7 @@ def _compute_projections(embs_id, embs_ood, cfg_tsne):
     embs = {"id": embs_id, "ood": embs_ood, "fullset": torch.cat([embs_id, embs_ood], dim=0)}
     pca_projs = {k: compute_pca(e.detach().cpu().numpy()) for k, e in embs.items()}
     tsne_projs = {
-        k: compute_tsne(embs[k], perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), n_iter=cfg_tsne["n_iter"])
+        k: compute_tsne(embs[k], perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), chunk_elems=chunk_elems, n_iter=cfg_tsne["n_iter"])
         for k in embs
     }
     return tsne_projs, pca_projs
@@ -921,7 +921,7 @@ def _build_color_maps(viz_context, cids_all, cfg_color):
     color_nshot = nshot_color_map(nst_names)  # bucket colors matching the learning curves (+ OOD black)
     return color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names
 
-def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifold_viz, cache_embs=False):
+def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifold_viz, chunk_elems, cache_embs=False):
     """COLLECTIVE -- every rank must enter. Compute the raw (sharded) t-SNE + PCA from the live,
     all-gathered eval embeddings and, on rank 0, cache them to dpath_cache/projections.npz. This is the
     training pipeline's ONLY in-loop viz work; orientation, coloring, and rendering are a separate pass
@@ -933,7 +933,7 @@ def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifo
     _log("computing projections")
     # ALL RANKS: sharded t-SNE + PCA projections (collective ops inside)
     tsne_projs, pca_projs = _compute_projections(
-        eval_bundle_id["embs_img"], eval_bundle_ood["embs_img"], cfg_manifold_viz["tsne"])
+        eval_bundle_id["embs_img"], eval_bundle_ood["embs_img"], cfg_manifold_viz["tsne"], chunk_elems)
     if dist.is_initialized() and dist.get_rank() != 0:
         return  # non-rank-0 ranks only participate in the collective compute
     dpath_cache.mkdir(parents=True, exist_ok=True)
@@ -973,7 +973,7 @@ def _stratified_subsample(cids, m, seed):
             picks.append(rng.choice(idx_c, size=k, replace=False))
     return np.sort(np.concatenate(picks)) if picks else np.arange(0)
 
-def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
+def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
     """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
     embeddings pooled (read from each eval's embs.npz) and, on rank 0, write per-threshold masked blocks
     to <eval>/projections_pooled.npz. The geometry is shared, so each threshold is a masked subset of the
@@ -1020,7 +1020,7 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget):
     tsne_projs, pca_projs = {}, {}
     for k, pool in pools.items():  # collective sharded t-SNE per subject (id/ood/fullset), one at a time
         pca_projs[k] = compute_pca(pool)
-        tsne_projs[k] = compute_tsne(pool, perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), n_iter=cfg_tsne["n_iter"])
+        tsne_projs[k] = compute_tsne(pool, perplexity=cfg_tsne["perplexity"], init=_pca_init(pca_projs[k]), chunk_elems=chunk_elems, n_iter=cfg_tsne["n_iter"])
     if dist.is_initialized() and dist.get_rank() != 0:
         return  # non-rank-0 ranks only participate in the collective compute
     # split each pooled projection into per-threshold blocks; cache them (projections.npz schema) per eval

@@ -103,6 +103,11 @@ stats:
     heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to row mins/maxs, fixed -> heatmap scaled to a fixed range
 
 dev:
+  debug_mode: true  # {true, false}
+  debug:  # parameters overridden with `debug_mode: true`
+    sample_volume: 6_000
+    chkpt_every: 3_000
+    batch_size: 128
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
   manifold_viz:
     n_trials: 1  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false
@@ -115,8 +120,3 @@ dev:
       budget: 100_000  # pooled t-SNE point budget as a total sample volume across all thresholds; if (N_id + N_ood) * n_evals <= budget all samples are used, else the pool is class-stratified subsampled to ~budget points total (larger budget needs proportionally more GPU memory)
       pca_bounds: final  # {null, final}
   logging: true
-  debug_mode: false  # {true, false}
-  debug:  # parameters overridden with `debug_mode: true`
-    sample_volume: 6_000
-    chkpt_every: 3_000
-    batch_size: 128

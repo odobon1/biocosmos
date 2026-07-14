@@ -1,6 +1,7 @@
 import sys
 import shutil
 import random
+import time
 import numpy as np
 import torch
 from torch.amp import autocast, GradScaler
@@ -40,6 +41,20 @@ torch.set_printoptions(
     edgeitems=3,  # num items to show at the start/end of each dim
     linewidth=120
 )
+
+
+def _timed_next(loader, wait_acc):
+    """Yield batches from loader, accumulating into wait_acc[0] the seconds spent blocked in next() -- the
+    time the train loop sat waiting on the DataLoader (prefetch queue empty => GPU starved by data)."""
+    it = iter(loader)
+    while True:
+        t0 = time.perf_counter()
+        try:
+            batch = next(it)
+        except StopIteration:
+            return
+        wait_acc[0] += time.perf_counter() - t0
+        yield batch
 
 
 def _fmt_thresh(n_samps):
@@ -352,9 +367,11 @@ class TrainPipeline:
 
                 loss_mean = RunningMean()
                 loss_raw_mean = RunningMean()
+                data_wait = [0.0]
 
                 for idx_batch, data_sb in enumerate(pbar := tqdm(
-                    self.dataloader,
+                    _timed_next(self.dataloader, data_wait),
+                    total=len(self.dataloader),
                     desc=f"Train ({self.idx_epoch}/{self.cfg.n_epochs})",
                     leave=False,
                     disable=(dist.get_rank() != 0),
@@ -465,9 +482,16 @@ class TrainPipeline:
                 self.timer_train.reset()
                 self.time_tracker.add("train", time_train)
 
+                # gather per-rank dataloader wait so rank0 can log all ranks (collective: every rank must reach this)
+                wait_t = torch.tensor([data_wait[0]], device=self.cfg.device)
+                waits = [torch.zeros_like(wait_t) for _ in range(dist.get_world_size())]
+                dist.all_gather(waits, wait_t)
+                time_data_wait_ranks = [w.item() for w in waits]
+
                 PrintLog.epoch(
                     time_train,
                     self.time_tracker.mean("train"),
+                    time_data_wait_ranks,
                     loss_mean.value(),
                     loss_raw_mean.value(),
                     self.n_samps_seen,

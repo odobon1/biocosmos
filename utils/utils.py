@@ -375,7 +375,7 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def epoch(time_train, time_train_avg, loss_train_avg, loss_train_raw_avg, n_samps_seen, idx_epoch, n_epochs):
+    def epoch(time_train, time_train_avg, time_data_wait_ranks, loss_train_avg, loss_train_raw_avg, n_samps_seen, idx_epoch, n_epochs):
 
         SECTION_WIDTH = 66
 
@@ -386,6 +386,7 @@ class PrintLog:
                 ("Raw Loss", f"{loss_train_raw_avg:.3e}"),
                 ("Samples Seen", f"{n_samps_seen:,}"),
                 ("Time", f"{time_train:.2f} s (avg: {time_train_avg:.2f} s)"),
+                ("Data Wait", " | ".join(f"r{i}: {w:.2f} s" for i, w in enumerate(time_data_wait_ranks))),
             )),
             f"{'':#^{SECTION_WIDTH}}",
             "",

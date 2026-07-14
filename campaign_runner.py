@@ -1,5 +1,6 @@
 """
 python -m campaign_runner --dev
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m campaign_runner --dev
 
 Campaigns are defined in config/camps/<campaign>.yaml, e.g. --dev_basic loads config/camps/dev_basic.yaml.
 """
@@ -259,28 +260,44 @@ def _reap_subtree(grace: float = 10.0, spare_root: int | None = None) -> None:
     """SIGKILL and reap every descendant process (torchrun, ranks, DataLoader
     workers). Relies on _enable_child_subreaper so orphaned workers reparent
     here and show up as descendants. A background render worker (spare_root and
-    its subtree) is left alone so it can keep rendering through the next trial."""
-    parent = psutil.Process()
-    spare: set[int] = set()
-    if spare_root is not None:
-        try:
-            rp = psutil.Process(spare_root)
-            spare = {rp.pid, *(c.pid for c in rp.children(recursive=True))}
-        except psutil.NoSuchProcess:
-            pass
-    deadline = time.time() + grace
-    while True:
-        procs = [p for p in parent.children(recursive=True) if p.pid not in spare]
-        if not procs:
-            return
-        for p in procs:
+    its subtree) is left alone so it can keep rendering through the next trial.
+
+    SIGINT and SIGTERM are blocked for the duration of the teardown so a second
+    Ctrl-C (or a SIGTERM) arriving mid-reap can't abort the kill loop and leak
+    live GPU procs into the next trial; the pending signal is held and delivered
+    once the subtree is fully reaped, then propagates as usual to the handler."""
+    # Arm the block as the very first action so the whole teardown is covered. Standard signals do not queue:
+    # any number of SIGINT/SIGTERM that arrive while blocked coalesce to a single pending one, so triple-,
+    # quadruple-, N-Ctrl-C are all handled identically -- one KeyboardInterrupt is delivered after the reap.
+    try:
+        prev_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    except (ValueError, OSError):
+        prev_mask = None  # unsupported / off main thread: reap unguarded rather than fail
+    try:
+        parent = psutil.Process()
+        spare: set[int] = set()
+        if spare_root is not None:
             try:
-                p.kill()
+                rp = psutil.Process(spare_root)
+                spare = {rp.pid, *(c.pid for c in rp.children(recursive=True))}
             except psutil.NoSuchProcess:
                 pass
-        psutil.wait_procs(procs, timeout=2)
-        if time.time() >= deadline:
-            return
+        deadline = time.time() + grace
+        while True:
+            procs = [p for p in parent.children(recursive=True) if p.pid not in spare]
+            if not procs:
+                return
+            for p in procs:
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            psutil.wait_procs(procs, timeout=2)
+            if time.time() >= deadline:
+                return
+    finally:
+        if prev_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, prev_mask)
 
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
     cmd = [

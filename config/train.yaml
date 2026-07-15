@@ -96,14 +96,14 @@ opt:  # optimization
 
 stats:
   spread_type: std  # {std, ste}
-  table_eval_group: closed_macro  # {closed_standard, closed_macro, full_standard, full_macro}
+  table_eval_group: closed_standard  # {closed_standard, closed_macro, full_standard, full_macro}
   xlsx:
     bold_high: true  # {true, false}; (true) bold item with highest mean per row
     ordered: true  # {true, false}; (true) order columns by the always-shown harmonic-mean table's "All" row
     heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to row mins/maxs, fixed -> heatmap scaled to a fixed range
 
 dev:
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000
@@ -120,3 +120,4 @@ dev:
       budget: 100_000  # pooled t-SNE point budget as a total sample volume across all thresholds; if (N_id + N_ood) * n_evals <= budget all samples are used, else the pool is class-stratified subsampled to ~budget points total (larger budget needs proportionally more GPU memory)
       pca_bounds: final  # {null, final}
   logging: true
+  continue_campaign: true  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...

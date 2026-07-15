@@ -601,11 +601,26 @@ def _load_campaign_config(name: str) -> dict:
     with open(fpath) as f:
         return yaml.safe_load(f)
 
+def _dedupe_campaign_name(campaign: str) -> str:
+    """Return the first campaign name without an existing artifacts dir: `campaign` itself, else
+    `<campaign>2`, `<campaign>3`, ..."""
+    if not _dpath_campaign(campaign).exists():
+        return campaign
+    n = 2
+    while _dpath_campaign(f"{campaign}{n}").exists():
+        n += 1
+    return f"{campaign}{n}"
+
 def main() -> None:
     name = _parse_campaign_name(sys.argv[1:])
     cfg = _load_campaign_config(name)
     suffix = cfg["suffix"]
     campaign = f"{name}_{suffix}" if suffix is not None else name
+    if not load_train_config_dict()["dev"]["continue_campaign"]:
+        deduped = _dedupe_campaign_name(campaign)
+        if deduped != campaign:
+            print(f"campaign '{campaign}' already exists -- starting '{deduped}' (dev.continue_campaign: false)", flush=True)
+            campaign = deduped
     run_campaign(
         campaign=campaign,
         n_trials=cfg["n_trials"],

@@ -428,12 +428,12 @@ def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
         ]
     )
     assert [name for name, _ in settings] == [
-        "hp_bs-1k_opt.lr.init-7.0e-6",
-        "hp_bs-1k_opt.lr.init-1.2e-5",
-        "hp_bs-2k_opt.lr.init-7.0e-6",
-        "hp_bs-2k_opt.lr.init-1.2e-5",
+        "hp_bs-1k_LR0-7.0e-6",
+        "hp_bs-1k_LR0-1.2e-5",
+        "hp_bs-2k_LR0-7.0e-6",
+        "hp_bs-2k_LR0-1.2e-5",
     ]
-    assert dict(settings)["hp_bs-2k_opt.lr.init-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
+    assert dict(settings)["hp_bs-2k_LR0-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
 
 
 def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
@@ -1203,3 +1203,38 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
             baseline_overrides=[[{"hw.use_img_cache": True, "name": "ic"}]],
         )
     assert launched == []
+
+
+def _run_main(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
+    """Run cr.main() with stubbed config loading and a no-op run_campaign; returns the campaign
+    name run_campaign was launched with."""
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "_parse_campaign_name", lambda argv: "dev")
+    monkeypatch.setattr(cr, "_load_campaign_config", lambda name: {
+        "suffix": suffix, "n_trials": 1, "datasets": ["cub"], "baseline_overrides": [[{"name": "s"}]],
+    })
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": continue_campaign}})
+    launched = []
+    monkeypatch.setattr(cr, "run_campaign", lambda campaign, **kwargs: launched.append(campaign))
+    cr.main()
+    return launched[0]
+
+
+def test_main_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
+    (tmp_path / "dev").mkdir()
+    assert _run_main(tmp_path, monkeypatch, continue_campaign=True) == "dev"
+
+
+def test_main_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
+    assert _run_main(tmp_path, monkeypatch, continue_campaign=False) == "dev"
+
+
+def test_main_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev2").mkdir()
+    assert _run_main(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
+
+
+def test_main_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
+    (tmp_path / "dev_foobar").mkdir()
+    assert _run_main(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"

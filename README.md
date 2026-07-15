@@ -117,7 +117,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 
    Each resulting **setting** — a member of this Cartesian product, not a single `baseline_overrides` item (they coincide only for a single combo group) — is trained for `n_trials` seeds on every dataset, so the campaign runs *settings × datasets × `n_trials`* trials in total.
 
-   The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`).
+   The campaign is named `<campaign>_<suffix>` (or just `<campaign>` when `suffix` is `null`). By default (`dev.continue_campaign: true` in `config/train.yaml`) a relaunch under an existing name resumes/extends that campaign; with `dev.continue_campaign: false`, a name whose `artifacts/<name>` dir already exists falls back to the first free `<name>2`, `<name>3`, … and starts a fresh campaign there instead.
 
    Putting it together, a complete single-combo-group campaign (`config/camps/foobar.yaml`):
     ```yaml

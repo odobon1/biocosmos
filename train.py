@@ -29,6 +29,7 @@ from utils.loss import configure_htarg_shuf
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
+from utils.hardware import apply_backend_flags
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
 import pdb
@@ -173,7 +174,8 @@ class TrainPipeline:
         self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
 
         if self.cfg.hw.mixed_prec:
-            self.scaler = GradScaler()
+            # bf16 needs no loss scaling; a disabled scaler passes through (scale/unscale_/update no-op, step -> opt.step)
+            self.scaler = GradScaler(enabled=self.cfg.hw.amp_dtype_torch is torch.float16)
 
     def _update_lr_warmup(self) -> float:
         if self.lr_warmup == 0 or self.n_samps_seen >= self.lr_warmup:
@@ -279,7 +281,7 @@ class TrainPipeline:
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.mixed_prec:
-            with autocast(device_type=self.cfg.device.type):
+            with autocast(device_type=self.cfg.device.type, dtype=self.cfg.hw.amp_dtype_torch):
                 loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb
                 )
@@ -538,6 +540,7 @@ def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
+    apply_backend_flags(cfg.hw)
     configure_htarg_shuf(cfg.htarg_shuf, cfg.seed)
 
     ArtifactManager.set_paths(cfg)
@@ -564,6 +567,9 @@ def run_training(cfg):
         trial_state = ArtifactManager.load_trial_state()
 
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
+    if cfg.hw.compile:
+        # on top of DDP; _unwrapped_model still resolves -- OptimizedModule forwards .module to the DDP wrapper
+        modelw.model = torch.compile(modelw.model)
 
     train_pipe = TrainPipeline(
         modelw, 

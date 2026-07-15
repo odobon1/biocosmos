@@ -142,6 +142,7 @@ class PartitionEvaluationPipeline:
         self.partition = partition
         self.subbatch_size = self.dataloader.batch_size
         self.mixed_prec = config.hw.mixed_prec
+        self.amp_dtype = config.hw.amp_dtype_torch
 
         if self.partition == "id":
             split = load_split(config.dataset, config.split)
@@ -167,7 +168,7 @@ class PartitionEvaluationPipeline:
 
         # text embeddings
         if self.mixed_prec:
-            with autocast(device_type=modelw.device.type):
+            with autocast(device_type=modelw.device.type, dtype=self.amp_dtype):
                 embs_text_all = modelw.embed_texts(self.index_text)  # pt[L, D]
         else:
             embs_text_all = modelw.embed_texts(self.index_text)
@@ -187,7 +188,7 @@ class PartitionEvaluationPipeline:
             imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
 
             if self.mixed_prec:
-                with autocast(device_type=modelw.device.type):
+                with autocast(device_type=modelw.device.type, dtype=self.amp_dtype):
                     embs_img_b, embs_txt_b = modelw.batch_step_local(imgs_sb, texts_sb)
             else:
                 embs_img_b, embs_txt_b = modelw.batch_step_local(imgs_sb, texts_sb)
@@ -224,7 +225,7 @@ class PartitionEvaluationPipeline:
             # global negative pool: per-rank eval batch x world size (mirrors the global training batch)
             B = self.subbatch_size * dist.get_world_size()
             if self.mixed_prec:
-                with autocast(device_type=modelw.device.type):
+                with autocast(device_type=modelw.device.type, dtype=self.amp_dtype):
                     loss_avg = modelw.eval_loss_chunked(
                         embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
                     )

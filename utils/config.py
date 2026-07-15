@@ -315,15 +315,24 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
 class HardwareConfig:
 
     mixed_prec: bool
+    amp_dtype: str  # {fp16, bf16}; autocast dtype under mixed_prec (resolved to amp_dtype_torch); fp16 -> GradScaler enabled, bf16 -> scaler disabled
     act_chkpt: bool
+    compile: bool  # torch.compile the DDP-wrapped train model
+    tf32_matmul: bool  # torch.backends.cuda.matmul.allow_tf32
+    tf32_conv: bool  # torch.backends.cudnn.allow_tf32
+    cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
+    pin_memory: bool  # dataloader pinned host RAM for faster host -> GPU copies
     persistent_workers_train: bool
     persistent_workers_eval: bool
     use_img_cache: bool  # read images from the prebuilt pack (tools/build_img_cache.py), staged to node-local scratch, instead of per-sample files on the shared FS
     eval: dict  # {map_chunk_size: {img2img, cross_modal}, tsne_chunk_log2: int} -- mAP sim-matrix chunking + t-SNE GPU-buffer tiling (buffer = 2^X fp32)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
+
+    def __post_init__(self):
+        self.amp_dtype_torch = {"fp16": torch.float16, "bf16": torch.bfloat16}[self.amp_dtype]
 
 
 def load_hardware_config_dict() -> dict:

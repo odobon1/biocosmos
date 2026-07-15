@@ -128,7 +128,6 @@ def seed_libs(seed, seed_torch=True):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
-        torch.backends.cudnn.benchmark = False  # (False) trades speed for reproducibility (default is False)
 
 def save_json(data, fpath):
     with open(fpath, "w") as f:

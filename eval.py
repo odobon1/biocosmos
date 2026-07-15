@@ -8,6 +8,7 @@ from models import VLMWrapper
 from utils.eval import EvaluationPipeline
 from utils.utils import get_text_template, PrintLog
 from utils.config import get_config_eval
+from utils.hardware import apply_backend_flags
 from utils.ddp import setup_ddp, cleanup_ddp
 
 import pdb
@@ -18,6 +19,7 @@ def main():
 
     config_eval = get_config_eval(verbose=(dist.get_rank() == 0))
     config_eval.device = device  # set local device
+    apply_backend_flags(config_eval.hw)
 
     modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
 

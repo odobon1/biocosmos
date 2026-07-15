@@ -641,7 +641,7 @@ def spawn_dataloader(
             dataset,
             batch_sampler=batch_sampler,
             num_workers=config.n_workers,
-            pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
+            pin_memory=config.hw.pin_memory,  # (True) speeds up host --> GPU copies, higher RAM cost
             prefetch_factor=config.prefetch_factor,
             collate_fn=collate_fn,
             persistent_workers=persistent_workers,
@@ -665,7 +665,7 @@ def spawn_dataloader(
             batch_size=SB,
             shuffle=False,
             num_workers=config.n_workers,
-            pin_memory=True,  # (True) speeds up host --> GPU copies, higher RAM cost
+            pin_memory=config.hw.pin_memory,  # (True) speeds up host --> GPU copies, higher RAM cost
             prefetch_factor=config.prefetch_factor,
             collate_fn=collate_fn,
             drop_last=drop_last,

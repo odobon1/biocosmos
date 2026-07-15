@@ -3,6 +3,16 @@ import subprocess
 import re
 from typing import Optional
 
+import torch
+
+
+def apply_backend_flags(hw):
+    # torch backend wall-clock switches from hardware.yaml (semantics-neutral up to TF32's reduced
+    # fp32 mantissa / cudnn.benchmark's algo choice). cudnn.benchmark is owned here, not by seed_libs.
+    torch.backends.cuda.matmul.allow_tf32 = hw.tf32_matmul
+    torch.backends.cudnn.allow_tf32 = hw.tf32_conv
+    torch.backends.cudnn.benchmark = hw.cudnn_benchmark
+
 
 def get_slurm_alloc():
     job_id = os.getenv("SLURM_JOB_ID")

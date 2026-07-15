@@ -20,10 +20,19 @@ from torchvision.transforms import (
 )
 import torchvision.transforms.functional as F
 import random
+import fcntl
+import getpass
+import io
+import mmap
+import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
 
 
 from utils.text import get_text_generator
-from utils.utils import paths, load_pickle, load_split, shuffle_list
+from utils.utils import paths, load_pickle, load_json, load_split, shuffle_list
 from utils.config import EvalConfig, _default_train_aug_cfg
 
 import pdb
@@ -334,6 +343,75 @@ class DorsalVentralBatchSampler:
 
             yield subbatch
 
+def dpath_img_cache_staged(dataset):
+    """Node-local staging dir for a dataset's image pack. Root is picked cluster-agnostically: SLURM_TMPDIR,
+    else TMPDIR (schedulers that provide a per-job node-local scratch set one of these), else /tmp. Keyed by
+    user since /tmp is shared across users on a node."""
+    root = os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or tempfile.gettempdir()
+    return Path(root) / f"img_cache-{getpass.getuser()}" / dataset
+
+def _img_cache_staged_valid(dpath_src, dpath_staged):
+    """A staged pack is complete+current iff its meta.json (copied LAST during staging) byte-matches the
+    source's (a rebuilt source pack changes created_utc => stale) and pack.bin has the recorded size."""
+    fpath_meta = dpath_staged / "meta.json"
+    if not fpath_meta.exists():
+        return False
+    if fpath_meta.read_bytes() != (dpath_src / "meta.json").read_bytes():
+        return False
+    # tolerate partial eviction: a /tmp reaper can age out pack.bin/index.pkl (mmap reads don't refresh
+    # atime) while the frequently-read meta.json survives -- classify as invalid, don't crash
+    fpath_pack = dpath_staged / "pack.bin"
+    if not fpath_pack.exists() or not (dpath_staged / "index.pkl").exists():
+        return False
+    return fpath_pack.stat().st_size == load_json(fpath_meta)["total_bytes"]
+
+def stage_img_cache(dataset):
+    """Ensure dataset's image pack (pack.bin + index.pkl + meta.json) is staged on node-local disk; return
+    seconds spent. Concurrency-safe via flock on the node-local FS -- no torch.distributed dependency, so it
+    works for 1 or N ranks and even concurrent jobs on the same node: the first process copies while the rest
+    block on the lock, then take the already-staged fast path."""
+    t0 = time.perf_counter()
+    dpath_src = paths["img_cache"] / dataset
+    if not (dpath_src / "meta.json").exists():
+        raise FileNotFoundError(
+            f"use_img_cache is enabled but there is no image pack for '{dataset}' at {dpath_src} -- "
+            f"build it first: python -m tools.build_img_cache"
+        )
+    dpath_staged = dpath_img_cache_staged(dataset)
+    if _img_cache_staged_valid(dpath_src, dpath_staged):  # lock-free fast path: files are immutable once marked
+        return time.perf_counter() - t0
+    dpath_staged.mkdir(parents=True, exist_ok=True)
+    with open(dpath_staged.parent / f".{dataset}.lock", "w") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        if _img_cache_staged_valid(dpath_src, dpath_staged):  # another proc staged it while we waited
+            return time.perf_counter() - t0
+        # drop stale/partial files (marker first) so the space check sees the reclaimable space and a
+        # rebuilt-pack restage's transient footprint stays ~1x pack size instead of 2x
+        (dpath_staged / "meta.json").unlink(missing_ok=True)
+        for fpath_stale in dpath_staged.iterdir():
+            fpath_stale.unlink()
+        total_bytes = load_json(dpath_src / "meta.json")["total_bytes"]
+        free = shutil.disk_usage(dpath_staged).free
+        if free < total_bytes * 1.02:
+            raise RuntimeError(
+                f"staging '{dataset}' image pack needs {total_bytes / 1e9:.1f} GB but node-local "
+                f"{dpath_staged} has only {free / 1e9:.1f} GB free"
+            )
+        print(f"[img cache] staging '{dataset}' ({total_bytes / 1e9:.1f} GB) -> {dpath_staged} ...", flush=True)
+        for fname in ("pack.bin", "index.pkl", "meta.json"):  # meta.json last: it is the completion marker
+            fpath_tmp = dpath_staged / f"{fname}.tmp"
+            shutil.copyfile(dpath_src / fname, fpath_tmp)
+            os.replace(fpath_tmp, dpath_staged / fname)
+        print(f"[img cache] staged '{dataset}' in {time.perf_counter() - t0:.1f} s", flush=True)
+    return time.perf_counter() - t0
+
+_cache_indexes = {}  # dataset -> index dict, shared across the ImageTextDataset instances of one process
+
+def _load_cache_index(dataset, dpath_staged):
+    if dataset not in _cache_indexes:
+        _cache_indexes[dataset] = load_pickle(dpath_staged / "index.pkl")
+    return _cache_indexes[dataset]
+
 class ImageTextDataset(Dataset):
 
     def __init__(
@@ -351,6 +429,16 @@ class ImageTextDataset(Dataset):
         self.dataset = config.dataset
         self.text_generator = get_text_generator(self.dataset)
         self._aug_seed = getattr(config, "seed", None)
+
+        self.use_img_cache = config.use_img_cache
+        if self.use_img_cache:
+            stage_img_cache(self.dataset)
+            self._fpath_cache_pack = dpath_img_cache_staged(self.dataset) / "pack.bin"
+            self._cache_index = _load_cache_index(self.dataset, dpath_img_cache_staged(self.dataset))
+            # mmap opened lazily per process: DataLoader workers fork after __init__, and an mmap handle
+            # must belong to the process that reads through it
+            self._cache_file = None
+            self._cache_mm = None
 
         self.n_samples = len(self.index_data)
 
@@ -412,7 +500,14 @@ class ImageTextDataset(Dataset):
             torch.manual_seed(self._aug_seed + encoded_idx)
 
         # load + preprocess image
-        img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
+        if self.use_img_cache:
+            if self._cache_mm is None:
+                self._cache_file = open(self._fpath_cache_pack, "rb")
+                self._cache_mm = mmap.mmap(self._cache_file.fileno(), 0, access=mmap.ACCESS_READ)
+            offset, length = self._cache_index[self.index_data[idx]["rfpath"]]
+            img = Image.open(io.BytesIO(self._cache_mm[offset:offset + length])).convert("RGB")
+        else:
+            img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
         img_t = self.img_pp(img)
 
         targ_data = {

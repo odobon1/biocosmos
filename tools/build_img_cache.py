@@ -24,7 +24,12 @@ global shuffle (EpochEncodingDistributedSampler + torch.randperm) keeps working 
 pointed at the pack. Source images are never modified. The FIRST build of a dataset is slow -- it reads every
 small source file once (the per-sample cost we are amortizing away) -- and is metadata/IO-bound.
 
-Reading a sample later (for the eventual utils/data.py integration -- NOT done in this script):
+Do NOT rebuild a pack while jobs are training from it: a job that already staged the old pack keeps working
+(deleted inodes persist under its mmap), but one that restages mid-run can pair the new pack.bin with an
+already-loaded old index -- misaligned offsets, loud decode errors. Rebuild between campaigns.
+
+Reading a sample later (this is what utils/data.py does when hw.use_img_cache is enabled, after staging the
+pack to node-local scratch -- see stage_img_cache in utils/data.py):
     import io, mmap, pickle
     from PIL import Image
     index = pickle.load(open(out_dir / "index.pkl", "rb"))
@@ -82,7 +87,7 @@ PROGRESS_EVERY = 5000  # files between progress prints
 # ----------------------------------------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]     # <root>/tools/this.py -> <root>
-IMG_CACHE_DIR = PROJECT_ROOT.parent.parent / "img_cache"
+IMG_CACHE_DIR = paths["img_cache"]  # single source of truth shared with the training-side reader (utils/data.py)
 
 
 def ensure_striped_dir(d: Path) -> None:

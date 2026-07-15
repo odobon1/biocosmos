@@ -7,6 +7,10 @@ max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus /
 persistent_workers_train: true  # {true, false}; keep train dataloader workers alive across train epochs
 persistent_workers_eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
 
+use_img_cache: true  # {true, false}; read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
+                     # staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces
+                     # per-sample reads from the shared FS. Errors at startup if the pack hasn't been built.
+
 eval:
   map_chunk_size:
     img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}

@@ -192,6 +192,7 @@ class TrainConfig:
             self.aug.pop("gblur", None)
 
         self.hw = HardwareConfig(**self.hw)
+        self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
             max_n_workers_gpu=self.hw.max_n_workers_gpu,
             prefetch_factor=self.hw.prefetch_factor,
@@ -319,6 +320,7 @@ class HardwareConfig:
     max_n_workers_gpu: int | None
     persistent_workers_train: bool
     persistent_workers_eval: bool
+    use_img_cache: bool  # read images from the prebuilt pack (tools/build_img_cache.py), staged to node-local scratch, instead of per-sample files on the shared FS
     eval: dict  # {map_chunk_size: {img2img, cross_modal}, tsne_chunk_log2: int} -- mAP sim-matrix chunking + t-SNE GPU-buffer tiling (buffer = 2^X fp32)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
@@ -364,6 +366,7 @@ class EvalConfig:
             raise ValueError("img_norm='dataset' requires a model checkpoint (rdpath_model) to infer which partition's norm stats were used during training")
 
         cfg_hw = get_config_hardware()
+        self.use_img_cache = cfg_hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
             max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
             prefetch_factor=cfg_hw.prefetch_factor,

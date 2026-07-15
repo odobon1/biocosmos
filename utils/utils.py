@@ -115,6 +115,10 @@ elif CLUSTER == "hpg":
         },
     }
 
+# Prebuilt image packs (tools/build_img_cache.py): one indexable blob per dataset, two levels above the
+# project root so a single cache serves every checkout. Cluster-agnostic (derived relative to the repo).
+paths["img_cache"] = dpath_root.parent.parent / "img_cache"
+
 def seed_libs(seed, seed_torch=True):
     random.seed(seed)
     os.putenv("PYTHONHASHSEED", str(seed))

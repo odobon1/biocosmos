@@ -23,6 +23,7 @@ import torch
 import yaml
 
 from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
@@ -454,6 +455,25 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     cfg_model_specific = cfg_snapshot["model_specific"]
     cfg_hardware = cfg_snapshot["hardware"]
     max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
+
+    # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
+    # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every setting.
+    # Effective per setting = frozen hw baseline overlaid with that setting's hw.use_img_cache override, so a
+    # setting-level enable is still checked/staged at startup rather than erroring mid-campaign.
+    metadata_camp["runtime_img_cache"] = {ds: None for ds in sorted(paths["imgs"])}
+    use_img_cache = any(
+        payload.get("hw.use_img_cache", cfg_hardware["use_img_cache"]) for _, payload in settings
+    )
+    if use_img_cache:
+        missing = [ds for ds in datasets if not (paths["img_cache"] / ds / "meta.json").exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"use_img_cache is enabled but no image pack exists for {missing} under {paths['img_cache']} "
+                f"-- build first: python -m tools.build_img_cache"
+            )
+        for dataset in datasets:
+            metadata_camp["runtime_img_cache"][dataset] = round(stage_img_cache(dataset), 2)
+    save_json(metadata_camp, fpath_meta)
 
     for setting, setting_payload in settings:
         _write_setting_overrides(campaign, setting, setting_payload)

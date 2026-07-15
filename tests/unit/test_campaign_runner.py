@@ -22,7 +22,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     leaves the chkpts/in_progress dir + incomplete metadata behind (the runner flips complete=True).
     Returns the list of (setting, dataset, seed) tuples each launched trial was invoked with."""
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -35,7 +35,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -55,7 +55,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
 
 
 def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     train_a = {"campaign": "dev", "split": "D10"}
     hw_a = {"mixed_prec": True, "prefetch_factor": 4}
@@ -86,7 +86,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
 
 
 def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     train_cfg = {
         "campaign": "dev",
@@ -94,7 +94,7 @@ def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, mon
         "opt": {"l2reg": None, "beta2": None},
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
-    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2})
+    monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
     monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"l2reg": 0.0, "beta2": 0.95}})
 
@@ -109,7 +109,7 @@ def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, mon
 
 def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -122,7 +122,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
@@ -160,7 +160,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
 
 def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 7)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -173,7 +173,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
@@ -204,7 +204,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
 
 def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -217,7 +217,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -248,7 +248,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
 
 def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -261,7 +261,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -298,7 +298,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     # a trial that flakes repeatedly but advances its checkpoint each time is resumed indefinitely: the
     # no-progress counter resets on every forward step, so more flakes than the cap still recover.
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -311,7 +311,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -585,7 +585,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     # the Cartesian product flows through run_campaign: each combined setting schedules and gets its
     # own merged overrides.json
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -598,7 +598,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
@@ -637,7 +637,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
 
 def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 9)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -658,7 +658,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
@@ -688,7 +688,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
 
 
 def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     dpath_trial = cr._dpath_campaign("cmp_d") / "iw" / "cub" / "42"
     err = subprocess.CalledProcessError(
@@ -718,7 +718,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
 
 
 def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     dpath_trial = cr._dpath_campaign("cmp_d") / "iw" / "cub" / "42"
     stderr = (
@@ -852,7 +852,7 @@ def test_manifest_shows_all_headers_at_kickoff(tmp_path) -> None:
 
 def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -865,7 +865,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -928,7 +928,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
 def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> None:
     # a campaign abort (Ctrl-C / SIGTERM / scancel) must not leave the killed trial frozen as In Progress
     monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
@@ -941,7 +941,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {"n_stoch_layers": 1},
         "model_specific": {},
     })
@@ -1023,7 +1023,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
 def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
     # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
     # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
         cr.run_campaign(
@@ -1128,3 +1128,78 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
             datasets=("cub",),
             baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
         )
+
+
+def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "hardware": {"max_retries": 2, "use_img_cache": True},
+        "manifold_viz": {},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    launched = []
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda *a, **k: launched.append(1))
+
+    with pytest.raises(FileNotFoundError, match="cub"):
+        cr.run_campaign(
+            campaign="cmp_ic_missing",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        )
+    assert launched == []
+
+
+def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
+    (tmp_path / "img_cache" / "cub").mkdir(parents=True)
+    (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
+    monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "hardware": {"max_retries": 2, "use_img_cache": True},
+        "manifold_viz": {},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: _leave_completed_trial(tmp_path, cfg_dict))
+
+    cr.run_campaign(
+        campaign="cmp_ic_rt",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+    )
+
+    meta = json.loads((tmp_path / "cmp_ic_rt" / "campaign_metadata.json").read_text())
+    # staged dataset gets round(seconds, 2); datasets not in this campaign stay null
+    assert meta["runtime_img_cache"] == {"bryo": None, "cub": 1.23}
+
+
+def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path, monkeypatch) -> None:
+    # baseline use_img_cache=False, but one setting enables it via hw.* override: the missing-pack
+    # error must still fire at startup, before any trial launches
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "hardware": {"max_retries": 2, "use_img_cache": False},
+        "manifold_viz": {},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    launched = []
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda *a, **k: launched.append(1))
+
+    with pytest.raises(FileNotFoundError, match="cub"):
+        cr.run_campaign(
+            campaign="cmp_ic_override",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[[{"hw.use_img_cache": True, "name": "ic"}]],
+        )
+    assert launched == []

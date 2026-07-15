@@ -1,0 +1,7 @@
+n_trials: 1
+datasets: [nymph]
+
+baseline_overrides:
+  - - {split: D10, train_pt: train, sample_volume: 500_000, chkpt_every: 100_000, batch_size: 2_048, dev.debug_mode: false}
+
+suffix: null  # {null, [str]}; no suffix if set to null

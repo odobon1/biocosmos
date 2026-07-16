@@ -8,7 +8,16 @@ dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only app
 
 arch:  # architecture
   model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
-  non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros) -- only applicable to CLIP (SigLIP already uses non-causal i.e. bidirectional)
+  clip:  # CLIP-specific
+    non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros); base eval: the native causal mask is always restored (non_causal undone) so the shared base_eval_cache stays a stable pretrained-as-released reference
+  siglip:  # SigLIP-specific
+    vis_proj: null  # {null, linear, mlp}; vision projection head over the MAP-pooled image feature -- null: none, use the pretrained MAP output directly (current); linear: Linear(768-->768); mlp: 768-->1536-->768 GELU MLP. linear/mlp add randomly-initialized params (absent from the pretrained checkpoint) and are the only settings under which dropout.siglip.vis_proj is active. base eval: this head is always skipped (headless pretrained MAP output) so the shared base_eval_cache stays head-/seed-invariant
+
+dropout:  # vision-tower (image encoder) regularization only -- text tower is unaffected; all off by default (== current behavior)
+  patch_dropout: 0.0  # [0.0, 1.0); CLIP + SigLIP; fraction of image patches dropped each training step (0.0 = disabled)
+  siglip:  # SigLIP-specific
+    vis_proj: 0.0  # [0.0, 1.0); dropout on the vision projection head -- only active when arch.siglip.vis_proj is linear/mlp, inert for the default MAP head (0.0 = disabled)
+    stoch_depth: null  # [0.0, 1.0) or null; vision-backbone stochastic depth / drop-path rate (null = disabled)
 
 freeze:
   image: false
@@ -120,4 +129,4 @@ dev:
       budget: 100_000  # pooled t-SNE point budget as a total sample volume across all thresholds; if (N_id + N_ood) * n_evals <= budget all samples are used, else the pool is class-stratified subsampled to ~budget points total (larger budget needs proportionally more GPU memory)
       pca_bounds: final  # {null, final}
   logging: true
-  continue_campaign: true  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
+  continue_campaign: false  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...

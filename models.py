@@ -7,7 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import open_clip
+from open_clip.pretrained import get_pretrained_cfg, download_pretrained
 import abc
+from contextlib import contextmanager
 from typing import List, Tuple, Any, Dict, Union, Optional
 from pathlib import Path
 
@@ -20,27 +22,27 @@ from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
 
 
-#                            open_clip model name            pretrain      quick-gelu
+#                            open_clip model name            pretrain  quick-gelu
 CLIP_MODELS = {
-    "bioclip":               ("hf-hub:imageomics/bioclip",   None,         False),
-    "bioclip2":              ("hf-hub:imageomics/bioclip-2", None,         False),
-    "clip_vitb16":           ("ViT-B-16",                    "openai",     True),
-    "clip_vitb32":           ("ViT-B-32",                    "openai",     True),
-    "clip_vitl14":           ("ViT-L-14",                    "openai",     True),
-    "clip_vitl14_336":       ("ViT-L-14-336",                "openai",     True),
+    "bioclip":               ("hf-hub:imageomics/bioclip",   None,     False),
+    "bioclip2":              ("hf-hub:imageomics/bioclip-2", None,     False),
+    "clip_vitb16":           ("ViT-B-16",                    "openai", True),
+    "clip_vitb32":           ("ViT-B-32",                    "openai", True),
+    "clip_vitl14":           ("ViT-L-14",                    "openai", True),
+    "clip_vitl14_336":       ("ViT-L-14-336",                "openai", True),
 }
 SIGLIP_MODELS = {
-    "siglip_vitb16":         ("ViT-B-16-SigLIP",             "webli",      False),
-    "siglip_vitb16_256":     ("ViT-B-16-SigLIP-256",         "webli",      False),
-    "siglip_vitb16_384":     ("ViT-B-16-SigLIP-384",         "webli",      False),
-    "siglip_vitl16_256":     ("ViT-L-16-SigLIP-256",         "webli",      False),
-    "siglip_vitl16_384":     ("ViT-L-16-SigLIP-384",         "webli",      False),
-    "siglip_vitso400m14":    ("ViT-SO400M-14-SigLIP",        "webli",      False),
-    "siglip2_vitb16":        ("ViT-B-16-SigLIP2",            "webli",      False),
-    "siglip2_vitb16_384":    ("ViT-B-16-SigLIP2-384",        "webli",      False),
-    "siglip2_vitl16_384":    ("ViT-L-16-SigLIP2-384",        "webli",      False),
-    "siglip2_vitso400m14":   ("ViT-SO400M-14-SigLIP2",       "webli",      False),
-    "siglip2_vitgopt16_384": ("ViT-gopt-16-SigLIP2-384",     "webli",      False),
+    "siglip_vitb16":         ("ViT-B-16-SigLIP",             "webli",  False),
+    "siglip_vitb16_256":     ("ViT-B-16-SigLIP-256",         "webli",  False),
+    "siglip_vitb16_384":     ("ViT-B-16-SigLIP-384",         "webli",  False),
+    "siglip_vitl16_256":     ("ViT-L-16-SigLIP-256",         "webli",  False),
+    "siglip_vitl16_384":     ("ViT-L-16-SigLIP-384",         "webli",  False),
+    "siglip_vitso400m14":    ("ViT-SO400M-14-SigLIP",        "webli",  False),
+    "siglip2_vitb16":        ("ViT-B-16-SigLIP2",            "webli",  False),
+    "siglip2_vitb16_384":    ("ViT-B-16-SigLIP2-384",        "webli",  False),
+    "siglip2_vitl16_384":    ("ViT-L-16-SigLIP2-384",        "webli",  False),
+    "siglip2_vitso400m14":   ("ViT-SO400M-14-SigLIP2",       "webli",  False),
+    "siglip2_vitgopt16_384": ("ViT-gopt-16-SigLIP2-384",     "webli",  False),
 }
 
 class _AllGather(torch.autograd.Function):
@@ -121,12 +123,60 @@ class VLMWrapper(abc.ABC):
         """
         self.cfg = config
 
+        # Vision-tower overrides, merged into one vision_cfg passed via model_kwargs (which replaces vision_cfg
+        # wholesale, so every override is folded into a copy of the base config).
+        #   - vis_proj -> timm_proj: an ARCHITECTURE choice, applied for train AND eval so a checkpoint's
+        #     projection head reloads with a matching module.
+        #   - patch/head/stochastic-depth dropout: parameterless and train-only (EvalConfig carries no `dropout`,
+        #     and eval runs in eval mode regardless).
+        # Native CLIP takes only patch_dropout, via open_clip's force_patch_dropout.
+        force_patch_dropout = None
+        vision_cfg_extra = {}
+        is_siglip = config.arch["model_type"] in SIGLIP_MODELS
+
+        if is_siglip and config.arch["siglip"]["vis_proj"] is not None:
+            vision_cfg_extra["timm_proj"] = config.arch["siglip"]["vis_proj"]
+
+        if hasattr(config, "dropout"):
+            dropout = config.dropout
+            if is_siglip:
+                vision_cfg_extra["patch_dropout"] = dropout["patch_dropout"]
+                vision_cfg_extra["timm_drop"] = dropout["siglip"]["vis_proj"]
+                if dropout["siglip"]["stoch_depth"] is not None:
+                    vision_cfg_extra["timm_drop_path"] = dropout["siglip"]["stoch_depth"]
+            else:
+                force_patch_dropout = dropout["patch_dropout"]
+
+        model_kwargs = {}
+        if vision_cfg_extra:
+            model_kwargs["vision_cfg"] = {
+                **open_clip.get_model_config(model_name)["vision_cfg"],
+                **vision_cfg_extra,
+            }
+
+        # timm_proj adds head params absent from the released checkpoint, which open_clip strict-loads with no
+        # opt-out -- skip its weight load and reload non-strict, allowing missing keys only under visual.head.
+        load_weights = "timm_proj" not in vision_cfg_extra
+
         model, img_pp_train, img_pp_inf = open_clip.create_model_and_transforms(
-            model_name, 
-            pretrained=pretrained, 
+            model_name,
+            pretrained=pretrained,
+            load_weights=load_weights,
             force_quick_gelu=quick_gelu,
+            force_patch_dropout=force_patch_dropout,
             cache_dir=paths["hf_cache"],
+            **model_kwargs,
         )
+
+        if not load_weights:
+            ckpt_path = download_pretrained(get_pretrained_cfg(model_name, pretrained), cache_dir=paths["hf_cache"])
+            incompatible = open_clip.load_checkpoint(model, ckpt_path, strict=False)
+            bad_missing = [k for k in incompatible.missing_keys if not k.startswith("visual.head.")]
+            if bad_missing or incompatible.unexpected_keys:
+                raise RuntimeError(
+                    f"Pretrained load mismatch beyond the vision head -- "
+                    f"missing: {bad_missing}, unexpected: {incompatible.unexpected_keys}"
+                )
 
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
@@ -227,7 +277,7 @@ class VLMWrapper(abc.ABC):
 
         modelw.set_image_preprocessors()
 
-        if config.arch['non_causal']:
+        if config.arch['clip']['non_causal']:
             modelw.disable_causal_mask_text()
 
         if verbose:
@@ -241,6 +291,41 @@ class VLMWrapper(abc.ABC):
         Helper to get the underlying model, handling DDP wrapping.
         """
         return self.model.module if hasattr(self.model, "module") else self.model
+
+    @contextmanager
+    def eval_pretrained_base(self):
+        """
+        Evaluate the pretrained-as-released model for the base-eval reference, undoing training-time
+        architecture changes so they don't leak into the shared, seed-invariant base_eval_cache:
+          - SigLIP: bypass the randomly-initialized projection head -> pretrained MAP output.
+          - CLIP: restore the native causal text mask when non_causal zeroed it for training.
+        Routes through the unwrapped (eager) model so neither change is shadowed by a compiled graph.
+        No-op when neither applies (SigLIP vis_proj=null, or CLIP with the default causal mask).
+        """
+        unwrapped = self._unwrapped_model
+        visual = unwrapped.visual
+        head = getattr(visual, "head", None)
+        bypass_head = isinstance(head, nn.Sequential) and len(head) > 0
+        causal_mask = getattr(self, "_causal_attn_mask", None)  # set iff non_causal zeroed the CLIP mask
+
+        if not bypass_head and causal_mask is None:
+            yield
+            return
+
+        saved_model = self.model
+        self.model = unwrapped  # eager path so changes aren't shadowed by a compiled graph
+        if bypass_head:
+            visual.head = nn.Identity()
+        if causal_mask is not None:
+            unwrapped.attn_mask.copy_(causal_mask)
+        try:
+            yield
+        finally:
+            self.model = saved_model
+            if bypass_head:
+                visual.head = head
+            if causal_mask is not None:
+                unwrapped.attn_mask.zero_()  # re-disable for training (non_causal)
 
     @property
     def embed_dim(self) -> int:
@@ -684,6 +769,7 @@ class CLIPWrapper(VLMWrapper):
         """
         Converts CLIP text encoder's causal attention mask to non-causal.
         """
+        self._causal_attn_mask = self._unwrapped_model.attn_mask.detach().clone()  # native mask, restored for the base-eval reference
         self._unwrapped_model.attn_mask.zero_()  # convert causal attention mask to non-causal
 
 class SigLIPWrapper(VLMWrapper):

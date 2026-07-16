@@ -571,7 +571,7 @@ class PrintLog:
             "=== Architecture ===",
             PrintLog._dash_aligned_lines((
                 ("Model Type", cfg_train.arch['model_type']),
-                ("Non-Causal", cfg_train.arch['non_causal']),
+                ("Non-Causal", cfg_train.arch['clip']['non_causal']),
             )),
             "",
         ]
@@ -663,7 +663,7 @@ class PrintLog:
             "=== Architecture ===",
             PrintLog._dash_aligned_lines((
                 ("Model Type", cfg_eval.arch['model_type']),
-                ("Non-Causal", cfg_eval.arch['non_causal']),
+                ("Non-Causal", cfg_eval.arch['clip']['non_causal']),
             )),
             "",
             f"Image Norm --- {cfg_eval.img_norm}",

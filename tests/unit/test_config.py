@@ -20,7 +20,8 @@ def make_train_config_dummy(**overrides):
         "dv_batching": False,
         "htarg_shuf": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
-        "arch": {"model_type": "clip_vitb16", "non_causal": False},
+        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj": None}},
+        "dropout": {"patch_dropout": 0.0, "siglip": {"vis_proj": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
         "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale_init": None, "bias_init": None}},
         "loss2": {"type": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale_init": None, "bias_init": None}},
@@ -62,6 +63,16 @@ def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
         "utils.config.compute_dataloader_workers_prefetch",
         lambda *args, **kwargs: (2, 2, {"n_gpus": 1, "n_cpus": 4, "ram": 32}),
     )
+
+
+def test_train_config_rejects_head_dropout_without_proj_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires arch.siglip.vis_proj"):
+        TrainConfig(**make_train_config_dummy(
+            arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj": None}},
+            dropout={"patch_dropout": 0.0, "siglip": {"vis_proj": 0.3, "stoch_depth": None}},
+        ))
 
 
 def test_train_config_rejects_freezing_both_encoders(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,7 +251,7 @@ def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.Mo
     )
 
     cfg_in = make_train_config_dummy(
-        arch={"model_type": "siglip_vitb16", "non_causal": False},
+        arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}},
         opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
@@ -260,7 +271,7 @@ def test_model_specific_opt_defaults_preserve_explicit_values(monkeypatch: pytes
     )
 
     cfg_in = make_train_config_dummy(
-        arch={"model_type": "clip_vitb16", "non_causal": False},
+        arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
     )
 
@@ -280,7 +291,7 @@ def test_model_specific_opt_defaults_resolve_partial_null(monkeypatch: pytest.Mo
     )
 
     cfg_in = make_train_config_dummy(
-        arch={"model_type": "clip_vitb16", "non_causal": False},
+        arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
     )
 
@@ -300,7 +311,7 @@ def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pyte
     )
 
     cfg_in = make_train_config_dummy(
-        arch={"model_type": "mystery_model", "non_causal": False},
+        arch={"model_type": "mystery_model", "clip": {"non_causal": False}},
         opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
@@ -315,7 +326,7 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
     monkeypatch.setattr("utils.config.load_model_specific_config_dict", _boom)
 
     cfg_in = make_train_config_dummy(
-        arch={"model_type": "clip_vitb16", "non_causal": False},
+        arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 

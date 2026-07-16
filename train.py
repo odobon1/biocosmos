@@ -321,11 +321,12 @@ class TrainPipeline:
                     }
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                 else:
-                    eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
-                        self.modelw,
-                        loss_flag=False,
-                        collect_eval_bundles=self._viz_manifold,
-                    )
+                    with self.modelw.eval_pretrained_base():  # base = pretrained-as-released (e.g. no freshly added projection head (SigLIP), native causal mask (CLIP), etc.)
+                        eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                            self.modelw,
+                            loss_flag=False,
+                            collect_eval_bundles=self._viz_manifold,
+                        )
                     ArtifactManager.save_base_eval_cache(eval_metrics)
                     if self._viz_manifold:
                         self._compute_projections_timed(eval_bundles, ArtifactManager.base_eval_cache_dpath())

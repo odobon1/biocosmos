@@ -646,7 +646,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "arch": {"model_type": "clip_vitb16", "non_causal": False},
+        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "l2reg": None,

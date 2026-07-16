@@ -79,6 +79,7 @@ class TrainConfig:
     dv_batching: bool
 
     arch: dict
+    dropout: dict
     freeze: dict
     htarg_shuf: bool
     loss: dict
@@ -138,6 +139,12 @@ class TrainConfig:
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
+
+        if self.arch["siglip"]["vis_proj"] is None and self.dropout["siglip"]["vis_proj"] > 0.0:
+            raise ValueError(
+                "dropout.siglip.vis_proj > 0 requires arch.siglip.vis_proj to be 'linear' or 'mlp' "
+                "(projection-head dropout needs a projection head)"
+            )
 
         if self.htarg_shuf:
             phylo_active = self.loss["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss2["mix"] != 0.0)
@@ -384,6 +391,10 @@ class EvalConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
 
+        # base-model eval always uses the pretrained-as-released arch; checkpoint eval overrides from setting_metadata below
+        self.arch["clip"] = {"non_causal": False}
+        self.arch["siglip"] = {"vis_proj": None}
+
         if self.rdpath_model is not None:
             dpath_model = paths["root"] / self.rdpath_model
             fpath_model = dpath_model / "model.pt"
@@ -396,7 +407,8 @@ class EvalConfig:
             metadata_trial = load_json(fpath_metadata_trial)
 
             self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
-            self.arch["non_causal"] = metadata_setting["arch"]["non_causal"]  # override non_causal
+            self.arch["clip"]["non_causal"] = metadata_setting["arch"]["clip"]["non_causal"]  # override non_causal
+            self.arch["siglip"]["vis_proj"] = metadata_setting["arch"]["siglip"]["vis_proj"]  # override vis_proj (projection head must match checkpoint)
             self.img_norm = metadata_setting["img_norm"]  # override img_norm
             self.dataset = metadata_trial["dataset"]  # override dataset
             self.split = metadata_trial["split"]  # override split

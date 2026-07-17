@@ -325,7 +325,6 @@ class HardwareConfig:
     amp_dtype: str  # {fp16, bf16}; autocast dtype under mixed_prec (resolved to amp_dtype_torch); fp16 -> GradScaler enabled, bf16 -> scaler disabled
     act_chkpt: bool
     compile: bool  # torch.compile the DDP-wrapped train model
-    tf32_matmul: bool  # torch.backends.cuda.matmul.allow_tf32
     tf32_conv: bool  # torch.backends.cudnn.allow_tf32
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int

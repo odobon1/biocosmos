@@ -4,8 +4,6 @@ amp_dtype: fp16  # {fp16, bf16}; autocast dtype under mixed_prec. fp16 pairs wit
 act_chkpt: false  # {true, false}; activation checkpointing
 compile: false  # {true, false}; torch.compile the DDP-wrapped train model; pays first-step compile latency for faster steady-state steps
 
-tf32_matmul: false  # {true, false}; TF32 tensor cores for fp32 matmuls (torch.backends.cuda.matmul.allow_tf32);
-                    # big speedup on Ampere+, reduces fp32 mantissa precision (PyTorch default is false)
 tf32_conv: true  # {true, false}; TF32 tensor cores for cuDNN convolutions (torch.backends.cudnn.allow_tf32) (PyTorch default is true)
 cudnn_benchmark: false  # {true, false}; cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
                         # batches, trades away algo-choice reproducibility (PyTorch default is false)

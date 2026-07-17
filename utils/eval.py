@@ -390,10 +390,10 @@ class PartitionEvaluationPipeline:
         map_chunk_size = self.cfg.hw.eval["map_chunk_size"]
 
         scores_i2t = compute_map_cross_modal(
-            embs_q=embs_img_q.cpu(),
-            class_encs_q=class_encs_img_q.cpu(),
-            embs_g=embs_text_g.cpu(),
-            class_encs_g=class_encs_text_g.cpu(),
+            embs_q=embs_img_q,
+            class_encs_q=class_encs_img_q,
+            embs_g=embs_text_g,
+            class_encs_g=class_encs_text_g,
             compute_accuracy=True,
             chunk_size=map_chunk_size["cross_modal"],
         )
@@ -406,10 +406,10 @@ class PartitionEvaluationPipeline:
             chunk_size=map_chunk_size["img2img"],
         )
         scores_t2i = compute_map_cross_modal(
-            embs_q=embs_text_q.cpu(),
-            class_encs_q=class_encs_text_q.cpu(),
-            embs_g=embs_img_g.cpu(),
-            class_encs_g=class_encs_img_g.cpu(),
+            embs_q=embs_text_q,
+            class_encs_q=class_encs_text_q,
+            embs_g=embs_img_g,
+            class_encs_g=class_encs_img_g,
             chunk_size=map_chunk_size["cross_modal"],
         )
 
@@ -431,11 +431,15 @@ def compute_map_img2img(
     class_encs_g: torch.Tensor,
     self_match_idxs_g: Optional[torch.Tensor] = None,
     chunk_size: int = 512,
-) -> Union[float, Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
     GPU-accelerated chunked vectorized mAP for evaluating image-to-image retrieval.
     Computes N x N similarity matrix in chunks on GPU to avoid OOM on GPU and slowness on CPU.
     Each image is queried against all others.
+
+    Collective: the query dim is sharded across ranks (each scores a contiguous 1/world_size block)
+    and reduced back to global "map"/"macro_map"/"class_ap". The returned per-query "ap"/"has_pos"
+    are full-Q but populated only over the local block -- reduce them with distributed=True.
 
     Args:
     - embs_q --------- Query image embeddings
@@ -445,8 +449,11 @@ def compute_map_img2img(
     - chunk_size ----- Chunk size for computing massive similarity matrix (to avoid OOM on GPU)
 
     Returns:
-    - [float] ------------ Image-to-image Mean Average Precision (mAP) over all non-singleton queries
-    - [Dict[str, Any]] --- Optional dictionary containing per-query statistics if return_query_stats is True
+    - [Dict[str, Any]] --- "map" / "macro_map" ---- global (all-reduced) image-to-image mAP over all
+                                                    non-singleton queries, and its class-balanced mean
+                           "ap" / "has_pos" ------- per-query AP and its validity mask, full-Q but
+                                                    populated only over this rank's block
+                           "class_ap" ------------- global per-class mean AP
     """
 
     device = embs_q.device
@@ -458,16 +465,22 @@ def compute_map_img2img(
     else:
         self_match_idxs_g = self_match_idxs_g.to(device=device, dtype=torch.long)
     
-    ap_local = None
-    has_pos_local = None
     ap_local = torch.full((Q,), float("nan"), device=device)
     has_pos_local = torch.zeros(Q, dtype=torch.bool, device=device)
 
+    # Every rank holds the identical all-gathered query set, so partition the query dim into
+    # contiguous per-rank blocks: each rank scores only its own block and the all_reduces below
+    # reassemble the global sums. ap_local/has_pos_local stay full-Q, NaN/False outside the block.
+    world_size = dist.get_world_size()
+    rank       = dist.get_rank()
+    q_lo = rank * Q // world_size
+    q_hi = (rank + 1) * Q // world_size
+
     ap_sum_local = 0.0
     n_nsq_local  = 0  # num. non-singleton queries
-    for i in range(0, Q, chunk_size):
-        i_end = min(i + chunk_size, Q)
-        
+    for i in range(q_lo, q_hi, chunk_size):
+        i_end = min(i + chunk_size, q_hi)
+
         embs_q_chunk       = embs_q[i:i_end]
         class_encs_q_chunk = class_encs_q[i:i_end]
         
@@ -557,10 +570,11 @@ def compute_map_cross_modal(
     class_encs_g: torch.Tensor,
     compute_accuracy: bool = False,
     chunk_size: int = 512,
-) -> Union[float, Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
     Vectorized mAP for evaluating cross-modal retrieval (image-to-text & text-to-image)
-    Computes the Q x N similarity matrix in chunks over the query dim to bound host memory.
+    Computes the Q x N similarity matrix in chunks over the query dim to bound memory. Runs on
+    whichever device embs_q is on (GPU in the pipeline); outputs are returned on CPU.
 
     Args:
     - embs_q --------- Query embeddings
@@ -570,8 +584,9 @@ def compute_map_cross_modal(
     - chunk_size ----- Chunk size (num. queries per chunk) for the similarity matrix (to bound memory)
 
     Returns:
-    - [float] ------------ Mean Average Precision (mAP) over all queries
-    - [Dict[str, Any]] --- Optional dictionary containing per-query statistics if return_query_stats is True
+    - [Dict[str, Any]] --- "map" / "macro_map" ---- mAP over all queries, and its class-balanced mean
+                           "ap" / "class_ap" ------ per-query AP and per-class mean AP
+                           plus, when compute_accuracy: "acc" / "accs" / "class_acc" / "macro_acc"
     """
 
     device       = embs_q.device

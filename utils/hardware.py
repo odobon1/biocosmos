@@ -9,7 +9,12 @@ import torch
 def apply_backend_flags(hw):
     # torch backend wall-clock switches from hardware.yaml (semantics-neutral up to TF32's reduced
     # fp32 mantissa / cudnn.benchmark's algo choice). cudnn.benchmark is owned here, not by seed_libs.
-    torch.backends.cuda.matmul.allow_tf32 = hw.tf32_matmul
+    #
+    # Hardcoded, deliberately not a config knob: the eval retrieval metrics run their similarity
+    # matmuls in fp32, so TF32 here would truncate the mantissa, perturb the sort order, and move
+    # i2i/i2t/t2i mAP -- a silent metric shift from a "speed" flag. Training matmuls run under
+    # autocast (mixed_prec), which is unaffected by this.
+    torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = hw.tf32_conv
     torch.backends.cudnn.benchmark = hw.cudnn_benchmark
 

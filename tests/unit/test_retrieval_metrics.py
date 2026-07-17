@@ -42,11 +42,13 @@ def _manual_map_img2img(
 
 def _stub_distributed_collectives(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(eval_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(eval_utils.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(eval_utils.dist, "all_reduce", lambda *args, **kwargs: None)
 
 
 def test_compute_map_img2img_toy_matches_expected_cosine_value(monkeypatch) -> None:
     monkeypatch.setattr(eval_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(eval_utils.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(eval_utils.dist, "all_reduce", lambda *args, **kwargs: None)
 
     embs = torch.tensor([
@@ -72,6 +74,7 @@ def test_compute_map_img2img_toy_matches_expected_cosine_value(monkeypatch) -> N
 
 def test_compute_map_img2img_expanded_gallery_keeps_only_self_excluded(monkeypatch) -> None:
     monkeypatch.setattr(eval_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(eval_utils.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(eval_utils.dist, "all_reduce", lambda *args, **kwargs: None)
 
     embs_q = torch.tensor([

@@ -1,5 +1,4 @@
 import sys
-import shutil
 import random
 import time
 import numpy as np
@@ -17,6 +16,7 @@ import math
 from utils.utils import (
     seed_libs,
     get_text_template,
+    save_json,
     RunningMean,
     Timer,
     TimeTracker,
@@ -197,23 +197,20 @@ class TrainPipeline:
         )
 
     @rank0
-    def _copy_base_eval(self):
-        # mirror the cached base-model eval into evals/_base/ so base is a uniform member of the eval
-        # sequence the render pass sweeps. metrics.json always (every trial records its base eval);
-        # projections.npz only for viz trials -- a non-viz trial computes none of its own projections,
-        # so it mustn't inherit the shared cache's base projections either.
-        src = ArtifactManager.base_eval_cache_dpath()
-        if not src.exists():
-            return
+    def _write_base_eval(self, entry):
+        # materialize the base-eval cache entry into evals/_base/ so base is a uniform member of the
+        # eval sequence the render pass sweeps. metrics.json always (every trial records its base eval);
+        # projections only for viz trials -- a non-viz trial computes none of its own projections, so it
+        # mustn't inherit the cache's base projections either; embs only for pooled trials, whose cache
+        # hit is gated on the entry carrying them (require_embs). On a fresh base eval the npz files were
+        # computed straight into _base/ (already on disk, skipped here); only a cache hit writes them.
         dst = ArtifactManager.dpath_trial / "evals" / "_base"
         dst.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src / "metrics.json", dst / "metrics.json")
-        if self._viz_manifold:
-            shutil.copy2(src / "projections.npz", dst / "projections.npz")
-        # pooled needs base embeddings too; absent when the shared cache predates pooling -> base is then
-        # simply excluded from the pool (the embs.npz sweep in compute_pooled_projections skips it)
-        if self._pooled_manifold and (src / "embs.npz").exists():
-            shutil.copy2(src / "embs.npz", dst / "embs.npz")
+        save_json(entry["metrics"], dst / "metrics.json")
+        if self._viz_manifold and not (dst / "projections.npz").exists():
+            np.savez(dst / "projections.npz", **entry["projections"])
+        if self._pooled_manifold and not (dst / "embs.npz").exists():
+            np.savez(dst / "embs.npz", **entry["embs"])
 
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
         # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.
@@ -312,31 +309,38 @@ class TrainPipeline:
             # BASE EVAL
 
             if self._resume_state is None and self.eval_enabled:
-                cached = ArtifactManager.load_base_eval_cache(require_projections=self._viz_manifold)
-                if cached is not None:
-                    scores = parse_scores(cached["scores"])
+                cached = ArtifactManager.load_base_eval_cache(self.cfg, require_projections=self._viz_manifold, require_embs=self._pooled_manifold)  # @rank0; None elsewhere
+                # single-source the hit/miss decision: a concurrent campaign's cache write landing between
+                # independent per-rank reads would split the branch, and the miss branch enters collective
+                # ops (evaluate / sharded t-SNE) that every rank must join. Only the small metrics dict is
+                # broadcast; the bulky projections/embs stay on rank 0, the only rank that writes _base.
+                sync = [cached["metrics"] if cached is not None else None]
+                dist.broadcast_object_list(sync, src=0)
+                metrics_cached = sync[0]
+                if metrics_cached is not None:
+                    scores = parse_scores(metrics_cached["scores"])
                     eval_metrics = {
                         "scores": scores,
                         "loss_raw": {p: None for p in self.eval_pipe.partitions},
                     }
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
+                    entry = cached
                 else:
-                    with self.modelw.eval_pretrained_base():  # base = pretrained-as-released (e.g. no freshly added projection head (SigLIP), native causal mask (CLIP), etc.)
-                        eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
-                            self.modelw,
-                            loss_flag=False,
-                            collect_eval_bundles=self._viz_manifold,
-                        )
-                    ArtifactManager.save_base_eval_cache(eval_metrics)
+                    eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                        self.modelw,
+                        loss_flag=False,
+                        collect_eval_bundles=self._viz_manifold,
+                    )
                     if self._viz_manifold:
-                        self._compute_projections_timed(eval_bundles, ArtifactManager.base_eval_cache_dpath())
-                self._copy_base_eval()  # base -> evals/_base (uniform member of the eval sequence)
+                        self._viz_eval(eval_bundles, "_base")  # projections (+ embs if pooled) straight into evals/_base
+                    entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics)  # rank0 gets the entry back; None elsewhere
+                self._write_base_eval(entry)  # base -> evals/_base (uniform member of the eval sequence)
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
                 if self.data is not None:
                     self.data.eval_metrics = eval_metrics
                     self.data.time_eval = time_eval
-                header = "Base - Cached" if cached is not None else "Base"
+                header = "Base - Cached" if metrics_cached is not None else "Base"
                 self._checkpoint(header=header, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
                 ArtifactManager.save_rng_states(self._local_rank)

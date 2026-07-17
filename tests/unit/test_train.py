@@ -1,8 +1,11 @@
 import json
+from types import SimpleNamespace
 
+import numpy as np
 from openpyxl import load_workbook
 
 from utils.train import ArtifactManager
+from utils.utils import save_pickle, load_pickle
 
 
 def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
@@ -349,18 +352,80 @@ def test_update_metrics_xlsx_heatmap_fixed(tmp_path, monkeypatch) -> None:
     assert _fill_rgb(ws, 3, 4) == "FF775C"  # 80 -> t=0.80
 
 
-def test_load_base_eval_cache_requires_projections_for_viz_trials(tmp_path, monkeypatch) -> None:
-    # a crash between the metrics write and the projections write leaves metrics.json without
-    # projections.npz -- a viz trial must read that as a miss (recompute) rather than hit the
-    # missing projections.npz downstream in _copy_base_eval; non-viz trials still reuse the metrics
-    monkeypatch.setattr(ArtifactManager, "base_eval_cache_dpath", lambda: tmp_path)
-    metrics = {"scores": {"comp": {"map": {"all": "0.50"}}}}
+def test_load_base_eval_cache_misses_when_entry_lacks_needed_pieces(tmp_path, monkeypatch) -> None:
+    # entries carry only what the caching trial computed -- a trial must read an entry missing a
+    # piece it needs (projections for viz, embs for pooled) as a miss (recompute + upgrade the
+    # entry) rather than hit the missing piece downstream in _write_base_eval; leaner trials
+    # still reuse the entry
+    fpath = tmp_path / "combo.pkl"
+    monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: fpath)
+    entry = {"metrics": {"scores": {"comp": {"map": {"all": "0.50"}}}}, "projections": None, "embs": None}
 
-    assert ArtifactManager.load_base_eval_cache(require_projections=False) is None  # no cache at all
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=False, require_embs=False) is None  # no file for this combo
 
-    (tmp_path / "metrics.json").write_text(json.dumps(metrics))
-    assert ArtifactManager.load_base_eval_cache(require_projections=True) is None  # partial cache
-    assert ArtifactManager.load_base_eval_cache(require_projections=False) == metrics
+    save_pickle(entry, fpath)
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=False) is None  # metrics-only entry, viz trial
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=False, require_embs=False) == entry
 
-    (tmp_path / "projections.npz").write_bytes(b"")
-    assert ArtifactManager.load_base_eval_cache(require_projections=True) == metrics
+    entry_viz = {**entry, "projections": {"pca_id": [0.0]}}
+    save_pickle(entry_viz, fpath)
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=False) == entry_viz
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=True) is None  # no embs, pooled trial
+
+    entry_pooled = {**entry_viz, "embs": {"embs_id": [0.0]}}
+    save_pickle(entry_pooled, fpath)
+    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=True) == entry_pooled
+
+
+def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> None:
+    # each save ingests the npz files compute_projections wrote into this trial's evals/_base/
+    # (absent for non-viz trials -> None) and writes its combo's entry to that combo's own file,
+    # leaving other combos' files untouched
+    dpath_cache = tmp_path / "base_eval_cache"
+    monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo.pkl")
+    monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial")
+    dpath_base = tmp_path / "trial" / "evals" / "_base"
+    dpath_base.mkdir(parents=True)
+    np.savez(dpath_base / "projections.npz", pca_id=np.arange(3))
+    eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None}}
+
+    ArtifactManager.save_base_eval_cache(None, eval_metrics)
+
+    entry = load_pickle(dpath_cache / "combo.pkl")
+    assert entry["metrics"] == {"scores": {"comp": {"map": {"all": "0.5000"}}}}  # loss_raw stripped
+    assert list(entry["projections"]) == ["pca_id"]
+    assert entry["embs"] is None
+
+    monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo2.pkl")
+    monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial2")  # no _base npzs -> non-viz trial
+
+    ArtifactManager.save_base_eval_cache(None, eval_metrics)
+
+    assert sorted(p.name for p in dpath_cache.iterdir()) == ["combo.pkl", "combo2.pkl"]
+    assert load_pickle(dpath_cache / "combo2.pkl")["projections"] is None
+
+
+def test_base_eval_key_normalizes_family_inert_components() -> None:
+    # non_causal is CLIP-only, vis_proj is SigLIP-only, and seed only enters through the random
+    # init of a linear/mlp vis_proj head -- inert components read as None so equivalent configs
+    # share one cache entry
+    def cfg(model_type, non_causal=False, vis_proj=None):
+        return SimpleNamespace(
+            arch={"model_type": model_type, "clip": {"non_causal": non_causal}, "siglip": {"vis_proj": vis_proj}},
+            img_norm="default", dataset="cub", split="dev",
+            text_template={"train": "train", "eval": "sci"}, seed=42,
+        )
+
+    assert ArtifactManager.base_eval_key(cfg("siglip_vitb16")) == \
+        ("siglip_vitb16", "default", "cub", "dev", None, "sci", None, None)  # headless: seed shared
+    assert ArtifactManager.base_eval_key(cfg("siglip_vitb16", vis_proj="mlp")) == \
+        ("siglip_vitb16", "default", "cub", "dev", None, "sci", "mlp", 42)  # random head: seed kept
+    assert ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=True)) == \
+        ("clip_vitb16", "default", "cub", "dev", True, "sci", None, None)
+    # non_causal true vs false are two separate cached readings
+    assert ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=True)) != \
+        ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=False))
+    # the combo key serializes to the flat per-combo cache filename
+    fpath = ArtifactManager.base_eval_cache_fpath(cfg("siglip_vitb16", vis_proj="mlp"))
+    assert fpath.parent.name == "base_eval_cache"
+    assert fpath.name == "siglip_vitb16__default__cub__dev__None__sci__mlp__42.pkl"

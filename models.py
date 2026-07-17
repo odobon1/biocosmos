@@ -9,7 +9,6 @@ import torch.distributed as dist
 import open_clip
 from open_clip.pretrained import get_pretrained_cfg, download_pretrained
 import abc
-from contextlib import contextmanager
 from typing import List, Tuple, Any, Dict, Union, Optional
 from pathlib import Path
 
@@ -291,41 +290,6 @@ class VLMWrapper(abc.ABC):
         Helper to get the underlying model, handling DDP wrapping.
         """
         return self.model.module if hasattr(self.model, "module") else self.model
-
-    @contextmanager
-    def eval_pretrained_base(self):
-        """
-        Evaluate the pretrained-as-released model for the base-eval reference, undoing training-time
-        architecture changes so they don't leak into the shared, seed-invariant base_eval_cache:
-          - SigLIP: bypass the randomly-initialized projection head -> pretrained MAP output.
-          - CLIP: restore the native causal text mask when non_causal zeroed it for training.
-        Routes through the unwrapped (eager) model so neither change is shadowed by a compiled graph.
-        No-op when neither applies (SigLIP vis_proj=null, or CLIP with the default causal mask).
-        """
-        unwrapped = self._unwrapped_model
-        visual = unwrapped.visual
-        head = getattr(visual, "head", None)
-        bypass_head = isinstance(head, nn.Sequential) and len(head) > 0
-        causal_mask = getattr(self, "_causal_attn_mask", None)  # set iff non_causal zeroed the CLIP mask
-
-        if not bypass_head and causal_mask is None:
-            yield
-            return
-
-        saved_model = self.model
-        self.model = unwrapped  # eager path so changes aren't shadowed by a compiled graph
-        if bypass_head:
-            visual.head = nn.Identity()
-        if causal_mask is not None:
-            unwrapped.attn_mask.copy_(causal_mask)
-        try:
-            yield
-        finally:
-            self.model = saved_model
-            if bypass_head:
-                visual.head = head
-            if causal_mask is not None:
-                unwrapped.attn_mask.zero_()  # re-disable for training (non_causal)
 
     @property
     def embed_dim(self) -> int:
@@ -769,7 +733,6 @@ class CLIPWrapper(VLMWrapper):
         """
         Converts CLIP text encoder's causal attention mask to non-causal.
         """
-        self._causal_attn_mask = self._unwrapped_model.attn_mask.detach().clone()  # native mask, restored for the base-eval reference
         self._unwrapped_model.attn_mask.zero_()  # convert causal attention mask to non-causal
 
 class SigLIPWrapper(VLMWrapper):

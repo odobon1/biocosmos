@@ -6,6 +6,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, FormatStrFormatter
 from dataclasses import asdict
 from datetime import datetime, timezone
+import os
 import time
 import random
 import numpy as np
@@ -150,8 +151,6 @@ class ArtifactManager:
     resuming = False
     dataset = None
     split = None
-    model_type = None
-    img_norm = None
 
     # table_eval_group -> (scores set_key, group key, human-readable name); drives map.png and metrics.xlsx
     _TABLE_EVAL_GROUPS = {
@@ -168,8 +167,6 @@ class ArtifactManager:
         ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "settings" / cfg_train.setting
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
-        ArtifactManager.model_type = cfg_train.arch["model_type"]
-        ArtifactManager.img_norm = cfg_train.img_norm
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
@@ -619,40 +616,79 @@ class ArtifactManager:
         wb.save(dpath_stats / "metrics.xlsx")
 
     @staticmethod
-    def base_eval_cache_dpath():
+    def base_eval_cache_fpath(cfg_train):
+        # one pickle per combo in a flat dir, named by the serialized combo key -- a save touches
+        # only its own combo's file (no shared-file rewrite) and a load reads only its own
+        fname = "__".join(str(c) for c in ArtifactManager.base_eval_key(cfg_train)) + ".pkl"
+        return paths["root"] / "base_eval_cache" / fname
+
+    @staticmethod
+    def base_eval_key(cfg_train):
+        """Combo key for one base-eval reading: the config settings that determine the base model's
+        eval output. Numerics-level knobs (hw mixed-precision dtype / compile, t-SNE perplexity) are
+        deliberately not keyed. Family-inert components are normalized to None so equivalent configs
+        share one entry: non_causal is CLIP-only, vis_proj is SigLIP-only, and seed only enters
+        through the random init of a linear/mlp vis_proj head."""
+        from models import CLIP_MODELS, SIGLIP_MODELS  # local: models pulls open_clip/transformers, too heavy for module import
+        model_type = cfg_train.arch["model_type"]
+        non_causal = cfg_train.arch["clip"]["non_causal"] if model_type in CLIP_MODELS else None
+        vis_proj = cfg_train.arch["siglip"]["vis_proj"] if model_type in SIGLIP_MODELS else None
+        seed = cfg_train.seed if vis_proj is not None else None
         return (
-            paths["root"]
-            / "base_eval_cache"
-            / ArtifactManager.model_type
-            / ArtifactManager.img_norm
-            / ArtifactManager.dataset
-            / ArtifactManager.split
+            model_type,
+            cfg_train.img_norm,
+            cfg_train.dataset,
+            cfg_train.split,
+            non_causal,
+            cfg_train.text_template["eval"],
+            vis_proj,
+            seed,
         )
 
     @staticmethod
-    def base_eval_cache_path():
-        return ArtifactManager.base_eval_cache_dpath() / "metrics.json"
-
-    @staticmethod
-    def load_base_eval_cache(require_projections):
-        # `require_projections` (viz trials) additionally demands projections.npz: a crash between
-        # the metrics write and the projections write leaves a partial cache, which must read as a
-        # miss (recompute both) rather than trip _copy_base_eval on the missing file downstream.
-        # Metrics-only caches stay valid for non-viz trials.
-        fpath = ArtifactManager.base_eval_cache_path()
+    @rank0
+    def load_base_eval_cache(cfg_train, require_projections, require_embs):
+        # @rank0: a concurrent same-combo campaign can create/replace this combo's file at any
+        # moment, so independent per-rank reads could disagree on hit/miss; rank 0 alone reads and
+        # the caller broadcasts the decision. Entries carry only what the caching trial computed
+        # (metrics always; projections for viz trials; embs for pooled trials): a trial must read
+        # an entry missing a piece it needs as a miss (recompute, overwriting the entry with the
+        # richer version) rather than trip _write_base_eval on the missing piece downstream.
+        # Leaner entries stay valid hits for trials that don't need the missing pieces.
+        fpath = ArtifactManager.base_eval_cache_fpath(cfg_train)
         if not fpath.exists():
             return None
-        if require_projections and not (ArtifactManager.base_eval_cache_dpath() / "projections.npz").exists():
+        entry = load_pickle(fpath)
+        if require_projections and entry["projections"] is None:
             return None
-        return load_json(fpath)
+        if require_embs and entry["embs"] is None:
+            return None
+        return entry
 
     @staticmethod
     @rank0
-    def save_base_eval_cache(eval_metrics):
-        fpath = ArtifactManager.base_eval_cache_path()
+    def save_base_eval_cache(cfg_train, eval_metrics):
+        """Write this combo's entry to its own cache file and return the entry. The npz arrays are
+        ingested from this trial's evals/_base/, where compute_projections just wrote them
+        (projections absent for non-viz trials, embs for non-pooled trials). Written via temp file +
+        atomic replace: concurrent same-combo campaigns overwrite each other with equivalent entries,
+        and readers never see a torn file; other combos' files are untouched."""
+        entry = {
+            "metrics": {k: format_scores(v) for k, v in eval_metrics.items() if k != "loss_raw"},
+            "projections": None,
+            "embs": None,
+        }
+        dpath_base = ArtifactManager.dpath_trial / "evals" / "_base"
+        for name in ("projections", "embs"):
+            fpath_npz = dpath_base / f"{name}.npz"
+            if fpath_npz.exists():
+                entry[name] = dict(np.load(fpath_npz))
+        fpath = ArtifactManager.base_eval_cache_fpath(cfg_train)
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        metadata = {k: format_scores(v) for k, v in eval_metrics.items() if k != "loss_raw"}
-        save_json(metadata, fpath)
+        fpath_tmp = fpath.with_name(f"{fpath.name}.{os.uname().nodename}.{os.getpid()}.tmp")  # node+pid: campaigns on different nodes can share a pid
+        save_pickle(entry, fpath_tmp)
+        fpath_tmp.replace(fpath)
+        return entry
 
     @staticmethod
     @rank0

@@ -391,7 +391,8 @@ class EvalConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
 
-        # base-model eval always uses the pretrained-as-released arch; checkpoint eval overrides from setting_metadata below
+        # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
+        # exposes no non_causal/vis_proj knobs; checkpoint eval overrides from setting_metadata below
         self.arch["clip"] = {"non_causal": False}
         self.arch["siglip"] = {"vis_proj": None}
 

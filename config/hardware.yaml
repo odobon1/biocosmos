@@ -1,6 +1,8 @@
-mixed_prec:  true  # {true, false}; mixed precision for training and validation
-amp_dtype: fp16  # {fp16, bf16}; autocast dtype under mixed_prec. fp16 pairs with GradScaler loss-scaling (enabled
-                 # automatically); bf16 skips the scaler (fp32-range exponent) -- prefer bf16 on Ampere+ (A100/B200)
+mixed_prec:
+  enabled: true  # {true, false}; mixed precision for training and validation
+  amp_dtype: fp16  # {fp16, bf16}; autocast dtype -- only relevant when enabled = true. fp16 pairs with GradScaler
+                   # loss-scaling (enabled automatically); bf16 skips the scaler (fp32-range exponent) -- prefer
+                   # bf16 on Ampere+ (A100/B200)
 act_chkpt: false  # {true, false}; activation checkpointing
 compile: false  # {true, false}; torch.compile the DDP-wrapped train model; pays first-step compile latency for faster steady-state steps
 

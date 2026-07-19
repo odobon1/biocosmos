@@ -140,7 +140,7 @@ class TrainPipeline:
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.cfg.device)
             self.lr_sched.load_state_dict(resume_state["lr_sched"])
-            if self.cfg.hw.mixed_prec:
+            if self.cfg.hw.mixed_prec["enabled"]:
                 self.scaler.load_state_dict(resume_state["scaler"])
 
     def init_opt_and_lr_sched(self):
@@ -173,7 +173,7 @@ class TrainPipeline:
         total_steps = max(1, math.ceil(self.cfg.sample_volume / self.cfg.batch_size) - math.ceil(self.lr_warmup / self.cfg.batch_size))
         self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
 
-        if self.cfg.hw.mixed_prec:
+        if self.cfg.hw.mixed_prec["enabled"]:
             # bf16 needs no loss scaling; a disabled scaler passes through (scale/unscale_/update no-op, step -> opt.step)
             self.scaler = GradScaler(enabled=self.cfg.hw.amp_dtype_torch is torch.float16)
 
@@ -277,7 +277,7 @@ class TrainPipeline:
         plot_metrics(self.data, ArtifactManager.dpath_trial)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
-        if self.cfg.hw.mixed_prec:
+        if self.cfg.hw.mixed_prec["enabled"]:
             with autocast(device_type=self.cfg.device.type, dtype=self.cfg.hw.amp_dtype_torch):
                 loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb
@@ -292,7 +292,7 @@ class TrainPipeline:
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
 
     def _step_optimizer(self):
-        if self.cfg.hw.mixed_prec:
+        if self.cfg.hw.mixed_prec["enabled"]:
             self.scaler.step(self.opt)
             self.scaler.update()
         else:

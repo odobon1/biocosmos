@@ -321,8 +321,7 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
 @dataclass
 class HardwareConfig:
 
-    mixed_prec: bool
-    amp_dtype: str  # {fp16, bf16}; autocast dtype under mixed_prec (resolved to amp_dtype_torch); fp16 -> GradScaler enabled, bf16 -> scaler disabled
+    mixed_prec: dict  # {enabled: bool, amp_dtype: str}; amp_dtype in {fp16, bf16} is the autocast dtype (resolved to amp_dtype_torch), only relevant when enabled; fp16 -> GradScaler enabled, bf16 -> scaler disabled
     act_chkpt: bool
     compile: bool  # torch.compile the DDP-wrapped train model
     tf32_conv: bool  # torch.backends.cudnn.allow_tf32
@@ -338,7 +337,7 @@ class HardwareConfig:
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 
     def __post_init__(self):
-        self.amp_dtype_torch = {"fp16": torch.float16, "bf16": torch.bfloat16}[self.amp_dtype]
+        self.amp_dtype_torch = {"fp16": torch.float16, "bf16": torch.bfloat16}[self.mixed_prec["amp_dtype"]]
 
 
 def load_hardware_config_dict() -> dict:

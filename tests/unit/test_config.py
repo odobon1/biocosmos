@@ -36,8 +36,7 @@ def make_train_config_dummy(**overrides):
         "text_template": {"train": "train", "eval": "sci"},
         "stats": {"spread_type": "std", "table_eval_group": "closed_standard"},
         "hw": {
-            "mixed_prec": True,
-            "amp_dtype": "fp16",
+            "mixed_prec": {"enabled": True, "amp_dtype": "fp16"},
             "act_chkpt": False,
             "compile": False,
             "tf32_conv": True,
@@ -156,8 +155,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(hw={
-        "mixed_prec": False,
-        "amp_dtype": "bf16",
+        "mixed_prec": {"enabled": False, "amp_dtype": "bf16"},
         "act_chkpt": True,
         "compile": True,
         "tf32_conv": False,
@@ -174,7 +172,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     }))
 
     assert cfg.use_img_cache is False
-    assert cfg.hw.mixed_prec is False
+    assert cfg.hw.mixed_prec["enabled"] is False
     assert cfg.hw.amp_dtype_torch is torch.bfloat16
     assert cfg.hw.act_chkpt is True
     assert cfg.hw.compile is True

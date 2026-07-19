@@ -706,7 +706,7 @@ class ArtifactManager:
             "chkpt_thresh": train_pipe.chkpt_thresh,
             "times": train_pipe.time_tracker.state_dict(),
         }
-        if train_pipe.cfg.hw.mixed_prec:
+        if train_pipe.cfg.hw.mixed_prec["enabled"]:
             state["scaler"] = train_pipe.scaler.state_dict()
         torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
 

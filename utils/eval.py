@@ -141,7 +141,7 @@ class PartitionEvaluationPipeline:
         self.cfg = config
         self.partition = partition
         self.subbatch_size = self.dataloader.batch_size
-        self.mixed_prec = config.hw.mixed_prec
+        self.mixed_prec = config.hw.mixed_prec["enabled"]
         self.amp_dtype = config.hw.amp_dtype_torch
 
         if self.partition == "id":

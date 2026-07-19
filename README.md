@@ -64,7 +64,7 @@ Note: The full similarity matrix is computed for all model types, including SigL
 ## Train
 1. Edit `config/train.yaml`:
     * `model_type`, `loss_type`, `targ_type`, `lr_sched_type`, etc.
-    * Mixed precision & activation checkpointing can be toggled in `config/hardware.yaml`: `mixed_prec`, `act_chkpt`
+    * Mixed precision & activation checkpointing can be toggled in `config/hardware.yaml`: `mixed_prec.enabled`, `act_chkpt` (`mixed_prec.amp_dtype` picks the autocast dtype, only relevant when enabled)
 2. Training runs through campaigns — see [Run a campaign](#run-a-campaign) below. `config/train.yaml` is the base config (layer 1) every campaign trial starts from. For a single one-off run, use a minimal campaign (e.g. `config/camps/dev.yaml`).
 
 ## Evaluate a trained model

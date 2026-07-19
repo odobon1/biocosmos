@@ -405,6 +405,12 @@ def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
+def _del_base_eval_cache() -> None:
+    dpath = paths["root"] / "base_eval_cache"
+    if dpath.exists():
+        shutil.rmtree(dpath)
+        print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
+
 def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]]) -> None:
     # Validate the planned matrix before any side effects: every setting's name must be unique.
     settings = _expand_settings(baseline_overrides)
@@ -427,6 +433,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     slurm_alloc = get_slurm_alloc()
     setting_names = [name for name, _ in settings]
     fpath_meta = dpath_campaign / "campaign_metadata.json"
+    first_launch = not fpath_meta.exists()
     if fpath_meta.exists():
         metadata_camp = load_json(fpath_meta)
         if metadata_camp["n_gpus"] != n_gpus:
@@ -456,6 +463,12 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     cfg_model_specific = cfg_snapshot["model_specific"]
     cfg_hardware = cfg_snapshot["hardware"]
     max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
+
+    # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
+    # is not a new beginning, so the cache the campaign's own trials built survives it
+    del_base_eval_cache = cfg_baseline["dev"]["del_base_eval_cache"]
+    if first_launch and del_base_eval_cache["campaign"]:
+        _del_base_eval_cache()
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
     # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every setting.
@@ -520,6 +533,9 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                     print(f"[{idx_trial}/{n_trials_total}] RESUME: {setting}/{dataset}/{seed}")
                 else:
                     print(f"[{idx_trial}/{n_trials_total}] {setting}/{dataset}/{seed}")
+
+                if del_base_eval_cache["trial"]:
+                    _del_base_eval_cache()
 
                 PrintLog.manifest(dpath_campaign, trials, in_progress=(setting, dataset, seed))
                 spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None

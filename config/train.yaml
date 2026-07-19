@@ -130,3 +130,6 @@ dev:
       pca_bounds: final  # {null, final}
   logging: true
   continue_campaign: false  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
+  del_base_eval_cache:
+    campaign: false  # {true, false}; (true) delete base_eval_cache/ once, when the campaign is first created (relaunches keep the cache the campaign's own trials built)
+    trial: true  # {true, false}; (true) delete base_eval_cache/ before each trial launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons)

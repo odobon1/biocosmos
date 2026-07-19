@@ -31,7 +31,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -118,7 +118,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -169,7 +169,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -213,7 +213,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -246,6 +246,98 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     assert not (dpath_trial / "chkpts" / "in_progress").exists()
 
 
+def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": True, "trial": False}},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2, "use_img_cache": False},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    dpath_cache = tmp_path / "root" / "base_eval_cache"
+    dpath_cache.mkdir(parents=True)
+    (dpath_cache / "combo.pkl").touch()
+
+    seen_at_launch = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        seen_at_launch.append(dpath_cache.exists())
+        _leave_completed_trial(tmp_path, cfg_dict)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]])
+    cr.run_campaign(**kwargs)
+    assert seen_at_launch == [False]  # first launch: cache deleted before the trial ran
+
+    # a relaunch of the existing campaign is not a new beginning: the cache survives it
+    dpath_cache.mkdir(parents=True)
+    (dpath_cache / "combo.pkl").touch()
+    cr.run_campaign(**kwargs)
+    assert (dpath_cache / "combo.pkl").exists()
+
+
+def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": True}},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2, "use_img_cache": False},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    dpath_cache = tmp_path / "root" / "base_eval_cache"
+    dpath_cache.mkdir(parents=True)
+    (dpath_cache / "combo.pkl").touch()
+
+    seen_at_launch = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        # record whether the cache survived to this trial's launch, then rebuild it the way the
+        # trial's base eval would
+        seen_at_launch.append(dpath_cache.exists())
+        dpath_cache.mkdir(parents=True)
+        (dpath_cache / "combo.pkl").touch()
+        _leave_completed_trial(tmp_path, cfg_dict)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign(
+        campaign="cmp_delt",
+        n_trials=2,
+        datasets=("cub",),
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+    )
+
+    assert seen_at_launch == [False, False]  # deleted before every trial, not just the first
+    assert (dpath_cache / "combo.pkl").exists()  # the last trial's rebuild is left in place
+
+
 def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
@@ -257,7 +349,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -307,7 +399,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -594,7 +686,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -654,7 +746,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
             "beta2": None,
             "eps": 1.0e-6,
         },
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -861,7 +953,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -937,7 +1029,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -1134,7 +1226,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1160,7 +1252,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
     monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1186,7 +1278,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {},
         "model_specific": {},

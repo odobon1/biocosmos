@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 from openpyxl import load_workbook
 
-from utils.train import ArtifactManager
+from utils.train import ArtifactManager, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
 
@@ -429,3 +429,15 @@ def test_base_eval_key_normalizes_family_inert_components() -> None:
     fpath = ArtifactManager.base_eval_cache_fpath(cfg("siglip_vitb16", vis_proj="mlp"))
     assert fpath.parent.name == "base_eval_cache"
     assert fpath.name == "siglip_vitb16__default__cub__dev__None__sci__mlp__42.pkl"
+
+
+def test_format_and_merge_mem_running_max() -> None:
+    # bytes -> 'used/total GB' (GiB), and merge keeps the higher-used reading per key -- a running
+    # max across snapshots; None (no reading yet) is always superseded
+    snap = format_mem({"ram": (4.2 * 2**30, 128 * 2**30), "vram": (37.5 * 2**30, 79.3 * 2**30)})
+    assert snap == {"ram": "4.2/128.0 GB", "vram": "37.5/79.3 GB"}
+
+    assert merge_mem({"ram": None, "vram": None}, snap) == snap
+
+    later = {"ram": "6.0/128.0 GB", "vram": "12.0/79.3 GB"}
+    assert merge_mem(snap, later) == {"ram": "6.0/128.0 GB", "vram": "37.5/79.3 GB"}

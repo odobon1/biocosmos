@@ -29,7 +29,7 @@ from utils.loss import configure_htarg_shuf
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
-from utils.hardware import apply_backend_flags
+from utils.hardware import apply_backend_flags, read_cgroup_ram
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
 import pdb
@@ -262,14 +262,29 @@ class TrainPipeline:
             time_eval_avg=self.time_tracker.mean("eval"),
         )
 
-    @rank0
+    def _snapshot_memory(self):
+        # COLLECTIVE -- every rank contributes its GPU's reading and the trial VRAM value is the max
+        # across GPUs. Peak reserved catches transient highs between snapshots (eval sim matrices,
+        # t-SNE buffers); total - free (device-wide, right now) additionally counts the CUDA context.
+        free, total = torch.cuda.mem_get_info(self.cfg.device)
+        used = max(torch.cuda.max_memory_reserved(self.cfg.device), total - free)
+        vram = torch.tensor([used, total], device=self.cfg.device, dtype=torch.int64)
+        dist.all_reduce(vram, op=dist.ReduceOp.MAX)
+        return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
+
     def _checkpoint(self, header, idx_batch, record_eval=True):
+        # NOT @rank0: the memory snapshot all-reduces across ranks, so every rank must enter.
+        # Only rank 0 proceeds to the writes, as before.
+        mem = self._snapshot_memory()
+        if dist.get_rank() != 0:
+            return
         if self.eval_enabled and record_eval:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data()
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, mem)
         ArtifactManager.update_campaign_time()
+        ArtifactManager.update_campaign_memory(mem)
 
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
@@ -302,7 +317,8 @@ class TrainPipeline:
         try:
 
             if self._resume_state is None:
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, init_flag=True)
+                mem = self._snapshot_memory()  # COLLECTIVE -- every rank must enter
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, mem, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 

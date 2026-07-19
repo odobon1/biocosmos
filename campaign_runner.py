@@ -442,6 +442,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             "n_gpus": n_gpus,
             "n_cpus": slurm_alloc["n_cpus"],
             "ram": slurm_alloc["ram"],
+            "memory": {"ram": None, "vram": None},  # peak used/total, max-merged across trials
         }
     # record the (possibly grown) planned matrix so the next run can detect removals
     metadata_camp["settings"] = setting_names

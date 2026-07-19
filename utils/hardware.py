@@ -1,6 +1,7 @@
 import os
 import subprocess
 import re
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -36,6 +37,24 @@ def get_slurm_alloc():
     }
 
     return slurm_alloc
+
+def read_cgroup_ram():
+    """(used_bytes, limit_bytes) of host RAM for the enclosing memory-limited cgroup. The leaf
+    cgroup (SLURM task) is unbounded; the OOM-kill limit sits at the job level, so walk up to the
+    first ancestor with a bounded memory.max and read that cgroup's current usage -- it covers
+    every process in the job (all ranks, DataLoader workers, the render worker)."""
+    root = Path("/sys/fs/cgroup")
+    rel = Path("/proc/self/cgroup").read_text().strip().split("::", 1)[1]
+    dpath = root / rel.lstrip("/")
+    while dpath != root:
+        fpath_limit = dpath / "memory.max"
+        if fpath_limit.exists():
+            limit = fpath_limit.read_text().strip()
+            if limit != "max":
+                return int((dpath / "memory.current").read_text()), int(limit)
+        dpath = dpath.parent
+    raise RuntimeError("no memory-limited cgroup found (not running under a SLURM job?)")
+
 
 def compute_dataloader_workers_prefetch(
     max_n_workers_gpu: Optional[int] = None,

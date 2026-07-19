@@ -46,6 +46,21 @@ def parse_scores(scores):
         return {k: parse_scores(v) for k, v in scores.items()}
     return float(scores)
 
+def format_mem(mem):
+    # {"ram": (used_bytes, total_bytes), "vram": ...} -> {"ram": "4.2/128.0 GB", "vram": ...}
+    return {k: f"{used / 2**30:.1f}/{total / 2**30:.1f} GB" for k, (used, total) in mem.items()}
+
+def merge_mem(mem_prev, mem_new):
+    """Per key keep whichever formatted 'used/total GB' reading has the higher used -- a running max
+    across snapshots (kept as a pair so used/total stay from the same reading if totals ever differ
+    across relaunches). None (no reading yet) is always superseded."""
+    def used(s):
+        return float(s.split("/")[0])
+    return {
+        k: mem_new[k] if mem_prev[k] is None or used(mem_new[k]) > used(mem_prev[k]) else mem_prev[k]
+        for k in mem_new
+    }
+
 
 class TrialData:
 
@@ -225,6 +240,16 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
+    def update_campaign_memory(mem):
+        # campaign-level memory = running max across every trial's snapshots (== max across
+        # trial-level values, maintained incrementally so it survives an OOM-killed trial)
+        fpath_meta = ArtifactManager.dpath_campaign / "campaign_metadata.json"
+        metadata_camp = load_json(fpath_meta)
+        metadata_camp["memory"] = merge_mem(metadata_camp["memory"], format_mem(mem))
+        save_json(metadata_camp, fpath_meta)
+
+    @staticmethod
+    @rank0
     def save_metadata_setting(cfg_train):
         
         def clean_metadata(metadata):
@@ -293,7 +318,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, n_samps_seen: int, sample_volume: int, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, n_samps_seen: int, sample_volume: int, mem, init_flag=False):
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         progress_data = {"n_samps_seen": n_samps_seen, "sample_volume": sample_volume}
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -303,6 +328,7 @@ class ArtifactManager:
                 "split": ArtifactManager.split,
                 "runtime": runtime_data,
                 "progress": progress_data,
+                "memory": format_mem(mem),
                 "datetime_start": now,
                 "datetime_last_seen": now,
                 "complete": False,
@@ -311,6 +337,7 @@ class ArtifactManager:
             metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
             metadata_trial["runtime"] = runtime_data
             metadata_trial["progress"] = progress_data
+            metadata_trial["memory"] = merge_mem(metadata_trial["memory"], format_mem(mem))
             metadata_trial["datetime_last_seen"] = now
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 

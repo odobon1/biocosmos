@@ -1,8 +1,7 @@
 n_trials: 3
-# datasets: [bryo, cub, lepid, nymph]
 datasets: [nymph, lepid]
-# datasets: [cub, nymph]
 
+baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:
   - - {batch_size: 1_024, opt.lr.init: 6.0e-5, name: bs1k}
     - {batch_size: 2_048, opt.lr.init: 1.2e-4, name: bs2k}

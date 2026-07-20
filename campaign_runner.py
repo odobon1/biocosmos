@@ -411,9 +411,16 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]]) -> None:
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]], baseline: bool) -> None:
     # Validate the planned matrix before any side effects: every setting's name must be unique.
     settings = _expand_settings(baseline_overrides)
+    if baseline:
+        if any(name == "baseline" for name, _ in settings):
+            raise ValueError(
+                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
+                "setting is already named 'baseline'."
+            )
+        settings.insert(0, ("baseline", {}))
     seeds = _iter_seeds(n_trials)
 
     _enable_child_subreaper()
@@ -643,6 +650,7 @@ def main() -> None:
         n_trials=cfg["n_trials"],
         datasets=cfg["datasets"],
         baseline_overrides=cfg["baseline_overrides"],
+        baseline=cfg["baseline"],
     )
 
 

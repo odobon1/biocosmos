@@ -1,6 +1,7 @@
 n_trials: 1
 datasets: [bryo, cub, lepid, nymph]
 
+baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:
   - - {batch_size: 32_000, name: way-too-big-bs}
     - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}

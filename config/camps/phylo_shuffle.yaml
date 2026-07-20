@@ -1,8 +1,7 @@
 n_trials: 3
-# datasets: [bryo, cub, lepid, nymph]
 datasets: [nymph, lepid]
-# datasets: [cub, nymph]
 
+baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:
   - - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: true, name: shuffle}
     - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: false, name: no-shuffle}

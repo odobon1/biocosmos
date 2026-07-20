@@ -1,0 +1,18 @@
+n_trials: 3
+# datasets: [bryo, cub, lepid, nymph]
+datasets: [nymph, lepid]
+# datasets: [cub, nymph]
+
+baseline_overrides:
+  - - {batch_size: 1_024, opt.lr.init: 6.0e-5, name: bs1k}
+    - {batch_size: 2_048, opt.lr.init: 1.2e-4, name: bs2k}
+    - {batch_size: 4_096, opt.lr.init: 2.4e-4, name: bs4k}
+    - {batch_size: 8_192, opt.lr.init: 4.8e-4, name: bs8k}
+    - {batch_size: 16_384, opt.lr.init: 9.6e-4, name: bs16k}
+  - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
+    - {loss.targ: sw, name: sw}
+    - {loss.targ: iw, name: iw}
+  - - {sample_volume: 16_000_000, name: 16M}
+    - {sample_volume: 8_000_000, name: 8M}
+
+suffix: null  # {null, [str]}; no suffix if set to null

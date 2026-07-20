@@ -300,6 +300,17 @@ def _reap_subtree(grace: float = 10.0, spare_root: int | None = None) -> None:
         if prev_mask is not None:
             signal.pthread_sigmask(signal.SIG_SETMASK, prev_mask)
 
+def _stash_nccl_dumps(dpath_campaign: Path) -> None:
+    # Tuck any flight-recorder dump files from the campaign root into nccl_traces/,
+    # creating the dir only when a dump actually exists.
+    fpaths = list(dpath_campaign.glob("nccl_trace_*"))
+    if not fpaths:
+        return
+    dpath_traces = dpath_campaign / "nccl_traces"
+    dpath_traces.mkdir(exist_ok=True)
+    for fpath in fpaths:
+        fpath.rename(dpath_traces / fpath.name.removeprefix("nccl_trace_"))
+
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
     cmd = [
         "torchrun",
@@ -314,16 +325,18 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
     # Enable the NCCL flight recorder for this trial: a per-rank ring buffer of the most recent collectives
     # that is dumped on a watchdog timeout, so a hang leaves a trace naming which collective each rank was
     # stuck on (and its state: scheduled/started/completed) — far more than the one-line "last enqueued/
-    # completed" the crash log otherwise gives. Dumps go under the campaign dir (survives trial-dir wipes on
-    # resume); the per-trial prefix keeps trials from clobbering each other. Analyze with `torchfrtrace`.
-    dpath_traces = _dpath_campaign(cfg_dict["campaign"]) / "nccl_traces"
-    dpath_traces.mkdir(parents=True, exist_ok=True)
+    # completed" the crash log otherwise gives. The C++ writer won't create parent dirs (a dump into a
+    # missing dir is silently lost), so dumps target a prefix at the campaign root (always exists, survives
+    # trial-dir wipes on resume) and are stashed into nccl_traces/ post-trial — the dir exists only if some
+    # trial actually dumped. The per-trial prefix keeps trials from clobbering each other. Analyze with
+    # `torchfrtrace`.
+    dpath_campaign = _dpath_campaign(cfg_dict["campaign"])
     env = os.environ.copy()
     env.setdefault("TORCH_NCCL_TRACE_BUFFER_SIZE", "2000")  # collectives retained per rank
     env.setdefault("TORCH_NCCL_DUMP_ON_TIMEOUT", "1")
     env.setdefault(
         "TORCH_NCCL_DEBUG_INFO_TEMP_FILE",
-        str(dpath_traces / f"{cfg_dict['setting']}_{cfg_dict['dataset']}_{cfg_dict['seed']}_rank"),
+        str(dpath_campaign / f"nccl_trace_{cfg_dict['setting']}_{cfg_dict['dataset']}_{cfg_dict['seed']}_rank"),
     )
 
     # start_new_session isolates torchrun from the terminal's Ctrl-C so the
@@ -362,6 +375,7 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
         # (the detached trial would otherwise keep running). A process-group
         # kill is insufficient: elastic puts each rank in its own session.
         _reap_subtree(spare_root=spare_render_pid)
+        _stash_nccl_dumps(dpath_campaign)
 
     # Bounded: don't re-hang if a worker is wedged in uninterruptible sleep and
     # still holding the pipe; the daemon thread is torn down at interpreter exit.

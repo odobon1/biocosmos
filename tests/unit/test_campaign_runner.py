@@ -1420,3 +1420,35 @@ def test_main_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monke
 def test_main_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev_foobar").mkdir()
     assert _run_main(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
+
+
+def test_stash_nccl_dumps_moves_dumps_and_strips_prefix(tmp_path) -> None:
+    (tmp_path / "nccl_trace_base_setting_cub_42_rank0").write_text("dump0")
+    (tmp_path / "nccl_trace_base_setting_cub_42_rank1").write_text("dump1")
+    (tmp_path / "cfg_baseline.json").write_text("{}")
+
+    cr._stash_nccl_dumps(tmp_path)
+
+    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank0").read_text() == "dump0"
+    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank1").read_text() == "dump1"
+    assert not list(tmp_path.glob("nccl_trace_*"))
+    assert (tmp_path / "cfg_baseline.json").exists()
+
+
+def test_stash_nccl_dumps_without_dumps_creates_nothing(tmp_path) -> None:
+    (tmp_path / "cfg_baseline.json").write_text("{}")
+
+    cr._stash_nccl_dumps(tmp_path)
+
+    assert not (tmp_path / "nccl_traces").exists()
+
+
+def test_stash_nccl_dumps_accumulates_into_existing_dir(tmp_path) -> None:
+    (tmp_path / "nccl_traces").mkdir()
+    (tmp_path / "nccl_traces" / "earlier_cub_7_rank0").write_text("old")
+    (tmp_path / "nccl_trace_base_setting_cub_42_rank0").write_text("new")
+
+    cr._stash_nccl_dumps(tmp_path)
+
+    assert (tmp_path / "nccl_traces" / "earlier_cub_7_rank0").read_text() == "old"
+    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank0").read_text() == "new"

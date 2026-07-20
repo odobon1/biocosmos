@@ -652,7 +652,7 @@ class ArtifactManager:
     @staticmethod
     def base_eval_key(cfg_train):
         """Combo key for one base-eval reading: the config settings that determine the base model's
-        eval output. Numerics-level knobs (hw mixed-precision dtype / compile, t-SNE perplexity) are
+        eval output. Numerics-level knobs (hw mixed_prec, t-SNE perplexity) are
         deliberately not keyed. Family-inert components are normalized to None so equivalent configs
         share one entry: non_causal is CLIP-only, vis_proj is SigLIP-only, and seed only enters
         through the random init of a linear/mlp vis_proj head."""
@@ -733,8 +733,6 @@ class ArtifactManager:
             "chkpt_thresh": train_pipe.chkpt_thresh,
             "times": train_pipe.time_tracker.state_dict(),
         }
-        if train_pipe.cfg.hw.mixed_prec["enabled"]:
-            state["scaler"] = train_pipe.scaler.state_dict()
         torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
 
     @staticmethod

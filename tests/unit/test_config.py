@@ -1,5 +1,4 @@
 import pytest
-import torch
 
 from utils.config import GenSplitConfig, TrainConfig
 from utils.config import apply_overrides
@@ -36,16 +35,13 @@ def make_train_config_dummy(**overrides):
         "text_template": {"train": "train", "eval": "sci"},
         "stats": {"spread_type": "std", "table_eval_group": "closed_standard"},
         "hw": {
-            "mixed_prec": {"enabled": True, "amp_dtype": "fp16"},
+            "mixed_prec": True,
             "act_chkpt": False,
-            "compile": False,
-            "tf32_conv": True,
             "cudnn_benchmark": False,
             "prefetch_factor": 4,
             "max_n_workers_gpu": None,
             "pin_memory": True,
-            "persistent_workers_train": True,
-            "persistent_workers_eval": True,
+            "persistent_workers": {"train": True, "eval": True},
             "use_img_cache": False,
             "eval": {"map_chunk_size": {"img2img": 512, "cross_modal": 512}, "tsne_chunk_log2": 28},
             "pg_timeout": 300,
@@ -155,16 +151,13 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(hw={
-        "mixed_prec": {"enabled": False, "amp_dtype": "bf16"},
+        "mixed_prec": False,
         "act_chkpt": True,
-        "compile": True,
-        "tf32_conv": False,
         "cudnn_benchmark": True,
         "prefetch_factor": 8,
         "max_n_workers_gpu": 3,
         "pin_memory": False,
-        "persistent_workers_train": False,
-        "persistent_workers_eval": False,
+        "persistent_workers": {"train": False, "eval": False},
         "use_img_cache": False,
         "eval": {"map_chunk_size": {"img2img": 1024, "cross_modal": 1024}, "tsne_chunk_log2": 30},
         "pg_timeout": 300,
@@ -172,10 +165,8 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     }))
 
     assert cfg.use_img_cache is False
-    assert cfg.hw.mixed_prec["enabled"] is False
-    assert cfg.hw.amp_dtype_torch is torch.bfloat16
+    assert cfg.hw.mixed_prec is False
     assert cfg.hw.act_chkpt is True
-    assert cfg.hw.compile is True
     assert cfg.hw.prefetch_factor == 8
     assert cfg.hw.max_n_workers_gpu == 3
     assert cfg.hw.pin_memory is False

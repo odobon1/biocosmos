@@ -1,12 +1,7 @@
-mixed_prec:
-  enabled: true  # {true, false}; mixed precision for training and validation
-  amp_dtype: fp16  # {fp16, bf16}; autocast dtype -- only relevant when enabled = true. fp16 pairs with GradScaler
-                   # loss-scaling (enabled automatically); bf16 skips the scaler (fp32-range exponent) -- prefer
-                   # bf16 on Ampere+ (A100/B200)
-act_chkpt: false  # {true, false}; activation checkpointing
-compile: false  # {true, false}; torch.compile the DDP-wrapped train model; pays first-step compile latency for faster steady-state steps
+mixed_prec: true  # {true, false}; mixed precision
 
-tf32_conv: true  # {true, false}; TF32 tensor cores for cuDNN convolutions (torch.backends.cudnn.allow_tf32) (PyTorch default is true)
+act_chkpt: false  # {true, false}; activation checkpointing
+
 cudnn_benchmark: false  # {true, false}; cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
                         # batches, trades away algo-choice reproducibility (PyTorch default is false)
 
@@ -14,8 +9,9 @@ prefetch_factor: 4  # dataloader prefetch factor
 max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus // n_gpus) - 2, scales with the live alloc
 pin_memory: true  # {true, false}; dataloader pins host RAM for faster host --> GPU copies, higher RAM cost
 
-persistent_workers_train: true  # {true, false}; keep train dataloader workers alive across train epochs
-persistent_workers_eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
+persistent_workers:
+  train: true  # {true, false}; keep train dataloader workers alive across train epochs
+  eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
 
 use_img_cache: true  # {true, false}; read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
                      # staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces

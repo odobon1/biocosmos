@@ -321,23 +321,17 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
 @dataclass
 class HardwareConfig:
 
-    mixed_prec: dict  # {enabled: bool, amp_dtype: str}; amp_dtype in {fp16, bf16} is the autocast dtype (resolved to amp_dtype_torch), only relevant when enabled; fp16 -> GradScaler enabled, bf16 -> scaler disabled
+    mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
-    compile: bool  # torch.compile the DDP-wrapped train model
-    tf32_conv: bool  # torch.backends.cudnn.allow_tf32
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
     pin_memory: bool  # dataloader pinned host RAM for faster host -> GPU copies
-    persistent_workers_train: bool
-    persistent_workers_eval: bool
+    persistent_workers: dict  # {train: bool, eval: bool}; keep dataloader workers alive across epochs
     use_img_cache: bool  # read images from the prebuilt pack (tools/build_img_cache.py), staged to node-local scratch, instead of per-sample files on the shared FS
     eval: dict  # {map_chunk_size: {img2img, cross_modal}, tsne_chunk_log2: int} -- mAP sim-matrix chunking + t-SNE GPU-buffer tiling (buffer = 2^X fp32)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
-
-    def __post_init__(self):
-        self.amp_dtype_torch = {"fp16": torch.float16, "bf16": torch.bfloat16}[self.mixed_prec["amp_dtype"]]
 
 
 def load_hardware_config_dict() -> dict:

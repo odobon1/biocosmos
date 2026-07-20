@@ -3,7 +3,7 @@ import random
 import time
 import numpy as np
 import torch
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
 )
@@ -94,7 +94,7 @@ class TrainPipeline:
             drop_last=True,
             img_pp=self.modelw.img_pp_train,
             use_dv_sampler=self.cfg.dv_batching,
-            persistent_workers=self.cfg.hw.persistent_workers_train,
+            persistent_workers=self.cfg.hw.persistent_workers["train"],
         )
 
         self.eval_enabled = self.cfg.train_pt != "trainval"
@@ -140,8 +140,6 @@ class TrainPipeline:
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.cfg.device)
             self.lr_sched.load_state_dict(resume_state["lr_sched"])
-            if self.cfg.hw.mixed_prec["enabled"]:
-                self.scaler.load_state_dict(resume_state["scaler"])
 
     def init_opt_and_lr_sched(self):
 
@@ -172,10 +170,6 @@ class TrainPipeline:
         eta_min = lr_init * float(self.cfg.opt['lr']['decay_factor'])
         total_steps = max(1, math.ceil(self.cfg.sample_volume / self.cfg.batch_size) - math.ceil(self.lr_warmup / self.cfg.batch_size))
         self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
-
-        if self.cfg.hw.mixed_prec["enabled"]:
-            # bf16 needs no loss scaling; a disabled scaler passes through (scale/unscale_/update no-op, step -> opt.step)
-            self.scaler = GradScaler(enabled=self.cfg.hw.amp_dtype_torch is torch.float16)
 
     def _update_lr_warmup(self) -> float:
         if self.lr_warmup == 0 or self.n_samps_seen >= self.lr_warmup:
@@ -292,26 +286,20 @@ class TrainPipeline:
         plot_metrics(self.data, ArtifactManager.dpath_trial)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
-        if self.cfg.hw.mixed_prec["enabled"]:
-            with autocast(device_type=self.cfg.device.type, dtype=self.cfg.hw.amp_dtype_torch):
+        if self.cfg.hw.mixed_prec:
+            with autocast(device_type=self.cfg.device.type, dtype=torch.bfloat16):
                 loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb
                 )
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.opt)
         else:
             loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
-            loss.backward()
+        loss.backward()
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
 
     def _step_optimizer(self):
-        if self.cfg.hw.mixed_prec["enabled"]:
-            self.scaler.step(self.opt)
-            self.scaler.update()
-        else:
-            self.opt.step()
+        self.opt.step()
 
     def train(self):
         try:
@@ -588,9 +576,6 @@ def run_training(cfg):
         trial_state = ArtifactManager.load_trial_state()
 
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
-    if cfg.hw.compile:
-        # on top of DDP; _unwrapped_model still resolves -- OptimizedModule forwards .module to the DDP wrapper
-        modelw.model = torch.compile(modelw.model)
 
     train_pipe = TrainPipeline(
         modelw, 

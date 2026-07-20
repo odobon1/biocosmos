@@ -58,12 +58,12 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     train_a = {"campaign": "dev", "split": "D10"}
-    hw_a = {"mixed_prec": {"enabled": True, "amp_dtype": "fp16"}, "prefetch_factor": 4}
+    hw_a = {"mixed_prec": True, "prefetch_factor": 4}
     mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
     ms_a = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
 
     train_b = {"campaign": "changed", "split": "dev"}
-    hw_b = {"mixed_prec": {"enabled": False, "amp_dtype": "bf16"}, "prefetch_factor": 2}
+    hw_b = {"mixed_prec": False, "prefetch_factor": 2}
     mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
     ms_b = {"siglip": {"l2reg": 0.1, "beta2": 0.5}, "clip": {"l2reg": 0.3, "beta2": 0.7}}
 

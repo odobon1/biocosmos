@@ -326,6 +326,8 @@ class TrainPipeline:
                     eval_metrics = {
                         "scores": scores,
                         "loss_raw": {p: None for p in self.eval_pipe.partitions},
+                        "sim": {stat: None for stat in ("min", "max", "median", "mean")},
+                        "targ": {stat: None for stat in ("min", "max", "median", "mean")},
                     }
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                     entry = cached

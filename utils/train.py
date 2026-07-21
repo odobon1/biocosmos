@@ -365,7 +365,7 @@ class ArtifactManager:
         if isinstance(first, dict):
             return {
                 k: ArtifactManager._aggregate_metric_stats(
-                    [v[k] for v in values], spread_type, percent=percent and k != "loss_raw"
+                    [v[k] for v in values], spread_type, percent=percent and k not in ("loss_raw", "sim", "targ")
                 )
                 for k in first
             }
@@ -386,7 +386,7 @@ class ArtifactManager:
         if isinstance(first, dict):
             return {
                 k: ArtifactManager._listview_metric_stats(
-                    [v[k] for v in values], percent=percent and k != "loss_raw"
+                    [v[k] for v in values], percent=percent and k not in ("loss_raw", "sim", "targ")
                 )
                 for k in first
             }
@@ -701,7 +701,7 @@ class ArtifactManager:
         atomic replace: concurrent same-combo campaigns overwrite each other with equivalent entries,
         and readers never see a torn file; other combos' files are untouched."""
         entry = {
-            "metrics": {k: format_scores(v) for k, v in eval_metrics.items() if k != "loss_raw"},
+            "metrics": {k: format_scores(v) for k, v in eval_metrics.items() if k not in ("loss_raw", "sim", "targ")},
             "projections": None,
             "embs": None,
         }

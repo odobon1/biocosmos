@@ -280,7 +280,7 @@ class PrintLog:
         PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
         PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
         PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
-        PrintLog.log_batch_similarity = open(dpath_batch_logs / "similarity.log", "a", buffering=1)
+        PrintLog.log_batch_similarity = open(dpath_batch_logs / "sim_targ.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
@@ -419,28 +419,28 @@ class PrintLog:
         logits1 = logits[0]
         logits2 = logits[1]
         if logits2 is None:
-            line_logits = f"log={tensor_grad_l2_norm(logits1):.2e}, "
+            line_logits = f"logit={tensor_grad_l2_norm(logits1):.2e} "
         else:
-            line_logits = f"log1={tensor_grad_l2_norm(logits1):.2e}, "
-            line_logits += f"log2={tensor_grad_l2_norm(logits2):.2e}, "
+            line_logits = f"logit1={tensor_grad_l2_norm(logits1):.2e} "
+            line_logits += f"logit2={tensor_grad_l2_norm(logits2):.2e} "
 
         line_grad_norm = (
-            f"img={tensor_grad_l2_norm(embs_img_b):.2e}, "
-            f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}, "
+            f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
+            f"txt={tensor_grad_l2_norm(embs_txt_b):.2e} "
             f"{line_logits}"
             f"model={model_grad_l2_norm(model):.2e}"
         )
 
         line_logits_param = ""
         if hasattr(model.module, "logit_scale") and model.module.logit_scale is not None:
-            line_logits_param += f"s1={model.module.logit_scale.detach().exp().item():.2e}, "
+            line_logits_param += f"s1={model.module.logit_scale.detach().exp().item():.2e} "
         if hasattr(model.module, "logit_scale2") and model.module.logit_scale2 is not None:
-            line_logits_param += f"s2={model.module.logit_scale2.detach().exp().item():.2e}, "
+            line_logits_param += f"s2={model.module.logit_scale2.detach().exp().item():.2e} "
         if hasattr(model.module, "logit_bias") and model.module.logit_bias is not None:
-            line_logits_param += f"b1={tensor_scalar_item(model.module.logit_bias):.2e}, "
+            line_logits_param += f"b1={tensor_scalar_item(model.module.logit_bias):.2e} "
         if hasattr(model.module, "logit_bias2") and model.module.logit_bias2 is not None:
-            line_logits_param += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e}, "
-        line_logits_param = line_logits_param.rstrip(", ")
+            line_logits_param += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e} "
+        line_logits_param = line_logits_param.rstrip(" ")
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
@@ -462,10 +462,10 @@ class PrintLog:
             )
             PrintLog.log_batch_similarity.write(
                 f"{batch_str:<10} "
-                f"sim: min={batch_stats['sim_min']:+.4f} max={batch_stats['sim_max']:+.4f} "
-                f"med={batch_stats['sim_median']:+.4f} mean={batch_stats['sim_mean']:+.4f}  |  "
-                f"targ: min={batch_stats['targ_min']:+.4f} max={batch_stats['targ_max']:+.4f} "
-                f"med={batch_stats['targ_median']:+.4f} mean={batch_stats['targ_mean']:+.4f}"
+                f"sim: min={batch_stats['sim_min']: .4f} max={batch_stats['sim_max']: .4f} "
+                f"med={batch_stats['sim_median']: .4f} mean={batch_stats['sim_mean']: .4f} | "
+                f"targ: min={batch_stats['targ_min']: .4f} max={batch_stats['targ_max']: .4f} "
+                f"med={batch_stats['targ_median']: .4f} mean={batch_stats['targ_mean']: .4f}"
                 f"\n"
             )
 
@@ -521,6 +521,19 @@ class PrintLog:
         ]
         lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(loss_pairs) + "\n") if loss_pairs else ""
 
+        lines_sim_targ = ""
+        if eval_metrics["sim"]["mean"] is not None:
+            def _fmt_stats(stats):
+                return (
+                    f"min={stats['min']: .4f} max={stats['max']: .4f} "
+                    f"med={stats['median']: .4f} mean={stats['mean']: .4f}"
+                )
+            sim_targ_pairs = [
+                ("Sim", _fmt_stats(eval_metrics["sim"])),
+                ("Targ", _fmt_stats(eval_metrics["targ"])),
+            ]
+            lines_sim_targ = f"{' Sim/Targ ':-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(sim_targ_pairs) + "\n"
+
         lines_info = ""
         info = []
         if n_samps_seen is not None:
@@ -540,6 +553,7 @@ class PrintLog:
             f"{lines_comp}"
             f"{lines_comp_macro}"
             f"{lines_loss}"
+            f"{lines_sim_targ}"
             f"{lines_info}"
             f"{'':#^{SECTION_WIDTH}}\n"
         )

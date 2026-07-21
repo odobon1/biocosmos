@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 from openpyxl import load_workbook
 
-from utils.train import ArtifactManager, format_mem, merge_mem
+from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
 
@@ -12,8 +12,8 @@ def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
     # loss_raw["ood"] is never computed -> None in every trial's metrics.json. Aggregating across
     # >1 completed trial must keep it None, not attempt float(None).
     trials = [
-        {"scores": {"comp": {"map": {"all": "0.50"}}}, "loss_raw": {"id": "0.7029", "ood": None}},
-        {"scores": {"comp": {"map": {"all": "0.60"}}}, "loss_raw": {"id": "0.7005", "ood": None}},
+        {"scores": {"comp": {"map": {"all": "0.50"}}}, "loss_raw": {"id": "0.7029", "ood": None}, "sim": {"mean": "0.0925"}, "targ": {"mean": "-0.9895"}},
+        {"scores": {"comp": {"map": {"all": "0.60"}}}, "loss_raw": {"id": "0.7005", "ood": None}, "sim": {"mean": "0.0935"}, "targ": {"mean": "-0.9885"}},
     ]
 
     out = ArtifactManager._aggregate_metric_stats(trials, "std")
@@ -21,6 +21,9 @@ def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
     assert out["loss_raw"]["ood"] is None
     assert out["loss_raw"]["id"] == "0.7017 ± 0.0017"
     assert out["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
+    # sim/targ aggregate raw (like loss_raw), not as percentages
+    assert out["sim"]["mean"] == "0.0930 ± 0.0007"
+    assert out["targ"]["mean"] == "-0.9890 ± 0.0007"
 
 
 def test_aggregate_metric_stats_ste_spread() -> None:
@@ -43,6 +46,31 @@ def test_aggregate_metric_stats_single_trial_returns_leaves_verbatim() -> None:
     assert out == {"loss_raw": {"id": "0.7029", "ood": None}}
 
 
+def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
+    # base eval computes no loss -> loss_raw/sim/targ carry None leaves; update_eval must append
+    # them as placeholders (not crash on a bare None) so eval curves stay index-aligned across evals
+    data = TrialData(tmp_path)
+    data.eval_metrics = {
+        "scores": {"comp": {"map": {"all": 0.5}}},
+        "loss_raw": {"id": None},
+        "sim": {"min": None, "max": None, "median": None, "mean": None},
+        "targ": {"min": None, "max": None, "median": None, "mean": None},
+    }
+    data.update_eval(0)
+    data.eval_metrics = {
+        "scores": {"comp": {"map": {"all": 0.6}}},
+        "loss_raw": {"id": 0.7},
+        "sim": {"min": -0.02, "max": 0.16, "median": 0.09, "mean": 0.09},
+        "targ": {"min": -1.0, "max": 1.0, "median": -1.0, "mean": -0.99},
+    }
+    data.update_eval(1000)
+
+    assert data.data_eval["n_samps_seen"] == [0, 1000]
+    assert data.data_eval["loss_raw"]["id"] == [None, 0.7]
+    assert data.data_eval["sim"]["mean"] == [None, 0.09]
+    assert data.data_eval["targ"]["min"] == [None, -1.0]
+
+
 def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monkeypatch) -> None:
     # completion is now marked by the orchestrator after stats run, so update_metric_stats must aggregate
     # trials by their written final-eval metrics -- not by a `complete` flag that isn't set yet
@@ -54,6 +82,8 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
         (dpath_final / "metrics.json").write_text(json.dumps({
             "scores": {"comp": {"map": {"all": all_v}}},
             "loss_raw": {"id": "0.70", "ood": None},
+            "sim": {"mean": "0.0925"},
+            "targ": {"mean": "-0.9895"},
             "n_samps_seen": "100/100",
         }))
 
@@ -72,6 +102,7 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
     assert listview["n_trials"] == 2
     assert listview["loss_raw"]["ood"] is None
     assert listview["loss_raw"]["id"] == ["0.7000", "0.7000"]
+    assert listview["sim"]["mean"] == ["0.0925", "0.0925"]
     assert listview["scores"]["comp"]["map"]["all"] == ["50.00", "60.00"]
     # each leaf list stays on a single line
     assert '"all": ["50.00", "60.00"]' in listview_text

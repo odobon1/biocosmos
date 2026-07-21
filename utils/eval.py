@@ -161,7 +161,7 @@ class PartitionEvaluationPipeline:
         self,
         modelw: Any,
         loss_flag: bool,
-    ) -> Tuple[Dict[str, Any], Optional[float]]:
+    ) -> Tuple[Dict[str, Any], Optional[float], List[Dict[str, float]]]:
         
         modelw.model.eval()
 
@@ -212,6 +212,7 @@ class PartitionEvaluationPipeline:
         cids_img = gather_object_list(cids_img)
 
         loss_avg = None
+        chunk_stats = []
         if loss_flag:
             if embs_txts:
                 embs_txt_local = torch.cat(embs_txts, dim=0).to(modelw.device)
@@ -225,11 +226,11 @@ class PartitionEvaluationPipeline:
             B = self.subbatch_size * dist.get_world_size()
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type, dtype=torch.bfloat16):
-                    loss_avg = modelw.eval_loss_chunked(
+                    loss_avg, chunk_stats = modelw.eval_loss_chunked(
                         embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
                     )
             else:
-                loss_avg = modelw.eval_loss_chunked(
+                loss_avg, chunk_stats = modelw.eval_loss_chunked(
                     embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
                 )
 
@@ -244,7 +245,7 @@ class PartitionEvaluationPipeline:
             "cids_text": list(self.index_text_cids),
         }
 
-        return eval_bundle, loss_avg
+        return eval_bundle, loss_avg, chunk_stats
 
     def _build_metric_views(
         self,
@@ -702,6 +703,8 @@ class EvaluationPipeline:
                 "full_set": {"standard": {}, "per_class": {}},
             },
             "loss_raw": {},
+            "sim": {stat: None for stat in ("min", "max", "median", "mean")},
+            "targ": {stat: None for stat in ("min", "max", "median", "mean")},
         }
         accum = {
             (set_key, grp): {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
@@ -710,12 +713,22 @@ class EvaluationPipeline:
         }
         eval_bundles: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
+        chunk_stats_all: List[Dict[str, float]] = []
 
         for partition in self.partitions:
             pipe = self.partition_pipes[partition]
-            eval_bundle_partition, loss_avg_partition = pipe.collect_eval_bundle(modelw, loss_flag)
+            eval_bundle_partition, loss_avg_partition, chunk_stats_partition = pipe.collect_eval_bundle(modelw, loss_flag)
             eval_bundles[partition] = eval_bundle_partition
             partition_losses[partition] = loss_avg_partition
+            chunk_stats_all.extend(chunk_stats_partition)
+
+        # per-chunk sim/targ stats averaged across every full chunk over all partitions
+        if chunk_stats_all:
+            for prefix in ("sim", "targ"):
+                eval_metrics[prefix] = {
+                    stat: sum(cs[f"{prefix}_{stat}"] for cs in chunk_stats_all) / len(chunk_stats_all)
+                    for stat in ("min", "max", "median", "mean")
+                }
 
         full_set_embs_img = torch.cat(
             [eval_bundles[partition]["embs_img"] for partition in self.partitions],

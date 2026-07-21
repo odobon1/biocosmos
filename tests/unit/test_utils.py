@@ -61,6 +61,8 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
             },
         },
         "loss_raw": {"id": None},
+        "sim": {"min": None, "max": None, "median": None, "mean": None},
+        "targ": {"min": None, "max": None, "median": None, "mean": None},
     }
 
     PrintLog.eval(eval_metrics, _EvalPipe())

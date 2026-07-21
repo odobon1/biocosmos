@@ -71,7 +71,8 @@ class _AllGather(torch.autograd.Function):
 def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor) -> Dict[str, float]:
     """
     Per-batch distribution stats over the full BxB similarity and (mix-blended) target
-    matrices; drives the batch-level learning-curve strip and similarity.log.
+    matrices; drives the batch-level learning-curve strip, sim_targ.log, and the eval
+    sim/targ sections (per-chunk, averaged across chunks).
 
     - sim ---- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
     - targs -- target matrix on [0, 1]; rescaled to [-1, 1] so it shares sim's range
@@ -655,13 +656,13 @@ class VLMWrapper(abc.ABC):
         class_encs: torch.Tensor,
         targ_data: List[Any],
         chunk_size_loss: int,
-    ) -> Optional[float]:
+    ) -> Tuple[Optional[float], List[Dict[str, float]]]:
         """
         Raw eval loss over precomputed paired (image, text) embeddings, using
         fixed-size chunks as the contrastive negative pool so the difficulty
         matches the global training batch (rather than a single rank's local
         sub-batch). The final partial chunk is dropped so every chunk poses an
-        equal-size negative pool; returns None when there isn't one full chunk.
+        equal-size negative pool; returns (None, []) when there isn't one full chunk.
 
         Inputs are the full partition gathered across ranks, so this runs
         identically (and redundantly) on every rank with no further
@@ -678,10 +679,12 @@ class VLMWrapper(abc.ABC):
 
         Returns:
         - Mean raw eval loss across full chunks, or None if N < chunk_size_loss
+        - Per-chunk sim/targ distribution stats (sim_targ_batch_stats per full chunk;
+          the dropped partial chunk contributes none), or [] if N < chunk_size_loss
         """
         N = embs_img.size(0)
         if N < chunk_size_loss:
-            return None
+            return None, []
 
         # deterministic shuffle (identical on every rank) so chunks are class-mixed
         perm = torch.randperm(N, generator=torch.Generator().manual_seed(0)).to(embs_img.device)
@@ -692,21 +695,29 @@ class VLMWrapper(abc.ABC):
 
         loss_total = 0.0
         n_samps = 0
+        chunk_stats = []
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
-            _, loss_raw, _, _, _ = self._loss_for_cfg_full_batch(
+            _, loss_raw, _, sim1, targs1 = self._loss_for_cfg_full_batch(
                 embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss, secondary=False,
             )
             mix = self.cfg.loss2["mix"]
             if mix != 0.0:
-                _, loss2_raw, _, _, _ = self._loss_for_cfg_full_batch(
+                _, loss2_raw, _, _, targs2 = self._loss_for_cfg_full_batch(
                     embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss2, secondary=True,
                 )
                 loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
+                # similarity is shared across loss configs (same embeddings, same sim_type in
+                # practice) so stats track the primary config's sim only; the tracked target
+                # matrix is the mix-blend of the two configs' targets (mirrors _global_batch_loss)
+                targs_stat = (1.0 - mix) * targs1 + mix * targs2
+            else:
+                targs_stat = targs1
+            chunk_stats.append(sim_targ_batch_stats(sim1, targs_stat))
             loss_total += loss_raw.item() * chunk_size_loss
             n_samps += chunk_size_loss
 
-        return loss_total / n_samps
+        return loss_total / n_samps, chunk_stats
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:

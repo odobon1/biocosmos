@@ -13,9 +13,8 @@ from typing import List, Tuple, Any, Dict, Union, Optional
 from pathlib import Path
 
 from utils.utils import paths, load_split
-from utils.loss import compute_loss
+from utils.loss import Criterion
 from utils.head import compute_sim
-from utils.imb import compute_class_wts
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
 from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
@@ -337,16 +336,6 @@ class VLMWrapper(abc.ABC):
             fpath
         )
 
-    def set_class_wts(self, config: TrainConfig, secondary: bool = False) -> None:
-        cfg_loss = config.loss if not secondary else config.loss2
-        cw, cpw = compute_class_wts(config.dataset, config.split, cfg_loss, train_pt=config.train_pt)
-        if not secondary:
-            self.class_wts = cw.to(self.device)
-            self.class_pair_wts = cpw.to(self.device)
-        else:
-            self.class_wts2 = cw.to(self.device)
-            self.class_pair_wts2 = cpw.to(self.device)
-
     def embed_images(self, imgs_b: torch.Tensor) -> torch.Tensor:
         """
         Runs batch of images through image encoder and returns batch of unit-length embeddings.
@@ -396,30 +385,6 @@ class VLMWrapper(abc.ABC):
         else:
             return sim * model.logit_scale2.exp() + model.logit_bias2
 
-    def compute_batch_loss(
-        self, 
-        logits:       torch.Tensor, 
-        class_encs_b: torch.Tensor, 
-        targ_data_b:  List[Any], 
-        cfg_loss:     Dict[str, Any], 
-        secondary:    bool = False,
-    ) -> torch.Tensor:
-        """
-        Computes loss for a batch given logits and target data.
-        """
-        cw, cpw = (self.class_wts, self.class_pair_wts) if not secondary else (self.class_wts2, self.class_pair_wts2)
-        loss, loss_raw, targs = compute_loss(
-            cfg_loss,
-            logits,
-            class_encs_b,
-            targ_data_b,
-            cw,
-            cpw,
-            self.device,
-            train=self.model.training,
-        )
-        return loss, loss_raw, targs
-
     def freeze(self, freeze_txt: bool, freeze_img: bool) -> None:
         """
         Freezes parameters of text and/or image encoders.
@@ -442,21 +407,21 @@ class VLMWrapper(abc.ABC):
         """
         raise NotImplementedError
 
-    def _loss_for_cfg_full_batch(
+    def _loss_for_crit_full_batch(
         self,
         embs_img_all: torch.Tensor,
         embs_txt_all: torch.Tensor,
         class_encs_all: torch.Tensor,
         targ_data_all: List[Any],
-        cfg_loss: Dict[str, Any],
+        crit: Criterion,
         secondary: bool = False,
     ) -> torch.Tensor:
         """
-        Computes loss for the full global batch according to a given loss configuration (primary or secondary).
+        Computes loss for the full global batch under a given criterion (primary or secondary).
         """
-        sim = compute_sim(embs_img_all, embs_txt_all, cfg_loss["sim"])
+        sim = compute_sim(embs_img_all, embs_txt_all, crit.cfg["sim"])
         logits = self.compute_logits(sim, secondary=secondary)
-        loss, loss_raw, targs = self.compute_batch_loss(logits, class_encs_all, targ_data_all, cfg_loss, secondary=secondary)
+        loss, loss_raw, targs = crit(logits, class_encs_all, targ_data_all, train=self.model.training)
 
         return loss, loss_raw, logits, sim, targs
 
@@ -481,12 +446,12 @@ class VLMWrapper(abc.ABC):
         if not loss_flag:
             return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b, None
 
-        loss1, loss1_raw, logits1, sim1, targs1 = self._loss_for_cfg_full_batch(
+        loss1, loss1_raw, logits1, sim1, targs1 = self._loss_for_crit_full_batch(
             embs_img_b,
             embs_txt_b,
             class_encs_b,
             targ_data_b,
-            self.cfg.loss,
+            self.crit1,
             secondary=False,
         )
         if logits1.requires_grad:
@@ -494,12 +459,12 @@ class VLMWrapper(abc.ABC):
 
         mix = self.cfg.loss2["mix"]
         if mix != 0.0:
-            loss2, loss2_raw, logits2, sim2, targs2 = self._loss_for_cfg_full_batch(
+            loss2, loss2_raw, logits2, sim2, targs2 = self._loss_for_crit_full_batch(
                 embs_img_b,
                 embs_txt_b,
                 class_encs_b,
                 targ_data_b,
-                self.cfg.loss2,
+                self.crit2,
                 secondary=True,
             )
             if logits2.requires_grad:
@@ -698,13 +663,13 @@ class VLMWrapper(abc.ABC):
         chunk_stats = []
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
-            _, loss_raw, _, sim1, targs1 = self._loss_for_cfg_full_batch(
-                embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss, secondary=False,
+            _, loss_raw, _, sim1, targs1 = self._loss_for_crit_full_batch(
+                embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit1, secondary=False,
             )
             mix = self.cfg.loss2["mix"]
             if mix != 0.0:
-                _, loss2_raw, _, _, targs2 = self._loss_for_cfg_full_batch(
-                    embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.cfg.loss2, secondary=True,
+                _, loss2_raw, _, _, targs2 = self._loss_for_crit_full_batch(
+                    embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit2, secondary=True,
                 )
                 loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
                 # similarity is shared across loss configs (same embeddings, same sim_type in

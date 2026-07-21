@@ -66,7 +66,7 @@ class TrialData:
 
     def __init__(self, dpath_trial):
 
-        self.fpath_data = dpath_trial / "data_trial.pkl"  #!
+        self.fpath_data = dpath_trial / "data_trial.pkl"
 
         self.data_epoch = {
             "n_samps_seen": [],

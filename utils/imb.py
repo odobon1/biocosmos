@@ -1,62 +1,86 @@
 import torch
-import numpy as np
 
 from utils.utils import load_split
 
 
-def compute_class_wts(dataset, split, cfg_loss, train_pt: str = "train"):
+def build_wting(cfg_wting, dataset, split, train_pt, dim):
+    """
+    Startup half of a weighting scheme: per-class counts, and the scalar that normalizes its
+    weights to mean 1.0.
 
-    # note: needs to be untangled....
-    split = load_split(dataset, split)
-    counts = split.class_counts[train_pt]
-    pair_counts = np.outer(counts, counts)
-    n_classes = len(counts)
+    The full weight vector (1D) / matrix (2D) is built here once, reduced to that scalar, and
+    discarded -- training recomputes weights per batch from the counts via `compute_batch_wts`,
+    so nothing of size n_classes^2 is held for the run.
 
-    if cfg_loss.get('wting', {}).get('type') is None:
-        class_wts = np.ones_like(counts)
-        class_pair_wts = np.ones_like(pair_counts)
-    else:
-        cfg_cw = cfg_loss["wting"]
-        
-        if cfg_cw["cp_type"] == 2:
-            neg_mult2 = np.full((n_classes, n_classes), 2)
-            np.fill_diagonal(neg_mult2, 1)
-            pair_counts = pair_counts * neg_mult2
+    Args:
+    - cfg_wting --- `wting` block of a loss config
+    - dim --------- 1 for per-class weights, 2 for per-class-pair weights
 
-        if cfg_cw["type"] == "inv_freq":
-            gamma = cfg_cw["inv_freq"].get("gamma", 0.0)
-            class_wts = 1.0 / np.power(counts, gamma)
-            class_pair_wts = 1.0 / np.power(pair_counts, gamma)
-        elif cfg_cw["type"] == "class_bal":
-            beta = cfg_cw["class_bal"].get("beta", 0.0)
-            eps = 1e-8
-            class_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, counts), eps)  # (1 - β) / (1 - β^n_c)
-            class_pair_wts = (1.0 - beta) / np.maximum(1.0 - np.power(beta, pair_counts), eps)
+    Returns:
+    - counts --- Per-class sample counts for the train partition, NaN for absent classes; pt[n_classes]
+    - norm ----- Mean weight over all classes (1D) / class pairs (2D)
+    """
+    counts = torch.tensor(load_split(dataset, split).class_counts[train_pt], dtype=torch.float64)
+    class_encs = torch.arange(counts.numel())
 
-    # normalize s.t. mean(wts) == 1.0 (ignoring NaN entries for absent classes)
-    # class_wts /= class_wts.mean()
-    class_wts = class_wts / np.nanmean(class_wts)
-
-    if cfg_loss.get('wting', {}).get('type') is not None:
-        if cfg_cw["cp_type"] == 1:
-            class_pair_wts = class_pair_wts / np.nanmean(class_pair_wts)
-        elif cfg_cw["cp_type"] == 2:
-            mask = np.triu(np.ones_like(class_pair_wts, dtype=bool))
-            # values of the upper triangle (1D)
-            tri_vals = class_pair_wts[mask]
+    if dim == 1:
+        wts = _compute_wts(cfg_wting, counts)
+        norm = wts.nanmean()
+    elif dim == 2:
+        wts = _compute_wts(cfg_wting, _pair_counts(counts, class_encs, cfg_wting["cp_type"]))
+        if cfg_wting["cp_type"] == 1:
+            norm = wts.nanmean()
+        elif cfg_wting["cp_type"] == 2:
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing i.e. although (i, j) and (j, i) key into different elements of the matrix, we are treating these as being the same
-            class_pair_wts = class_pair_wts / np.nanmean(tri_vals)
-    
-    # # class weight clipping (currently not used)
-    # class_wt_clip = cfg_cw.get("class_wt_clip", None)
-    # if class_wt_clip is not None:
-    #     class_wts      = np.minimum(class_wts, class_wt_clip)
-    #     class_pair_wts = np.minimum(class_pair_wts, class_wt_clip)
-    #     # renormalize after clipping
-    #     class_wts      = class_wts / class_wts.mean()
-    #     class_pair_wts = class_pair_wts / class_pair_wts.mean()
+            norm = wts[torch.triu(torch.ones_like(wts, dtype=torch.bool))].nanmean()  # mean over the upper triangle (1D)
 
-    class_wts = torch.tensor(class_wts)
-    class_pair_wts = torch.tensor(class_pair_wts)
+    return counts, norm.item()
 
-    return class_wts, class_pair_wts
+def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, norm):
+    """
+    Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
+
+    Returns pt[B] for dim 1, pt[B, B] for dim 2. Computed in float64 (`class_bal` evaluates
+    1 - beta^n, which cancels catastrophically for small counts) and cast to float32, since a
+    float64 result would promote the whole weighted loss reduction to float64.
+    """
+    if dim == 1:
+        counts_b = counts[class_encs_b]
+    elif dim == 2:
+        counts_b = _pair_counts(counts, class_encs_b, cfg_wting["cp_type"])
+
+    return (_compute_wts(cfg_wting, counts_b) / norm).float()
+
+def _pair_counts(counts, class_encs, cp_type):
+    """
+    Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings.
+
+    cp_type 2 counts negative pairs double. "Negative" is by class identity, not position -- two
+    entries of the same class are a positive pair wherever they land in the matrix, which for a
+    batch means anywhere two samples share a class, not just the diagonal.
+    """
+    counts_k = counts[class_encs]
+    pair = counts_k.unsqueeze(1) * counts_k.unsqueeze(0)
+
+    if cp_type == 2:
+        neg = class_encs.unsqueeze(1) != class_encs.unsqueeze(0)
+        pair = torch.where(neg, pair * 2, pair)
+
+    return pair
+
+def _compute_wts(cfg_wting, counts):
+    """
+    Weighting formula, unnormalized; dimension-agnostic -- applied to per-class counts (1D) or
+    class-pair counts (2D) alike.
+    """
+    if cfg_wting["type"] is None:
+        wts = torch.ones_like(counts)
+    elif cfg_wting["type"] == "inv_freq":
+        gamma = cfg_wting["inv_freq"]["gamma"]
+        wts = 1.0 / counts.pow(gamma)
+    elif cfg_wting["type"] == "class_bal":
+        beta = cfg_wting["class_bal"]["beta"]
+        eps = 1e-8
+        wts = (1.0 - beta) / (1.0 - torch.pow(beta, counts)).clamp_min(eps)  # (1 - β) / (1 - β^n_c)
+
+    return wts

@@ -3,6 +3,6 @@ datasets: [nymph]
 
 baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:
-  - - {split: D10, train_pt: train, sample_volume: 500_000, chkpt_every: 100_000, batch_size: 2_048, dev.debug_mode: false}
+  - - {split: D10, train_pt: train, sample_volume: 500_000, chkpt_every: 100_000, batch_size: 2_048, dev.debug_mode: false, dev.manifold_viz.n_trials: 0, dev.del_base_eval_cache.trial: true, hw.use_img_cache: true}
 
 suffix: null  # {null, [str]}; no suffix if set to null

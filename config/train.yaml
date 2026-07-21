@@ -71,22 +71,22 @@ loss2:  # secondary loss
 aug:  # image augmentation
   rrcrop:  # random resized crop
     scale_min: 0.9  # down-scale wrt area, scale randomly picked from [scale_min, 1.0]; OpenCLIP default: [0.9, 1.0]
-  hflip: true  # {true, false}; horizontal flip w/ 50% probability
+  hflip: false  # {true, false}; horizontal flip w/ 50% probability
   cjit:  # color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
-    prob: 0.1
+    prob: 0.0
   sharpness:
     factor: 1.333  # (1.0, inf); sharpness range = [1.0 / factor, factor]; 1.0 --> no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
-    prob: 0.05
+    prob: 0.00
   gblur:  # gaussian blur
     kernel_size: 3  # must be odd int
     sigma:
       min: 0.0
       max: 1.0
-    prob: 0.05
+    prob: 0.00
 img_norm: default  # {default, dataset}
 
 text_template:
@@ -132,4 +132,4 @@ dev:
   continue_campaign: false  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
   del_base_eval_cache:
     campaign: false  # {true, false}; (true) delete base_eval_cache/ once, when the campaign is first created (relaunches keep the cache the campaign's own trials built)
-    trial: true  # {true, false}; (true) delete base_eval_cache/ before each trial launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons)
+    trial: false  # {true, false}; (true) delete base_eval_cache/ before each trial launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons)

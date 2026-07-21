@@ -128,7 +128,7 @@ def tree_pyrisitia():
         ((pyrisitia_lisa:14.69, leucidia_elvina:14.69):14.69,
           colias_palaeno:29.38);
 
-    Post-augmentation (wrong placement at root, branch_length=0):
+    Pre-rehome state under test (wrong placement at root, branch_length=0):
         ((pyrisitia_lisa:14.69, leucidia_elvina:14.69):14.69,
           colias_palaeno:29.38,
           pyrisitia_chamberlaini:0.0, pyrisitia_venusta:0.0);

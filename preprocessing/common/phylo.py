@@ -594,7 +594,6 @@ def _find_graft_node_path_for_class_worker(
 def augment_tree_with_polytomies(
     tree: Tree,
     class_data: Dict[str, Dict[str, Optional[str]]],
-    branch_length: Optional[float] = 0.0,
     n_workers: int = 4,
 ) -> Tree:
     """
@@ -607,6 +606,7 @@ def augment_tree_with_polytomies(
         * at least one sibling taxon at that rank also has an original-tree representative
     - Graft at the deepest MRCA between represented members of the target taxon
       and represented members of represented sibling taxa.
+    - Extend each grafted tip to the tree's max tip depth.
 
     Parameters
     ----------
@@ -624,8 +624,6 @@ def augment_tree_with_polytomies(
                 ...
             }
         Available ranks are auto-detected from this class_data.
-    branch_length
-        Branch length to assign to newly grafted leaves.
     n_workers
         Number of worker processes for placement computation.
         Use 1 for serial execution.
@@ -664,6 +662,14 @@ def augment_tree_with_polytomies(
             parent: Optional[Tuple[str, str]] = lineage[i - 1] if i > 0 else None
             taxa_by_parent[rank][parent].add(taxon)
 
+    # Extend each grafted tip to the tree's max tip depth so it sits at the present day
+    # rather than at its graft node, which may be an ancient divergence (or the root,
+    # when find_graft_node_for_class found no usable anchor at all). rehome_missing_-
+    # classes_in_represented_higher_rank relocates most grafted tips afterward; this is
+    # the branch length the ones it skips keep.
+    depths = tree.depths()
+    depth_max = max(depths[tip] for tip in tree.get_terminals())
+
     chunksize = max(1, len(cids_missing) // max(1, n_workers * 8))
     with ProcessPoolExecutor(
         max_workers=n_workers,
@@ -671,10 +677,11 @@ def augment_tree_with_polytomies(
         initargs=(tree, class_data, rep_by_rank_taxon, taxa_by_parent, parent_map, rank_order),
     ) as executor:
         for cid, graft_path in executor.map(_find_graft_node_path_for_class_worker, cids_missing, chunksize=chunksize):
+            graft_node = _get_clade_by_path(tree, graft_path)
             add_child_as_polytomy(
-                node=_get_clade_by_path(tree, graft_path),
+                node=graft_node,
                 cid=cid,
-                branch_length=branch_length,
+                branch_length=depth_max - depths[graft_node],
             )
 
     rehome_missing_classes_in_represented_higher_rank(

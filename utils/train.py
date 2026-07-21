@@ -1055,16 +1055,16 @@ def plot_composite_metrics(
         for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
             stat_key = f"{stat_prefix}_{stat_name}"
             if len(data_epoch.get(stat_key, [])) == len(x_train):
-                ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle)
+                ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
     ax6.set_ylabel("Similarity / Target", fontsize=fontsize_axes, fontweight="bold")
     ax6.set_ylim(-1.0, 1.0)
     ax6.legend(
         handles=[
-            Line2D([0], [0], color=color_sim, lw=1.5, label="Similarity"),
-            Line2D([0], [0], color=color_targ, lw=1.5, label="Target"),
-            Line2D([0], [0], color="gray", lw=1.5, linestyle="-", label="Min/Max"),
-            Line2D([0], [0], color="gray", lw=1.5, linestyle="--", label="Mean"),
-            Line2D([0], [0], color="gray", lw=1.5, linestyle=":", label="Median"),
+            Line2D([0], [0], color=color_sim, lw=1.0, label="Similarity"),
+            Line2D([0], [0], color=color_targ, lw=1.0, label="Target"),
+            Line2D([0], [0], color="gray", lw=1.0, linestyle="-", label="Min/Max"),
+            Line2D([0], [0], color="gray", lw=1.0, linestyle="--", label="Mean"),
+            Line2D([0], [0], color="gray", lw=1.0, linestyle=":", label="Median"),
         ],
         loc="upper center",
         ncol=5,
@@ -1102,7 +1102,7 @@ def plot_composite_metrics(
     plt.tight_layout()
     plots_dir = dpath_trial / "learning_curves"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(plots_dir / output_filename)
+    fig.savefig(plots_dir / output_filename, dpi=300)
     plt.close(fig)
 
 def maybe_plot(ax, x, data, key, label, **kwargs):

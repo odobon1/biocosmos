@@ -242,17 +242,19 @@ class BCECriterion(Criterion):
 
         loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
 
-        if self.cfg["wting"]["norm"]["wts"]:
-            loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm
+        if self.cfg["reduce"]["denom"] == "wt_mean":
+            loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # per-pair weighted mean
             loss_raw = loss_raw_matrix.mean()
-        else:
+        elif self.cfg["reduce"]["denom"] == "per_samp":
             loss = (W * loss_raw_matrix).sum() / B
             loss_raw = loss_raw_matrix.sum() / B
 
-        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
-        with torch.no_grad():
-            norm = loss_raw / loss
-        loss = norm * loss
+        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of 
+        # "total learning" stays the same for apples-to-apples comparison with baselines)
+        if self.cfg["reduce"]["wt_invar"]:
+            with torch.no_grad():
+                norm = loss_raw / loss
+            loss = norm * loss
 
         return loss, loss_raw, targs
 

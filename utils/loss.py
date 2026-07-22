@@ -221,6 +221,10 @@ class BCECriterion(Criterion):
             if self.cfg["focal"]:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
+                if self.cfg["focal"]["norm"]:
+                    with torch.no_grad():
+                        norm = W_foc.mean()
+                    W_foc = W_foc / norm
             else:
                 W_foc = torch.ones_like(targs)
 

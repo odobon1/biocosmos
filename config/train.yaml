@@ -39,6 +39,7 @@ loss:  # primary loss
   focal:
     gamma: 2.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
+    norm: false  # {true, false}
   dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
   reduce:
     denom: wt_mean  # {wt_mean, per_samp} (WANT BETTER NAME THAN "per_samp"); wt_mean: /W.sum() -> per-pair weighted mean; per_samp: /B -> per-sample sum (SigLIP convention)
@@ -64,6 +65,7 @@ loss2:  # secondary loss
   focal:
     gamma: 2.0  # [0.0, inf)
     comp_type: 1  # {1, 2}
+    norm: false  # {true, false}
   dsmr: true
   reduce:
     denom: wt_mean  # {wt_mean, per_samp}

@@ -227,9 +227,9 @@ class BCECriterion(Criterion):
             if self.cfg["dsmr"]:
                 mass_pos = torch.sum(targs).item()
                 mass_neg = B**2 - mass_pos
-                # scaling (numerical stability measure)
-                wt_neg = mass_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of mass_pos and mass_neg
-                wt_pos = mass_neg / (B**2 / 2)
+                scale = B**2 / (2 * mass_pos * mass_neg)  # scaling factor to keep the mean of W_dsmr at 1.0
+                wt_neg = scale * mass_pos
+                wt_pos = scale * mass_neg
                 W_dsmr = targs * wt_pos + (1 - targs) * wt_neg
             else:
                 W_dsmr = torch.ones_like(targs)
@@ -242,7 +242,7 @@ class BCECriterion(Criterion):
 
         loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
 
-        if self.cfg["reduce"]["denom"] == "wt_mean":
+        if self.cfg["reduce"]["denom"] == "wt_mean":  # NOTE: wt_mean divides by W.sum(), so any scalar on W cancels (i.e. normalizing weights becomes inert)
             loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # per-pair weighted mean
             loss_raw = loss_raw_matrix.mean()
         elif self.cfg["reduce"]["denom"] == "per_samp":

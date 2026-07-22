@@ -126,7 +126,7 @@ class InfoNCE1Criterion(Criterion):
 
         W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B]
 
-        if self.cfg['focal']:
+        if self.cfg["focal"]:
             """
             p_t = exp(-CE)
             focal factor: (1 - p_t)^gamma
@@ -182,7 +182,7 @@ class InfoNCE2Criterion(Criterion):
 
         W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B, B]
 
-        if self.cfg['focal']:
+        if self.cfg["focal"]:
             preds_i2t = log_p_i2t.exp()
             preds_t2i = log_p_t2i.exp()
             W_foc_i2t = focal_2d(preds_i2t, targs, self.cfg["focal"])
@@ -218,32 +218,36 @@ class BCECriterion(Criterion):
         if train:
             W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B, B]
 
-            if self.cfg['focal']:
+            if self.cfg["focal"]:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
             else:
                 W_foc = torch.ones_like(targs)
 
             if self.cfg["dsmr"]:
-                num_pos = torch.sum(targs).item()
-                num_neg = B**2 - num_pos
+                mass_pos = torch.sum(targs).item()
+                mass_neg = B**2 - mass_pos
                 # scaling (numerical stability measure)
-                wt_neg = num_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of num_pos and num_neg
-                wt_pos = num_neg / (B**2 / 2)
-                smr_wts = targs * wt_pos + (1 - targs) * wt_neg
+                wt_neg = mass_pos / (B**2 / 2)  # (_ / (B^2 / 2)) equivalent to dividing by mean of mass_pos and mass_neg
+                wt_pos = mass_neg / (B**2 / 2)
+                W_dsmr = targs * wt_pos + (1 - targs) * wt_neg
             else:
-                smr_wts = torch.ones_like(targs)
+                W_dsmr = torch.ones_like(targs)
 
-            W = W_cb * smr_wts * W_foc
+            W = W_cb * W_dsmr * W_foc
 
         else:
 
             W = torch.ones_like(targs)
 
         loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
-        loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm (may be some numerical considerations here though, might even want to prenorm the individual terms)
 
-        loss_raw = loss_raw_matrix.mean()
+        if self.cfg["wting"]["norm"]["wts"]:
+            loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # weighted mean loss -- the norm here is irrelevant with the subsequent loss norm
+            loss_raw = loss_raw_matrix.mean()
+        else:
+            loss = (W * loss_raw_matrix).sum() / B
+            loss_raw = loss_raw_matrix.sum() / B
 
         # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of "total learning" stays the same for apples-to-apples comparison with baselines)
         with torch.no_grad():

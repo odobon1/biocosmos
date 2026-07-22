@@ -30,12 +30,14 @@ loss:  # primary loss
   sim: cos  # {cos, geo1, geo2}
   targ: sw  # {iw, sw, tax, phylo}
   wting:
-    cp_type: 1  # {1, 2}; class-pair computation type; 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
+    cp_type: 1  # {1, 2}; class-pair computation type (only relevant for 2D-weighting); 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
     type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
     inv_freq:  # inverse-frequency weighting; only relevant if `type: inv_freq`
       gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
     class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
       beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
+    norm:
+      wts: true  # {true, false}; (true) normalize batch weights to sum to 1.0 (i.e. weighted mean loss); (false) normalize via 1/B
   focal:
     gamma: 2.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
@@ -58,6 +60,8 @@ loss2:  # secondary loss
       gamma: 0.5  # (0.0, 1.0]
     class_bal:
       beta: 0.9999  # [0.0, 1.0)
+    norm:
+      wts: true  # {true, false}
   focal:
     gamma: 2.0  # [0.0, inf)
     comp_type: 1  # {1, 2}
@@ -119,7 +123,7 @@ dev:
     batch_size: 128
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
   manifold_viz:
-    n_trials: 1  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false
+    n_trials: 0  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false
     plot_2panel: true  # {true, false}; (true) plot 2-panel PCA's + t-SNE's
     plot_4panel: true  # {true, false}; (true) plot 4-panel PCA's + t-SNE's
     plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's

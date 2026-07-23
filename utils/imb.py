@@ -17,26 +17,26 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim):
     - dim --------- 1 for per-class weights, 2 for per-class-pair weights
 
     Returns:
-    - counts --- Per-class sample counts for the train partition, NaN for absent classes; pt[n_classes]
-    - norm ----- Mean weight over all classes (1D) / class pairs (2D)
+    - counts ---- Per-class sample counts for the train partition, NaN for absent classes; pt[n_classes]
+    - ds_norm --- Mean weight over all classes (1D) / class pairs (2D); dataset-level constant, computed once at startup
     """
     counts = torch.tensor(load_split(dataset, split).class_counts[train_pt], dtype=torch.float64)
     class_encs = torch.arange(counts.numel())
 
     if dim == 1:
         wts = _compute_wts(cfg_wting, counts)
-        norm = wts.nanmean()
+        ds_norm = wts.nanmean()
     elif dim == 2:
         wts = _compute_wts(cfg_wting, _pair_counts(counts, class_encs, cfg_wting["cp_type"]))
         if cfg_wting["cp_type"] == 1:
-            norm = wts.nanmean()
+            ds_norm = wts.nanmean()
         elif cfg_wting["cp_type"] == 2:
             # symmetric weight values are considered to be of the same class (i.e. symmetrical values are considered duplicates), structured like so for convenient indexing i.e. although (i, j) and (j, i) key into different elements of the matrix, we are treating these as being the same
-            norm = wts[torch.triu(torch.ones_like(wts, dtype=torch.bool))].nanmean()  # mean over the upper triangle (1D)
+            ds_norm = wts[torch.triu(torch.ones_like(wts, dtype=torch.bool))].nanmean()  # mean over the upper triangle (1D)
 
-    return counts, norm.item()
+    return counts, ds_norm.item()
 
-def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, norm):
+def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, ds_norm):
     """
     Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
 
@@ -49,7 +49,7 @@ def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, norm):
     elif dim == 2:
         counts_b = _pair_counts(counts, class_encs_b, cfg_wting["cp_type"])
 
-    return (_compute_wts(cfg_wting, counts_b) / norm).float()
+    return (_compute_wts(cfg_wting, counts_b) / ds_norm).float()
 
 def _pair_counts(counts, class_encs, cp_type):
     """

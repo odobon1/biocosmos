@@ -72,7 +72,7 @@ class Criterion(abc.ABC):
     def __init__(self, cfg_loss, dataset, split, train_pt, device):
         self.cfg = cfg_loss
         self.device = device
-        counts, self.wt_norm = build_wting(cfg_loss["wting"], dataset, split, train_pt, self.wting_dim)
+        counts, self.ds_norm = build_wting(cfg_loss["wting"], dataset, split, train_pt, self.wting_dim)
         self.counts = counts.to(device)
 
     @staticmethod
@@ -89,7 +89,7 @@ class Criterion(abc.ABC):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
     def _batch_wts(self, class_encs_b):
-        return compute_batch_wts(self.cfg["wting"], self.counts, class_encs_b, self.wting_dim, self.wt_norm)
+        return compute_batch_wts(self.cfg["wting"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
 
     @abc.abstractmethod
     def __call__(self, logits, class_encs_b, targ_data_b, train):
@@ -124,7 +124,7 @@ class InfoNCE1Criterion(Criterion):
         if not train:
             return loss_raw, loss_raw, targs_raw
 
-        W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B]
+        W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B]
 
         if self.cfg["focal"]:
             """
@@ -143,8 +143,8 @@ class InfoNCE1Criterion(Criterion):
             W_foc_i2t = torch.ones_like(targs)
             W_foc_t2i = torch.ones_like(targs.T)
 
-        W_i2t = W_foc_i2t * W_cb
-        W_t2i = W_foc_t2i * W_cb
+        W_i2t = W_foc_i2t * W_ci
+        W_t2i = W_foc_t2i * W_ci
 
         num_i2t = (W_i2t * loss_i2t_raw_b).sum()
         num_t2i = (W_t2i * loss_t2i_raw_b).sum()
@@ -180,7 +180,7 @@ class InfoNCE2Criterion(Criterion):
         if not train:
             return loss_raw, loss_raw, targs_raw
 
-        W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B, B]
+        W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
 
         if self.cfg["focal"]:
             preds_i2t = log_p_i2t.exp()
@@ -191,8 +191,8 @@ class InfoNCE2Criterion(Criterion):
             W_foc_i2t = torch.ones_like(targs)
             W_foc_t2i = torch.ones_like(targs.T)
 
-        W_i2t = W_foc_i2t * W_cb
-        W_t2i = W_foc_t2i * W_cb
+        W_i2t = W_foc_i2t * W_ci
+        W_t2i = W_foc_t2i * W_ci
 
         num_i2t = (W_i2t * loss_i2t_raw).sum()
         num_t2i = (W_t2i * loss_t2i_raw).sum()
@@ -216,15 +216,14 @@ class BCECriterion(Criterion):
         targs = self._targets(B, class_encs_b, targ_data_b)
 
         if train:
-            W_cb = self._batch_wts(class_encs_b)  # class-balancing weights; pt[B, B]
-
+            W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
+            if self.cfg["reduce"]["cls_imb"]:
+                W_ci = W_ci / W_ci.detach().mean()
             if self.cfg["focal"]:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
-                if self.cfg["focal"]["norm"]:
-                    with torch.no_grad():
-                        norm = W_foc.mean()
-                    W_foc = W_foc / norm
+                if self.cfg["reduce"]["focal"]:
+                    W_foc = W_foc / W_foc.detach().mean()
             else:
                 W_foc = torch.ones_like(targs)
 
@@ -238,7 +237,7 @@ class BCECriterion(Criterion):
             else:
                 W_dsmr = torch.ones_like(targs)
 
-            W = W_cb * W_dsmr * W_foc
+            W = W_ci * W_dsmr * W_foc
 
         else:
 

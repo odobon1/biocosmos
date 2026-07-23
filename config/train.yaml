@@ -37,7 +37,7 @@ loss:  # primary loss
     class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
       beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
   focal:
-    gamma: 2.0  # [0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0
+    gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
   dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
   reduce:
@@ -64,7 +64,7 @@ loss2:  # secondary loss
     class_bal:
       beta: 0.9999  # [0.0, 1.0)
   focal:
-    gamma: 2.0  # [0.0, inf)
+    gamma: 2.0  # (0.0, inf)
     comp_type: 1  # {1, 2}
   dsmr: true
   reduce:

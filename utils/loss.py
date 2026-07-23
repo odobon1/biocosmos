@@ -126,7 +126,7 @@ class InfoNCE1Criterion(Criterion):
 
         W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B]
 
-        if self.cfg["focal"]:
+        if self.cfg["focal"]["gamma"] > 0.0:
             """
             p_t = exp(-CE)
             focal factor: (1 - p_t)^gamma
@@ -182,7 +182,7 @@ class InfoNCE2Criterion(Criterion):
 
         W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
 
-        if self.cfg["focal"]:
+        if self.cfg["focal"]["gamma"] > 0.0:
             preds_i2t = log_p_i2t.exp()
             preds_t2i = log_p_t2i.exp()
             W_foc_i2t = focal_2d(preds_i2t, targs, self.cfg["focal"])
@@ -219,7 +219,7 @@ class BCECriterion(Criterion):
             W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
             if self.cfg["reduce"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
-            if self.cfg["focal"]:
+            if self.cfg["focal"]["gamma"] > 0.0:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
                 if self.cfg["reduce"]["focal"]:

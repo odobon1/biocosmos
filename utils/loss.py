@@ -217,12 +217,12 @@ class BCECriterion(Criterion):
 
         if train:
             W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
-            if self.cfg["reduce"]["cls_imb"]:
+            if self.cfg["norm"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
             if self.cfg["focal"]["gamma"] > 0.0:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
-                if self.cfg["reduce"]["focal"]:
+                if self.cfg["norm"]["focal"]:
                     W_foc = W_foc / W_foc.detach().mean()
             else:
                 W_foc = torch.ones_like(targs)
@@ -237,7 +237,15 @@ class BCECriterion(Criterion):
             else:
                 W_dsmr = torch.ones_like(targs)
 
-            W = W_ci * W_dsmr * W_foc
+            if self.cfg["norm"]["agg"] == "foc_dsmr":
+                W_foc_dsmr = W_foc * W_dsmr
+                W_foc_dsmr = W_foc_dsmr / W_foc_dsmr.detach().mean()
+                W = W_ci * W_foc_dsmr
+            elif self.cfg["norm"]["agg"] == "full":
+                W = W_ci * W_dsmr * W_foc
+                W = W / W.detach().mean()
+            elif self.cfg["norm"]["agg"] is None:
+                W = W_ci * W_dsmr * W_foc
 
         else:
 
@@ -245,19 +253,19 @@ class BCECriterion(Criterion):
 
         loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
 
-        if self.cfg["reduce"]["denom"] == "wt_mean":  # NOTE: wt_mean divides by W.sum(), so any scalar on W cancels (i.e. normalizing weights becomes inert)
+        if self.cfg["norm"]["denom"] == "wt_mean":  # NOTE: wt_mean divides by W.sum(), so any scalar on W cancels (i.e. normalizing weights becomes inert)
             loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # per-pair weighted mean
             loss_raw = loss_raw_matrix.mean()
-        elif self.cfg["reduce"]["denom"] == "per_samp":
+        elif self.cfg["norm"]["denom"] == "per_samp":
             loss = (W * loss_raw_matrix).sum() / B
             loss_raw = loss_raw_matrix.sum() / B
 
         # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of 
         # "total learning" stays the same for apples-to-apples comparison with baselines)
-        if self.cfg["reduce"]["wt_invar"]:
+        if self.cfg["norm"]["wt_invar"]:
             with torch.no_grad():
-                norm = loss_raw / loss
-            loss = norm * loss
+                scale = loss_raw / loss
+            loss = scale * loss
 
         return loss, loss_raw, targs
 

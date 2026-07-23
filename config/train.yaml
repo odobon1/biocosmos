@@ -40,11 +40,12 @@ loss:  # primary loss
     gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
     comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
   dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
-  reduce:
+  norm:
     cls_imb: false  # {true, false}
     focal: false  # {true, false}
-    denom: wt_mean  # {wt_mean, per_samp}; (wt_mean) per-pair weighted mean, renders loss.reduce.{cls_imb, focal} inert; (per_samp) scale by 1/B (SigLIP convention)
-    wt_invar: true  # {true, false}; (true) rescale loss to the unweighted magnitude ("raw loss") so gradient scale is invariant to the weighting scheme, renders loss.reduce.{cls_imb, focal, denom} inert
+    agg: null  # {null, foc_dsmr, full}; (null) no aggregate normalization; (foc_dsmr) normalize focal * dsmr weights, renders loss.norm.focal inert; (full) normalize class-imb * focal * dsmr weights, renders loss.norm.{cls_imb, focal} inert
+    denom: wt_mean  # {wt_mean, per_samp}; (wt_mean) per-pair weighted mean, renders loss.norm.{cls_imb, focal, agg} inert; (per_samp) scale by 1/B (SigLIP convention)
+    wt_invar: true  # {true, false}; (true) rescale loss to the unweighted magnitude ("raw loss") so gradient scale is invariant to the weighting scheme, renders loss.norm.{cls_imb, focal, agg, denom} inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -67,9 +68,10 @@ loss2:  # secondary loss
     gamma: 2.0  # (0.0, inf)
     comp_type: 1  # {1, 2}
   dsmr: true
-  reduce:
+  norm:
     cls_imb: false  # {true, false}
     focal: false  # {true, false}
+    agg: null  # {null, foc_dsmr, full}
     wt_invar: true  # {true, false}
     denom: wt_mean  # {wt_mean, per_samp}
   logits:

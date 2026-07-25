@@ -44,7 +44,7 @@ loss:  # primary loss
     agg: prod  # {prod, mean, geo_mean, harm_mean}
     norm:
       cls_imb: false  # {true, false}
-      agg: false  # {true, false}; (true) normalize aggregate of class-imb + focal + dsmr weights, renders loss.wting.norm.cls_imb inert
+      agg: false  # {true, false}; (true) normalize aggregate of class-imb + focal + dsmr weights, (loss.wting.agg = {prod, geo_mean}) & (loss.wting.norm.agg = true) --> loss.wting.norm.cls_imb inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -123,11 +123,12 @@ stats:
     heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to row mins/maxs, fixed -> heatmap scaled to a fixed range
 
 dev:
-  debug_mode: false  # {true, false}
+  debug_mode: true  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000
     batch_size: 128
+    lr_warmup: 0  # overrides opt.lr.warmup
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
   manifold_viz:
     n_trials: 0  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false

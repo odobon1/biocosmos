@@ -223,6 +223,7 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
         cfg_dict["sample_volume"] = dev_cfg["debug"]["sample_volume"]
         cfg_dict["chkpt_every"] = dev_cfg["debug"]["chkpt_every"]
         cfg_dict["batch_size"] = dev_cfg["debug"]["batch_size"]
+        cfg_dict["opt"] = {**cfg_dict["opt"], "lr": {**cfg_dict["opt"]["lr"], "warmup": dev_cfg["debug"]["lr_warmup"]}}
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:

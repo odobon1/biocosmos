@@ -470,6 +470,13 @@ class VLMWrapper(abc.ABC):
             if logits2.requires_grad:
                 logits2.retain_grad()  # for batch-level logging of logit-level gradient norm
 
+            if self.cfg.loss2["mix_unit_scale"]:
+                # equalize the two losses' magnitudes so `mix` controls their true gradient-contribution
+                # ratio. Adam cancels a global loss scale but NOT the relative scale between the blended
+                # losses, which can differ by orders of magnitude and drift over training.
+                loss1 = loss1 / loss1.detach().clamp_min(1e-12)
+                loss2 = loss2 / loss2.detach().clamp_min(1e-12)
+
             loss = (1.0 - mix) * loss1 + mix * loss2
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
 

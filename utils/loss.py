@@ -216,14 +216,14 @@ class BCECriterion(Criterion):
         targs = self._targets(B, class_encs_b, targ_data_b)
 
         if train:
+
             W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
             if self.cfg["wting"]["norm"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
+            
             if self.cfg["wting"]["focal"]["gamma"] > 0.0:
                 preds = torch.sigmoid(logits)
                 W_foc = focal_2d(preds, targs, self.cfg["wting"]["focal"])  # pt[B, B]
-                if self.cfg["wting"]["norm"]["focal"]:
-                    W_foc = W_foc / W_foc.detach().mean()
             else:
                 W_foc = torch.ones_like(targs)
 

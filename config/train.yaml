@@ -44,8 +44,7 @@ loss:  # primary loss
     agg: prod  # {prod, mean, geo_mean, harm_mean}
     norm:
       cls_imb: false  # {true, false}
-      focal: false  # {true, false}
-      agg: false  # {true, false}; (true) normalize class-imb, focal, dsmr weights, renders loss.wting.norm.{cls_imb, focal} inert
+      agg: false  # {true, false}; (true) normalize aggregate of class-imb + focal + dsmr weights, renders loss.wting.norm.cls_imb inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -73,7 +72,6 @@ loss2:  # secondary loss
     agg: prod  # {prod, mean, geo_mean, harm_mean}
     norm:
       cls_imb: false  # {true, false}
-      focal: false  # {true, false}
       agg: false  # {true, false}
   logits:
     scale_init: null

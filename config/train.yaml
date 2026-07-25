@@ -43,9 +43,7 @@ loss:  # primary loss
   norm:
     cls_imb: false  # {true, false}
     focal: false  # {true, false}
-    agg: null  # {null, foc_dsmr, full}; (null) no aggregate normalization; (foc_dsmr) normalize focal * dsmr weights, renders loss.norm.focal inert; (full) normalize class-imb * focal * dsmr weights, renders loss.norm.{cls_imb, focal} inert
-    denom: per_samp  # {wt_mean, per_samp}; (wt_mean) per-pair weighted mean, renders loss.norm.{cls_imb, focal, agg} inert; (per_samp) scale by 1/B (SigLIP convention)
-    wt_invar: false  # {true, false}; (true) rescale loss to the unweighted magnitude ("raw loss") so gradient scale is invariant to the weighting scheme, renders loss.norm.{cls_imb, focal, agg, denom} inert
+    agg: false  # {true, false}; (true) normalize class-imb, focal, dsmr weights, renders loss.norm.{cls_imb, focal} inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -72,9 +70,7 @@ loss2:  # secondary loss
   norm:
     cls_imb: false  # {true, false}
     focal: false  # {true, false}
-    agg: null  # {null, foc_dsmr, full}
-    wt_invar: true  # {true, false}
-    denom: wt_mean  # {wt_mean, per_samp}
+    agg: false  # {true, false}
   logits:
     scale_init: null
     bias_init: null

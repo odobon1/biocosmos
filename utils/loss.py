@@ -237,35 +237,17 @@ class BCECriterion(Criterion):
             else:
                 W_dsmr = torch.ones_like(targs)
 
-            if self.cfg["norm"]["agg"] == "foc_dsmr":
-                W_foc_dsmr = W_foc * W_dsmr
-                W_foc_dsmr = W_foc_dsmr / W_foc_dsmr.detach().mean()
-                W = W_ci * W_foc_dsmr
-            elif self.cfg["norm"]["agg"] == "full":
-                W = W_ci * W_dsmr * W_foc
+            W = W_ci * W_dsmr * W_foc
+            if self.cfg["norm"]["agg"]:
                 W = W / W.detach().mean()
-            elif self.cfg["norm"]["agg"] is None:
-                W = W_ci * W_dsmr * W_foc
 
         else:
 
             W = torch.ones_like(targs)
 
         loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
-
-        if self.cfg["norm"]["denom"] == "wt_mean":  # NOTE: wt_mean divides by W.sum(), so any scalar on W cancels (i.e. normalizing weights becomes inert)
-            loss = (W * loss_raw_matrix).sum() / W.detach().sum()  # per-pair weighted mean
-            loss_raw = loss_raw_matrix.mean()
-        elif self.cfg["norm"]["denom"] == "per_samp":
-            loss = (W * loss_raw_matrix).sum() / B
-            loss_raw = loss_raw_matrix.sum() / B
-
-        # used to render total batch loss the same regardless of reweighting (i.e. individual loss components are adjusted with reweighting, but the amount of 
-        # "total learning" stays the same for apples-to-apples comparison with baselines)
-        if self.cfg["norm"]["wt_invar"]:
-            with torch.no_grad():
-                scale = loss_raw / loss
-            loss = scale * loss
+        loss = (W * loss_raw_matrix).sum() / B
+        loss_raw = loss_raw_matrix.sum() / B
 
         return loss, loss_raw, targs
 

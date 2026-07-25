@@ -709,32 +709,32 @@ class PrintLog:
         info.append(("Targs", cfg_loss["targ"]))
         lines.append(PrintLog._dash_aligned_lines(info))
 
-        wting = cfg_loss.get("wting", {}).get("type") is not None
+        wting = cfg_loss.get("wting", {}).get("cls_imb", {}).get("type") is not None
         if wting:
-            cw_type = cfg_loss["wting"]["type"]
+            cw_type = cfg_loss["wting"]["cls_imb"]["type"]
             lines_cw = [
                 "Class Weighting",
                 PrintLog._dash_aligned_lines((
                     ("- Type", cw_type),
-                    *((("- gamma", cfg_loss["wting"]["inv_freq"]["gamma"]),) if cw_type == "inv_freq" else ()),
-                    *((("- beta", cfg_loss["wting"]["class_bal"]["beta"]),) if cw_type == "class_bal" else ()),
-                    ("- cp_type", cfg_loss["wting"]["cp_type"]),
+                    *((("- gamma", cfg_loss["wting"]["cls_imb"]["inv_freq"]["gamma"]),) if cw_type == "inv_freq" else ()),
+                    *((("- beta", cfg_loss["wting"]["cls_imb"]["class_bal"]["beta"]),) if cw_type == "class_bal" else ()),
+                    ("- cp_type", cfg_loss["wting"]["cls_imb"]["cp_type"]),
                 )),
             ]
             lines.extend(lines_cw)
 
-        focal = cfg_loss.get("focal", {}).get("gamma", 0.0) != 0.0
+        focal = cfg_loss.get("wting", {}).get("focal", {}).get("gamma", 0.0) != 0.0
         if focal:
             lines_focal = [
                 "Focal",
                 PrintLog._dash_aligned_lines((
-                    ("- gamma", cfg_loss["focal"]["gamma"]),
-                    ("- comp_type", cfg_loss["focal"]["comp_type"]),
+                    ("- gamma", cfg_loss["wting"]["focal"]["gamma"]),
+                    ("- comp_type", cfg_loss["wting"]["focal"]["comp_type"]),
                 )),
             ]
             lines.extend(lines_focal)
 
-        if cfg_loss.get("dsmr", False):
+        if cfg_loss.get("wting", {}).get("dsmr", False):
             lines.append("DSMR Enabled")
 
         cfg_logits = cfg_loss["logits"]

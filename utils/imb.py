@@ -13,7 +13,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim):
     so nothing of size n_classes^2 is held for the run.
 
     Args:
-    - cfg_wting --- `wting` block of a loss config
+    - cfg_wting --- `wting.cls_imb` block of a loss config
     - dim --------- 1 for per-class weights, 2 for per-class-pair weights
 
     Returns:

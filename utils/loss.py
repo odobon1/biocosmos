@@ -72,7 +72,7 @@ class Criterion(abc.ABC):
     def __init__(self, cfg_loss, dataset, split, train_pt, device):
         self.cfg = cfg_loss
         self.device = device
-        counts, self.ds_norm = build_wting(cfg_loss["wting"], dataset, split, train_pt, self.wting_dim)
+        counts, self.ds_norm = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim)
         self.counts = counts.to(device)
 
     @staticmethod
@@ -89,7 +89,7 @@ class Criterion(abc.ABC):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
     def _batch_wts(self, class_encs_b):
-        return compute_batch_wts(self.cfg["wting"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
+        return compute_batch_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
 
     @abc.abstractmethod
     def __call__(self, logits, class_encs_b, targ_data_b, train):
@@ -126,7 +126,7 @@ class InfoNCE1Criterion(Criterion):
 
         W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B]
 
-        if self.cfg["focal"]["gamma"] > 0.0:
+        if self.cfg["wting"]["focal"]["gamma"] > 0.0:
             """
             p_t = exp(-CE)
             focal factor: (1 - p_t)^gamma
@@ -135,7 +135,7 @@ class InfoNCE1Criterion(Criterion):
 
             only supports 0/1 targets
             """
-            gamma = self.cfg["focal"]["gamma"]
+            gamma = self.cfg["wting"]["focal"]["gamma"]
             W_foc_i2t = (-torch.expm1(-loss_i2t_raw_b)).clamp_min(1e-12).pow(gamma)
             W_foc_t2i = (-torch.expm1(-loss_t2i_raw_b)).clamp_min(1e-12).pow(gamma)
 
@@ -182,11 +182,11 @@ class InfoNCE2Criterion(Criterion):
 
         W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
 
-        if self.cfg["focal"]["gamma"] > 0.0:
+        if self.cfg["wting"]["focal"]["gamma"] > 0.0:
             preds_i2t = log_p_i2t.exp()
             preds_t2i = log_p_t2i.exp()
-            W_foc_i2t = focal_2d(preds_i2t, targs, self.cfg["focal"])
-            W_foc_t2i = focal_2d(preds_t2i, targs.T, self.cfg["focal"])
+            W_foc_i2t = focal_2d(preds_i2t, targs, self.cfg["wting"]["focal"])
+            W_foc_t2i = focal_2d(preds_t2i, targs.T, self.cfg["wting"]["focal"])
         else:
             W_foc_i2t = torch.ones_like(targs)
             W_foc_t2i = torch.ones_like(targs.T)
@@ -217,17 +217,17 @@ class BCECriterion(Criterion):
 
         if train:
             W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
-            if self.cfg["norm"]["cls_imb"]:
+            if self.cfg["wting"]["norm"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
-            if self.cfg["focal"]["gamma"] > 0.0:
+            if self.cfg["wting"]["focal"]["gamma"] > 0.0:
                 preds = torch.sigmoid(logits)
-                W_foc = focal_2d(preds, targs, self.cfg["focal"])  # pt[B, B]
-                if self.cfg["norm"]["focal"]:
+                W_foc = focal_2d(preds, targs, self.cfg["wting"]["focal"])  # pt[B, B]
+                if self.cfg["wting"]["norm"]["focal"]:
                     W_foc = W_foc / W_foc.detach().mean()
             else:
                 W_foc = torch.ones_like(targs)
 
-            if self.cfg["dsmr"]:
+            if self.cfg["wting"]["dsmr"]:
                 mass_pos = torch.sum(targs).item()
                 mass_neg = B**2 - mass_pos
                 scale = B**2 / (2 * mass_pos * mass_neg)  # scaling factor to keep the mean of W_dsmr at 1.0
@@ -238,7 +238,7 @@ class BCECriterion(Criterion):
                 W_dsmr = torch.ones_like(targs)
 
             W = W_ci * W_dsmr * W_foc
-            if self.cfg["norm"]["agg"]:
+            if self.cfg["wting"]["norm"]["agg"]:
                 W = W / W.detach().mean()
 
         else:

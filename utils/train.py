@@ -265,13 +265,9 @@ class ArtifactManager:
             del metadata["stats"]
             
             metadata["loss"].pop("wting", None)
-            metadata["loss"].pop("focal", None)
-            metadata["loss"].pop("dsmr", None)
 
             if "loss2" in metadata:
                 metadata["loss2"].pop("wting", None)
-                metadata["loss2"].pop("focal", None)
-                metadata["loss2"].pop("dsmr", None)
 
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]

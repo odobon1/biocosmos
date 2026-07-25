@@ -701,16 +701,16 @@ def test_expand_settings_null_name_skips_component() -> None:
                 {"loss.targ": "sw", "name": "sw"},
             ],
             [
-                {"loss.wting.type": "inv_freq", "name": "if"},
-                {"loss.wting.type": "class_bal", "name": None},
+                {"loss.wting.cls_imb.type": "inv_freq", "name": "if"},
+                {"loss.wting.cls_imb.type": "class_bal", "name": None},
             ],
         ]
     )
     assert dict(settings) == {
-        "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.type": "inv_freq"},
-        "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.type": "class_bal"},
-        "sw_if": {"loss.targ": "sw", "loss.wting.type": "inv_freq"},
-        "sw": {"loss.targ": "sw", "loss.wting.type": "class_bal"},
+        "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
+        "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
+        "sw_if": {"loss.targ": "sw", "loss.wting.cls_imb.type": "inv_freq"},
+        "sw": {"loss.targ": "sw", "loss.wting.cls_imb.type": "class_bal"},
     }
 
 

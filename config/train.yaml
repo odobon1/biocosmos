@@ -30,20 +30,21 @@ loss:  # primary loss
   sim: cos  # {cos, geo1, geo2}
   targ: sw  # {iw, sw, tax, phylo}
   wting:
-    cp_type: 1  # {1, 2}; class-pair computation type (only relevant for 2D-weighting); 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
-    type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
-    inv_freq:  # inverse-frequency weighting; only relevant if `type: inv_freq`
-      gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
-    class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
-      beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
-  focal:
-    gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
-    comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
-  dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
-  norm:
-    cls_imb: false  # {true, false}
-    focal: false  # {true, false}
-    agg: false  # {true, false}; (true) normalize class-imb, focal, dsmr weights, renders loss.norm.{cls_imb, focal} inert
+    cls_imb:
+      type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
+      inv_freq:  # inverse-frequency weighting; only relevant if `type: inv_freq`
+        gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
+      class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
+        beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
+      cp_type: 1  # {1, 2}; class-pair computation type (only relevant for 2D-weighting); 1: vanilla (i2t, t2i for same pair treated as separate "classes"), 2: negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes")
+    focal:
+      gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
+      comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
+    dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
+    norm:
+      cls_imb: false  # {true, false}
+      focal: false  # {true, false}
+      agg: false  # {true, false}; (true) normalize class-imb, focal, dsmr weights, renders loss.wting.norm.{cls_imb, focal} inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -57,20 +58,21 @@ loss2:  # secondary loss
   sim: cos  # {cos, geo1, geo2}; note: if loss2.sim is different from loss.sim, min/max/mean/median similarity metrics are incorrect
   targ: phylo  # {iw, sw, tax, phylo}
   wting:
-    cp_type: 1  # {1, 2}
-    type: inv_freq  # {inv_freq, class_bal, null}
-    inv_freq:
-      gamma: 0.5  # (0.0, 1.0]
-    class_bal:
-      beta: 0.9999  # [0.0, 1.0)
-  focal:
-    gamma: 2.0  # (0.0, inf)
-    comp_type: 1  # {1, 2}
-  dsmr: true
-  norm:
-    cls_imb: false  # {true, false}
-    focal: false  # {true, false}
-    agg: false  # {true, false}
+    cls_imb:
+      type: inv_freq  # {inv_freq, class_bal, null}
+      inv_freq:
+        gamma: 0.5  # (0.0, 1.0]
+      class_bal:
+        beta: 0.9999  # [0.0, 1.0)
+      cp_type: 1  # {1, 2}
+    focal:
+      gamma: 2.0  # (0.0, inf)
+      comp_type: 1  # {1, 2}
+    dsmr: true
+    norm:
+      cls_imb: false  # {true, false}
+      focal: false  # {true, false}
+      agg: false  # {true, false}
   logits:
     scale_init: null
     bias_init: null

@@ -237,7 +237,16 @@ class BCECriterion(Criterion):
             else:
                 W_dsmr = torch.ones_like(targs)
 
-            W = W_ci * W_dsmr * W_foc
+            agg = self.cfg["wting"]["agg"]
+            if agg == "prod":
+                W = W_ci * W_dsmr * W_foc
+            elif agg == "mean":
+                W = (W_ci + W_dsmr + W_foc) / 3
+            elif agg == "geo_mean":
+                W = (W_ci * W_dsmr * W_foc).pow(1.0 / 3.0)
+            elif agg == "harm_mean":
+                W = 3.0 / (1.0 / W_ci + 1.0 / W_dsmr + 1.0 / W_foc)
+
             if self.cfg["wting"]["norm"]["agg"]:
                 W = W / W.detach().mean()
 

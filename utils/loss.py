@@ -4,7 +4,7 @@ import abc
 
 from utils.rank_encs import compute_rank_dists
 from utils.phylo import PhyloVCV
-from utils.imb import build_wting, compute_batch_wts
+from utils.imb import build_wting, compute_cls_imb_wts
 
 import pdb
 
@@ -88,8 +88,8 @@ class Criterion(abc.ABC):
     def _targets(self, batch_size, class_encs_b, targ_data_b):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
-    def _batch_wts(self, class_encs_b):
-        return compute_batch_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
+    def _cls_imb_wts(self, class_encs_b):
+        return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
 
     @abc.abstractmethod
     def __call__(self, logits, class_encs_b, targ_data_b, train):
@@ -124,7 +124,7 @@ class InfoNCE1Criterion(Criterion):
         if not train:
             return loss_raw, loss_raw, targs_raw
 
-        W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B]
+        W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
 
         if self.cfg["wting"]["focal"]["gamma"] > 0.0:
             """
@@ -180,7 +180,7 @@ class InfoNCE2Criterion(Criterion):
         if not train:
             return loss_raw, loss_raw, targs_raw
 
-        W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
+        W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
 
         if self.cfg["wting"]["focal"]["gamma"] > 0.0:
             preds_i2t = log_p_i2t.exp()
@@ -217,7 +217,7 @@ class BCECriterion(Criterion):
 
         if train:
 
-            W_ci = self._batch_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
+            W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
             if self.cfg["wting"]["norm"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
             
@@ -243,9 +243,9 @@ class BCECriterion(Criterion):
             elif agg == "mean":
                 W = (W_ci + W_dsmr + W_foc) / 3
             elif agg == "geo_mean":
-                W = (W_ci * W_dsmr * W_foc).pow(1.0 / 3.0)
+                W = (W_ci * W_dsmr * W_foc).clamp_min(1e-8).pow(1.0 / 3.0)
             elif agg == "harm_mean":
-                W = 3.0 / (1.0 / W_ci + 1.0 / W_dsmr + 1.0 / W_foc)
+                W = 3.0 / (1.0 / W_ci + 1.0 / W_dsmr + 1.0 / W_foc.clamp_min(1e-8))
 
             if self.cfg["wting"]["norm"]["agg"]:
                 W = W / W.detach().mean()

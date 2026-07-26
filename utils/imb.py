@@ -9,7 +9,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim):
     weights to mean 1.0.
 
     The full weight vector (1D) / matrix (2D) is built here once, reduced to that scalar, and
-    discarded -- training recomputes weights per batch from the counts via `compute_batch_wts`,
+    discarded -- training recomputes weights per batch from the counts via `compute_cls_imb_wts`,
     so nothing of size n_classes^2 is held for the run.
 
     Args:
@@ -27,7 +27,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim):
         wts = _compute_wts(cfg_wting, counts)
         ds_norm = wts.nanmean()
     elif dim == 2:
-        wts = _compute_wts(cfg_wting, _pair_counts(counts, class_encs, cfg_wting["cp_type"]))
+        wts = _compute_wts(cfg_wting, _pair_freq(counts, class_encs, cfg_wting["cp_type"]))
         if cfg_wting["cp_type"] == 1:
             ds_norm = wts.nanmean()
         elif cfg_wting["cp_type"] == 2:
@@ -36,7 +36,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim):
 
     return counts, ds_norm.item()
 
-def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, ds_norm):
+def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, ds_norm):
     """
     Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
 
@@ -45,13 +45,13 @@ def compute_batch_wts(cfg_wting, counts, class_encs_b, dim, ds_norm):
     float64 result would promote the whole weighted loss reduction to float64.
     """
     if dim == 1:
-        counts_b = counts[class_encs_b]
+        freq_b = counts[class_encs_b]
     elif dim == 2:
-        counts_b = _pair_counts(counts, class_encs_b, cfg_wting["cp_type"])
+        freq_b = _pair_freq(counts, class_encs_b, cfg_wting["cp_type"])
 
-    return (_compute_wts(cfg_wting, counts_b) / ds_norm).float()
+    return (_compute_wts(cfg_wting, freq_b) / ds_norm).float()
 
-def _pair_counts(counts, class_encs, cp_type):
+def _pair_freq(counts, class_encs, cp_type):
     """
     Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings.
 
@@ -60,13 +60,13 @@ def _pair_counts(counts, class_encs, cp_type):
     batch means anywhere two samples share a class, not just the diagonal.
     """
     counts_k = counts[class_encs]
-    pair = counts_k.unsqueeze(1) * counts_k.unsqueeze(0)
+    pair_freq = counts_k.unsqueeze(1) * counts_k.unsqueeze(0)
 
     if cp_type == 2:
-        neg = class_encs.unsqueeze(1) != class_encs.unsqueeze(0)
-        pair = torch.where(neg, pair * 2, pair)
+        non_match = class_encs.unsqueeze(1) != class_encs.unsqueeze(0)
+        pair_freq = torch.where(non_match, pair_freq * 2, pair_freq)
 
-    return pair
+    return pair_freq
 
 def _compute_wts(cfg_wting, counts):
     """

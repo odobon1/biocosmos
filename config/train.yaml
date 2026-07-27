@@ -1,9 +1,10 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 1_000_000
-chkpt_every: 200_000
+sample_volume: 100_000
+chkpt_every: 100_000
 batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
+epoch_floor: null  # {null, [int]}; min samples per "epoch": when train set < epoch_floor, each epoch chains ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max batch_size) from dataset size; (null | train set >= epoch_floor) one pass per epoch
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # architecture
@@ -44,7 +45,7 @@ loss:  # primary loss
     agg: prod  # {prod, mean, geo_mean, harm_mean}
     norm:
       cls_imb: false  # {true, false}
-      agg: false  # {true, false}; (true) normalize aggregate of class-imb + focal + dsmr weights, (loss.wting.agg = {prod, geo_mean}) & (loss.wting.norm.agg = true) --> loss.wting.norm.cls_imb inert
+      agg: false  # {true, false}; (true) normalize aggregate of class-imb, focal, dsmr weights; (loss.wting.agg = {prod, geo_mean}) & (loss.wting.norm.agg = true) --> loss.wting.norm.cls_imb inert
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -108,7 +109,7 @@ opt:  # optimization
   lr:  # learning rate
     init: 3.2e-5
     decay_factor: 1.0e-4  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
-    warmup: 200_000  # sample volume for linear LR warmup
+    warmup: 10_000  # sample volume for linear LR warmup
   l2reg: null  # if `null`, resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
   beta2: null  # if `null`, resolved from model-specific default hyperparam config
@@ -123,11 +124,11 @@ stats:
     heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to row mins/maxs, fixed -> heatmap scaled to a fixed range
 
 dev:
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {false, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 6_000
     chkpt_every: 3_000
-    batch_size: 128
+    batch_size: 256
     lr_warmup: 0  # overrides opt.lr.warmup
   traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
   manifold_viz:

@@ -16,6 +16,7 @@ def make_train_config_dummy(**overrides):
         "sample_volume": 1_000,
         "chkpt_every": 100,
         "batch_size": 8,
+        "epoch_floor": None,
         "dv_batching": False,
         "htarg_shuf": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
@@ -322,3 +323,55 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
 
     assert out["opt"]["l2reg"] == 0.2
     assert out["opt"]["beta2"] == 0.98
+
+
+# cub D10 train split has 4_944 samples (the dummy's dataset/split)
+def test_train_config_epoch_floor_null_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy())
+
+    assert cfg.chain_perms is None
+    assert cfg.n_epochs == 1  # ceil(1_000 / 4_944)
+
+
+def test_train_config_epoch_floor_below_train_set_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=1_000))
+
+    assert cfg.chain_perms is None
+
+
+def test_train_config_epoch_floor_chains_permutations(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=100_000, sample_volume=1_000_000))
+
+    assert cfg.chain_perms == 21  # ceil(100_000 / 4_944)
+    assert cfg.n_epochs == 10  # ceil(1_000_000 / (21 * 4_944))
+
+
+def test_train_config_chaining_allows_batch_size_above_train_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=100_000, batch_size=8_192))
+
+    assert cfg.chain_perms == 21
+
+
+def test_train_config_rejects_batch_size_above_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="exceeds epoch size"):
+        TrainConfig(**make_train_config_dummy(batch_size=8_192))
+
+    with pytest.raises(ValueError, match="exceeds epoch size"):
+        TrainConfig(**make_train_config_dummy(epoch_floor=5_000, batch_size=16_384))  # 2 perms = 9_888
+
+
+def test_train_config_rejects_nonpositive_epoch_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="epoch_floor must be greater than 0"):
+        TrainConfig(**make_train_config_dummy(epoch_floor=0))

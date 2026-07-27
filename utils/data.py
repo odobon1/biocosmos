@@ -233,6 +233,33 @@ class EpochEncodingDistributedSampler(DistributedSampler):
         epoch_offset = self.epoch * len(self.dataset)
         return (idx + epoch_offset for idx in super().__iter__())
 
+class ChainShuffleDistributedSampler(DistributedSampler):
+    """DistributedSampler for train sets smaller than cfg.epoch_floor: each epoch chains n_perms
+    independently shuffled permutations of the dataset, decoupling epoch length (and max batch
+    size) from dataset size. Every aligned block of len(dataset) consecutive samples in the
+    chained stream covers the dataset exactly once. Yields pass-encoded indexes
+    ((epoch * n_perms + p) * len(dataset) + raw_idx) so ImageTextDataset derives a distinct
+    augmentation seed for each copy of an item."""
+
+    def __init__(self, dataset, n_perms, num_replicas=None, rank=None):
+        super().__init__(dataset, num_replicas=num_replicas, rank=rank, shuffle=True, drop_last=True)
+        self.n_perms = n_perms
+
+    def __iter__(self):
+        n = len(self.dataset)
+        chained = []
+        for p in range(self.n_perms):
+            idx_pass = self.epoch * self.n_perms + p
+            g = torch.Generator()
+            g.manual_seed(self.seed + idx_pass)
+            chained.append(torch.randperm(n, generator=g) + idx_pass * n)
+        chained = torch.cat(chained)
+        n_total = (len(chained) // self.num_replicas) * self.num_replicas
+        return iter(chained[self.rank:n_total:self.num_replicas].tolist())
+
+    def __len__(self) -> int:
+        return (self.n_perms * len(self.dataset)) // self.num_replicas
+
 class ExactDistributedSampler(Sampler[int]):
     """
     Distributed sampler that assigns each dataset index to exactly one rank.
@@ -274,9 +301,13 @@ class DorsalVentralBatchSampler:
     Batch sampler that yields batches composed entirely of either dorsal or ventral samples, drawn without replacement.
 
     Only for training
-    
+
     Always shuffles
     Always drops partial batch
+
+    n_perms > 1 (epoch_floor chaining): each epoch chains n_perms independently shuffled
+    permutations of each position category, with pass-encoded index offsets like
+    ChainShuffleDistributedSampler; batch counts are cut from the chained streams.
     """
 
     def __init__(
@@ -284,6 +315,7 @@ class DorsalVentralBatchSampler:
         index_pos:  List[str],
         batch_size: int,
         seed:       int,
+        n_perms:    int = 1,
     ) -> None:
 
         self.n_replicas = dist.get_world_size()
@@ -292,13 +324,19 @@ class DorsalVentralBatchSampler:
         self.seed = seed
         self.epoch = 0
         self.n_samples = len(index_pos)
+        self.n_perms = n_perms
 
         self.idxs_d = [i for i, p in enumerate(index_pos) if p == "dorsal"]
         self.idxs_v = [i for i, p in enumerate(index_pos) if p == "ventral"]
 
-        self.n_batches_d = len(self.idxs_d) // batch_size
-        self.n_batches_v = len(self.idxs_v) // batch_size
+        self.n_batches_d = (n_perms * len(self.idxs_d)) // batch_size
+        self.n_batches_v = (n_perms * len(self.idxs_v)) // batch_size
         self.n_batches   = self.n_batches_d + self.n_batches_v
+        if self.n_batches == 0:
+            raise ValueError(
+                f"batch_size {batch_size} yields zero dorsal/ventral batches "
+                f"(dorsal {n_perms * len(self.idxs_d)}, ventral {n_perms * len(self.idxs_v)} chained samples)"
+            )
 
     def __len__(self) -> int:
         return self.n_batches
@@ -312,16 +350,28 @@ class DorsalVentralBatchSampler:
         n_batches_pos: int,
         offset_seed:   int,
     ) -> List[int]:
-        
-        # shuffle ~ same seeds used across GPUs so shuffling is identical
-        idxs_pos_shuf = shuffle_list(idxs_pos, self.seed + self.epoch + offset_seed)
+
+        # shuffle ~ same seeds used across GPUs so shuffling is identical; pass-encoded offsets
+        # baked in so ImageTextDataset seeds augmentation per (pass, item)
+        chained = []
+        for p in range(self.n_perms):
+            idx_pass = self.epoch * self.n_perms + p
+            pass_offset = idx_pass * self.n_samples
+            chained += [i + pass_offset for i in shuffle_list(idxs_pos, self.seed + idx_pass + offset_seed)]
 
         n_samps_local = self.subbatch_size * n_batches_pos
 
-        idx_start = self.rank * n_samps_local
-        idx_end   = idx_start + n_samps_local
-        return idxs_pos_shuf[idx_start:idx_end]
-        
+        if self.n_perms == 1:  # one pass: contiguous per-rank blocks (pre-chaining behavior)
+            idx_start = self.rank * n_samps_local
+            idx_end   = idx_start + n_samps_local
+            return chained[idx_start:idx_end]
+        # chained passes: strided rank slicing (like ChainShuffleDistributedSampler) so each global
+        # batch reassembles a contiguous window of the chain -- contiguous per-rank blocks would put
+        # every rank's subbatch in a different pass, injecting cross-pass duplicates into every
+        # global batch instead of only pass-boundary straddles
+        n_total = n_samps_local * self.n_replicas
+        return chained[self.rank:n_total:self.n_replicas]
+
     def __iter__(self):
         idxs_d_local = self._get_idxs_pos_local(self.idxs_d, self.n_batches_d, offset_seed=0)
         idxs_v_local = self._get_idxs_pos_local(self.idxs_v, self.n_batches_v, offset_seed=1)
@@ -329,16 +379,14 @@ class DorsalVentralBatchSampler:
         pool_tags: list[str] = (["dorsal"] * self.n_batches_d) + (["ventral"] * self.n_batches_v)
         pool_tags = shuffle_list(pool_tags, self.seed + self.epoch + 2)  # shuffle pool tags
 
-        epoch_offset = self.epoch * self.n_samples
-
         idx_d = 0
         idx_v = 0
         for tag in pool_tags:
             if tag == "dorsal":
-                subbatch = [i + epoch_offset for i in idxs_d_local[idx_d:idx_d+self.subbatch_size]]
+                subbatch = idxs_d_local[idx_d:idx_d+self.subbatch_size]
                 idx_d += self.subbatch_size
             else:
-                subbatch = [i + epoch_offset for i in idxs_v_local[idx_v:idx_v+self.subbatch_size]]
+                subbatch = idxs_v_local[idx_v:idx_v+self.subbatch_size]
                 idx_v += self.subbatch_size
 
             yield subbatch
@@ -636,6 +684,7 @@ def spawn_dataloader(
             index_pos=index_pos,
             batch_size=config.batch_size,
             seed=config.seed,
+            n_perms=config.chain_perms or 1,
         )
         dataloader = DataLoader(
             dataset,
@@ -652,6 +701,11 @@ def spawn_dataloader(
                 dataset,
                 shuffle=shuffle,
                 seed=getattr(config, "seed", 0),
+            )
+        elif shuffle and config.chain_perms:
+            sampler = ChainShuffleDistributedSampler(
+                dataset,
+                n_perms=config.chain_perms,
             )
         else:
             sampler = EpochEncodingDistributedSampler(

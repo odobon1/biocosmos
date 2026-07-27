@@ -76,6 +76,7 @@ class TrainConfig:
     sample_volume: int
     chkpt_every: int
     batch_size: int
+    epoch_floor: int | None
     dv_batching: bool
 
     arch: dict
@@ -111,9 +112,21 @@ class TrainConfig:
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
-        if self.batch_size > size_train:
-            raise ValueError(f"batch_size {self.batch_size} exceeds training set size {size_train}")
-        samps_per_epoch = size_train - size_train % self.batch_size
+        if self.epoch_floor is not None and self.epoch_floor <= 0:
+            raise ValueError(f"epoch_floor must be greater than 0 or null, got {self.epoch_floor}")
+        # chain-shuffle: when the train set is smaller than epoch_floor, each epoch chains this many
+        # full shuffled permutations of it (ChainShuffleDistributedSampler)
+        if self.epoch_floor is not None and size_train < self.epoch_floor:
+            self.chain_perms = math.ceil(self.epoch_floor / size_train)
+        else:
+            self.chain_perms = None
+        samps_epoch = size_train * (self.chain_perms or 1)
+        if self.batch_size > samps_epoch:
+            raise ValueError(
+                f"batch_size {self.batch_size} exceeds epoch size {samps_epoch} "
+                f"(train set size {size_train} x {self.chain_perms or 1} chained permutations)"
+            )
+        samps_per_epoch = samps_epoch - samps_epoch % self.batch_size
         self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
         
         if self.chkpt_every <= 0:

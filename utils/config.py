@@ -88,7 +88,6 @@ class TrainConfig:
     text_template: dict
     img_norm: str
     opt: dict
-    stats: dict
 
     dev: dict
 
@@ -189,15 +188,6 @@ class TrainConfig:
 
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
-
-        if self.stats["spread_type"] not in ("std", "ste"):
-            raise ValueError(f"Unknown stats.spread_type: '{self.stats['spread_type']}', must be one of {{std, ste}}")
-
-        if self.stats["table_eval_group"] not in ("closed_standard", "closed_macro", "full_standard", "full_macro"):
-            raise ValueError(
-                f"Unknown stats.table_eval_group: '{self.stats['table_eval_group']}', "
-                f"must be one of {{closed_standard, closed_macro, full_standard, full_macro}}"
-            )
 
         for loss in [self.loss, self.loss2]:
             logits = loss["logits"]
@@ -467,6 +457,39 @@ def load_manifold_viz_config_dict() -> dict:
 
 def get_config_manifold_viz():
     return ManifoldVizConfig(**load_manifold_viz_config_dict())
+
+
+@dataclass
+class StatsConfig:
+    """stats.yaml contents -- campaign stats-artifact rendering settings (stats tables + metrics.xlsx).
+    Render-time only: read live at each render (trial completion / tools.regen_stats), never frozen
+    into campaign baselines, so edits apply to the next re-render of any campaign."""
+
+    spread_type: str  # {std, ste}
+    table_eval_group: str  # {closed_standard, closed_macro, full_standard, full_macro}
+    bold_high: bool
+    ordered: bool
+    heatmap: str | None  # {None, scaled, fixed}
+    prim_scores: bool  # (True) append per-partition primitive score columns to the tables
+
+    def __post_init__(self):
+
+        if self.spread_type not in ("std", "ste"):
+            raise ValueError(f"Unknown stats spread_type: '{self.spread_type}', must be one of {{std, ste}}")
+
+        if self.table_eval_group not in ("closed_standard", "closed_macro", "full_standard", "full_macro"):
+            raise ValueError(
+                f"Unknown stats table_eval_group: '{self.table_eval_group}', "
+                f"must be one of {{closed_standard, closed_macro, full_standard, full_macro}}"
+            )
+
+
+def load_stats_config_dict() -> dict:
+    with open(paths["config"] / "stats.yaml") as f:
+        return yaml.safe_load(f)
+
+def get_config_stats():
+    return StatsConfig(**load_stats_config_dict())
 
 
 @dataclass

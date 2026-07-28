@@ -4,7 +4,7 @@ train_pt: train  # {train, trainval}
 sample_volume: 100_000
 chkpt_every: 100_000
 batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
-epoch_floor: null  # {null, [int]}; min samples per "epoch": when train set < epoch_floor, each epoch chains ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max batch_size) from dataset size; (null | train set >= epoch_floor) one pass per epoch
+epoch_floor: 100_000  # {null, [int]}; min samples per "epoch": when train set < epoch_floor, each epoch chains ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max batch_size) from dataset size; (null | train set >= epoch_floor) one pass per epoch
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # architecture
@@ -17,8 +17,8 @@ arch:  # architecture
 dropout:  # vision-tower (image encoder) regularization only -- text tower is unaffected; all off by default (== current behavior)
   patch_dropout: 0.0  # [0.0, 1.0); CLIP + SigLIP; fraction of image patches dropped each training step (0.0 = disabled)
   siglip:  # SigLIP-specific
-    vis_proj: 0.0  # [0.0, 1.0); dropout on the vision projection head -- only active when arch.siglip.vis_proj is linear/mlp, inert for the default MAP head (0.0 = disabled)
-    stoch_depth: null  # [0.0, 1.0) or null; vision-backbone stochastic depth / drop-path rate (null = disabled)
+    vis_proj: 0.0  # [0.0, 1.0); dropout on the vision projection head; (0.0) disabled; inert with `arch.siglip.vis_proj = null`
+    stoch_depth: null  # {null, [0.0, 1.0)}; vision-backbone stochastic depth / drop-path rate (null = disabled)
 
 freeze:
   image: false
@@ -44,8 +44,8 @@ loss:  # primary loss
     dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
     agg: prod  # {prod, mean, geo_mean, harm_mean}
     norm:
-      cls_imb: false  # {true, false}
-      agg: false  # {true, false}; (true) normalize aggregate of class-imb, focal, dsmr weights; (loss.wting.agg = {prod, geo_mean}) & (loss.wting.norm.agg = true) --> loss.wting.norm.cls_imb inert
+      cls_imb: false  # {true, false}; inert with 1. `loss.wting.agg = {prod, geo_mean}` & `loss.wting.norm.agg = true`, 2. `loss.wting.agg = {prod, geo_mean}` & `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
+      agg: false  # {true, false}; (true) normalize aggregate of class-imb, focal, dsmr weights; inert with `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
   logits:
     scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
     bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
@@ -54,7 +54,7 @@ loss:  # primary loss
 
 loss2:  # secondary loss
   mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
-  mix_unit_scale: false  # {true, false}; (true) rescale each loss to unit magnitude (loss / loss.detach()) before the (1-mix)*loss1 + mix*loss2 blend, so `mix` sets the true gradient-contribution ratio regardless of each loss's raw scale; inert when mix=0.0
+  mix_unit_scale: false  # {true, false}; (true) rescale each loss to unit magnitude (loss / loss.detach()) before the (1-mix)*loss1 + mix*loss2 blend, so `mix` sets the true gradient-contribution ratio regardless of each loss's raw scale; inert with `loss2.mix = 0.0`
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}; note: if loss2.sim is different from loss.sim, min/max/mean/median similarity metrics are incorrect
   targ: phylo  # {iw, sw, tax, phylo}
@@ -115,18 +115,10 @@ opt:  # optimization
   beta2: null  # if `null`, resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
-stats:
-  spread_type: std  # {std, ste}
-  table_eval_group: closed_standard  # {closed_standard, closed_macro, full_standard, full_macro}
-  xlsx:
-    bold_high: true  # {true, false}; (true) bold item with highest mean per row
-    ordered: true  # {true, false}; (true) order columns by the always-shown harmonic-mean table's "All" row
-    heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to row mins/maxs, fixed -> heatmap scaled to a fixed range
-
 dev:
-  debug_mode: false  # {false, false}
+  debug_mode: true  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
-    sample_volume: 6_000
+    sample_volume: 3_000
     chkpt_every: 3_000
     batch_size: 256
     lr_warmup: 0  # overrides opt.lr.warmup
@@ -144,5 +136,5 @@ dev:
   logging: true
   continue_campaign: false  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
   del_base_eval_cache:
-    campaign: false  # {true, false}; (true) delete base_eval_cache/ once, when the campaign is first created (relaunches keep the cache the campaign's own trials built)
+    campaign: true  # {true, false}; (true) delete base_eval_cache/ once, when the campaign is first created (relaunches keep the cache the campaign's own trials built)
     trial: false  # {true, false}; (true) delete base_eval_cache/ before each trial launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons)

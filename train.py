@@ -24,6 +24,7 @@ from utils.utils import (
     model_grad_l2_norm,
 )
 from models import VLMWrapper
+from utils.config import get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
@@ -586,8 +587,9 @@ def run_training(cfg):
         local_rank=local_gpu_rank,
     )
     train_pipe.train()
-    ArtifactManager.update_metric_stats(cfg.stats["spread_type"])
-    ArtifactManager.update_stats_tables(cfg.stats["table_eval_group"], cfg.stats["spread_type"])
-    ArtifactManager.update_metrics_xlsx(cfg.stats["table_eval_group"], cfg.stats["spread_type"], cfg.stats["xlsx"]["bold_high"], cfg.stats["xlsx"]["ordered"], cfg.stats["xlsx"]["heatmap"])
+    cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
+    ArtifactManager.update_metric_stats(cfg_stats.spread_type)
+    ArtifactManager.update_stats_tables(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
+    ArtifactManager.update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
 
     cleanup_ddp()

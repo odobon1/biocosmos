@@ -1,6 +1,6 @@
 import pytest
 
-from utils.config import GenSplitConfig, TrainConfig
+from utils.config import GenSplitConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import apply_model_specific_opt_defaults
 
@@ -34,7 +34,6 @@ def make_train_config_dummy(**overrides):
         },
         "freeze": {"text": False, "image": True},
         "text_template": {"train": "train", "eval": "sci"},
-        "stats": {"spread_type": "std", "table_eval_group": "closed_standard"},
         "hw": {
             "mixed_prec": True,
             "act_chkpt": False,
@@ -375,3 +374,26 @@ def test_train_config_rejects_nonpositive_epoch_floor(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="epoch_floor must be greater than 0"):
         TrainConfig(**make_train_config_dummy(epoch_floor=0))
+
+
+def _make_stats_config_dummy(**overrides):
+    config = {
+        "spread_type": "std",
+        "table_eval_group": "closed_standard",
+        "bold_high": True,
+        "ordered": True,
+        "heatmap": None,
+        "prim_scores": False,
+    }
+    config.update(overrides)
+    return config
+
+
+def test_stats_config_rejects_invalid_spread_type() -> None:
+    with pytest.raises(ValueError, match="spread_type"):
+        StatsConfig(**_make_stats_config_dummy(spread_type="var"))
+
+
+def test_stats_config_rejects_invalid_table_eval_group() -> None:
+    with pytest.raises(ValueError, match="table_eval_group"):
+        StatsConfig(**_make_stats_config_dummy(table_eval_group="open_standard"))

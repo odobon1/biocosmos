@@ -1,0 +1,6 @@
+spread_type: std  # {std, ste}
+table_eval_group: closed_standard  # {closed_standard, closed_macro, full_standard, full_macro}
+bold_high: true  # {true, false}; (true) bold item with highest mean per score column
+ordered: true  # {true, false}; (true) order each table's setting rows by its own metric ("All" column for mAP tables, "I2T" for accuracy) -- xlsx sheets by the cross-dataset mean, per-dataset pngs by their own dataset's means; orders may differ between metrics and between tables
+heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to column mins/maxs (per score label), fixed -> heatmap scaled to a fixed range
+prim_scores: true  # {true, false}; (true) append per-partition primitive score columns -- mAP tables: "ID I2T"/"ID I2I"/"ID T2I"/"OOD I2T"/"OOD I2I"/"OOD T2I"; accuracy tables: "ID I2T"/"OOD I2T"

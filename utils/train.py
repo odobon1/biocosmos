@@ -262,8 +262,7 @@ class ArtifactManager:
             del metadata["split"]
 
             del metadata["dev"]
-            del metadata["stats"]
-            
+
             metadata["loss"].pop("wting", None)
 
             if "loss2" in metadata:
@@ -423,15 +422,16 @@ class ArtifactManager:
         save_json_listview(listview, dpath_stats / "metrics_listview.json")
 
     @staticmethod
-    def _stats_table_grid(corner, row_labels, setting_score_maps, spread_type):
+    def _stats_table_grid(labels, setting_score_maps, spread_type):
         """Build a composite-score table's cell grid from [(setting, [score dict per completed
-        trial]), ...]: a header row of `corner` + '<setting> (n_trials)' columns, then one row per
-        label in `row_labels` (each read from the score dicts by its lowercased key) with each cell
-        '-' (0 trials), 'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX' (>1 trial, mean ± spread)."""
-        grid = [[corner, *(f"{setting} ({len(score_maps)})" for setting, score_maps in setting_score_maps)]]
-        for label in row_labels:
-            row = [label]
-            for _, score_maps in setting_score_maps:
+        trial]), ...]: a header row of 'Setting' + one column per label in `labels`, then one row
+        per setting -- '<setting> (n_trials)' + each label's cell (read from the score dicts by
+        its lowercased key): '-' (0 trials), 'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX'
+        (>1 trial, mean ± spread)."""
+        grid = [["Setting", *labels]]
+        for setting, score_maps in setting_score_maps:
+            row = [f"{setting} ({len(score_maps)})"]
+            for label in labels:
                 nums = np.array([float(score_map[label.lower()]) for score_map in score_maps]) * 100
                 if len(nums) == 0:
                     row.append("-")
@@ -443,7 +443,102 @@ class ArtifactManager:
         return grid
 
     @staticmethod
-    def _render_stats_table(grid, title, fpath):
+    def _collect_comps(settings, datasets, set_key, grp):
+        """Each (setting, dataset)'s completed-trial score maps, keyed by trial seed (the trial dir
+        name; empty dict -> no trials yet): per trial a {'map': ..., 'acc': ...} pair of flat
+        label->score dicts merging the comp scores with the per-partition primitives ('id i2t' ...
+        'ood t2i'), so table labels map to keys by lowercasing. A written final-eval metrics file is
+        the completion signal, same as update_metric_stats."""
+        comps_by = {}
+        for setting in settings:
+            for dataset in datasets:
+                dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
+                comps = {}
+                if dpath_dataset.exists():
+                    for dpath_trial in sorted(dpath_dataset.iterdir()):
+                        fpath_metrics = dpath_trial / "evals/final/metrics.json"
+                        if fpath_metrics.exists():
+                            scores_grp = load_json(fpath_metrics)["scores"][set_key][grp]
+                            comps[dpath_trial.name] = {
+                                "map": {**scores_grp["comp"]["map"],
+                                        **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")}},
+                                "acc": {**scores_grp["comp"]["acc"],
+                                        **{f"{p} i2t": scores_grp[p]["acc"]["i2t"] for p in ("id", "ood")}},
+                            }
+                comps_by[(setting, dataset)] = comps
+        return comps_by
+
+    @staticmethod
+    def _score_labels(prim_scores):
+        """(mAP labels, acc labels) for the stats tables; prim_scores appends the per-partition
+        primitive score columns (ID/OOD x modality) to each."""
+        map_labels = ("All", "ID", "OOD", "I2T", "I2I", "T2I")
+        acc_labels = ("I2T",)
+        if prim_scores:
+            map_labels += ("ID I2T", "ID I2I", "ID T2I", "OOD I2T", "OOD I2I", "OOD T2I")
+            acc_labels += ("ID I2T", "OOD I2T")
+        return map_labels, acc_labels
+
+    @staticmethod
+    def _cross_dataset_means(settings, datasets, comps_by, score_key, labels):
+        """xmeans[(setting, label)]: arithmetic mean, across datasets with completed trials, of that
+        setting/label's per-dataset mean comp score (percent), read from comp[score_key][label.lower()]
+        (score_key: 'map' or 'acc'); None when no dataset has trials."""
+
+        def dataset_means(setting, label):
+            key = label.lower()
+            return [np.mean([float(comp[score_key][key]) for comp in comps_by[(setting, dataset)].values()]) * 100
+                    for dataset in datasets if comps_by[(setting, dataset)]]
+
+        xmeans = {}
+        for setting in settings:
+            for label in labels:
+                vals = dataset_means(setting, label)
+                xmeans[(setting, label)] = np.mean(vals) if vals else None
+        return xmeans
+
+    @staticmethod
+    def _order_settings(settings, xmeans, label):
+        # order setting rows by the mean for `label`, descending (ties keep campaign order); callers
+        # filter out settings with no completed trials before ordering, so every mean is numeric
+        return sorted(settings, key=lambda s: xmeans[(s, label)], reverse=True)
+
+    @staticmethod
+    def _col_styles(grid, bold_high):
+        """Per-column data-cell styling for one rendered table, shared by the png and xlsx tables:
+        styles[c] for each score-label column c -- row -> mean for numeric cells ('-' skipped), the
+        bold-winner rows (highest mean, ties included; empty unless bold_high), and the column's
+        min/max mean for scaled heatmaps."""
+        styles = {}
+        for c in range(1, len(grid[0])):
+            means = {r: float(grid[r][c].split(" ± ")[0]) for r in range(1, len(grid)) if grid[r][c] != "-"}
+            winners = set()
+            if bold_high and means:
+                top = max(means.values())
+                winners = {r for r, m in means.items() if m == top}
+            col_min = min(means.values()) if means else 0.0
+            col_max = max(means.values()) if means else 0.0
+            styles[c] = (means, winners, col_min, col_max)
+        return styles
+
+    @staticmethod
+    def _heat_hex(heatmap, mean, col_min, col_max):
+        """Heatmap cell color as 'RRGGBB': linear white (#ffffff) -> #ff5533 interpolation -- 'fixed'
+        maps a fixed 0.00 -> 100.00, 'scaled' maps the column's min -> max (a single-value or
+        all-equal column -> lowest color)."""
+        if heatmap == "fixed":
+            frac = mean / 100.0
+        elif col_max > col_min:  # scaled across the column's data cells
+            frac = (mean - col_min) / (col_max - col_min)
+        else:  # scaled but column has one value (or all equal) -> lowest color
+            frac = 0.0
+        frac = max(0.0, min(1.0, frac))
+        g = round(255 - (255 - 0x55) * frac)
+        b = round(255 - (255 - 0x33) * frac)
+        return f"FF{g:02X}{b:02X}"
+
+    @staticmethod
+    def _render_stats_table(grid, title, fpath, bold_high, heatmap):
         fig, ax = plt.subplots(figsize=(1.2 + 1.5 * (len(grid[0]) - 1), 0.7 + 0.3 * len(grid)))
         ax.axis("off")
         ax.set_title(title, fontsize=11, pad=12)
@@ -452,187 +547,236 @@ class ArtifactManager:
         table.set_fontsize(9)
         table.scale(1, 1.5)
         table.auto_set_column_width(list(range(len(grid[0]))))
+        styles = ArtifactManager._col_styles(grid, bold_high)
         for (row, col), cell in table.get_celld().items():
             if row == 0 or col == 0:
                 cell.set_text_props(fontweight="bold")
                 cell.set_facecolor("#eaeaea")
+                continue
+            means, winners, col_min, col_max = styles[col]
+            if row in winners:
+                cell.set_text_props(fontweight="bold")
+            if heatmap and row in means:
+                cell.set_facecolor(f"#{ArtifactManager._heat_hex(heatmap, means[row], col_min, col_max)}")
         fig.savefig(fpath, dpi=200, bbox_inches="tight")
         plt.close(fig)
 
     @staticmethod
     @rank0
-    def update_stats_tables(table_eval_group, spread_type):
+    def update_stats_tables(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores):
         """Render the campaign-level composite-score summary tables for this trial's dataset to
-        artifacts/<campaign>/stats/<dataset>/map.png (comp mAP: All/OOD/ID/I2T/I2I/T2I rows) and
-        acc.png (comp I2T accuracy: single row): one column per setting (all settings planned in
-        campaign_metadata.json, including ones with no trials yet), stats aggregated across each
-        setting's completed trials. Re-rendered at each trial completion."""
+        artifacts/<campaign>/stats/<dataset>/map.png (comp mAP: All/ID/OOD/I2T/I2I/T2I score
+        columns) and acc.png (comp I2T accuracy: single I2T column) -- prim_scores appends the
+        per-partition primitive score columns (ID/OOD x modality) to both: one row per setting with >= 1
+        completed trial in this dataset (settings without local trials are omitted -- no blank rows
+        in the pngs), stats aggregated across each setting's completed trials. bold_high/ordered/
+        heatmap style the
+        tables the same way as metrics.xlsx: bold_high bolds each score column's highest-mean cell
+        (ties included; '-' cells ignored), ordered orders each table's setting rows by its own
+        metric's mean over THIS dataset's completed trials (map.png by the mAP 'All' column,
+        acc.png by the acc 'I2T' column) -- localized per dataset, independent of the cross-dataset
+        order used in metrics.xlsx -- heatmap shades score cells white->#ff5533 (None/scaled/fixed
+        as in update_metrics_xlsx). Re-rendered at each trial completion."""
         set_key, grp, group_name = ArtifactManager._TABLE_EVAL_GROUPS[table_eval_group]
 
         settings = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
-        setting_comps = []
-        for setting in settings:
-            dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / ArtifactManager.dataset
-            comps = []
-            if dpath_dataset.exists():
-                for dpath_trial in sorted(dpath_dataset.iterdir()):
-                    # same completion signal as update_metric_stats: a written final-eval metrics file
-                    fpath_metrics = dpath_trial / "evals/final/metrics.json"
-                    if fpath_metrics.exists():
-                        comps.append(load_json(fpath_metrics)["scores"][set_key][grp]["comp"])
-            setting_comps.append((setting, comps))
+        dataset = ArtifactManager.dataset
+        comps_by = ArtifactManager._collect_comps(settings, (dataset,), set_key, grp)
+        # a setting gets a row only once it has >= 1 completed trial in THIS dataset (no blank rows)
+        settings = [s for s in settings if comps_by[(s, dataset)]]
 
-        title_suffix = f" -- {DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
-        dpath_stats = ArtifactManager.dpath_campaign / "stats" / ArtifactManager.dataset
+        def ordered_settings(score_key, label):
+            # localized order: this dataset's per-setting trial means (single-dataset degenerate
+            # case of _cross_dataset_means), not the cross-dataset means backing the xlsx order
+            means = ArtifactManager._cross_dataset_means(settings, (dataset,), comps_by, score_key, (label,))
+            return ArtifactManager._order_settings(settings, means, label)
+
+        settings_map = ordered_settings("map", "All") if ordered else settings
+        settings_acc = ordered_settings("acc", "I2T") if ordered else settings
+        map_labels, acc_labels = ArtifactManager._score_labels(prim_scores)
+
+        title_suffix = f" -- {DATASET_ALIAS2NAME[dataset]} ({group_name})"
+        dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
         dpath_stats.mkdir(parents=True, exist_ok=True)
 
         grid_map = ArtifactManager._stats_table_grid(
-            "Composite mAP",
-            ("All", "OOD", "ID", "I2T", "I2I", "T2I"),
-            [(setting, [comp["map"] for comp in comps]) for setting, comps in setting_comps],
+            map_labels,
+            [(setting, [comp["map"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_map],
             spread_type,
         )
-        ArtifactManager._render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map.png")
+        ArtifactManager._render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map.png", bold_high, heatmap)
 
         grid_acc = ArtifactManager._stats_table_grid(
-            "Composite I2T Accuracy",
-            ("I2T",),
-            [(setting, [comp["acc"] for comp in comps]) for setting, comps in setting_comps],
+            acc_labels,
+            [(setting, [comp["acc"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_acc],
             spread_type,
         )
-        ArtifactManager._render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc.png")
+        ArtifactManager._render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc.png", bold_high, heatmap)
 
     @staticmethod
     @rank0
-    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap):
-        """Write artifacts/<campaign>/stats/metrics.xlsx: one composite-mAP table per campaign dataset,
-        stacked vertically -- a bold dataset-title banner, then a 7 x (n_settings + 1) table (header row
-        'mAP Composite' + '<setting> (n_trials)' columns, then All/ID/OOD/I2T/I2I/T2I rows), then a blank
-        spacer row before the next dataset. Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or
-        'XX.XX ± XX.XX' (>1 trial, mean ± spread), aggregated across each setting's completed trials'
-        scores.<set_key>.<grp>.comp.map for the eval group selected by table_eval_group -- the same grid
-        that backs map.png. A 'Harmonic Mean' summary table is always stacked on top -- each cell the
-        harmonic mean, across datasets, of that setting/row's per-dataset mean (a point value, no spread;
-        combining per-dataset spreads is not meaningful). When bold_high is True, the highest-mean setting
-        cell in each score row is bolded (ties included; '-' cells ignored). When ordered is True, every
-        table's columns are ordered by the harmonic table's 'All' row (descending; settings with no
-        completed trials anywhere sort last); when False, columns keep the fixed campaign_metadata order. A
-        single column order is shared across all tables so they stay aligned. heatmap shades each score
-        cell white->#ff5533 by intensity: None leaves cells unshaded; 'scaled' maps each row's min->max to
-        white->#ff5533; 'fixed' maps a fixed 0.00->100.00 to white->#ff5533. '-' cells are never shaded.
-        Regenerated at each trial completion."""
+    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores):
+        """Write artifacts/<campaign>/stats/metrics.xlsx: two sheets, 'Composite mAP' (comp map scores,
+        All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy' (comp acc, single I2T
+        column) -- prim_scores appends the per-partition primitive score columns (ID/OOD x modality)
+        to both sheets' tables, and splits each mAP-sheet table banner into the title cell (first
+        column, unmerged) plus grey merged 'Composite Scores' / 'Primitive Scores' group headers over
+        their column groups (the accuracy sheet keeps full-width merged title banners). Each sheet
+        opens with a bold '<repo-parent-dir> - <campaign>' title cell (e.g.
+        'bc_dev - dev') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
+        title banner, then a table of header row 'Setting' + one column per score label and one
+        '<setting> (n_trials)' row per setting, then a blank spacer row before the next dataset -- with
+        an always-shown 'Mean' summary table on top: one row per setting, each cell the arithmetic mean,
+        across datasets with completed trials, of that setting/label's per-dataset mean (a point value,
+        no spread). Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or 'XX.XX ± XX.XX'
+        (>1 trial, mean ± spread), aggregated across each setting's completed trials'
+        scores.<set_key>.<grp>.comp for the eval group selected by table_eval_group. A setting gets
+        rows only once it has >= 1 completed trial in some dataset -- it then appears in every table of
+        both sheets, with blank '-' rows in dataset tables lacking its trials; settings with no
+        completed trials anywhere are omitted entirely. When bold_high is
+        True, the highest-mean setting cell in each score column is bolded (ties included; '-' cells
+        ignored). When ordered is True, each sheet's setting rows are ordered by its own metric's
+        Mean-table first score column -- 'All' for mAP, 'I2T' for accuracy -- descending, settings with
+        no completed trials anywhere last; when False, rows keep the fixed campaign_metadata order.
+        Within a sheet one row order is shared across all tables, but the two sheets' orders may differ.
+        heatmap shades each score cell white->#ff5533 by intensity: None leaves cells unshaded; 'scaled'
+        maps each score column's min->max to white->#ff5533; 'fixed' maps a fixed 0.00->100.00 to
+        white->#ff5533. '-' cells are never shaded. To the right of this aggregate block sit per-seed
+        blocks (one blank separator column apart): a 'seed <seed>' label in the campaign-banner row,
+        then the per-dataset tables only (no Mean summary) built from that seed's trials alone,
+        padded down so each dataset table sits in the same rows as the aggregate block's -- plain
+        setting labels (no trial counts), single-trial 'XX.XX' cells, '-' where that seed's trial
+        hasn't completed -- sharing the aggregate block's setting rows/order. Column widths hug each column's longest header/data cell
+        (banner/label text overflows); blank separator columns get a small ~square width. Regenerated
+        at each trial completion."""
         set_key, grp, _ = ArtifactManager._TABLE_EVAL_GROUPS[table_eval_group]
         metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
         settings, datasets = metadata["settings"], metadata["datasets"]
-        row_labels = ("All", "ID", "OOD", "I2T", "I2I", "T2I")
 
-        # collect each (setting, dataset)'s completed-trial comp maps once (empty list -> no trials yet)
-        maps_by = {}
-        for setting in settings:
+        comps_by = ArtifactManager._collect_comps(settings, datasets, set_key, grp)
+        # a setting gets rows only once it has >= 1 completed trial in some dataset; it then appears in
+        # every dataset table (blank '-' row where that dataset has no trials for it yet)
+        settings = [s for s in settings if any(comps_by[(s, dataset)] for dataset in datasets)]
+        seeds = sorted({seed for comps in comps_by.values() for seed in comps}, key=int)
+
+        def build_blocks(score_key, labels):
+            """The sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
+            block (label None): the always-shown 'Mean' cross-dataset summary table, then one table per
+            campaign dataset; then one block per completed seed (label 'seed <seed>'): the per-dataset
+            tables only (no Mean summary), built from that seed's trials alone -- plain setting labels
+            (no trial counts), single-trial 'XX.XX' cells, '-' where that seed's trial hasn't
+            completed. Setting rows are shared across all blocks -- when ordered, pinned to the
+            aggregate Mean-table's first score column (labels[0]), descending."""
+            xmeans = ArtifactManager._cross_dataset_means(settings, datasets, comps_by, score_key, labels)
+            rows = ArtifactManager._order_settings(settings, xmeans, labels[0]) if ordered else settings
+
+            xgrid = [["Setting", *labels]]
+            for s in rows:
+                xgrid.append([s] + [f"{xmeans[(s, label)]:.2f}" for label in labels])
+            tables = [("Mean", xgrid)]
             for dataset in datasets:
-                dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
-                maps = []
-                if dpath_dataset.exists():
-                    for dpath_trial in sorted(dpath_dataset.iterdir()):
-                        # same completion signal as update_stats_tables: a written final-eval metrics file
-                        fpath_metrics = dpath_trial / "evals/final/metrics.json"
-                        if fpath_metrics.exists():
-                            maps.append(load_json(fpath_metrics)["scores"][set_key][grp]["comp"]["map"])
-                maps_by[(setting, dataset)] = maps
+                grid = ArtifactManager._stats_table_grid(
+                    labels,
+                    [(setting, [comp[score_key] for comp in comps_by[(setting, dataset)].values()]) for setting in rows],
+                    spread_type,
+                )
+                tables.append((DATASET_ALIAS2NAME[dataset], grid))
+            blocks = [(None, tables)]
 
-        def dataset_means(setting, label):
-            # this setting/row's mean (percent) per dataset, over datasets with completed trials
-            key = label.lower()
-            return [np.mean([float(m[key]) for m in maps_by[(setting, dataset)]]) * 100
-                    for dataset in datasets if maps_by[(setting, dataset)]]
-
-        def harmonic_mean(vals):
-            if not vals:
-                return None
-            if any(v == 0 for v in vals):
-                return 0.0
-            return len(vals) / sum(1.0 / v for v in vals)
-
-        # harmonic-mean summary across datasets is always shown; `ordered` only sets the shared column order
-        hmeans = {(s, label): harmonic_mean(dataset_means(s, label)) for s in settings for label in row_labels}
-        if ordered:
-            # order columns by the harmonic 'All' row, descending; no-data settings (None) keep campaign order last
-            settings = sorted(settings, key=lambda s: (hmeans[(s, "All")] is not None, hmeans[(s, "All")] or 0.0), reverse=True)
-        hgrid = [["mAP Composite", *settings]]
-        for label in row_labels:
-            hgrid.append([label] + ["-" if hmeans[(s, label)] is None else f"{hmeans[(s, label)]:.2f}" for s in settings])
-
-        tables = [("Harmonic Mean", hgrid)]  # (title, cell grid) in top-to-bottom render order
-        for dataset in datasets:
-            grid = ArtifactManager._stats_table_grid(
-                "mAP Composite",
-                row_labels,
-                [(setting, maps_by[(setting, dataset)]) for setting in settings],
-                spread_type,
-            )
-            tables.append((DATASET_ALIAS2NAME[dataset], grid))
-
-        def cell_mean(val):
-            return None if val == "-" else float(val.split(" ± ")[0])
-
-        def heat_fill(frac):
-            # linear white (#ffffff) -> #ff5533 interpolation over frac in [0, 1]
-            frac = max(0.0, min(1.0, frac))
-            g = round(255 - (255 - 0x55) * frac)
-            b = round(255 - (255 - 0x33) * frac)
-            return PatternFill("solid", fgColor=f"FF{g:02X}{b:02X}")
+            for seed in seeds:
+                stables = []
+                for dataset in datasets:
+                    grid = [["Setting", *labels]]
+                    for s in rows:
+                        comp = comps_by[(s, dataset)].get(seed)
+                        grid.append([s] + ["-" if comp is None else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
+                                           for label in labels])
+                    stables.append((DATASET_ALIAS2NAME[dataset], grid))
+                blocks.append((f"seed {seed}", stables))
+            return blocks
 
         bold = Font(bold=True)
         center = Alignment(horizontal="center", vertical="center")
+        left = Alignment(horizontal="left", vertical="center")
         header_fill = PatternFill("solid", fgColor="EAEAEA")
-        thin = Side(style="thin", color="BBBBBB")
+        thin = Side(style="thin", color="000000")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+        def write_sheet(ws, blocks, groups):
+            """groups: None -> each table's banner is its title merged across the full table width;
+            else [(group_title, n_group_cols), ...] -> the title sits unmerged in the block's first
+            column, followed by one grey merged group-header cell per group (e.g. 'Composite Scores'
+            over the composite columns, 'Primitive Scores' over the primitive columns)."""
+            n_cols = len(blocks[0][1][0][1][0])  # corner + one col per score label (same for every grid in the sheet)
+            mean_rows = len(blocks[0][1][0][1]) + 2  # aggregate Mean table height incl. its banner + spacer
+            widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
+
+            campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_campaign.name}")
+            campaign.font = bold
+            campaign.alignment = left
+
+            for i_block, (block_label, tables) in enumerate(blocks):
+                col0 = 1 + i_block * (n_cols + 1)  # blocks side by side, one blank separator column apart
+                if block_label is not None:
+                    label_cell = ws.cell(row=1, column=col0, value=block_label)  # campaign-banner row, atop the block
+                    label_cell.font = bold
+                    label_cell.alignment = left
+                # banner + blank row above the tables; seed blocks (no Mean table) start past the
+                # aggregate's Mean rows so per-dataset tables line up across blocks
+                row = 3 if block_label is None else 3 + mean_rows
+                for title_text, grid in tables:
+                    title = ws.cell(row=row, column=col0, value=title_text)
+                    title.font = bold
+                    title.alignment = left
+                    for c in range(col0, col0 + n_cols):  # border every cell of the banner so the merged ranges' edges all render
+                        ws.cell(row=row, column=c).border = border
+                    if groups is None:
+                        ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + n_cols - 1)
+                    else:
+                        widths[col0] = max(widths.get(col0, 0), len(title_text))  # unmerged title must fit its column
+                        gcol = col0 + 1
+                        for group_title, n_group in groups:
+                            for c in range(gcol, gcol + n_group):  # fill every cell so the merged range renders grey
+                                ws.cell(row=row, column=c).fill = header_fill
+                            gcell = ws.cell(row=row, column=gcol, value=group_title)
+                            gcell.font = bold
+                            gcell.alignment = center
+                            ws.merge_cells(start_row=row, start_column=gcol, end_row=row, end_column=gcol + n_group - 1)
+                            gcol += n_group
+                    row += 1
+
+                    styles = ArtifactManager._col_styles(grid, bold_high)
+                    for r, grid_row in enumerate(grid):
+                        for c, val in enumerate(grid_row):
+                            cell = ws.cell(row=row, column=col0 + c, value=val)
+                            cell.alignment = center
+                            cell.border = border
+                            widths[col0 + c] = max(widths.get(col0 + c, 0), len(val))
+                            if r == 0 or c == 0:
+                                cell.font = bold
+                                cell.fill = header_fill
+                                continue
+                            means, winners, col_min, col_max = styles[c]
+                            if r in winners:
+                                cell.font = bold
+                            if heatmap and r in means:
+                                cell.fill = PatternFill("solid", fgColor=ArtifactManager._heat_hex(heatmap, means[r], col_min, col_max))
+                        row += 1
+                    row += 1  # blank spacer row between tables
+
+            for c in range(1, max(widths) + 1):
+                # snug fit to each column's longest cell; blank separator columns get a small ~square width
+                ws.column_dimensions[get_column_letter(c)].width = widths[c] + 2 if c in widths else 3
+
+        map_labels, acc_labels = ArtifactManager._score_labels(prim_scores)
+        # with prim_scores, mAP-sheet banners split into title + 'Composite Scores'/'Primitive Scores'
+        # group headers; the accuracy sheet keeps full-width title banners
+        map_groups = [("Composite Scores", 6), ("Primitive Scores", 6)] if prim_scores else None
         wb = Workbook()
-        ws = wb.active
-        ws.title = "Composite mAP"
-        n_cols = len(settings) + 1
-
-        row = 1
-        for title_text, grid in tables:
-            title = ws.cell(row=row, column=1, value=title_text)
-            title.font = bold
-            title.alignment = center
-            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
-            row += 1
-
-            for r, grid_row in enumerate(grid):
-                means = {} if r == 0 else {c: cell_mean(v) for c, v in enumerate(grid_row) if c > 0 and v != "-"}
-                winners = set()
-                if bold_high and means:
-                    top = max(means.values())
-                    winners = {c for c, m in means.items() if m == top}
-                row_min = min(means.values()) if means else 0.0
-                row_max = max(means.values()) if means else 0.0
-                for c, val in enumerate(grid_row):
-                    cell = ws.cell(row=row, column=c + 1, value=val)
-                    cell.alignment = center
-                    cell.border = border
-                    if r == 0 or c == 0:
-                        cell.font = bold
-                        cell.fill = header_fill
-                        continue
-                    if c in winners:
-                        cell.font = bold
-                    if heatmap and c in means:
-                        if heatmap == "fixed":
-                            frac = means[c] / 100.0
-                        elif row_max > row_min:  # scaled across the row's data cells
-                            frac = (means[c] - row_min) / (row_max - row_min)
-                        else:  # scaled but row has one value (or all equal) -> lowest color
-                            frac = 0.0
-                        cell.fill = heat_fill(frac)
-                row += 1
-            row += 1  # blank spacer row between tables
-
-        ws.column_dimensions["A"].width = 16
-        for c in range(2, n_cols + 1):
-            ws.column_dimensions[get_column_letter(c)].width = 18
+        ws_map = wb.active
+        ws_map.title = "Composite mAP"
+        write_sheet(ws_map, build_blocks("map", map_labels), map_groups)
+        write_sheet(wb.create_sheet("Composite I2T Accuracy"), build_blocks("acc", acc_labels), None)
 
         dpath_stats = ArtifactManager.dpath_campaign / "stats"
         dpath_stats.mkdir(parents=True, exist_ok=True)

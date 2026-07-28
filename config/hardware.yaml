@@ -1,17 +1,17 @@
 mixed_prec: true  # {true, false}; mixed precision
 
-act_chkpt: false  # {true, false}; activation checkpointing
+act_chkpt: true  # {true, false}; activation checkpointing
 
 cudnn_benchmark: false  # {true, false}; cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
                         # batches, trades away algo-choice reproducibility (PyTorch default is false)
 
 prefetch_factor: 4  # dataloader prefetch factor
 max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus // n_gpus) - 2, scales with the live alloc
-pin_memory: true  # {true, false}; dataloader pins host RAM for faster host --> GPU copies, higher RAM cost
+pin_memory: false  # {true, false}; dataloader pins host RAM for faster host --> GPU copies, higher RAM cost
 
 persistent_workers:
   train: true  # {true, false}; keep train dataloader workers alive across train epochs
-  eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
+  eval: false  # {true, false}; keep eval dataloader workers alive across validation epochs
 
 use_img_cache: true  # {true, false}; read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
                      # staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces

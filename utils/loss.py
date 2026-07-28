@@ -234,18 +234,28 @@ class BCECriterion(Criterion):
                 wt_neg = scale * mass_pos
                 wt_pos = scale * mass_neg
                 W_dsmr = targs * wt_pos + (1 - targs) * wt_neg
-            else:
-                W_dsmr = torch.ones_like(targs)
+            # else:
+            #     W_dsmr = torch.ones_like(targs)
 
             agg = self.cfg["wting"]["agg"]
-            if agg == "prod":
-                W = W_ci * W_dsmr * W_foc
-            elif agg == "mean":
-                W = (W_ci + W_dsmr + W_foc) / 3
-            elif agg == "geo_mean":
-                W = (W_ci * W_dsmr * W_foc).clamp_min(1e-8).pow(1.0 / 3.0)
-            elif agg == "harm_mean":
-                W = 3.0 / (1.0 / W_ci + 1.0 / W_dsmr + 1.0 / W_foc.clamp_min(1e-8))
+            if self.cfg["wting"]["dsmr"]:
+                if agg == "prod":
+                    W = W_ci * W_foc * W_dsmr
+                elif agg == "mean":
+                    W = (W_ci + W_foc + W_dsmr) / 3
+                elif agg == "geo_mean":
+                    W = (W_ci * W_foc * W_dsmr).clamp_min(1e-8).pow(1.0 / 3.0)
+                elif agg == "harm_mean":
+                    W = 3.0 / (1.0 / W_ci + 1.0 / W_foc.clamp_min(1e-8) + 1.0 / W_dsmr)
+            else:
+                if agg == "prod":
+                    W = W_ci * W_foc
+                elif agg == "mean":
+                    W = (W_ci + W_foc) / 2
+                elif agg == "geo_mean":
+                    W = (W_ci * W_foc).clamp_min(1e-8).pow(1.0 / 2.0)
+                elif agg == "harm_mean":
+                    W = 2.0 / (1.0 / W_ci + 1.0 / W_foc.clamp_min(1e-8))
 
             if self.cfg["wting"]["norm"]["agg"]:
                 W = W / W.detach().mean()

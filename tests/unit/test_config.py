@@ -385,6 +385,7 @@ def _make_stats_config_dummy(**overrides):
         "heatmap": None,
         "prim_scores": False,
         "baseline_overrides": False,
+        "hw_perf": False,
     }
     config.update(overrides)
     return config

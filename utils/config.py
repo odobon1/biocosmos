@@ -472,6 +472,7 @@ class StatsConfig:
     heatmap: str | None  # {None, scaled, fixed}
     prim_scores: bool  # (True) append per-partition primitive score columns to the tables
     baseline_overrides: bool  # (True) append a "Baseline Overrides" config table to each xlsx sheet
+    hw_perf: bool  # (True) append a "Hardware Performance" table to the xlsx mAP sheet
 
     def __post_init__(self):
 

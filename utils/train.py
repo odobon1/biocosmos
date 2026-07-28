@@ -175,6 +175,9 @@ class ArtifactManager:
         "full_macro": ("full_set", "per_class", "Full-Set, Macro"),
     }
 
+    # "Hardware Performance" table columns; keys of the per-trial dicts built by _collect_hw
+    _HW_LABELS = ("Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM")
+
     @staticmethod
     def set_paths(cfg_train):
 
@@ -478,6 +481,32 @@ class ArtifactManager:
         return comps_by
 
     @staticmethod
+    def _collect_hw(settings, datasets):
+        """Each (setting, dataset)'s completed-trial hardware/wall-clock readings, parsed from
+        trial_metadata.json: one {_HW_LABELS label -> float} dict per trial -- runtime.trial /
+        runtime.train.mean / runtime.eval.mean are float-seconds strings, memory.ram / memory.vram
+        are 'used/total GB' strings (numerator taken). A written final-eval metrics file is the
+        completion signal, same as _collect_comps."""
+        hw_by = {}
+        for setting in settings:
+            for dataset in datasets:
+                dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
+                trials = []
+                if dpath_dataset.exists():
+                    for dpath_trial in sorted(dpath_dataset.iterdir()):
+                        if (dpath_trial / "evals/final/metrics.json").exists():
+                            meta = load_json(dpath_trial / "trial_metadata.json")
+                            trials.append({
+                                "Time Trial": float(meta["runtime"]["trial"]),
+                                "Mean Time Train": float(meta["runtime"]["train"]["mean"]),
+                                "Mean Time Eval": float(meta["runtime"]["eval"]["mean"]),
+                                "Peak RAM": float(meta["memory"]["ram"].split("/")[0]),
+                                "Peak VRAM": float(meta["memory"]["vram"].split("/")[0]),
+                            })
+                hw_by[(setting, dataset)] = trials
+        return hw_by
+
+    @staticmethod
     def _score_labels(prim_scores):
         """(mAP labels, acc labels) for the stats tables; prim_scores appends the per-partition
         primitive score columns (ID/OOD x modality) to each."""
@@ -624,7 +653,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides):
+    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides, hw_perf):
         """Write artifacts/<campaign>/stats/metrics.xlsx: two sheets, 'Composite mAP' (comp map scores,
         All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy' (comp acc, single I2T
         column) -- prim_scores appends the per-partition primitive score columns (ID/OOD x modality)
@@ -663,7 +692,14 @@ class ArtifactManager:
         first-seen order), each cell the setting's effective value resolved from its
         setting_metadata.json -- '-' when the param is absent there, the signal that it is inert
         under that configuration (e.g. loss2.* with loss2.mix 0.0). This table gets no
-        winner-bold/heatmap styling. Column widths hug each column's longest header/data cell
+        winner-bold/heatmap styling. hw_perf adds a 'Hardware Performance' table to the mAP sheet
+        only, a band of the same kind sitting leftmost (before the Baseline Overrides band when both
+        are on, each followed by its own blank separator column), likewise Mean-aligned and
+        unstyled: Time Trial / Mean Time Train / Mean Time Eval (whole seconds) and Peak RAM / Peak
+        VRAM (whole GB) columns, each cell the mean across datasets with completed trials of the
+        setting's per-dataset trial means, rounded to the nearest int -- per-trial readings parsed
+        from trial_metadata.json (float-seconds runtime strings; 'used/total GB' memory strings,
+        numerator taken). Column widths hug each column's longest header/data cell
         (banner/label text overflows); blank separator columns get a small ~square width. Regenerated
         at each trial completion."""
         set_key, grp, _ = ArtifactManager._TABLE_EVAL_GROUPS[table_eval_group]
@@ -694,6 +730,8 @@ class ArtifactManager:
                     node = node[part]
                 return str(node)
 
+        hw_by = ArtifactManager._collect_hw(settings, datasets) if hw_perf else None
+
         def build_blocks(score_key, labels):
             """The sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
             block (label None): one table per campaign dataset, then the always-shown 'Mean'
@@ -702,9 +740,11 @@ class ArtifactManager:
             trials alone -- plain setting labels (no trial counts), single-trial 'XX.XX' cells, '-'
             where that seed's trial hasn't completed. Setting rows are shared across all blocks --
             when ordered, pinned to the aggregate Mean-table's first score column (labels[0]),
-            descending. Returns (blocks, ogrid): ogrid is the 'Baseline Overrides' grid (param-name
-            header + one value row per setting in this sheet's row order), or None when disabled or
-            nothing is overridden."""
+            descending. Returns (blocks, ogrid, hgrid): ogrid is the 'Baseline Overrides' grid
+            (param-name header + one value row per setting in this sheet's row order), or None when
+            disabled or nothing is overridden; hgrid is the 'Hardware Performance' grid (_HW_LABELS
+            header + one value row per setting, same row order -- cells the cross-dataset mean of
+            per-dataset trial means, rounded to the nearest int), or None when disabled."""
             xmeans = ArtifactManager._cross_dataset_means(settings, datasets, comps_by, score_key, labels)
             rows = ArtifactManager._order_settings(settings, xmeans, labels[0]) if ordered else settings
 
@@ -740,7 +780,18 @@ class ArtifactManager:
                 ogrid = [list(okeys)]
                 for s in rows:
                     ogrid.append([override_value(s, key) for key in okeys])
-            return blocks, ogrid
+
+            hgrid = None
+            if hw_by:
+                # same headerless-row layout as ogrid: rows labeled by the Mean table's Setting column
+                hgrid = [list(ArtifactManager._HW_LABELS)]
+                for s in rows:
+                    hgrid.append([
+                        str(round(np.mean([np.mean([trial[label] for trial in hw_by[(s, dataset)]])
+                                           for dataset in datasets if hw_by[(s, dataset)]])))
+                        for label in ArtifactManager._HW_LABELS
+                    ])
+            return blocks, ogrid, hgrid
 
         bold = Font(bold=True)
         center = Alignment(horizontal="center", vertical="center")
@@ -749,16 +800,16 @@ class ArtifactManager:
         thin = Side(style="thin", color="000000")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        def write_sheet(ws, blocks, groups, ogrid):
+        def write_sheet(ws, blocks, groups, ogrid, hgrid):
             """groups: None -> each table's banner is its title merged across the full table width;
             else [(group_title, n_group_cols), ...] -> the title sits unmerged in the block's first
             column, followed by one grey merged group-header cell per group (e.g. 'Composite Scores'
-            over the composite columns, 'Primitive Scores' over the primitive columns). ogrid: None,
-            or the 'Baseline Overrides' grid (param-name header + one value row per setting, sheet
-            row order) -- rendered in a left column band (one blank separator column before the
-            score blocks, which all shift right past it), vertically aligned with the aggregate
-            block's bottom Mean table so the Mean's Setting column labels its rows; config cells get
-            no winner-bold/heatmap styling."""
+            over the composite columns, 'Primitive Scores' over the primitive columns). hgrid/ogrid
+            (each None or a header + one-value-row-per-setting grid, sheet row order) render as left
+            column bands -- 'Hardware Performance' then 'Baseline Overrides', one blank separator
+            column after each, with the score blocks all shifted right past them -- vertically
+            aligned with the aggregate block's bottom Mean table so the Mean's Setting column labels
+            their rows; band cells get no winner-bold/heatmap styling."""
             n_cols = len(blocks[0][1][0][1][0])  # corner + one col per score label (same for every grid in the sheet)
             widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
@@ -766,7 +817,8 @@ class ArtifactManager:
             campaign.font = bold
             campaign.alignment = left
 
-            offset = len(ogrid[0]) + 1 if ogrid else 0  # overrides band + its separator column
+            bands = [(t, g) for t, g in (("Hardware Performance", hgrid), ("Baseline Overrides", ogrid)) if g]
+            offset = sum(len(g[0]) + 1 for _, g in bands)  # left bands + their separator columns
             for i_block, (block_label, tables) in enumerate(blocks):
                 col0 = 1 + offset + i_block * (n_cols + 1)  # blocks side by side, one blank separator column apart
                 if block_label is not None:
@@ -816,27 +868,29 @@ class ArtifactManager:
                         row += 1
                     row += 1  # blank spacer row between tables
 
-            if ogrid:
-                o_cols = len(ogrid[0])
-                # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
-                row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
-                title = ws.cell(row=row, column=1, value="Baseline Overrides")
+            # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
+            band_row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
+            band_col = 1
+            for band_title, band_grid in bands:
+                b_cols = len(band_grid[0])
+                title = ws.cell(row=band_row, column=band_col, value=band_title)
                 title.font = bold
                 title.alignment = left
-                for c in range(1, o_cols + 1):
-                    ws.cell(row=row, column=c).border = border
-                ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=o_cols)
-                row += 1
-                for r, grid_row in enumerate(ogrid):
+                for c in range(band_col, band_col + b_cols):
+                    ws.cell(row=band_row, column=c).border = border
+                ws.merge_cells(start_row=band_row, start_column=band_col, end_row=band_row, end_column=band_col + b_cols - 1)
+                row = band_row + 1
+                for r, grid_row in enumerate(band_grid):
                     for c, val in enumerate(grid_row):
-                        cell = ws.cell(row=row, column=1 + c, value=val)
+                        cell = ws.cell(row=row, column=band_col + c, value=val)
                         cell.alignment = center
                         cell.border = border
-                        widths[1 + c] = max(widths.get(1 + c, 0), len(val))
-                        if r == 0:  # param-name header row
+                        widths[band_col + c] = max(widths.get(band_col + c, 0), len(val))
+                        if r == 0:  # header row (param names / hw stat labels)
                             cell.font = bold
                             cell.fill = header_fill
                     row += 1
+                band_col += b_cols + 1
 
             for c in range(1, max(widths) + 1):
                 # snug fit to each column's longest cell; blank separator columns get a small ~square width
@@ -849,10 +903,11 @@ class ArtifactManager:
         wb = Workbook()
         ws_map = wb.active
         ws_map.title = "Composite mAP"
-        map_blocks, map_ogrid = build_blocks("map", map_labels)
-        write_sheet(ws_map, map_blocks, map_groups, map_ogrid)
-        acc_blocks, acc_ogrid = build_blocks("acc", acc_labels)
-        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid)
+        map_blocks, map_ogrid, map_hgrid = build_blocks("map", map_labels)
+        write_sheet(ws_map, map_blocks, map_groups, map_ogrid, map_hgrid)
+        # hw table is mAP-sheet only: the accuracy sheet keeps just the overrides band
+        acc_blocks, acc_ogrid, _ = build_blocks("acc", acc_labels)
+        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid, None)
 
         dpath_stats = ArtifactManager.dpath_campaign / "stats"
         dpath_stats.mkdir(parents=True, exist_ok=True)

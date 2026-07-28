@@ -590,6 +590,6 @@ def run_training(cfg):
     cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
     ArtifactManager.update_metric_stats(cfg_stats.spread_type)
     ArtifactManager.update_stats_tables(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
-    ArtifactManager.update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides)
+    ArtifactManager.update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
 
     cleanup_ddp()

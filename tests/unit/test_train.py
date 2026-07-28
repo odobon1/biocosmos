@@ -249,7 +249,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, False, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, False, False, False)
 
     fpath_xlsx = tmp_path / "stats" / "metrics.xlsx"
     assert fpath_xlsx.exists()
@@ -346,7 +346,7 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, None, False, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, None, False, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, setting rows
@@ -377,7 +377,7 @@ def test_update_metrics_xlsx_selects_eval_group(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_macro", "std", False, False, None, False, False)
+    ArtifactManager.update_metrics_xlsx("closed_macro", "std", False, False, None, False, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
     assert ws.cell(row=4, column=2).value == "All"
@@ -411,7 +411,7 @@ def test_update_metrics_xlsx_ordered_per_sheet_metric(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, True, None, False, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, True, None, False, False, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
@@ -463,7 +463,7 @@ def test_update_metrics_xlsx_heatmap_scaled(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "scaled", False, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "scaled", False, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
@@ -492,7 +492,7 @@ def test_update_metrics_xlsx_heatmap_fixed(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "fixed", False, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "fixed", False, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
@@ -526,7 +526,7 @@ def test_update_metrics_xlsx_prim_scores(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, True, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, True, False, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
@@ -613,7 +613,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, "fixed", False, True)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, "fixed", False, True, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
@@ -652,6 +652,74 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     assert agrid[9][:3] == ["0.3", "phylo", "sw"]
     assert agrid[10][:3] == ["-", "-", "sw"]
     assert agrid[0][7] == "seed 42"
+
+
+def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
+    # hw_perf=True renders a "Hardware Performance" table on the mAP sheet only, leftmost in the
+    # bottom band (before the Baseline Overrides band, each followed by its own separator column),
+    # rows labeled by the Mean table's Setting column: per-trial readings from trial_metadata.json,
+    # meaned per dataset (across trials) then across datasets with completed trials, rounded to the
+    # nearest int. hp's cub trial times (100.4, 200.4) mean to 150.4, then with bryo's 350.0 ->
+    # 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level aggregation matters).
+    hw_vals = {  # (setting, dataset, seed) -> (trial, train mean, eval mean, ram, vram)
+        ("hp", "cub", "42"): ("100.40", "10.10", "5.10", "100.2/128.0 GB", "20.2/178.4 GB"),
+        ("hp", "cub", "43"): ("200.40", "20.10", "7.10", "110.2/128.0 GB", "24.2/178.4 GB"),
+        ("hp", "bryo", "42"): ("350.00", "30.10", "9.10", "120.2/128.0 GB", "30.2/178.4 GB"),
+        ("sw", "cub", "42"): ("63.49", "7.70", "6.49", "117.2/128.0 GB", "26.3/178.4 GB"),
+    }
+    for (setting, dataset, seed), (trial_t, train_t, eval_t, ram, vram) in hw_vals.items():
+        dpath_trial = tmp_path / "settings" / setting / dataset / seed
+        dpath_final = dpath_trial / "evals" / "final"
+        dpath_final.mkdir(parents=True)
+        (dpath_final / "metrics.json").write_text(json.dumps({
+            "scores": {"closed_set": {"standard": _scores_grp(_comp(0.50))}},
+        }))
+        (dpath_trial / "trial_metadata.json").write_text(json.dumps({
+            "runtime": {"train": {"mean": train_t}, "eval": {"mean": eval_t}, "trial": trial_t},
+            "memory": {"ram": ram, "vram": vram},
+        }))
+    for setting, overrides, meta in (
+        ("hp", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}),
+        ("sw", {"loss.targ": "sw"}, {"loss": {"targ": "sw"}}),
+    ):
+        (tmp_path / "settings" / setting / "overrides.json").write_text(json.dumps(overrides))
+        (tmp_path / "settings" / setting / "setting_metadata.json").write_text(json.dumps(meta))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub", "bryo"]}))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, False, True, True)
+
+    wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
+    ws = wb.active
+    grid = [[c.value for c in r] for r in ws.iter_rows()]
+    # bands left to right: hw at A..E + separator F, overrides at G..H + separator I, score blocks
+    # from J; all share the Mean table's banner row (two 3-row dataset tables precede it -> row 13)
+    assert grid[12][0] == "Hardware Performance"
+    assert grid[12][6] == "Baseline Overrides"
+    assert grid[12][9] == "Mean"
+    merged = {str(m) for m in ws.merged_cells.ranges}
+    assert "A13:E13" in merged and "G13:H13" in merged
+    assert grid[13][:5] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert grid[13][6:8] == ["loss2.mix", "loss.targ"]
+    # hp: cub means (150.4, 15.1, 6.1, 105.2, 22.2) averaged with bryo's single trial, then rounded
+    assert grid[14][:5] == ["250", "23", "8", "113", "26"]
+    assert grid[14][6:8] == ["0.3", "-"]
+    assert grid[14][9] == "hp"  # labeled by the Mean's Setting column
+    # sw: single cub trial, values pass straight through the two-level mean before rounding
+    assert grid[15][:5] == ["63", "8", "6", "117", "26"]
+    assert grid[15][9] == "sw"
+    assert all(r[5] is None and r[8] is None for r in grid)  # both separator columns stay empty
+    # hw header styled like other headers; value cells get no winner-bold/heatmap styling
+    assert ws.cell(row=14, column=1).font.bold is True
+    assert ws.cell(row=14, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=15, column=1).font.bold is not True
+    assert ws.cell(row=15, column=1).fill.patternType is None
+    # accuracy sheet: no hw band -- the overrides band stays leftmost
+    agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
+    assert agrid[12][0] == "Baseline Overrides"
+    assert agrid[12][3] == "Mean"
+    assert not any(v == "Hardware Performance" for r in agrid for v in r)
 
 
 def test_load_base_eval_cache_misses_when_entry_lacks_needed_pieces(tmp_path, monkeypatch) -> None:

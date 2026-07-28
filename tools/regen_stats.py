@@ -47,6 +47,7 @@ def regen_campaign(campaign, cfg_stats):
         cfg_stats.ordered,
         cfg_stats.heatmap,
         cfg_stats.prim_scores,
+        cfg_stats.baseline_overrides,
     )
 
 

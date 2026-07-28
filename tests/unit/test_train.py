@@ -249,7 +249,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, False, False)
 
     fpath_xlsx = tmp_path / "stats" / "metrics.xlsx"
     assert fpath_xlsx.exists()
@@ -260,36 +260,36 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
         return [[c.value for c in row] for row in ws.iter_rows()]
 
     grid = rows_as_lists()
-    # campaign banner ("<parent-dir> - <campaign>") + blank row, then the always-on cross-dataset mean
-    # table (one row per setting), spacer, then the two dataset tables. "sw" (no completed trials
-    # anywhere) gets no rows; "hp" completed only in cub, so the Bryozoa table still gets its blank
-    # "-" row. mean cells are point values (no spread), unlike the per-dataset "± spread".
+    # campaign banner ("<parent-dir> - <campaign>") + blank row, then the dataset tables, then the
+    # always-on cross-dataset mean table (one row per setting) at the bottom. "sw" (no completed
+    # trials anywhere) gets no rows; "hp" completed only in cub, so the Bryozoa table still gets its
+    # blank "-" row. mean cells are point values (no spread), unlike the per-dataset "± spread".
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name}"
     assert grid[1][:7] == [None] * 7  # blank row below the campaign banner
-    assert grid[2][0] == "Mean"
+    assert grid[2][0] == "CUB"
     assert grid[3][:7] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[4][:7] == ["hp", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]
+    assert grid[4][:2] == ["hp (2)", "55.00 ± 7.07"]  # hp: 2 trials
     assert grid[5][:7] == [None] * 7  # spacer row -- no "sw" row
-    assert grid[6][0] == "CUB"
+    assert grid[6][0] == "Bryozoa"
     assert grid[7][:7] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[8][:2] == ["hp (2)", "55.00 ± 7.07"]  # hp: 2 trials
-    assert grid[10][0] == "Bryozoa"
+    assert grid[8][:2] == ["hp (0)", "-"]  # hp's blank entries still added for the trial-less dataset
+    assert grid[10][0] == "Mean"  # cross-dataset mean table sits at the bottom
     assert grid[11][0] == "Setting"
-    assert grid[12][:2] == ["hp (0)", "-"]  # hp's blank entries still added for the trial-less dataset
+    assert grid[12][:7] == ["hp", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]
     assert not any(v in ("sw", "sw (0)") for r in grid for v in r)
     # per-seed blocks to the right, one blank separator column apart; "seed <seed>" labels sit in the
-    # campaign-banner row; seed blocks have no Mean table -- they're padded down so their per-dataset
-    # tables sit in the same rows as the aggregate block's -- and use plain setting labels (no counts)
-    # with that seed's raw values, "-" where the seed's trial hasn't completed
+    # campaign-banner row; seed blocks have no Mean table and their dataset tables sit in the same
+    # rows as the aggregate block's (dataset tables lead everywhere), with plain setting labels (no
+    # counts), that seed's raw values, and "-" where the seed's trial hasn't completed
     assert grid[0][8] == "seed 42"
     assert grid[0][16] == "seed 43"
-    assert grid[2][8] is None  # blank where the aggregate's Mean table sits
-    assert grid[6][8] == "CUB"
-    assert grid[7][8:15] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[8][8:15] == ["hp", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"]   # seed 42 CUB, aligned with aggregate CUB
-    assert grid[10][8] == "Bryozoa"
-    assert grid[12][8:15] == ["hp", "-", "-", "-", "-", "-", "-"]                          # seed 42 Bryozoa
-    assert grid[8][16:23] == ["hp", "60.00", "62.00", "61.00", "63.00", "64.00", "65.00"]  # seed 43 CUB
+    assert grid[2][8] == "CUB"
+    assert grid[3][8:15] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[4][8:15] == ["hp", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"]   # seed 42 CUB, aligned with aggregate CUB
+    assert grid[6][8] == "Bryozoa"
+    assert grid[8][8:15] == ["hp", "-", "-", "-", "-", "-", "-"]                           # seed 42 Bryozoa
+    assert grid[4][16:23] == ["hp", "60.00", "62.00", "61.00", "63.00", "64.00", "65.00"]  # seed 43 CUB
+    assert grid[10][8] is None  # seed blocks have no Mean table (bottom band stays blank)
     assert not any(r[8] == "Mean" for r in grid)  # no trial-mean table in seed blocks
     assert all(r[7] is None and r[15] is None for r in grid)  # separator columns stay empty
     # snug column widths: longest header/data cell + 2; empty separator columns get a small fixed width
@@ -297,14 +297,14 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     assert ws.column_dimensions["B"].width == len("55.00 ± 7.07") + 2
     assert ws.column_dimensions["H"].width == 3
     # bold_high=False: data cells stay unbolded (only header row + setting column bold)
-    assert ws.cell(row=9, column=2).font.bold is not True
+    assert ws.cell(row=5, column=2).font.bold is not True
     # heatmap=None: data cells are left unshaded
-    assert ws.cell(row=9, column=2).fill.patternType is None
+    assert ws.cell(row=5, column=2).fill.patternType is None
     # "All Borders": thin black gridlines on every table cell, incl. all cells of the merged title banner
     assert ws.cell(row=3, column=1).border.top.style == "thin"
     assert ws.cell(row=3, column=1).border.top.color.rgb[-6:] == "000000"
     assert ws.cell(row=3, column=7).border.right.color.rgb[-6:] == "000000"  # banner's far merged edge
-    assert ws.cell(row=9, column=2).border.left.color.rgb[-6:] == "000000"  # data cell
+    assert ws.cell(row=5, column=2).border.left.color.rgb[-6:] == "000000"  # data cell
     # campaign + table titles are left-aligned in their cells
     assert ws.cell(row=1, column=1).alignment.horizontal == "left"
     assert ws.cell(row=3, column=1).alignment.horizontal == "left"
@@ -313,20 +313,20 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy"]
     agrid = [[c.value for c in row] for row in wb["Composite I2T Accuracy"].iter_rows()]
     assert agrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name}"
-    assert agrid[2][0] == "Mean"
+    assert agrid[2][0] == "CUB"
     assert agrid[3][:2] == ["Setting", "I2T"]
-    assert agrid[4][:2] == ["hp", "61.00"]
-    assert agrid[6][0] == "CUB"
-    assert agrid[8][:2] == ["hp (2)", "61.00 ± 7.07"]
-    assert agrid[10][0] == "Bryozoa"
-    assert agrid[12][:2] == ["hp (0)", "-"]
+    assert agrid[4][:2] == ["hp (2)", "61.00 ± 7.07"]
+    assert agrid[6][0] == "Bryozoa"
+    assert agrid[8][:2] == ["hp (0)", "-"]
+    assert agrid[10][0] == "Mean"
+    assert agrid[12][:2] == ["hp", "61.00"]
     # acc seed blocks (2-wide, so at cols D-E and G-H)
     assert agrid[0][3] == "seed 42"
     assert agrid[0][6] == "seed 43"
-    assert agrid[6][3] == "CUB"
-    assert agrid[8][3:5] == ["hp", "56.00"]   # seed 42 CUB, aligned with aggregate CUB
-    assert agrid[8][6:8] == ["hp", "66.00"]   # seed 43 CUB
-    assert agrid[12][3:5] == ["hp", "-"]      # seed 42 Bryozoa
+    assert agrid[2][3] == "CUB"
+    assert agrid[4][3:5] == ["hp", "56.00"]   # seed 42 CUB, aligned with aggregate CUB
+    assert agrid[4][6:8] == ["hp", "66.00"]   # seed 43 CUB
+    assert agrid[8][3:5] == ["hp", "-"]       # seed 42 Bryozoa
 
 
 def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
@@ -346,18 +346,18 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, None, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, None, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
-    # campaign banner + blank row, then the mean table (rows 3-7); the CUB per-dataset table starts at
-    # row 9 (banner), header row 10, setting rows 11/12/13 = hp/sw/iw; score cols B..G = All/ID/OOD/I2T/I2I/T2I
-    assert ws.cell(row=9, column=1).value == "CUB"
-    assert ws.cell(row=10, column=1).value == "Setting"
+    # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, setting rows
+    # 5/6/7 = hp/sw/iw; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
+    assert ws.cell(row=3, column=1).value == "CUB"
+    assert ws.cell(row=4, column=1).value == "Setting"
     for score_col in range(2, 8):
-        assert ws.cell(row=11, column=score_col).font.bold is True       # hp wins -> bold
-        assert ws.cell(row=12, column=score_col).font.bold is not True   # sw loses -> not bold
-        assert ws.cell(row=13, column=score_col).value == "-"            # iw: no cub trials
-        assert ws.cell(row=13, column=score_col).font.bold is not True   # "-" never bolds
+        assert ws.cell(row=5, column=score_col).font.bold is True       # hp wins -> bold
+        assert ws.cell(row=6, column=score_col).font.bold is not True   # sw loses -> not bold
+        assert ws.cell(row=7, column=score_col).value == "-"            # iw: no cub trials
+        assert ws.cell(row=7, column=score_col).font.bold is not True   # "-" never bolds
 
 
 def test_update_metrics_xlsx_selects_eval_group(tmp_path, monkeypatch) -> None:
@@ -377,11 +377,11 @@ def test_update_metrics_xlsx_selects_eval_group(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_macro", "std", False, False, None, False)
+    ArtifactManager.update_metrics_xlsx("closed_macro", "std", False, False, None, False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
     assert ws.cell(row=4, column=2).value == "All"
-    assert ws.cell(row=5, column=1).value == "hp"
+    assert ws.cell(row=5, column=1).value == "hp (1)"
     assert ws.cell(row=5, column=2).value == "30.00"  # per_class, not standard's 50.00
 
 
@@ -411,32 +411,34 @@ def test_update_metrics_xlsx_ordered_per_sheet_metric(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, True, None, False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, True, None, False, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
-    # campaign banner + blank row, then the mean table, setting rows ordered by its "All" column -> b before a
-    assert grid[2][0] == "Mean"
+    # campaign banner + blank row, then the dataset tables (Mean at the bottom); setting rows ordered
+    # by the mean table's "All" column -> b before a
+    assert grid[2][0] == "CUB"
     assert grid[3][:7] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[4][:2] == ["b", "40.00"]
-    assert grid[5][:2] == ["a", "30.00"]
-    # per-dataset tables follow, sharing the sheet's [b, a] row order
-    assert grid[7][0] == "CUB"
+    assert grid[4][:2] == ["b (1)", "40.00"]
+    assert grid[5][:2] == ["a (1)", "20.00"]
+    assert grid[7][0] == "Bryozoa"
     assert grid[9][:2] == ["b (1)", "40.00"]
-    assert grid[10][:2] == ["a (1)", "20.00"]
-    assert grid[12][0] == "Bryozoa"
-    assert grid[14][:2] == ["b (1)", "40.00"]
-    assert grid[15][:2] == ["a (1)", "40.00"]
+    assert grid[10][:2] == ["a (1)", "40.00"]
+    assert grid[12][0] == "Mean"
+    assert grid[14][:2] == ["b", "40.00"]
+    assert grid[15][:2] == ["a", "30.00"]
     # the seed block's rows are pinned to the sheet's mean-derived order too (CUB table, aligned rows)
     assert grid[0][8] == "seed 42"
-    assert [grid[9][8], grid[10][8]] == ["b", "a"]
+    assert [grid[4][8], grid[5][8]] == ["b", "a"]
     # the accuracy sheet orders by its own acc mean-'I2T' column -> [a, b], unlike the mAP sheet
     agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
     assert agrid[3][:2] == ["Setting", "I2T"]
-    assert agrid[4][:2] == ["a", "80.00"]
-    assert agrid[5][:2] == ["b", "20.00"]
-    assert agrid[9][:2] == ["a (1)", "80.00"]  # per-dataset tables share the sheet's row order
-    assert agrid[9][3:5] == ["a", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
+    assert agrid[4][:2] == ["a (1)", "80.00"]
+    assert agrid[5][:2] == ["b (1)", "20.00"]
+    assert agrid[12][0] == "Mean"
+    assert agrid[14][:2] == ["a", "80.00"]
+    assert agrid[15][:2] == ["b", "20.00"]
+    assert agrid[4][3:5] == ["a", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
 
 
 def _fill_rgb(ws, row, col):
@@ -461,15 +463,16 @@ def test_update_metrics_xlsx_heatmap_scaled(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "scaled", False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "scaled", False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
-    # campaign banner + blank row; mean "All" column is col B, setting rows 5/6/7 = a/b/c (values 20/50/80)
+    # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
+    # setting rows 5/6/7 = a/b/c (values 20/50/80)
     assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
     assert _fill_rgb(ws, 5, 2) == "FFFFFF"  # column min -> white
     assert _fill_rgb(ws, 6, 2) == "FFAA99"  # midpoint (t=0.5) -> interpolated
     assert _fill_rgb(ws, 7, 2) == "FF5533"  # column max -> #ff5533
-    # per-dataset tables are shaded too (CUB setting rows are 11/12/13)
+    # the trailing Mean table is shaded too (setting rows 11/12/13)
     assert _fill_rgb(ws, 11, 2) == "FFFFFF"
     assert _fill_rgb(ws, 13, 2) == "FF5533"
 
@@ -489,10 +492,11 @@ def test_update_metrics_xlsx_heatmap_fixed(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "fixed", False)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, "fixed", False, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics.xlsx").active
-    # campaign banner + blank row; mean "All" column is col B, setting rows 5/6/7 = a/b/c
+    # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
+    # setting rows 5/6/7 = a/b/c
     assert _fill_rgb(ws, 5, 2) == "FFDDD6"  # 20 -> t=0.20
     assert _fill_rgb(ws, 6, 2) == "FFAA99"  # 50 -> t=0.50
     assert _fill_rgb(ws, 7, 2) == "FF775C"  # 80 -> t=0.80
@@ -522,37 +526,37 @@ def test_update_metrics_xlsx_prim_scores(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, True)
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", False, False, None, True, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # mAP banners split: unmerged title + grey merged 'Composite Scores'/'Primitive Scores' group headers
-    assert grid[2][:2] == ["Mean", "Composite Scores"]
+    assert grid[2][:2] == ["CUB", "Composite Scores"]
     assert grid[2][7] == "Primitive Scores"
-    assert grid[6][:2] == ["CUB", "Composite Scores"]
+    assert grid[6][:2] == ["Mean", "Composite Scores"]
     assert grid[6][7] == "Primitive Scores"
     assert "B3:G3" in {str(m) for m in ws.merged_cells.ranges} and "H3:M3" in {str(m) for m in ws.merged_cells.ranges}
     assert ws.cell(row=3, column=2).fill.fgColor.rgb[-6:] == "EAEAEA"  # group headers get the header grey
     assert ws.cell(row=3, column=1).fill.patternType is None           # title cell stays unfilled
     assert grid[3][:13] == _PRIM_MAP_HEADER
-    assert grid[4][:13] == ["hp", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00",
-                            "61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # Mean row
-    assert grid[8][7:13] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # CUB row
+    assert grid[4][:13] == ["hp (1)", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00",
+                            "61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # CUB row
+    assert grid[8][7:13] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # Mean row (bottom)
     # seed block starts after the 13-wide aggregate + separator; its CUB table row-aligns with the aggregate's
     assert grid[0][14] == "seed 42"
-    assert grid[6][14:16] == ["CUB", "Composite Scores"]
-    assert grid[6][21] == "Primitive Scores"
-    assert grid[7][14:27] == _PRIM_MAP_HEADER
-    assert grid[8][21:27] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
+    assert grid[2][14:16] == ["CUB", "Composite Scores"]
+    assert grid[2][21] == "Primitive Scores"
+    assert grid[3][14:27] == _PRIM_MAP_HEADER
+    assert grid[4][21:27] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
     # the accuracy sheet keeps full-width merged title banners (no group headers)
     ws_acc = wb["Composite I2T Accuracy"]
     agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
-    assert agrid[2][:2] == ["Mean", None]
+    assert agrid[2][:2] == ["CUB", None]
     assert "A3:D3" in {str(m) for m in ws_acc.merged_cells.ranges}
     assert agrid[3][:4] == ["Setting", "I2T", "ID I2T", "OOD I2T"]
-    assert agrid[4][:4] == ["hp", "56.00", "64.00", "74.00"]  # Mean row
-    assert agrid[8][:4] == ["hp (1)", "56.00", "64.00", "74.00"]  # CUB row
+    assert agrid[4][:4] == ["hp (1)", "56.00", "64.00", "74.00"]  # CUB row
+    assert agrid[8][:4] == ["hp", "56.00", "64.00", "74.00"]  # Mean row (bottom)
     assert agrid[0][5] == "seed 42"
 
 
@@ -581,6 +585,73 @@ def test_update_stats_tables_prim_scores(tmp_path, monkeypatch) -> None:
                            "61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
     assert grid_acc[0] == ["Setting", "I2T", "ID I2T", "OOD I2T"]
     assert grid_acc[1] == ["hp (1)", "56.00", "64.00", "74.00"]
+
+
+def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
+    # baseline_overrides=True renders a "Baseline Overrides" config table in a left column band that
+    # the score blocks shift right past, aligned with the aggregate block's bottom Mean table (whose
+    # Setting column labels its rows): one column per overridden param (union of the settings'
+    # overrides.json keys, first-seen order), values resolved from each setting's
+    # setting_metadata.json -- "-" when the param is absent there (inert under that config: sw has
+    # loss2.mix 0.0, so clean_metadata dropped its loss2 subtree). Config cells get no
+    # winner-bold/heatmap styling despite bold_high/heatmap on.
+    for setting, base, overrides, meta in (
+        ("hp", 0.50, {"loss2.mix": 0.3, "loss2.targ": "phylo"},
+         {"loss": {"targ": "sw"}, "loss2": {"mix": 0.3, "targ": "phylo"}}),
+        ("sw", 0.40, {"loss.targ": "sw"},
+         {"loss": {"targ": "sw"}}),
+    ):
+        dpath_setting = tmp_path / "settings" / setting
+        dpath_final = dpath_setting / "cub" / "42" / "evals" / "final"
+        dpath_final.mkdir(parents=True)
+        (dpath_final / "metrics.json").write_text(json.dumps({
+            "scores": {"closed_set": {"standard": _scores_grp(_comp(base))}},
+        }))
+        (dpath_setting / "overrides.json").write_text(json.dumps(overrides))
+        (dpath_setting / "setting_metadata.json").write_text(json.dumps(meta))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub"]}))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+
+    ArtifactManager.update_metrics_xlsx("closed_standard", "std", True, False, "fixed", False, True)
+
+    wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
+    ws = wb.active
+    grid = [[c.value for c in r] for r in ws.iter_rows()]
+    # score blocks shift right past the 3-wide overrides band + separator col D: aggregate at E..K
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name}"  # campaign banner stays top-left
+    assert grid[2][4] == "CUB"
+    assert grid[7][4] == "Mean"
+    # overrides table in the left band, aligned with the Mean table; param cols in first-seen order
+    # (hp's overrides, then sw's); no Setting column of its own
+    assert grid[7][0] == "Baseline Overrides"
+    assert "A8:C8" in {str(m) for m in ws.merged_cells.ranges}
+    assert grid[8][:3] == ["loss2.mix", "loss2.targ", "loss.targ"]
+    assert grid[8][4:6] == ["Setting", "All"]  # Mean header shares the row
+    assert grid[9][:3] == ["0.3", "phylo", "sw"]
+    assert grid[9][4] == "hp"  # labeled by the Mean's Setting column
+    assert grid[10][:3] == ["-", "-", "sw"]  # loss2.* inert for sw -> "-"
+    assert grid[10][4] == "sw"
+    # param-name header styled like other headers; config cells skip score styling entirely
+    assert ws.cell(row=9, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=9, column=1).font.bold is True
+    assert ws.cell(row=10, column=1).fill.patternType is None
+    assert ws.cell(row=10, column=1).font.bold is not True
+    assert all(r[3] is None for r in grid)  # separator col D stays empty
+    # seed block one separator past the aggregate score block (cols E..K)
+    assert grid[0][12] == "seed 42"
+    assert grid[2][12] == "CUB"
+    # same treatment on the accuracy sheet (2-wide score tables at E..F, seed at col I)
+    ws_acc = wb["Composite I2T Accuracy"]
+    agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
+    assert agrid[2][4] == "CUB"
+    assert agrid[7][4] == "Mean"
+    assert agrid[7][0] == "Baseline Overrides"
+    assert "A8:C8" in {str(m) for m in ws_acc.merged_cells.ranges}
+    assert agrid[8][:3] == ["loss2.mix", "loss2.targ", "loss.targ"]
+    assert agrid[9][:3] == ["0.3", "phylo", "sw"]
+    assert agrid[10][:3] == ["-", "-", "sw"]
+    assert agrid[0][7] == "seed 42"
 
 
 def test_load_base_eval_cache_misses_when_entry_lacks_needed_pieces(tmp_path, monkeypatch) -> None:

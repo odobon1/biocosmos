@@ -510,9 +510,6 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             metadata_camp["runtime_img_cache"][dataset] = round(stage_img_cache(dataset), 2)
     save_json(metadata_camp, fpath_meta)
 
-    for setting, setting_payload in settings:
-        _write_setting_overrides(campaign, setting, setting_payload)
-
     n_trials_total = len(seeds) * len(datasets) * len(settings)
     print(f"Campaign: '{campaign}' ({n_trials_total} trials)")
 
@@ -537,6 +534,10 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 if _check_trial_completion(dpath_trial):
                     print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {setting}/{dataset}/{seed}")
                     continue
+
+                # the setting dir is created here, at trial launch, not at campaign kickoff -- a
+                # planned setting whose trials never start leaves no artifacts/<campaign>/settings/ entry
+                _write_setting_overrides(campaign, setting, setting_payload)
 
                 cfg_dict = deepcopy(cfg_baseline)
                 cfg_dict["campaign"] = campaign

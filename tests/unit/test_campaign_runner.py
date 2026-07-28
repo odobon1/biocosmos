@@ -270,6 +270,54 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
     assert data["loss.targ"] == "iw"
 
 
+def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
+    # a setting's dir (settings/<setting>/, holding overrides.json) is created at its first trial's
+    # launch, not at campaign kickoff -- a planned setting whose trials never start leaves no dir
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 2, "use_img_cache": False},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    dpath_settings = Path(tmp_path) / "cmp_defer" / "settings"
+
+    # abort the campaign during the first trial (setting 'iw'): its overrides.json must already be
+    # in place at launch, while 'hp' -- planned but never launched -- must have no dir at all
+    def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
+        assert (dpath_settings / cfg_dict["setting"] / "overrides.json").exists()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign(
+        campaign="cmp_defer",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[[
+            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "phylo", "name": "hp"},
+        ]],
+        baseline=False,
+    )
+
+    assert (dpath_settings / "iw" / "overrides.json").exists()
+    assert not (dpath_settings / "hp").exists()
+
+
 def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})

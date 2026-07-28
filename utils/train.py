@@ -263,14 +263,23 @@ class ArtifactManager:
 
             del metadata["dev"]
 
-            metadata["loss"].pop("wting", None)
-
-            if "loss2" in metadata:
-                metadata["loss2"].pop("wting", None)
-
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]
-        
+
+            # drop inert wting.norm params (per the train.yaml inertness notes): the unit-scale
+            # blend (loss / loss.detach()) cancels any per-batch scalar factor on a loss, making
+            # norm.agg inert; norm.cls_imb's rescale is such a scalar under multiplicative aggs,
+            # cancelled by norm.agg or unit-scaling. loss2 is already gone when mix = 0.0, under
+            # which mix_unit_scale never applies
+            unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
+            for key in ("loss", "loss2"):
+                if key in metadata:
+                    wting = metadata[key]["wting"]
+                    if wting["agg"] in ("prod", "geo_mean") and (wting["norm"]["agg"] or unit_scaled):
+                        del wting["norm"]["cls_imb"]
+                    if unit_scaled:
+                        del wting["norm"]["agg"]
+
         fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
         metadata = asdict(cfg_train)
         clean_metadata(metadata)
@@ -615,7 +624,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores):
+    def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides):
         """Write artifacts/<campaign>/stats/metrics.xlsx: two sheets, 'Composite mAP' (comp map scores,
         All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy' (comp acc, single I2T
         column) -- prim_scores appends the per-partition primitive score columns (ID/OOD x modality)
@@ -626,9 +635,9 @@ class ArtifactManager:
         'bc_dev - dev') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
         title banner, then a table of header row 'Setting' + one column per score label and one
         '<setting> (n_trials)' row per setting, then a blank spacer row before the next dataset -- with
-        an always-shown 'Mean' summary table on top: one row per setting, each cell the arithmetic mean,
-        across datasets with completed trials, of that setting/label's per-dataset mean (a point value,
-        no spread). Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or 'XX.XX ± XX.XX'
+        the always-shown 'Mean' summary table at the bottom: one row per setting, each cell the
+        arithmetic mean, across datasets with completed trials, of that setting/label's per-dataset
+        mean (a point value, no spread). Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or 'XX.XX ± XX.XX'
         (>1 trial, mean ± spread), aggregated across each setting's completed trials'
         scores.<set_key>.<grp>.comp for the eval group selected by table_eval_group. A setting gets
         rows only once it has >= 1 completed trial in some dataset -- it then appears in every table of
@@ -644,9 +653,17 @@ class ArtifactManager:
         white->#ff5533. '-' cells are never shaded. To the right of this aggregate block sit per-seed
         blocks (one blank separator column apart): a 'seed <seed>' label in the campaign-banner row,
         then the per-dataset tables only (no Mean summary) built from that seed's trials alone,
-        padded down so each dataset table sits in the same rows as the aggregate block's -- plain
-        setting labels (no trial counts), single-trial 'XX.XX' cells, '-' where that seed's trial
-        hasn't completed -- sharing the aggregate block's setting rows/order. Column widths hug each column's longest header/data cell
+        sitting in the same rows as the aggregate block's dataset tables -- plain setting labels (no
+        trial counts), single-trial 'XX.XX' cells, '-' where that seed's trial hasn't completed --
+        sharing the aggregate block's setting rows/order. baseline_overrides adds a 'Baseline
+        Overrides' config table to each sheet, in a left column band that the score blocks shift
+        right past (one blank separator column between), vertically aligned with the aggregate
+        block's bottom Mean table so the Mean's Setting column labels its rows: one column per param
+        overridden in the campaign's baseline_overrides (union of the settings' overrides.json keys,
+        first-seen order), each cell the setting's effective value resolved from its
+        setting_metadata.json -- '-' when the param is absent there, the signal that it is inert
+        under that configuration (e.g. loss2.* with loss2.mix 0.0). This table gets no
+        winner-bold/heatmap styling. Column widths hug each column's longest header/data cell
         (banner/label text overflows); blank separator columns get a small ~square width. Regenerated
         at each trial completion."""
         set_key, grp, _ = ArtifactManager._TABLE_EVAL_GROUPS[table_eval_group]
@@ -659,21 +676,39 @@ class ArtifactManager:
         settings = [s for s in settings if any(comps_by[(s, dataset)] for dataset in datasets)]
         seeds = sorted({seed for comps in comps_by.values() for seed in comps}, key=int)
 
+        if baseline_overrides:
+            dpath_settings = ArtifactManager.dpath_campaign / "settings"
+            okeys = []  # union of overridden params, first-seen order across settings (campaign order)
+            for s in settings:
+                for key in load_json(dpath_settings / s / "overrides.json"):
+                    if key not in okeys:
+                        okeys.append(key)
+            metadata_by = {s: load_json(dpath_settings / s / "setting_metadata.json") for s in settings}
+
+            def override_value(setting, key):
+                # a param absent from the setting's metadata is inert under that configuration -> '-'
+                node = metadata_by[setting]
+                for part in key.split("."):
+                    if not isinstance(node, dict) or part not in node:
+                        return "-"
+                    node = node[part]
+                return str(node)
+
         def build_blocks(score_key, labels):
             """The sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
-            block (label None): the always-shown 'Mean' cross-dataset summary table, then one table per
-            campaign dataset; then one block per completed seed (label 'seed <seed>'): the per-dataset
-            tables only (no Mean summary), built from that seed's trials alone -- plain setting labels
-            (no trial counts), single-trial 'XX.XX' cells, '-' where that seed's trial hasn't
-            completed. Setting rows are shared across all blocks -- when ordered, pinned to the
-            aggregate Mean-table's first score column (labels[0]), descending."""
+            block (label None): one table per campaign dataset, then the always-shown 'Mean'
+            cross-dataset summary table at the bottom; then one block per completed seed (label
+            'seed <seed>'): the per-dataset tables only (no Mean summary), built from that seed's
+            trials alone -- plain setting labels (no trial counts), single-trial 'XX.XX' cells, '-'
+            where that seed's trial hasn't completed. Setting rows are shared across all blocks --
+            when ordered, pinned to the aggregate Mean-table's first score column (labels[0]),
+            descending. Returns (blocks, ogrid): ogrid is the 'Baseline Overrides' grid (param-name
+            header + one value row per setting in this sheet's row order), or None when disabled or
+            nothing is overridden."""
             xmeans = ArtifactManager._cross_dataset_means(settings, datasets, comps_by, score_key, labels)
             rows = ArtifactManager._order_settings(settings, xmeans, labels[0]) if ordered else settings
 
-            xgrid = [["Setting", *labels]]
-            for s in rows:
-                xgrid.append([s] + [f"{xmeans[(s, label)]:.2f}" for label in labels])
-            tables = [("Mean", xgrid)]
+            tables = []
             for dataset in datasets:
                 grid = ArtifactManager._stats_table_grid(
                     labels,
@@ -681,6 +716,10 @@ class ArtifactManager:
                     spread_type,
                 )
                 tables.append((DATASET_ALIAS2NAME[dataset], grid))
+            xgrid = [["Setting", *labels]]
+            for s in rows:
+                xgrid.append([s] + [f"{xmeans[(s, label)]:.2f}" for label in labels])
+            tables.append(("Mean", xgrid))
             blocks = [(None, tables)]
 
             for seed in seeds:
@@ -693,7 +732,15 @@ class ArtifactManager:
                                            for label in labels])
                     stables.append((DATASET_ALIAS2NAME[dataset], grid))
                 blocks.append((f"seed {seed}", stables))
-            return blocks
+
+            ogrid = None
+            if baseline_overrides and okeys:
+                # header of param names only -- no setting column; the rows align with (and are
+                # labeled by) the aggregate Mean table's setting rows
+                ogrid = [list(okeys)]
+                for s in rows:
+                    ogrid.append([override_value(s, key) for key in okeys])
+            return blocks, ogrid
 
         bold = Font(bold=True)
         center = Alignment(horizontal="center", vertical="center")
@@ -702,28 +749,33 @@ class ArtifactManager:
         thin = Side(style="thin", color="000000")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        def write_sheet(ws, blocks, groups):
+        def write_sheet(ws, blocks, groups, ogrid):
             """groups: None -> each table's banner is its title merged across the full table width;
             else [(group_title, n_group_cols), ...] -> the title sits unmerged in the block's first
             column, followed by one grey merged group-header cell per group (e.g. 'Composite Scores'
-            over the composite columns, 'Primitive Scores' over the primitive columns)."""
+            over the composite columns, 'Primitive Scores' over the primitive columns). ogrid: None,
+            or the 'Baseline Overrides' grid (param-name header + one value row per setting, sheet
+            row order) -- rendered in a left column band (one blank separator column before the
+            score blocks, which all shift right past it), vertically aligned with the aggregate
+            block's bottom Mean table so the Mean's Setting column labels its rows; config cells get
+            no winner-bold/heatmap styling."""
             n_cols = len(blocks[0][1][0][1][0])  # corner + one col per score label (same for every grid in the sheet)
-            mean_rows = len(blocks[0][1][0][1]) + 2  # aggregate Mean table height incl. its banner + spacer
             widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
             campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_campaign.name}")
             campaign.font = bold
             campaign.alignment = left
 
+            offset = len(ogrid[0]) + 1 if ogrid else 0  # overrides band + its separator column
             for i_block, (block_label, tables) in enumerate(blocks):
-                col0 = 1 + i_block * (n_cols + 1)  # blocks side by side, one blank separator column apart
+                col0 = 1 + offset + i_block * (n_cols + 1)  # blocks side by side, one blank separator column apart
                 if block_label is not None:
                     label_cell = ws.cell(row=1, column=col0, value=block_label)  # campaign-banner row, atop the block
                     label_cell.font = bold
                     label_cell.alignment = left
-                # banner + blank row above the tables; seed blocks (no Mean table) start past the
-                # aggregate's Mean rows so per-dataset tables line up across blocks
-                row = 3 if block_label is None else 3 + mean_rows
+                # banner row + blank row above the tables; dataset tables lead in every block, so they
+                # sit in the same rows across blocks (only the aggregate has the trailing Mean table)
+                row = 3
                 for title_text, grid in tables:
                     title = ws.cell(row=row, column=col0, value=title_text)
                     title.font = bold
@@ -764,6 +816,28 @@ class ArtifactManager:
                         row += 1
                     row += 1  # blank spacer row between tables
 
+            if ogrid:
+                o_cols = len(ogrid[0])
+                # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
+                row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
+                title = ws.cell(row=row, column=1, value="Baseline Overrides")
+                title.font = bold
+                title.alignment = left
+                for c in range(1, o_cols + 1):
+                    ws.cell(row=row, column=c).border = border
+                ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=o_cols)
+                row += 1
+                for r, grid_row in enumerate(ogrid):
+                    for c, val in enumerate(grid_row):
+                        cell = ws.cell(row=row, column=1 + c, value=val)
+                        cell.alignment = center
+                        cell.border = border
+                        widths[1 + c] = max(widths.get(1 + c, 0), len(val))
+                        if r == 0:  # param-name header row
+                            cell.font = bold
+                            cell.fill = header_fill
+                    row += 1
+
             for c in range(1, max(widths) + 1):
                 # snug fit to each column's longest cell; blank separator columns get a small ~square width
                 ws.column_dimensions[get_column_letter(c)].width = widths[c] + 2 if c in widths else 3
@@ -775,8 +849,10 @@ class ArtifactManager:
         wb = Workbook()
         ws_map = wb.active
         ws_map.title = "Composite mAP"
-        write_sheet(ws_map, build_blocks("map", map_labels), map_groups)
-        write_sheet(wb.create_sheet("Composite I2T Accuracy"), build_blocks("acc", acc_labels), None)
+        map_blocks, map_ogrid = build_blocks("map", map_labels)
+        write_sheet(ws_map, map_blocks, map_groups, map_ogrid)
+        acc_blocks, acc_ogrid = build_blocks("acc", acc_labels)
+        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid)
 
         dpath_stats = ArtifactManager.dpath_campaign / "stats"
         dpath_stats.mkdir(parents=True, exist_ok=True)

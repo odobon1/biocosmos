@@ -384,6 +384,7 @@ def _make_stats_config_dummy(**overrides):
         "ordered": True,
         "heatmap": None,
         "prim_scores": False,
+        "baseline_overrides": False,
     }
     config.update(overrides)
     return config

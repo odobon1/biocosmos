@@ -52,9 +52,9 @@ loss:  # primary loss
     freeze_scale: false  # (true) non-learnable temp
     freeze_bias: false  # (true) non-learnable bias
 
-loss2:  # secondary loss
+loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
   mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
-  mix_unit_scale: false  # {true, false}; (true) rescale each loss to unit magnitude (loss / loss.detach()) before the (1-mix)*loss1 + mix*loss2 blend, so `mix` sets the true gradient-contribution ratio regardless of each loss's raw scale; inert with `loss2.mix = 0.0`
+  mix_unit_scale: false  # {true, false}; (true) rescale each loss to unit magnitude (loss / loss.detach()) before the (1-mix)*loss1 + mix*loss2 blend, so `mix` sets the true gradient-contribution ratio regardless of each loss's raw scale
   type: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}; note: if loss2.sim is different from loss.sim, min/max/mean/median similarity metrics are incorrect
   targ: phylo  # {iw, sw, tax, phylo}

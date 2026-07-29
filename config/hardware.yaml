@@ -25,6 +25,9 @@ eval:
   # doesn't change the projection: bigger X = faster if you have VRAM, smaller X if it OOMs.
   tsne_chunk_log2: 30
 
+ram_poll_interval: 1.0  # seconds between cgroup RAM polls by the peak-RAM tracker (trial processes); the running
+                        # max of these readings is what trial/campaign metadata report as peak RAM
+
 pg_timeout: 600  # NCCL collective watchdog timeout, in seconds. A hang aborts (and dumps its flight-recorder
                  # trace) after this; the campaign runner then resumes the trial from its last checkpoint. Keep
                  # it above the longest legit gap between collectives -- the per-partition eval embedding pass

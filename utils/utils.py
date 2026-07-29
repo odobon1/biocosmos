@@ -839,7 +839,7 @@ class Timer:
 
     def get_elapsed_time(self):
         if self._active:
-            elapsed_time = time.time() - self._start_time
+            elapsed_time = self._elapsed_time + (time.time() - self._start_time)
         else:
             elapsed_time = self._elapsed_time
         return elapsed_time

@@ -44,6 +44,7 @@ def make_train_config_dummy(**overrides):
             "persistent_workers": {"train": True, "eval": True},
             "use_img_cache": False,
             "eval": {"map_chunk_size": {"img2img": 512, "cross_modal": 512}, "tsne_chunk_log2": 28},
+            "ram_poll_interval": 1.0,
             "pg_timeout": 300,
             "max_retries": 2,
         },
@@ -160,6 +161,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
         "persistent_workers": {"train": False, "eval": False},
         "use_img_cache": False,
         "eval": {"map_chunk_size": {"img2img": 1024, "cross_modal": 1024}, "tsne_chunk_log2": 30},
+        "ram_poll_interval": 0.5,
         "pg_timeout": 300,
         "max_retries": 2,
     }))
@@ -171,6 +173,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     assert cfg.hw.max_n_workers_gpu == 3
     assert cfg.hw.pin_memory is False
     assert cfg.hw.eval["tsne_chunk_log2"] == 30
+    assert cfg.hw.ram_poll_interval == 0.5
 
 
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:

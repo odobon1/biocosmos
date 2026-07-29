@@ -1,6 +1,8 @@
 import os
 import subprocess
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -38,11 +40,11 @@ def get_slurm_alloc():
 
     return slurm_alloc
 
-def read_cgroup_ram():
-    """(used_bytes, limit_bytes) of host RAM for the enclosing memory-limited cgroup. The leaf
-    cgroup (SLURM task) is unbounded; the OOM-kill limit sits at the job level, so walk up to the
-    first ancestor with a bounded memory.max and read that cgroup's current usage -- it covers
-    every process in the job (all ranks, DataLoader workers, the render worker)."""
+def _bounded_memcg():
+    """(dir, limit_bytes) of the enclosing memory-limited cgroup. The leaf cgroup (SLURM task) is
+    unbounded; the OOM-kill limit sits at the job level, so walk up to the first ancestor with a
+    bounded memory.max -- its accounting covers every process in the job (all ranks, DataLoader
+    workers, the render worker)."""
     root = Path("/sys/fs/cgroup")
     rel = Path("/proc/self/cgroup").read_text().strip().split("::", 1)[1]
     dpath = root / rel.lstrip("/")
@@ -51,9 +53,49 @@ def read_cgroup_ram():
         if fpath_limit.exists():
             limit = fpath_limit.read_text().strip()
             if limit != "max":
-                return int((dpath / "memory.current").read_text()), int(limit)
+                return dpath, int(limit)
         dpath = dpath.parent
     raise RuntimeError("no memory-limited cgroup found (not running under a SLURM job?)")
+
+
+class _RamPeakTracker(threading.Thread):
+    """Daemon thread polling the job cgroup's memory.current, keeping the running max so RAM
+    readings are peaks over the tracker's lifetime (the trial process) rather than instantaneous
+    values at snapshot time. The kernel's own watermark (memory.peak) can't serve here: the
+    cgroup -- and so its watermark -- spans the whole SLURM job (every trial in the campaign),
+    and resetting it needs kernel >= 6.12."""
+
+    def __init__(self, interval):
+        super().__init__(daemon=True)
+        self.interval = interval
+        self.fpath_current = _bounded_memcg()[0] / "memory.current"
+        self.peak = 0
+
+    def run(self):
+        while True:
+            self.peak = max(self.peak, int(self.fpath_current.read_text()))
+            time.sleep(self.interval)
+
+
+_ram_peak_tracker = None
+
+def start_ram_peak_tracker(interval):
+    """Arm per-process RAM peak polling; read_cgroup_ram folds the tracked peak into its reading
+    from then on. Idempotent."""
+    global _ram_peak_tracker
+    if _ram_peak_tracker is None:
+        _ram_peak_tracker = _RamPeakTracker(interval)
+        _ram_peak_tracker.start()
+
+def read_cgroup_ram():
+    """(used_bytes, limit_bytes) of host RAM for the enclosing memory-limited cgroup (see
+    _bounded_memcg). used is the peak since start_ram_peak_tracker() when armed, else the
+    instantaneous usage."""
+    dpath, limit = _bounded_memcg()
+    used = int((dpath / "memory.current").read_text())
+    if _ram_peak_tracker is not None:
+        used = max(used, _ram_peak_tracker.peak)
+    return used, limit
 
 
 def compute_dataloader_workers_prefetch(

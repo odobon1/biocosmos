@@ -30,7 +30,7 @@ from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
-from utils.hardware import apply_backend_flags, read_cgroup_ram
+from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
 import pdb
@@ -413,7 +413,7 @@ class TrainPipeline:
                         PrintLog.texts(texts_sb)
 
                     imgs_sb = imgs_sb.to(self.cfg.device, non_blocking=True)
-                    class_encs_sb = class_encs_sb.to(self.cfg.device)
+                    class_encs_sb = class_encs_sb.to(self.cfg.device, non_blocking=True)
                     B = imgs_sb.size(0) * dist.get_world_size()
                     self.n_samps_seen += B
 
@@ -550,6 +550,7 @@ class TrainPipeline:
 
 def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
+    start_ram_peak_tracker(cfg.hw.ram_poll_interval)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
     apply_backend_flags(cfg.hw)

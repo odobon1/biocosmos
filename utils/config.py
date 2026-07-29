@@ -334,6 +334,7 @@ class HardwareConfig:
     persistent_workers: dict  # {train: bool, eval: bool}; keep dataloader workers alive across epochs
     use_img_cache: bool  # read images from the prebuilt pack (tools/build_img_cache.py), staged to node-local scratch, instead of per-sample files on the shared FS
     eval: dict  # {map_chunk_size: {img2img, cross_modal}, tsne_chunk_log2: int} -- mAP sim-matrix chunking + t-SNE GPU-buffer tiling (buffer = 2^X fp32)
+    ram_poll_interval: float  # seconds between cgroup RAM polls by the peak-RAM tracker (utils/hardware.py)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 

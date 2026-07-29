@@ -19,24 +19,36 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
 
     Returns:
     - counts ---- Per-class sample counts for the train partition, NaN for absent classes; pt[n_classes]
-    - ds_norm --- Mean weight over all classes (1D) / class pairs (2D); dataset-level constant, computed once at startup
+    - wt_mean --- Mean weight over all classes (1D) / class pairs (2D); dataset-level constant, computed once at startup
     """
     counts = torch.tensor(load_split(dataset, split).class_counts[train_pt], dtype=torch.float64)
     class_encs = torch.arange(counts.numel())
+    wt_mean_type = cfg_wting["wt_mean_type"]
 
     if dim == 1:
         wts = _compute_wts(cfg_wting, counts)
-        ds_norm = wts.nanmean()
+        if wt_mean_type == "per_class":
+            wt_mean = wts.nanmean()
+        elif wt_mean_type == "per_sample":
+            wt_mean = (counts * wts).nansum() / counts.nansum()
     elif dim == 2:
-        wts = _compute_wts(cfg_wting, _pair_freqs(counts, class_encs, cfg_wting["freq_type_2d"], batch_size))
+        pair_freqs = _pair_freqs(counts, class_encs, cfg_wting["freq_type_2d"], batch_size)
+        wts = _compute_wts(cfg_wting, pair_freqs)
         if cfg_wting["freq_type_2d"] == "naive":
-            ds_norm = wts.nanmean()
+            if wt_mean_type == "per_class":
+                wt_mean = wts.nanmean()
+            elif wt_mean_type == "per_sample":
+                wt_mean = (pair_freqs * wts).nansum() / pair_freqs.nansum()
         elif cfg_wting["freq_type_2d"] == "cmx2" or cfg_wting["freq_type_2d"] == "pair_prob":
-            ds_norm = wts[torch.triu(torch.ones_like(wts, dtype=torch.bool))].nanmean()  # mean over upper triangle
+            triu_mask = torch.triu(torch.ones_like(wts, dtype=torch.bool))
+            if wt_mean_type == "per_class":
+                wt_mean = wts[triu_mask].nanmean()  # mean over upper triangle
+            elif wt_mean_type == "per_sample":
+                wt_mean = (pair_freqs[triu_mask] * wts[triu_mask]).nansum() / pair_freqs[triu_mask].nansum()
 
-    return counts, ds_norm.item()
+    return counts, wt_mean.item()
 
-def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, ds_norm, batch_size):
+def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, wt_mean, batch_size):
     """
     Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
 
@@ -49,7 +61,7 @@ def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, ds_norm, batch_siz
     elif dim == 2:
         freqs_b = _pair_freqs(counts, class_encs_b, cfg_wting["freq_type_2d"], batch_size)
 
-    return (_compute_wts(cfg_wting, freqs_b) / ds_norm).float()
+    return (_compute_wts(cfg_wting, freqs_b) / wt_mean).float()
 
 def _pair_freqs(counts, class_encs, freq_type_2d, batch_size):
     """

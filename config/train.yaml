@@ -38,6 +38,7 @@ loss:  # primary loss
       class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
         beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
       freq_type_2d: naive  # {naive, cmx2, pair_prob}; class-pair frequency/counting type (only relevant for 2D-weighting); (naive) vanilla (i2t, t2i for same pair treated as separate "classes"); (cmx2) "cross-model x2" negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes"); (pair_prob) "pair-probability" weighting
+      wt_mean_type: per_class  # {per_class, per_sample}
     focal:
       gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
       comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
@@ -66,6 +67,7 @@ loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
       class_bal:
         beta: 0.9999  # [0.0, 1.0)
       freq_type_2d: naive  # {naive, cmx2, pair_prob}
+      wt_mean_type: per_class  # {per_class, per_sample}
     focal:
       gamma: 2.0  # (0.0, inf)
       comp_type: 1  # {1, 2}

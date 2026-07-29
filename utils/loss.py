@@ -73,7 +73,7 @@ class Criterion(abc.ABC):
         self.cfg = cfg_loss
         self.device = device
         self.batch_size = batch_size
-        counts, self.ds_norm = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim, batch_size)
+        counts, self.wt_mean = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim, batch_size)
         self.counts = counts.to(device)
 
     @staticmethod
@@ -90,7 +90,7 @@ class Criterion(abc.ABC):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
     def _cls_imb_wts(self, class_encs_b):
-        return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm, self.batch_size)
+        return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.wt_mean, self.batch_size)
 
     @abc.abstractmethod
     def __call__(self, logits, class_encs_b, targ_data_b, train):

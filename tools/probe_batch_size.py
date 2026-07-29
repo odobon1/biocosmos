@@ -64,8 +64,8 @@ def probe_model(
     config_train.loss_type  = loss_type
 
     modelw = VLMWrapper.build(config_train)
-    modelw.crit1 = Criterion.build(config_train.loss, DATASET, config_train.split, config_train.train_pt, device)
-    modelw.crit2 = Criterion.build(config_train.loss2, DATASET, config_train.split, config_train.train_pt, device) if config_train.loss2["mix"] != 0.0 else None
+    modelw.crit1 = Criterion.build(config_train.loss, DATASET, config_train.split, config_train.train_pt, device, config_train.batch_size)
+    modelw.crit2 = Criterion.build(config_train.loss2, DATASET, config_train.split, config_train.train_pt, device, config_train.batch_size) if config_train.loss2["mix"] != 0.0 else None
 
     n_classes = len(load_split(DATASET, config_train.split).class_counts[config_train.train_pt])
 

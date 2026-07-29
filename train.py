@@ -564,8 +564,8 @@ def run_training(cfg):
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
-    modelw.crit1 = Criterion.build(cfg.loss, cfg.dataset, cfg.split, cfg.train_pt, device)
-    modelw.crit2 = Criterion.build(cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device) if cfg.loss2["mix"] != 0.0 else None
+    modelw.crit1 = Criterion.build(cfg.loss, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
+    modelw.crit2 = Criterion.build(cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size) if cfg.loss2["mix"] != 0.0 else None
 
     resume_state = None
     trial_state = None

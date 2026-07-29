@@ -69,27 +69,28 @@ class Criterion(abc.ABC):
 
     wting_dim: int
 
-    def __init__(self, cfg_loss, dataset, split, train_pt, device):
+    def __init__(self, cfg_loss, dataset, split, train_pt, device, batch_size):
         self.cfg = cfg_loss
         self.device = device
-        counts, self.ds_norm = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim)
+        self.batch_size = batch_size
+        counts, self.ds_norm = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim, batch_size)
         self.counts = counts.to(device)
 
     @staticmethod
-    def build(cfg_loss, dataset, split, train_pt, device):
+    def build(cfg_loss, dataset, split, train_pt, device, batch_size):
         crit_cls = {
             "infonce1": InfoNCE1Criterion,
             "infonce2": InfoNCE2Criterion,
             "bce":      BCECriterion,
         }[cfg_loss["type"]]
 
-        return crit_cls(cfg_loss, dataset, split, train_pt, device)
+        return crit_cls(cfg_loss, dataset, split, train_pt, device, batch_size)
 
     def _targets(self, batch_size, class_encs_b, targ_data_b):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
     def _cls_imb_wts(self, class_encs_b):
-        return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm)
+        return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.ds_norm, self.batch_size)
 
     @abc.abstractmethod
     def __call__(self, logits, class_encs_b, targ_data_b, train):

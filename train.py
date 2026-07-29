@@ -29,7 +29,8 @@ from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
-from utils.train import TrialData, ArtifactManager, plot_metrics, parse_scores
+from utils.train import TrialData, ArtifactManager, parse_scores
+from utils.report import plot_metrics, update_metric_stats, update_stats_tables, update_metrics_xlsx
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -67,6 +68,12 @@ def _fmt_thresh(n_samps):
 
 
 class TrainPipeline:
+    """DDP rank discipline: every undecorated method is entered by ALL ranks and may run
+    collectives (all_reduce / all_gather / sharded t-SNE), so no caller may rank-gate one.
+    Every @rank0 method holds rank-0-only side effects (artifact writes, logging, TrialData
+    access -- self.data is None off rank 0) and must never run a collective. @rank0 is the
+    single gate: no inline dist.get_rank() gating in this class (display-only flags like
+    tqdm's disable are fine -- every rank still executes the same work)."""
 
     def __init__(
         self,
@@ -121,13 +128,7 @@ class TrainPipeline:
         self.timer_train = Timer()
         self.time_tracker = TimeTracker()
 
-        if dist.get_rank() == 0:
-            if resume_state is not None and trial_state is not None:
-                self.data = TrialData.resume(ArtifactManager.dpath_trial, trial_state)
-            else:
-                self.data = TrialData(ArtifactManager.dpath_trial)
-        else:
-            self.data = None
+        self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
 
         if resume_state is not None:
             self.n_samps_seen = resume_state["n_samps_seen"]
@@ -183,13 +184,30 @@ class TrainPipeline:
         return lr
 
     @rank0
-    def _save_eval_data(self):
-        ArtifactManager.save_eval_data(
-            ArtifactManager.dpath_model_checkpoint,
-            self.data.eval_metrics,
+    def _init_trial_data(self, trial_state):
+        if self._resume_state is not None and trial_state is not None:
+            return TrialData.resume(ArtifactManager.dpath_trial, trial_state)
+        return TrialData(ArtifactManager.dpath_trial)
+
+    @rank0
+    def _record_eval(self, eval_metrics, time_eval):
+        self.data.eval_metrics = eval_metrics
+        self.data.time_eval = time_eval
+
+    @rank0
+    def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, batch_stats):
+        self.data.update_train_batch(
             self.n_samps_seen,
-            self.n_samps_seen,
+            lr=lr,
+            loss_train=loss,
+            loss_raw_train=loss_raw,
+            grad_norm_model=grad_norm_model,
+            batch_stats=batch_stats,
         )
+
+    @rank0
+    def _save_eval_data(self, dpath):
+        ArtifactManager.save_eval_data(dpath, self.data.eval_metrics, self.n_samps_seen, self.n_samps_seen)
 
     @rank0
     def _write_base_eval(self, entry):
@@ -235,12 +253,11 @@ class TrainPipeline:
             compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget,
                                        1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
-    def _save_mid_eval(self, threshold_hit, eval_metrics, eval_bundles):
-        # NOT @rank0: _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank
-        # must enter it. Only the metrics write is rank-0 gated.
+    def _save_mid_eval(self, threshold_hit, eval_bundles):
+        # _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank must
+        # enter here; the metrics write (_save_eval_data) is @rank0.
         eval_name = _fmt_thresh(threshold_hit)
-        if dist.get_rank() == 0:
-            ArtifactManager.save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name, eval_metrics, self.n_samps_seen, self.n_samps_seen)
+        self._save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name)
         if self._viz_manifold:
             self._viz_eval(eval_bundles, eval_name)
 
@@ -268,15 +285,16 @@ class TrainPipeline:
         return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
 
     def _checkpoint(self, header, idx_batch, record_eval=True):
-        # NOT @rank0: the memory snapshot all-reduces across ranks, so every rank must enter.
-        # Only rank 0 proceeds to the writes, as before.
+        # the memory snapshot all-reduces across ranks, so every rank must enter; the writes are @rank0
         mem = self._snapshot_memory()
-        if dist.get_rank() != 0:
-            return
+        self._checkpoint_writes(header, idx_batch, record_eval, mem)
+
+    @rank0
+    def _checkpoint_writes(self, header, idx_batch, record_eval, mem):
         if self.eval_enabled and record_eval:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
-            self._save_eval_data()
+            self._save_eval_data(ArtifactManager.dpath_model_checkpoint)
         ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, mem)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
@@ -344,9 +362,7 @@ class TrainPipeline:
                 self._write_base_eval(entry)  # base -> evals/_base (uniform member of the eval sequence)
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
-                if self.data is not None:
-                    self.data.eval_metrics = eval_metrics
-                    self.data.time_eval = time_eval
+                self._record_eval(eval_metrics, time_eval)
                 header = "Base - Cached" if metrics_cached is not None else "Base"
                 self._checkpoint(header=header, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
@@ -441,15 +457,7 @@ class TrainPipeline:
                         loss_raw_mean.update(loss_raw)
                         self.n_batches_seen += 1
 
-                    if self.data is not None:
-                        self.data.update_train_batch(
-                            self.n_samps_seen,
-                            lr=lr,
-                            loss_train=loss,
-                            loss_raw_train=loss_raw,
-                            grad_norm_model=grad_norm_model,
-                            batch_stats=batch_stats,
-                        )
+                    self._record_train_batch(lr, loss, loss_raw, grad_norm_model, batch_stats)
 
                     if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()
@@ -471,10 +479,8 @@ class TrainPipeline:
                                     collect_eval_bundles=self._viz_manifold,
                                 )
                                 self.time_tracker.add("eval", time_eval)
-                                if self.data is not None:
-                                    self.data.eval_metrics = eval_metrics
-                                    self.data.time_eval = time_eval
-                                self._save_mid_eval(threshold_hit, eval_metrics, eval_bundles)
+                                self._record_eval(eval_metrics, time_eval)
+                                self._save_mid_eval(threshold_hit, eval_bundles)
                             self._checkpoint(
                                 header=f"{threshold_hit:,}",
                                 idx_batch=idx_batch,
@@ -522,23 +528,15 @@ class TrainPipeline:
                     collect_eval_bundles=self._viz_manifold,
                 )
                 self.time_tracker.add("eval", time_eval)
-                if self.data is not None:
-                    self.data.eval_metrics = eval_metrics
-                    self.data.time_eval = time_eval
-                    ArtifactManager.save_eval_data(
-                        ArtifactManager.dpath_eval_final,
-                        eval_metrics,
-                        self.n_samps_seen,
-                        self.n_samps_seen,
-                    )
+                self._record_eval(eval_metrics, time_eval)
+                self._save_eval_data(ArtifactManager.dpath_eval_final)
                 if self._viz_manifold:
                     self._viz_eval(eval_bundles, "final")  # COLLECTIVE compute+cache; rendered post-trial off-process
             self._checkpoint(
                 header="Final",
                 idx_batch=-1,
             )
-            if self.data is not None:
-                self.modelw.save(ArtifactManager.dpath_model_final)
+            self.modelw.save(ArtifactManager.dpath_model_final)  # @rank0
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
 
@@ -589,8 +587,8 @@ def run_training(cfg):
     )
     train_pipe.train()
     cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
-    ArtifactManager.update_metric_stats(cfg_stats.spread_type)
-    ArtifactManager.update_stats_tables(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
-    ArtifactManager.update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
+    update_metric_stats(cfg_stats.spread_type)
+    update_stats_tables(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
+    update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
 
     cleanup_ddp()

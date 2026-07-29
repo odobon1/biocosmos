@@ -13,6 +13,7 @@ train.py (update_metric_stats -> update_stats_tables -> update_metrics_xlsx).
 import sys
 
 from utils.config import get_config_stats
+from utils.report import update_metric_stats, update_stats_tables, update_metrics_xlsx
 from utils.train import ArtifactManager
 from utils.utils import load_json, paths
 
@@ -28,11 +29,11 @@ def regen_campaign(campaign, cfg_stats):
         for dataset in datasets:
             if (ArtifactManager.dpath_setting / dataset).exists():
                 ArtifactManager.dataset = dataset
-                ArtifactManager.update_metric_stats(cfg_stats.spread_type)
+                update_metric_stats(cfg_stats.spread_type)
 
     for dataset in datasets:
         ArtifactManager.dataset = dataset
-        ArtifactManager.update_stats_tables(
+        update_stats_tables(
             cfg_stats.table_eval_group,
             cfg_stats.spread_type,
             cfg_stats.bold_high,
@@ -40,7 +41,7 @@ def regen_campaign(campaign, cfg_stats):
             cfg_stats.heatmap,
             cfg_stats.prim_scores,
         )
-    ArtifactManager.update_metrics_xlsx(
+    update_metrics_xlsx(
         cfg_stats.table_eval_group,
         cfg_stats.spread_type,
         cfg_stats.bold_high,

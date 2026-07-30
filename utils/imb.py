@@ -9,8 +9,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
     weights to mean 1.0.
 
     The full weight vector (1D) / matrix (2D) is built here once, reduced to that scalar, and
-    discarded -- training recomputes weights per batch from the counts via `compute_cls_imb_wts`,
-    so nothing of size n_classes^2 is held for the run.
+    discarded.
 
     Args:
     - cfg_wting ---- `wting.cls_imb` block of a loss config
@@ -53,8 +52,9 @@ def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, wt_mean, batch_siz
     Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
 
     Returns pt[B] for dim 1, pt[B, B] for dim 2. Computed in float64 (`class_bal` evaluates
-    1 - beta^n, which cancels catastrophically for small counts) and cast to float32, since a
-    float64 result would promote the whole weighted loss reduction to float64.
+    1 - beta^n, as -expm1(n log beta) since the direct form cancels catastrophically for small
+    counts / pair probabilities) and cast to float32, since a float64 result would promote the
+    whole weighted loss reduction to float64.
     """
     if dim == 1:
         freqs_b = counts[class_encs_b]
@@ -100,7 +100,7 @@ def _compute_wts(cfg_wting, freqs):
         wts = 1.0 / freqs.pow(gamma)
     elif cfg_wting["type"] == "class_bal":
         beta = cfg_wting["class_bal"]["beta"]
-        eps = 1e-8
-        wts = (1.0 - beta) / (1.0 - torch.pow(beta, freqs)).clamp_min(eps)  # (1 - β) / (1 - β^n_c)
+        log_beta = torch.log(torch.tensor(beta, dtype=freqs.dtype))
+        wts = (1.0 - beta) / (-torch.expm1(freqs * log_beta))  # (1 - β) / (1 - β^n_c); expm1 form stays exact for freqs << 1 (pair_prob)
 
     return wts

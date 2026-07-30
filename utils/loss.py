@@ -215,6 +215,10 @@ class BCECriterion(Criterion):
     def __call__(self, logits, class_encs_b, targ_data_b, train):
         B = logits.size(0)
         targs = self._targets(B, class_encs_b, targ_data_b)
+        # fp32: cos-path logits are bf16 under autocast, where sigmoid saturates to exactly 1.0 at
+        # |logit| >~ 6 (zeroing focal weights on the easy set, quantizing the rest); upcast once and
+        # reuse for both focal preds and the BCE loss. No-op when logits are already fp32 (geo sim).
+        logits_f = logits.float()
 
         if train:
 
@@ -223,18 +227,22 @@ class BCECriterion(Criterion):
                 W_ci = W_ci / W_ci.detach().mean()
             
             if self.cfg["wting"]["focal"]["gamma"] > 0.0:
-                preds = torch.sigmoid(logits)
-                W_foc = focal_2d(preds, targs, self.cfg["wting"]["focal"])  # pt[B, B]
+                preds = torch.sigmoid(logits_f)
+                W_foc = focal_2d(preds, targs, self.cfg["wting"]["focal"], clamp_base=True)  # pt[B, B]
             else:
                 W_foc = torch.ones_like(targs)
 
             if self.cfg["wting"]["dsmr"]:
-                mass_pos = torch.sum(targs).item()
-                mass_neg = B**2 - mass_pos
-                scale = B**2 / (2 * mass_pos * mass_neg)  # scaling factor to keep the mean of W_dsmr at 1.0
+                mass_pos = torch.sum(targs)
+                mass_neg = torch.sum(1.0 - targs)
+                scale = B**2 / (2 * mass_pos * mass_neg)  # mass_neg == 0 --> inf here, but masked below (guard against div-by-zero for all-positive batch)
                 wt_neg = scale * mass_pos
                 wt_pos = scale * mass_neg
-                W_dsmr = targs * wt_pos + (1 - targs) * wt_neg
+                W_dsmr = torch.where(
+                    mass_neg == 0,
+                    torch.ones_like(targs),
+                    targs * wt_pos + (1 - targs) * wt_neg,
+                )
             # else:
             #     W_dsmr = torch.ones_like(targs)
 
@@ -245,7 +253,8 @@ class BCECriterion(Criterion):
                 elif agg == "mean":
                     W = (W_ci + W_foc + W_dsmr) / 3
                 elif agg == "geo_mean":
-                    W = (W_ci * W_foc * W_dsmr).clamp_min(1e-8).pow(1.0 / 3.0)
+                    eps = torch.finfo(W_ci.dtype).tiny  # per-factor log floor; engages only when a factor is already ~0 (e.g. focal underflow)
+                    W = torch.exp((W_ci.clamp_min(eps).log() + W_foc.clamp_min(eps).log() + W_dsmr.clamp_min(eps).log()) / 3.0)  # log-space: no product underflow / clamp-floor artifact
                 elif agg == "harm_mean":
                     W = 3.0 / (1.0 / W_ci + 1.0 / W_foc.clamp_min(1e-8) + 1.0 / W_dsmr)
             else:
@@ -254,24 +263,25 @@ class BCECriterion(Criterion):
                 elif agg == "mean":
                     W = (W_ci + W_foc) / 2
                 elif agg == "geo_mean":
-                    W = (W_ci * W_foc).clamp_min(1e-8).pow(1.0 / 2.0)
+                    eps = torch.finfo(W_ci.dtype).tiny  # per-factor log floor; engages only when a factor is already ~0 (e.g. focal underflow)
+                    W = torch.exp((W_ci.clamp_min(eps).log() + W_foc.clamp_min(eps).log()) / 2.0)  # log-space: no product underflow / clamp-floor artifact
                 elif agg == "harm_mean":
                     W = 2.0 / (1.0 / W_ci + 1.0 / W_foc.clamp_min(1e-8))
 
             if self.cfg["wting"]["norm"]["agg"]:
-                W = W / W.detach().mean()
+                W = W / W.detach().mean().clamp_min(1e-12)
 
         else:
 
             W = torch.ones_like(targs)
 
-        loss_raw_matrix = F.binary_cross_entropy_with_logits(logits, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
+        loss_raw_matrix = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
         loss = (W * loss_raw_matrix).sum() / B
         loss_raw = loss_raw_matrix.sum() / B
 
         return loss, loss_raw, targs
 
-def focal_2d(preds, targs, cfg_focal):
+def focal_2d(preds, targs, cfg_focal, clamp_base=False):
 
     gamma = cfg_focal["gamma"]
     comp_type = cfg_focal["comp_type"]
@@ -280,9 +290,11 @@ def focal_2d(preds, targs, cfg_focal):
         p_t = (1 - preds) + targs * (2 * preds - 1)
     elif comp_type == 2:
         p_t = 1 - torch.abs(targs - preds)
-    
-    # p_t = p_t.clamp(1e-12, 1 - 1e-12)
 
-    foc = (1 - p_t).pow(gamma)
-    
+    base = 1 - p_t
+    if clamp_base:
+        base = base.clamp_min(1e-12)  # pow backward at base 0 is inf for gamma < 1
+
+    foc = base.pow(gamma)
+
     return foc

@@ -13,8 +13,11 @@ def compute_sim(embs_img, embs_txt, sim_type):
     if sim_type == "cos":
         sim = cos_sim
     else:
+        # fp32: in bf16 the geo2 eps bounds round to +/-1.0 (guard no-op), and acos/sqrt
+        # backward at |cos| = 1 is inf
+        cos_sim = cos_sim.float()
         if sim_type == "geo1":
-            geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=0.0)), cos_sim)  # geodesic distance on range [0, pi]
+            geo_dist = torch.atan2(torch.sqrt(torch.clamp(1 - torch.square(cos_sim), min=1e-12)), cos_sim)  # geodesic distance on range [0, pi]
         elif sim_type == "geo2":
             eps      = 1e-6
             geo_dist = torch.acos(torch.clamp(cos_sim, -1.0 + eps, 1.0 - eps))  # geodesic distance on range [0, pi]

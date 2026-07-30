@@ -1,9 +1,9 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 100_000
-chkpt_every: 100_000
-batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
+sample_volume: 16_000_000
+chkpt_every: 500_000
+batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
 epoch_floor: 100_000  # {null, [int]}; min samples per "epoch": when train set < epoch_floor, each epoch chains ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max batch_size) from dataset size; (null | train set >= epoch_floor) one pass per epoch
 dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
@@ -40,7 +40,7 @@ loss:  # primary loss
       freq_type_2d: naive  # {naive, cmx2, pair_prob}; class-pair frequency/counting type (only relevant for 2D-weighting); (naive) vanilla (i2t, t2i for same pair treated as separate "classes"); (cmx2) "cross-model x2" negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes"); (pair_prob) "pair-probability" weighting
       wt_mean_type: per_class  # {per_class, per_sample}
     focal:
-      gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss
+      gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss; gamma < 1.0 & gamma > 3.0 may be unstable
       comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
     dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
     agg: prod  # {prod, mean, geo_mean, harm_mean}
@@ -109,16 +109,16 @@ text_template:
 
 opt:  # optimization
   lr:  # learning rate
-    init: 3.2e-5
+    init: 1.0e-5
     decay_factor: 1.0e-4  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
-    warmup: 10_000  # sample volume for linear LR warmup
+    warmup: 200_000  # sample volume for linear LR warmup
   l2reg: null  # if `null`, resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
   beta2: null  # if `null`, resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
 
 dev:
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # parameters overridden with `debug_mode: true`
     sample_volume: 3_000
     chkpt_every: 3_000

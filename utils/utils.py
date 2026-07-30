@@ -245,11 +245,11 @@ class TimeTracker:
 
 
 def model_grad_l2_norm(model: torch.nn.Module) -> float:
-    total = 0.0
+    total = torch.zeros((), device=next(model.parameters()).device)
     for p in model.parameters():
         if p.grad is not None:
-            total += p.grad.detach().pow(2).sum().item()
-    return math.sqrt(total)
+            total += p.grad.detach().pow(2).sum()  # accumulate on-device; single host sync at the end
+    return total.sqrt().item()
     
 def shuffle_list(input: List[Any], seed: int) -> List[int]:
     rng = random.Random(seed)
@@ -400,7 +400,7 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, batch_stats):
+    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, grad_norm_model, batch_stats):
 
         def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
             if x is None:
@@ -428,7 +428,7 @@ class PrintLog:
             f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
             f"txt={tensor_grad_l2_norm(embs_txt_b):.2e} "
             f"{line_logits}"
-            f"model={model_grad_l2_norm(model):.2e}"
+            f"model={grad_norm_model:.2e}"
         )
 
         line_logits_param = ""

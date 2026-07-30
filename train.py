@@ -444,7 +444,7 @@ class TrainPipeline:
                     )
                     with torch.no_grad():
                         grad_norm_model = model_grad_l2_norm(self.modelw.model)
-                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model, batch_stats)
+                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model, grad_norm_model, batch_stats)
                     self._step_optimizer()
 
                     if self.n_samps_seen >= self.lr_warmup:

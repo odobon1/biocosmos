@@ -189,11 +189,6 @@ class TrainConfig:
         if self.img_norm not in ("default", "dataset"):
             raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
-        for loss in [self.loss, self.loss2]:
-            logits = loss["logits"]
-            if logits["scale_init"] is not None or logits["bias_init"] is not None:
-                print(f"\nWARNING: logit scale/bias overridden!\n")
-
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
         if self.aug.get("sharpness", {}).get("prob", 0.0) == 0.0:

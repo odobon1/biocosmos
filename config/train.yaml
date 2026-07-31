@@ -48,10 +48,13 @@ loss:  # primary loss
       cls_imb: false  # {true, false}; inert with 1. `loss.wting.agg = {prod, geo_mean}` & `loss.wting.norm.agg = true`, 2. `loss.wting.agg = {prod, geo_mean}` & `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
       agg: false  # {true, false}; (true) normalize aggregate of class-imb, focal, dsmr weights; inert with `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
   logits:
-    scale_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
-    bias_init: null  # null for existing learnable param (or 0.0 non-learnable if non-existent), float for learnable param override init
-    freeze_scale: false  # (true) non-learnable temp
-    freeze_bias: false  # (true) non-learnable bias
+    scale:
+      init: null  # {null [float]}; (null) existing learnable param (or 0.0 non-learnable if non-existent); ([float]) override init, learnable param
+      freeze: false  # {true, false}; (true) non-learnable scale
+      clamp: false  # {true, false}; (true) cap logit scale at ln(100) before exp() so scale multiplier stays <= 100 (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) unbounded
+    bias:
+      init: null  # {null [float]}; null existing learnable param (or 0.0 non-learnable if non-existent); ([float]) override init, learnable param
+      freeze: false  # {true, false}; (true) non-learnable bias
 
 loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
   mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
@@ -77,10 +80,13 @@ loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
       cls_imb: false  # {true, false}
       agg: false  # {true, false}
   logits:
-    scale_init: null
-    bias_init: null
-    freeze_scale: false
-    freeze_bias: false
+    scale:
+      init: null  # {null [float]}
+      freeze: false  # {true, false}
+      clamp: false  # {true, false}
+    bias:
+      init: null  # {null [float]}
+      freeze: false  # {true, false}
 
 aug:  # image augmentation
   rrcrop:  # random resized crop

@@ -741,10 +741,11 @@ class PrintLog:
         lines_logits = [
             "Logits",
             PrintLog._dash_aligned_lines((
-                ("- Scale Init", cfg_logits["scale_init"]),
-                ("- Bias Init", cfg_logits["bias_init"]),
-                ("- Freeze Scale", cfg_logits["freeze_scale"]),
-                ("- Freeze Bias", cfg_logits["freeze_bias"]),
+                ("- Scale Init",   cfg_logits["scale"]["init"]),
+                ("- Scale Freeze", cfg_logits["scale"]["freeze"]),
+                ("- Scale Clamp",  cfg_logits["scale"]["clamp"]),
+                ("- Bias Init",    cfg_logits["bias"]["init"]),
+                ("- Bias Freeze",  cfg_logits["bias"]["freeze"]),
             )),
         ]
         lines.extend(lines_logits)

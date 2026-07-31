@@ -23,8 +23,8 @@ def make_train_config_dummy(**overrides):
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"vis_proj": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
-        "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale_init": None, "bias_init": None}},
-        "loss2": {"type": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale_init": None, "bias_init": None}},
+        "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        "loss2": {"type": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "l2reg": 0.0,
@@ -119,7 +119,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"type": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale_init": None, "bias_init": None}},
+        loss2={"type": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -132,7 +132,7 @@ def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.Monk
         TrainConfig(**make_train_config_dummy(
             htarg_shuf=True,
             seed=None,
-            loss={"type": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale_init": None, "bias_init": None}},
+            loss={"type": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
         ))
 
 

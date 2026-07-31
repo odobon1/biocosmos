@@ -49,7 +49,8 @@ def compute_targs_sw(class_encs_b):
 
 def compute_targs_tax(targ_data_b):
     rank_dists = compute_rank_dists(targ_data_b)
-    targs = 1 - 0.5 * rank_dists
+    R = len(targ_data_b[0]["rank_encs"])  # tree depth (max rank_dist)
+    targs = 1 - rank_dists / R
     return targs
 
 def compute_targs_phylo(targ_data_b):

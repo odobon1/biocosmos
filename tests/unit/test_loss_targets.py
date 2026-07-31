@@ -65,9 +65,30 @@ def test_compute_targs_tax_uses_rank_distances() -> None:
     assert torch.equal(targs, expected)
 
 
+def test_compute_targs_tax_normalizes_by_tree_depth() -> None:
+    loss_mod = import_loss_module()
+    targ_data = [
+        {"rank_encs": [1, 10, 100, 1000]},
+        {"rank_encs": [1, 10, 100, 2000]},  # diverges only at the deepest rank -> rank_dist 1
+        {"rank_encs": [2, 20, 200, 3000]},  # diverges at the root -> rank_dist R (== 4)
+    ]
+
+    targs = loss_mod.compute_targs_tax(targ_data)
+
+    expected = torch.tensor(
+        [
+            [1.00, 0.75, 0.0],
+            [0.75, 1.00, 0.0],
+            [0.00, 0.00, 1.0],
+        ]
+    )
+    assert torch.equal(targs, expected)
+
+
 def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     loss_mod = import_loss_module()
 
     targs = loss_mod.compute_targs_phylo([{"cid": "a", "dataset": "cub"}, {"cid": "b", "dataset": "cub"}])
 
     assert torch.equal(targs, torch.full((2, 2), 0.25))
+    

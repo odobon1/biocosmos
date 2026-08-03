@@ -37,6 +37,7 @@ def make_train_config_dummy(**overrides):
         "hw": {
             "mixed_prec": True,
             "act_chkpt": False,
+            "loss_chunk_size": None,
             "cudnn_benchmark": False,
             "prefetch_factor": 4,
             "max_n_workers_gpu": None,
@@ -154,6 +155,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     cfg = TrainConfig(**make_train_config_dummy(hw={
         "mixed_prec": False,
         "act_chkpt": True,
+        "loss_chunk_size": None,
         "cudnn_benchmark": True,
         "prefetch_factor": 8,
         "max_n_workers_gpu": 3,
@@ -377,6 +379,38 @@ def test_train_config_rejects_nonpositive_epoch_floor(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="epoch_floor must be greater than 0"):
         TrainConfig(**make_train_config_dummy(epoch_floor=0))
+
+
+def test_train_config_rejects_batch_size_indivisible_by_loss_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(batch_size=24)
+    cfg_dict["hw"]["loss_chunk_size"] = 16  # 24 % 16 != 0; ragged final block unsupported
+
+    with pytest.raises(ValueError, match="must be evenly divisible by hardware.loss_chunk_size"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_accepts_batch_size_divisible_by_loss_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(batch_size=32)
+    cfg_dict["hw"]["loss_chunk_size"] = 16  # 32 % 16 == 0
+
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.hw.loss_chunk_size == 16
+
+
+def test_train_config_rejects_infonce_with_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()  # batch_size 8
+    cfg_dict["loss"] = {"type": "infonce2", "sim": "cos", "targ": "sw",
+                        "logits": {"scale": {"init": None}, "bias": {"init": None}}}
+    cfg_dict["hw"]["loss_chunk_size"] = 8  # divisible; only the InfoNCE loss should trip validation
+
+    with pytest.raises(NotImplementedError, match="chunking-supported subset"):
+        TrainConfig(**cfg_dict)
 
 
 def _make_stats_config_dummy(**overrides):

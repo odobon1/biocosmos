@@ -47,43 +47,52 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
 
     return counts, wt_mean.item()
 
-def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, wt_mean, batch_size):
+def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, wt_mean, batch_size, class_encs_cols=None):
     """
     Class-balancing weights for a batch, rebuilt from counts and normalized by the startup scalar.
 
-    Returns pt[B] for dim 1, pt[B, B] for dim 2. Computed in float64 (`class_bal` evaluates
-    1 - beta^n, as -expm1(n log beta) since the direct form cancels catastrophically for small
-    counts / pair probabilities) and cast to float32, since a float64 result would promote the
-    whole weighted loss reduction to float64.
+    Returns pt[B] for dim 1, pt[B, B] for dim 2. For dim 2, `class_encs_cols` selects a rectangular
+    row-block/tile of the pair matrix (rows = `class_encs_b`, cols = `class_encs_cols`); None -> square
+    (cols == rows), the full-batch case.
+
+    Computed in float64 (`class_bal` evaluates 1 - beta^n, as -expm1(n log beta) since the direct form
+    cancels catastrophically for small counts / pair probabilities) and cast to float32, since a float64
+    result would promote the whole weighted loss reduction to float64.
     """
     if dim == 1:
         freqs_b = counts[class_encs_b]
     elif dim == 2:
-        freqs_b = _pair_freqs(counts, class_encs_b, cfg_wting["freq_type_2d"], batch_size)
+        freqs_b = _pair_freqs(counts, class_encs_b, cfg_wting["freq_type_2d"], batch_size, class_encs_cols=class_encs_cols)
 
     return (_compute_wts(cfg_wting, freqs_b) / wt_mean).float()
 
-def _pair_freqs(counts, class_encs, freq_type_2d, batch_size):
+def _pair_freqs(counts, class_encs, freq_type_2d, batch_size, class_encs_cols=None):
     """
-    Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings.
+    Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings. `class_encs_cols`
+    gives a rectangular pt[K_rows, K_cols] tile (rows = `class_encs`, cols = `class_encs_cols`); None ->
+    square (cols == rows).
 
     `freq_type_2d = cmx2` counts negative pairs double. "Negative" is by class identity, not position -- two
     entries of the same class are a positive pair wherever they land in the matrix, which for a
     batch means anywhere two samples share a class, not just the diagonal.
     """
-    counts_k = counts[class_encs]
-    pair_freqs = torch.outer(counts_k, counts_k)
+    class_encs_rows = class_encs
+    if class_encs_cols is None:
+        class_encs_cols = class_encs_rows
+    counts_r = counts[class_encs_rows]
+    counts_c = counts[class_encs_cols]
+    pair_freqs = torch.outer(counts_r, counts_c)
 
     if freq_type_2d == "cmx2":
-        matches = class_encs.unsqueeze(1) == class_encs.unsqueeze(0)
+        matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
         pair_freqs = torch.where(matches, pair_freqs, pair_freqs * 2)
     elif freq_type_2d == "pair_prob":
         total_count = counts.nansum()
-        c1 = counts[class_encs].unsqueeze(1)
-        c2 = counts[class_encs].unsqueeze(0)
+        c1 = counts_r.unsqueeze(1)
+        c2 = counts_c.unsqueeze(0)
         homog = (c1 / total_count) * (1 + (batch_size - 1) * (c2 - 1) / (total_count - 1))
         heterog = (c1 / total_count) * (batch_size - 1) * (c2 / (total_count - 1))
-        matches = class_encs.unsqueeze(1) == class_encs.unsqueeze(0)
+        matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
         pair_freqs = torch.where(matches, homog, heterog)  # pair-probability matrix
 
     return pair_freqs

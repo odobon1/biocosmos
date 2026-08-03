@@ -197,6 +197,14 @@ class TrainConfig:
             self.aug.pop("gblur", None)
 
         self.hw = HardwareConfig(**self.hw)
+        if self.hw.loss_chunk_size is not None:
+            if self.batch_size % self.hw.loss_chunk_size != 0:
+                raise ValueError(
+                    f"batch_size ({self.batch_size}) must be evenly divisible by hardware.loss_chunk_size "
+                    f"({self.hw.loss_chunk_size}); the tiled loss does not support a ragged final row-block"
+                )
+            from utils.loss import validate_chunking_supported  # local: avoid importing Bio.Phylo at config load
+            validate_chunking_supported(self.loss, self.loss2)  # tiled loss supports the full BCE config; only InfoNCE is rejected
         self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
             max_n_workers_gpu=self.hw.max_n_workers_gpu,
@@ -322,6 +330,7 @@ class HardwareConfig:
 
     mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
+    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss; None -> full BxB (no tiling). See config/hardware.yaml.
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
@@ -332,6 +341,11 @@ class HardwareConfig:
     ram_poll_interval: float  # seconds between cgroup RAM polls by the peak-RAM tracker (utils/hardware.py)
     pg_timeout: int  # NCCL PG watchdog timeout in seconds; passed to setup_ddp
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
+
+    def __post_init__(self):
+        c = self.loss_chunk_size
+        if c is not None and not (isinstance(c, int) and c > 0 and (c & (c - 1)) == 0):
+            raise ValueError(f"hardware.loss_chunk_size must be null or a positive power of 2; got {c!r}")
 
 
 def load_hardware_config_dict() -> dict:

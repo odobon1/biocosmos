@@ -305,6 +305,13 @@ class TrainPipeline:
         plot_metrics(self.data, ArtifactManager.dpath_trial)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
+        if self.cfg.hw.loss_chunk_size is not None:
+            # tiled path: encoder forward, loss, AND backward happen inside (representation gradients),
+            # so no loss.backward() here. Autocast + DDP grad sync are handled internally.
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step_chunked(
+                imgs_sb, texts_sb, class_encs_sb, targ_data_sb
+            )
+            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
         if self.cfg.hw.mixed_prec:
             with autocast(device_type=self.cfg.device.type, dtype=torch.bfloat16):
                 loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(

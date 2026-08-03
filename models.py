@@ -10,11 +10,12 @@ import open_clip
 from open_clip.pretrained import get_pretrained_cfg, download_pretrained
 import abc
 import math
+from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Union, Optional
 from pathlib import Path
 
 from utils.utils import paths, load_split
-from utils.loss import Criterion
+from utils.loss import Criterion, chunked_bce_loss_backward
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
 from utils.ddp import rank0
@@ -610,6 +611,69 @@ class VLMWrapper(abc.ABC):
         )
 
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b, batch_stats
+
+    def batch_step_chunked(self, imgs_sb, txts_sb, class_encs_sb, targ_data_sb):
+        """
+        Memory-tiled training step for the global-batch BCE loss (hardware.loss_chunk_size), incl. a
+        BCE+BCE loss2 mix, used in place of batch_step + loss.backward() when chunking is on. Does the
+        encoder forward, the tiled loss, AND the full backward internally, so the caller must NOT call
+        loss.backward() afterwards.
+
+        The BxB loss is never materialized: after gathering the global-batch embeddings, they are
+        detached into leaves and the loss is summed over C x B row-blocks, each backpropagated into
+        those leaves as it is computed (chunked_bce_loss_backward). A single representation-gradient backward
+        then pushes dL/dembs into the encoder. DDP grad sync is suppressed during these multiple
+        backwards and replaced with one manual all-reduce of every parameter's grad -- which reproduces
+        DDP's averaging exactly, since every rank computes the identical global-batch loss (the
+        world_size factor from _AllGather.backward cancels the manual /world_size).
+
+        Returns batch_step's tuple shape, with loss/loss_raw detached, logits = (None, None) (no full
+        logit matrix is formed, so its grad-norm diagnostic is unavailable), and the embedding leaves
+        (carrying dL/dembs in .grad) in place of embs_img_b / embs_txt_b for grad-norm logging.
+        """
+        chunk = self.cfg.hw.loss_chunk_size
+        mixed_prec = self.cfg.hw.mixed_prec
+        device = self.cfg.device
+
+        # DDP.forward must run under no_sync too, so the reducer is never armed for this step (we sync
+        # gradients manually below); otherwise DDP would expect a matching synced backward. The reducer
+        # arms regardless of world size, so no_sync is required even at world_size 1 -- without it the
+        # multiple tile backwards trip DDP's "marked ready only once" check.
+        with self.model.no_sync():
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16) if mixed_prec else nullcontext():
+                toks_sb = self.txt_pp(txts_sb)
+                output = self.model(imgs_sb, toks_sb)
+                embs_img_sb = F.normalize(output[0], dim=1)
+                embs_txt_sb = F.normalize(output[1], dim=1)
+                embs_img_b, embs_txt_b, class_encs_b, targ_data_b = self._gather_batch(
+                    embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
+                )
+
+            img = embs_img_b.detach().requires_grad_(True)
+            txt = embs_txt_b.detach().requires_grad_(True)
+
+            loss, loss_raw, batch_stats = chunked_bce_loss_backward(
+                img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss2["mix"],
+                self.cfg.loss2["mix_unit_scale"], self.compute_logits, chunk, mixed_prec, device
+            )
+
+            # representation gradient: push accumulated dL/dembs into the encoder (one backward, only
+            # for sides whose encoder is trainable -- a frozen tower's embeddings do not require grad)
+            reps, grads = [], []
+            for emb, leaf in ((embs_img_b, img), (embs_txt_b, txt)):
+                if emb.requires_grad:
+                    reps.append(emb)
+                    grads.append(leaf.grad)
+            if reps:
+                torch.autograd.backward(reps, grads)
+
+        if self.world_size > 1:
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad)
+                    p.grad /= self.world_size
+
+        return loss, loss_raw, img, txt, (None, None), class_encs_b, batch_stats
 
     def batch_step_local(
         self,

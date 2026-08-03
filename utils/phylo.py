@@ -38,7 +38,6 @@ class PhyloVCV:
 
         self._cids:       List[str]      = sorted(list(self._cid_to_clade.keys()))
         self._cid_to_idx: Dict[str, int] = {cid: i for i, cid in enumerate(self._cids)}
-        self._warned_missing_cids: set[str] = set()
 
         vcv = self.build_vcv_matrix()
 
@@ -98,30 +97,31 @@ class PhyloVCV:
 
     def get_targs_batch(self, targ_data_b) -> torch.Tensor:
         cids_b = [td["cid"] for td in targ_data_b]
-        B = len(cids_b)
 
-        known_pos = [i for i, cid in enumerate(cids_b) if cid in self._cid_to_idx]
-        missing_cids = {cid for cid in cids_b if cid not in self._cid_to_idx}
+        idxs = [self._cid_to_idx[cid] for cid in cids_b]
+        targs = self.corr[np.ix_(idxs, idxs)]  # pt[B, B]; advanced indexing returns a writeable copy
 
-        missing_new = sorted(missing_cids - self._warned_missing_cids)
-        if missing_new:
-            self._warned_missing_cids.update(missing_new)
-            print(
-                "WARNING: "
-                f"{len(missing_new)} class ids in batch missing from phylo tree; "
-                "using fallback phylo targets for missing ids."
-            )
-
-        targs = np.zeros((B, B), dtype=np.float64)
-
-        if known_pos:
-            known_idxs = [self._cid_to_idx[cids_b[i]] for i in known_pos]
-            targs_known = self.corr[np.ix_(known_idxs, known_idxs)]
-            targs[np.ix_(known_pos, known_pos)] = targs_known
-
-        # Fallback: samples with the same cid should remain fully positive.
+        # same-cid pairs are fully positive (1.0). On an ultrametric tree corr's diagonal is already
+        # 1.0; same-species samples are pinned to it explicitly rather than relying on that.
         cids_arr = np.asarray(cids_b, dtype=object)
-        same_cid_mask = cids_arr[:, None] == cids_arr[None, :]
-        targs[same_cid_mask] = 1.0
+        targs[cids_arr[:, None] == cids_arr[None, :]] = 1.0
 
         return torch.from_numpy(targs).float()
+
+    def make_targ_block_fn(self, targ_data_b, device):
+        """
+        Closure (rs, re) -> [re-rs, B] phylo target row-block (rows rs:re vs all B cols) matching the
+        [rs:re, :] block of get_targs_batch, for the chunked/tiled loss. Correlation indices and the
+        same-cid array are precomputed once; missing cids fail loud up front (as in get_targs_batch).
+        """
+        cids_b = [td["cid"] for td in targ_data_b]
+
+        idxs = np.array([self._cid_to_idx[cid] for cid in cids_b])
+        cids_arr = np.asarray(cids_b, dtype=object)
+
+        def targ_block(rs, re):
+            targs = self.corr[np.ix_(idxs[rs:re], idxs)]  # [C, B]; writeable copy
+            targs[cids_arr[rs:re][:, None] == cids_arr[None, :]] = 1.0
+            return torch.from_numpy(targs).float().to(device)
+
+        return targ_block

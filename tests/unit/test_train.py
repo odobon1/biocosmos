@@ -1,9 +1,42 @@
+import json
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
 
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
+
+
+@dataclass
+class _FakeSettingCfg:
+    campaign: str = "c"
+    setting: str = "iw"
+    seed: int = 42
+    idx_seed: int = 0
+    dataset: str = "cub"
+    split: str = "D10"
+    dev: dict = field(default_factory=dict)
+    loss: dict = field(default_factory=lambda: {"targ": "iw", "wting": {"agg": "mean", "norm": {"agg": False, "cls_imb": False}}})
+    loss2: dict = field(default_factory=lambda: {"mix": 0.0, "mix_unit_scale": False, "wting": {"agg": "mean", "norm": {"agg": False, "cls_imb": False}}})
+
+
+def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
+    # setting-level config params go to config.json; setting_metadata.json holds only n_crashes (a mutable
+    # counter the campaign runner bumps on crashes). A later trial of the same setting must re-assert config.json
+    # unchanged and must not reset the crash count.
+    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
+    cfg = _FakeSettingCfg()
+
+    ArtifactManager.save_metadata_setting(cfg)
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
+    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {"n_crashes": {"ram": 0, "vram": 0, "other": 0}}
+
+    (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 1, "vram": 2, "other": 4}}))  # runner bumps it across crashes
+    ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the counts
+    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {"n_crashes": {"ram": 1, "vram": 2, "other": 4}}
+    assert json.loads((tmp_path / "config.json").read_text()) == config
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

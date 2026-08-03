@@ -398,7 +398,7 @@ class EvalConfig:
         self.ram = slurm_alloc["ram"]
 
         # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
-        # exposes no non_causal/vis_proj knobs; checkpoint eval overrides from setting_metadata below
+        # exposes no non_causal/vis_proj knobs; checkpoint eval overrides from the setting's config.json below
         self.arch["clip"] = {"non_causal": False}
         self.arch["siglip"] = {"vis_proj": None}
 
@@ -409,14 +409,14 @@ class EvalConfig:
                 raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
 
             fpath_metadata_trial = dpath_model / "../../trial_metadata.json"
-            fpath_metadata_setting = dpath_model / "../../../../setting_metadata.json"
-            metadata_setting = load_json(fpath_metadata_setting)
+            fpath_config_setting = dpath_model / "../../../../config.json"
+            config_setting = load_json(fpath_config_setting)
             metadata_trial = load_json(fpath_metadata_trial)
 
-            self.arch["model_type"] = metadata_setting["arch"]["model_type"]  # override model_type
-            self.arch["clip"]["non_causal"] = metadata_setting["arch"]["clip"]["non_causal"]  # override non_causal
-            self.arch["siglip"]["vis_proj"] = metadata_setting["arch"]["siglip"]["vis_proj"]  # override vis_proj (projection head must match checkpoint)
-            self.img_norm = metadata_setting["img_norm"]  # override img_norm
+            self.arch["model_type"] = config_setting["arch"]["model_type"]  # override model_type
+            self.arch["clip"]["non_causal"] = config_setting["arch"]["clip"]["non_causal"]  # override non_causal
+            self.arch["siglip"]["vis_proj"] = config_setting["arch"]["siglip"]["vis_proj"]  # override vis_proj (projection head must match checkpoint)
+            self.img_norm = config_setting["img_norm"]  # override img_norm
             self.dataset = metadata_trial["dataset"]  # override dataset
             self.split = metadata_trial["split"]  # override split
 

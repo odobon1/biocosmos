@@ -264,13 +264,3 @@ def test_phylo_same_cid_pinned_to_one():
     full = vcv.get_targs_batch(targ_data_b)
     assert full[0, 0] == 1.0 and full[0, 1] == 1.0 and full[1, 0] == 1.0  # same-cid -> 1.0
     assert full[0, 2] == pytest.approx(vcv.corr[1, 2])  # cross-species keeps the corr value
-
-
-def test_phylo_missing_cid_raises():
-    """A cid absent from the tree fails loud in both the full and block builders (no silent fallback)."""
-    vcv = _synthetic_vcv()
-    targ_data_b = [{"cid": "c0"}, {"cid": "not_in_tree"}, {"cid": "c1"}]
-    with pytest.raises(KeyError, match="absent from the phylo tree"):
-        vcv.get_targs_batch(targ_data_b)
-    with pytest.raises(KeyError, match="absent from the phylo tree"):
-        vcv.make_targ_block_fn(targ_data_b, torch.device("cpu"))

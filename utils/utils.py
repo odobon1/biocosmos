@@ -1,6 +1,7 @@
 import pickle
 from pathlib import Path
 import random
+import re
 import os
 import numpy as np
 import torch
@@ -296,8 +297,10 @@ class PrintLog:
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
         as 'trial_id --- D-HH:MM:SS', dash-aligned per section; Failed entries additionally carry sample
-        progress as ' --- X.XM/X.XM' (samples seen / sample_volume). A trial that failed before ever
-        writing metadata shows 'n/a'. Trials run sequentially, so the filesystem can't tell a running trial
+        progress as ' --- X.XM/X.XM' (samples seen / sample_volume) and the failure type as
+        ' --- RAM|VRAM|Other|Mixed' (the aggregate cause over the fatal retry loop's crashes, parsed
+        from error.log's 'failure=' marker written by campaign_runner._log_trial_error). A trial that
+        failed before ever writing metadata shows 'n/a'. Trials run sequentially, so the filesystem can't tell a running trial
         from a crashed one (both leave chkpts/in_progress); the runner passes the live trial in explicitly."""
 
         def fmt_trial_time(metadata_trial):
@@ -323,10 +326,11 @@ class PrintLog:
             elif trial == in_progress:
                 buckets["In Progress"].append(trial_id)
             elif (dpath_trial / "error.log").exists():
+                failure = re.search(r"failure=(\w+)", (dpath_trial / "error.log").read_text()).group(1)
                 if metadata_trial is None:
-                    buckets["Failed"].append((trial_id, "n/a"))
+                    buckets["Failed"].append((trial_id, f"n/a --- {failure}"))
                 else:
-                    buckets["Failed"].append((trial_id, f"{fmt_trial_time(metadata_trial)} --- {fmt_trial_progress(metadata_trial)}"))
+                    buckets["Failed"].append((trial_id, f"{fmt_trial_time(metadata_trial)} --- {fmt_trial_progress(metadata_trial)} --- {failure}"))
             else:
                 buckets["Queued"].append(trial_id)
 

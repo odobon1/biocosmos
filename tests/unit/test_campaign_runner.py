@@ -14,7 +14,7 @@ def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
-        json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+        json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
 
 def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
@@ -48,7 +48,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
     return scheduled
@@ -346,7 +346,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         (dpath_trial / "chkpts" / "in_progress").mkdir(parents=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -480,13 +480,19 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
 
     # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
     # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
+    # each attempt fails a different way (vram, ram, other) to exercise the crash classifier end-to-end
+    crash_stderrs = [
+        "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 GiB",
+        "torch.distributed.elastic.multiprocessing.errors.ChildFailedError: Signal 9 (SIGKILL) received by PID 12345",
+        "boom",
+    ]
     calls = []
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         calls.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
         dpath_trial.mkdir(parents=True, exist_ok=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
-        raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr=crash_stderrs[len(calls) - 1])
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -502,7 +508,34 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     assert len(calls) == 2 + 1
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["complete"] is False
-    assert (dpath_trial / "error.log").exists()
+    # the fatal error.log carries the aggregate failure= label (vram + ram + other crashes -> Mixed),
+    # which the manifest surfaces on the Failed line
+    assert "failure=Mixed" in (dpath_trial / "error.log").read_text()
+    assert "--- Mixed" in (tmp_path / "cmp_fail" / "manifest.log").read_text()
+    # every crash (all three, at the same 200k checkpoint) also lands its own file under errors/
+    assert sorted(p.name for p in (dpath_trial / "errors").iterdir()) == [
+        "error-200000-0.log", "error-200000-1.log", "error-200000-2.log",
+    ]
+    # all three crashes are tallied at the campaign level, bucketed by cause (that file is never rewritten
+    # by the mock); the mock rewrites trial_metadata fresh each attempt, so the trial-level counter
+    # reflects only the last one (an 'other' crash)
+    with open(tmp_path / "cmp_fail" / "campaign_metadata.json") as f:
+        assert json.load(f)["n_crashes"] == {"ram": 1, "vram": 1, "other": 1}
+    with open(dpath_trial / "trial_metadata.json") as f:
+        assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": 1}
+
+
+def test_classify_crash_buckets() -> None:
+    def cpe(stderr):
+        return subprocess.CalledProcessError(1, ["torchrun"], stderr=stderr)
+
+    assert cr._classify_crash(cpe("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 GiB")) == "vram"
+    assert cr._classify_crash(cpe("Signal 9 (SIGKILL) received by PID 12345")) == "ram"
+    assert cr._classify_crash(cpe("RuntimeError: DataLoader worker (pid 123) is killed by signal: Killed.")) == "ram"
+    # a CUDA OOM's teardown can drag SIGKILL noise into stderr -- the root cause wins
+    assert cr._classify_crash(cpe("CUDA out of memory\nSignal 9 (SIGKILL) received by PID 12345")) == "vram"
+    assert cr._classify_crash(cpe("boom")) == "other"
+    assert cr._classify_crash(RuntimeError("crashed before the subprocess produced stderr")) == "other"
 
 
 def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path, monkeypatch) -> None:
@@ -541,7 +574,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         fpath_ckpt.write_text(f"state-{calls['n']}")
         os.utime(fpath_ckpt, (calls["n"] * 1000, calls["n"] * 1000))  # strictly-increasing mtime = progress
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         if calls["n"] <= n_flakes:
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -560,6 +593,8 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         assert json.load(f)["complete"] is True
     assert not fpath_ckpt.parent.exists()  # chkpts/in_progress removed on success
     assert not (dpath_trial / "error.log").exists()
+    with open(tmp_path / "cmp_flaky" / "campaign_metadata.json") as f:
+        assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": n_flakes}  # each recovered flake is counted at the campaign level
 
 
 def test_expand_settings_raises_on_duplicate_names() -> None:
@@ -919,6 +954,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
         dataset="cub",
         setting="iw",
         exc=err,
+        failure="VRAM",
     )
 
     log_fpath = dpath_trial / "error.log"
@@ -927,6 +963,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
     text = log_fpath.read_text()
 
     assert "TRIAL FAILED" in text
+    assert "failure=VRAM" in text  # the marker PrintLog.manifest parses for the Failed section
     assert "stderr" in text
     assert "line3" in text
 
@@ -952,6 +989,7 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
         dataset="cub",
         setting="iw",
         exc=err,
+        failure="Other",
     )
 
     text = (dpath_trial / "error.log").read_text()
@@ -961,10 +999,34 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
     assert "it/s" not in text
 
 
+def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+
+    dpath_trial = cr._dpath_campaign("cmp_c") / "iw" / "cub" / "42"
+    dpath_trial.mkdir(parents=True, exist_ok=True)
+
+    # errors/ is created only once a crash occurs; before the first checkpoint there's no metadata, so
+    # progress reads as 0
+    assert not (dpath_trial / "errors").exists()
+    cr._log_crash(dpath_trial, subprocess.CalledProcessError(1, ["torchrun"], stderr="boom-early"))
+    assert (dpath_trial / "errors" / "error-0-0.log").exists()
+    assert "boom-early" in (dpath_trial / "errors" / "error-0-0.log").read_text()
+
+    # once a checkpoint advances progress, crashes are keyed by samples seen; repeated crashes at the same
+    # sample count get incrementing indices instead of clobbering
+    with open(dpath_trial / "trial_metadata.json", "w") as f:
+        json.dump({"progress": {"n_samps_seen": 1_058_816, "sample_volume": 5_000_000}}, f)
+    cr._log_crash(dpath_trial, subprocess.CalledProcessError(1, ["torchrun"], stderr="boom-a"))
+    cr._log_crash(dpath_trial, subprocess.CalledProcessError(1, ["torchrun"], stderr="boom-b"))
+
+    assert "boom-a" in (dpath_trial / "errors" / "error-1058816-0.log").read_text()
+    assert "boom-b" in (dpath_trial / "errors" / "error-1058816-1.log").read_text()
+
+
 def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
-    def _make_trial(setting, dataset, seed, complete=None, errored=False, runtime=None, n_samps_seen=0):
+    def _make_trial(setting, dataset, seed, complete=None, failure=None, runtime=None, n_samps_seen=0):
         d = dpath_campaign / "settings" / setting / dataset / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
@@ -975,16 +1037,16 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
                     "runtime": {"trial": runtime},
                     "progress": {"n_samps_seen": n_samps_seen, "sample_volume": 4_000_000},
                 }, f)
-        if errored:
-            (d / "error.log").write_text("boom")
+        if failure is not None:  # errored, with the failure= marker _log_trial_error writes
+            (d / "error.log").write_text(f"TRIAL FAILED\n  seed={seed}, dataset={dataset}, setting={setting}, failure={failure}\nboom")
 
     _make_trial("hp", "cub", 42, complete=True, runtime="113723.9", n_samps_seen=4_000_000)  # completed
-    _make_trial("hp", "lepid", 42, complete=False, errored=True, runtime="3723.4", n_samps_seen=2_200_000)  # failed
+    _make_trial("hp", "lepid", 42, complete=False, failure="VRAM", runtime="3723.4", n_samps_seen=2_200_000)  # failed
     # hp/moss/42 -> failed before ever writing metadata (e.g. crashed at startup): no runtime to show
-    _make_trial("hp", "moss", 42, errored=True)
+    _make_trial("hp", "moss", 42, failure="Mixed")
     # hp/nymph/42 -> in progress: it's a resume-after-failure, so it carries a stale error.log; the
     # running trial (passed explicitly) must outrank that error.log and bucket as In Progress, not Failed
-    _make_trial("hp", "nymph", 42, errored=True)
+    _make_trial("hp", "nymph", 42, failure="Other")
     # hp/bryo/42  -> queued (no dir at all)
 
     trials = [
@@ -1001,8 +1063,8 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "hp/lepid/42 --- 0-01:02:03 --- 2.2M/4.0M\n"
-        "hp/moss/42 ---- n/a\n"
+        "hp/lepid/42 --- 0-01:02:03 --- 2.2M/4.0M --- VRAM\n"
+        "hp/moss/42 ---- n/a --- Mixed\n"
         "\n"
         "✅ Completed:\n"
         "hp/cub/42 --- 1-07:35:23\n"
@@ -1105,7 +1167,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         if cfg_dict["dataset"] == "lepid":
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -1129,7 +1191,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "iw/lepid/42 --- 0-01:01:01 --- 0.2M/4.0M\n"
+        "iw/lepid/42 --- 0-01:01:01 --- 0.2M/4.0M --- Other\n"
         "\n"
         "✅ Completed:\n"
         "iw/cub/42 --- 0-01:01:01\n"
@@ -1168,7 +1230,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)

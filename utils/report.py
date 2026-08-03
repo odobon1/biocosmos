@@ -37,8 +37,10 @@ _TABLE_EVAL_GROUPS = {
     "full_macro": ("full_set", "per_class", "Full-Set, Macro"),
 }
 
-# "Hardware Performance" table columns; keys of the per-trial dicts built by _collect_hw
+# "Hardware Performance" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
+# _HW_CRASH_LABELS the per-setting crash totals it reads from setting_metadata.json
 _HW_LABELS = ("Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM")
+_HW_CRASH_LABELS = ("Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other")
 
 
 def _spread(nums, spread_type):
@@ -161,7 +163,10 @@ def _collect_hw(settings, datasets):
     trial_metadata.json: one {_HW_LABELS label -> float} dict per trial -- runtime.trial /
     runtime.train.mean / runtime.eval.mean are float-seconds strings, memory.ram / memory.vram
     are 'used/total GB' strings (numerator taken). A written final-eval metrics file is the
-    completion signal, same as _collect_comps."""
+    completion signal, same as _collect_comps. Also each setting's n_crashes totals
+    ({'ram'/'vram'/'other' -> int}, summed across all its trials -- seeds + datasets, completed or
+    not) from setting_metadata.json, whose counters survive the trial-dir wipes that reset
+    trial_metadata's."""
     hw_by = {}
     for setting in settings:
         for dataset in datasets:
@@ -179,7 +184,11 @@ def _collect_hw(settings, datasets):
                             "Peak VRAM": float(meta["memory"]["vram"].split("/")[0]),
                         })
             hw_by[(setting, dataset)] = trials
-    return hw_by
+    crashes_by = {
+        setting: load_json(ArtifactManager.dpath_campaign / "settings" / setting / "setting_metadata.json")["n_crashes"]
+        for setting in settings
+    }
+    return hw_by, crashes_by
 
 def _score_labels(prim_scores):
     """(mAP labels, acc labels) for the stats tables; prim_scores appends the per-partition
@@ -357,8 +366,10 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     block's bottom Mean table so the Mean's Setting column labels its rows: one column per param
     overridden in the campaign's baseline_overrides (union of the settings' overrides.json keys,
     first-seen order), each cell the setting's effective value resolved from its
-    setting_metadata.json -- '-' when the param is absent there, the signal that it is inert
-    under that configuration (e.g. loss2.* with loss2.mix 0.0). This table gets no
+    config.json -- '-' when the param is absent there, the signal that it is inert
+    under that configuration (e.g. loss2.* with loss2.mix 0.0). Params whose effective value is
+    identical across every setting row are omitted (they differentiate nothing); when every param
+    is uniform the table is omitted entirely. This table gets no
     winner-bold/heatmap styling. hw_perf adds a 'Hardware Performance' table to the mAP sheet
     only, a band of the same kind sitting leftmost (before the Baseline Overrides band when both
     are on, each followed by its own blank separator column), likewise Mean-aligned and
@@ -366,7 +377,9 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     VRAM (whole GB) columns, each cell the mean across datasets with completed trials of the
     setting's per-dataset trial means, rounded to the nearest int -- per-trial readings parsed
     from trial_metadata.json (float-seconds runtime strings; 'used/total GB' memory strings,
-    numerator taken). Column widths hug each column's longest header/data cell
+    numerator taken) -- plus Total Crashes RAM / VRAM / Other columns, each cell the setting's
+    crash total of that cause across all its trials (seeds + datasets, completed or not), read
+    from setting_metadata.json's n_crashes. Column widths hug each column's longest header/data cell
     (banner/label text overflows); blank separator columns get a small ~square width. Regenerated
     at each trial completion."""
     set_key, grp, _ = _TABLE_EVAL_GROUPS[table_eval_group]
@@ -386,7 +399,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
             for key in load_json(dpath_settings / s / "overrides.json"):
                 if key not in okeys:
                     okeys.append(key)
-        metadata_by = {s: load_json(dpath_settings / s / "setting_metadata.json") for s in settings}
+        metadata_by = {s: load_json(dpath_settings / s / "config.json") for s in settings}
 
         def override_value(setting, key):
             # a param absent from the setting's metadata is inert under that configuration -> '-'
@@ -397,7 +410,11 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                 node = node[part]
             return str(node)
 
-    hw_by = _collect_hw(settings, datasets) if hw_perf else None
+        # a param whose effective value is identical across every setting row differentiates
+        # nothing -- drop the column (and with it the whole table when no column survives)
+        okeys = [key for key in okeys if len({override_value(s, key) for s in settings}) > 1]
+
+    hw_by, crashes_by = _collect_hw(settings, datasets) if hw_perf else (None, None)
 
     def build_blocks(score_key, labels):
         """The sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
@@ -451,13 +468,13 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
         hgrid = None
         if hw_by:
             # same headerless-row layout as ogrid: rows labeled by the Mean table's Setting column
-            hgrid = [list(_HW_LABELS)]
+            hgrid = [list(_HW_LABELS) + list(_HW_CRASH_LABELS)]
             for s in rows:
                 hgrid.append([
                     str(round(np.mean([np.mean([trial[label] for trial in hw_by[(s, dataset)]])
                                        for dataset in datasets if hw_by[(s, dataset)]])))
                     for label in _HW_LABELS
-                ])
+                ] + [str(crashes_by[s][kind]) for kind in ("ram", "vram", "other")])
         return blocks, ogrid, hgrid
 
     bold = Font(bold=True)

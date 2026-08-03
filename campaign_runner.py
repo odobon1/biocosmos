@@ -46,14 +46,17 @@ def _relevant_stderr(stderr: str) -> str:
     idx = stderr.find(marker)
     return stderr if idx == -1 else stderr[idx:]
 
-def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception) -> None:
-    """Log trial error to stdout and to error.log in the trial-seed's directory."""
+def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception, failure: str) -> None:
+    """Log trial error to stdout and to error.log in the trial-seed's directory. `failure` is the
+    aggregate cause over the fatal retry loop's crashes -- RAM / VRAM / Other when every crash was
+    that one kind, Mixed when they span kinds -- written as a 'failure=' marker that
+    PrintLog.manifest parses for the Failed section."""
     dpath_trial.mkdir(parents=True, exist_ok=True)
     fpath_error = dpath_trial / "error.log"
     # Format error message with context
     error_msg = (
         f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
-        f"  seed={seed}, dataset={dataset}, setting={setting}"
+        f"  seed={seed}, dataset={dataset}, setting={setting}, failure={failure}"
     )
     stderr_body = None
     if isinstance(exc, subprocess.CalledProcessError):
@@ -70,6 +73,57 @@ def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int
             f.write(stderr_body + "\n")
         else:
             f.write(traceback.format_exc())
+
+def _log_crash(dpath_trial: Path, exc: Exception) -> None:
+    """Write a per-crash error log under <trial>/errors/, one file per crash (recovered *or* fatal),
+    creating the dir on demand so it exists only once a crash has actually happened. Files are named
+    error-<n_samps_seen>-<k>.log: <n_samps_seen> is the trial's last-checkpointed sample count read from
+    trial_metadata.json (the crashed subprocess is gone, so progress comes off disk; 0 before the first
+    checkpoint), and <k> is the next free index for that count (0 for the first crash there, so repeated
+    crashes at the same checkpoint don't clobber). The fatal crash is additionally summarized in the
+    trial-root error.log by _log_trial_error, which the manifest keys the 'Failed' bucket off of."""
+    fpath_meta = dpath_trial / "trial_metadata.json"
+    n_samps = load_json(fpath_meta)["progress"]["n_samps_seen"] if fpath_meta.exists() else 0
+    dpath_errors = dpath_trial / "errors"
+    dpath_errors.mkdir(parents=True, exist_ok=True)
+    idxs = [int(p.stem.rsplit("-", 1)[1]) for p in dpath_errors.glob(f"error-{n_samps}-*.log")]
+    k = max(idxs) + 1 if idxs else 0
+    stderr = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else None
+    body = _relevant_stderr(stderr) if stderr else traceback.format_exc()
+    (dpath_errors / f"error-{n_samps}-{k}.log").write_text(body + "\n")
+
+def _classify_crash(exc: Exception) -> str:
+    """Bucket a trial crash by cause, from the subprocess's captured stderr (falls back to the
+    exception text): 'vram' = CUDA OOM (a rank raised torch.OutOfMemoryError); 'ram' = cgroup OOM
+    (the kernel SIGKILLed a rank or DataLoader worker over the job's RAM limit); 'other' = the rest.
+    VRAM is checked first: a CUDA OOM's teardown can drag SIGKILL noise into stderr, but the
+    reverse doesn't happen (a cgroup kill leaves no CUDA OOM traceback)."""
+    stderr = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else None
+    text = stderr if stderr else str(exc)
+    if "CUDA out of memory" in text or "torch.OutOfMemoryError" in text:
+        return "vram"
+    if "SIGKILL" in text or "killed by signal: Killed" in text:
+        return "ram"
+    return "other"
+
+def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> None:
+    """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
+    setting, and campaign levels. The three counters are bumped independently rather than re-summed
+    from the trials, so the setting and campaign totals stay accurate even when a no-progress restart
+    wipes the trial dir (which resets that trial's own counts). Each file seeds the zeroed dict at
+    creation (campaign at kickoff, setting/trial by the subprocess), so a bump is a plain
+    read-increment-save; the setting/trial files are guarded because a crash can precede the
+    subprocess writing them, whereas campaign_metadata.json always exists by the time any trial runs."""
+    dpath_setting = dpath_trial.parent.parent
+    for fpath in (
+        dpath_trial / "trial_metadata.json",
+        dpath_setting / "setting_metadata.json",
+        dpath_campaign / "campaign_metadata.json",
+    ):
+        if fpath.exists():
+            metadata = load_json(fpath)
+            metadata["n_crashes"][kind] += 1
+            save_json(metadata, fpath)
 
 def _dpath_campaign(campaign: str) -> Path:
     return paths["artifacts"] / campaign
@@ -471,6 +525,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             "n_cpus": slurm_alloc["n_cpus"],
             "ram": slurm_alloc["ram"],
             "memory": {"ram": None, "vram": None},  # peak used/total, max-merged across trials
+            "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # running totals of crashes across all trials, bucketed by cause (see _classify_crash / _bump_crash_counts)
         }
     # record the (possibly grown) planned matrix so the next run can detect removals
     metadata_camp["settings"] = setting_names
@@ -567,6 +622,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 # checkpoint; any attempt that does reset it, so distinct flakes recover indefinitely.
                 fpath_ckpt = dpath_trial / "chkpts/in_progress/train_state.pt"
                 stalled = 0
+                crash_kinds = []  # every crash kind across this trial's retry loop, for the fatal failure= label
                 succeeded = False
                 while True:
                     ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
@@ -587,9 +643,17 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                         PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                         return
                     except Exception as e:
+                        _log_crash(dpath_trial, e)
+                        kind = _classify_crash(e)
+                        _bump_crash_counts(dpath_trial, dpath_campaign, kind)
+                        crash_kinds.append(kind)
                         made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
                         stalled = 0 if made_progress else stalled + 1
                         if stalled > max_retries:
+                            # a no-progress restart wipes the trial dir (metadata + errors/), so the
+                            # in-loop crash_kinds is the only record covering ALL of this loop's crashes
+                            kinds = set(crash_kinds)
+                            failure = {"ram": "RAM", "vram": "VRAM", "other": "Other"}[next(iter(kinds))] if len(kinds) == 1 else "Mixed"
                             _log_trial_error(
                                 dpath_trial=dpath_trial,
                                 idx_trial=idx_trial,
@@ -598,6 +662,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                                 dataset=dataset,
                                 setting=setting,
                                 exc=e,
+                                failure=failure,
                             )
                             PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                             break

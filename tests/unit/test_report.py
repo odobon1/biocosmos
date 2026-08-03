@@ -566,9 +566,10 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     # the score blocks shift right past, aligned with the aggregate block's bottom Mean table (whose
     # Setting column labels its rows): one column per overridden param (union of the settings'
     # overrides.json keys, first-seen order), values resolved from each setting's
-    # setting_metadata.json -- "-" when the param is absent there (inert under that config: sw has
-    # loss2.mix 0.0, so clean_metadata dropped its loss2 subtree). Config cells get no
-    # winner-bold/heatmap styling despite bold_high/heatmap on.
+    # config.json -- "-" when the param is absent there (inert under that config: sw has
+    # loss2.mix 0.0, so clean_metadata dropped its loss2 subtree). loss.targ resolves to "sw" for
+    # BOTH settings, so its column is omitted (uniform columns differentiate nothing). Config cells
+    # get no winner-bold/heatmap styling despite bold_high/heatmap on.
     for setting, base, overrides, meta in (
         ("hp", 0.50, {"loss2.mix": 0.3, "loss2.targ": "phylo"},
          {"loss": {"targ": "sw"}, "loss2": {"mix": 0.3, "targ": "phylo"}}),
@@ -582,7 +583,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
             "scores": {"closed_set": {"standard": _scores_grp(_comp(base))}},
         }))
         (dpath_setting / "overrides.json").write_text(json.dumps(overrides))
-        (dpath_setting / "setting_metadata.json").write_text(json.dumps(meta))
+        (dpath_setting / "config.json").write_text(json.dumps(meta))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
@@ -592,40 +593,65 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
-    # score blocks shift right past the 3-wide overrides band + separator col D: aggregate at E..K
+    # score blocks shift right past the 2-wide overrides band + separator col C: aggregate at D..J
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name}"  # campaign banner stays top-left
-    assert grid[2][4] == "CUB"
-    assert grid[7][4] == "Mean"
+    assert grid[2][3] == "CUB"
+    assert grid[7][3] == "Mean"
     # overrides table in the left band, aligned with the Mean table; param cols in first-seen order
-    # (hp's overrides, then sw's); no Setting column of its own
+    # (hp's overrides, then sw's); no Setting column of its own; uniform loss.targ column omitted
     assert grid[7][0] == "Baseline Overrides"
-    assert "A8:C8" in {str(m) for m in ws.merged_cells.ranges}
-    assert grid[8][:3] == ["loss2.mix", "loss2.targ", "loss.targ"]
-    assert grid[8][4:6] == ["Setting", "All"]  # Mean header shares the row
-    assert grid[9][:3] == ["0.3", "phylo", "sw"]
-    assert grid[9][4] == "hp"  # labeled by the Mean's Setting column
-    assert grid[10][:3] == ["-", "-", "sw"]  # loss2.* inert for sw -> "-"
-    assert grid[10][4] == "sw"
+    assert "A8:B8" in {str(m) for m in ws.merged_cells.ranges}
+    assert grid[8][:2] == ["loss2.mix", "loss2.targ"]
+    assert not any(v == "loss.targ" for r in grid for v in r)
+    assert grid[8][3:5] == ["Setting", "All"]  # Mean header shares the row
+    assert grid[9][:2] == ["0.3", "phylo"]
+    assert grid[9][3] == "hp"  # labeled by the Mean's Setting column
+    assert grid[10][:2] == ["-", "-"]  # loss2.* inert for sw -> "-"
+    assert grid[10][3] == "sw"
     # param-name header styled like other headers; config cells skip score styling entirely
     assert ws.cell(row=9, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
     assert ws.cell(row=9, column=1).font.bold is True
     assert ws.cell(row=10, column=1).fill.patternType is None
     assert ws.cell(row=10, column=1).font.bold is not True
-    assert all(r[3] is None for r in grid)  # separator col D stays empty
-    # seed block one separator past the aggregate score block (cols E..K)
-    assert grid[0][12] == "seed 42"
-    assert grid[2][12] == "CUB"
-    # same treatment on the accuracy sheet (2-wide score tables at E..F, seed at col I)
+    assert all(r[2] is None for r in grid)  # separator col C stays empty
+    # seed block one separator past the aggregate score block (cols D..J)
+    assert grid[0][11] == "seed 42"
+    assert grid[2][11] == "CUB"
+    # same treatment on the accuracy sheet (2-wide score tables at D..E, seed at col H)
     ws_acc = wb["Composite I2T Accuracy"]
     agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
-    assert agrid[2][4] == "CUB"
-    assert agrid[7][4] == "Mean"
+    assert agrid[2][3] == "CUB"
+    assert agrid[7][3] == "Mean"
     assert agrid[7][0] == "Baseline Overrides"
-    assert "A8:C8" in {str(m) for m in ws_acc.merged_cells.ranges}
-    assert agrid[8][:3] == ["loss2.mix", "loss2.targ", "loss.targ"]
-    assert agrid[9][:3] == ["0.3", "phylo", "sw"]
-    assert agrid[10][:3] == ["-", "-", "sw"]
-    assert agrid[0][7] == "seed 42"
+    assert "A8:B8" in {str(m) for m in ws_acc.merged_cells.ranges}
+    assert agrid[8][:2] == ["loss2.mix", "loss2.targ"]
+    assert agrid[9][:2] == ["0.3", "phylo"]
+    assert agrid[10][:2] == ["-", "-"]
+    assert agrid[0][6] == "seed 42"
+
+
+def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path, monkeypatch) -> None:
+    # every overridden param resolves to the same value for every setting -> no column survives, so
+    # the Baseline Overrides band is omitted entirely and the score blocks sit leftmost
+    for setting, base in (("hp", 0.50), ("sw", 0.40)):
+        dpath_setting = tmp_path / "settings" / setting
+        dpath_final = dpath_setting / "cub" / "42" / "evals" / "final"
+        dpath_final.mkdir(parents=True)
+        (dpath_final / "metrics.json").write_text(json.dumps({
+            "scores": {"closed_set": {"standard": _scores_grp(_comp(base))}},
+        }))
+        (dpath_setting / "overrides.json").write_text(json.dumps({"loss.targ": "sw"}))
+        (dpath_setting / "config.json").write_text(json.dumps({"loss": {"targ": "sw"}}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub"]}))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+
+    report.update_metrics_xlsx("closed_standard", "std", False, False, None, False, True, False)
+
+    wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
+    grid = [[c.value for c in r] for r in wb.active.iter_rows()]
+    assert not any(v == "Baseline Overrides" for r in grid for v in r)
+    assert grid[2][0] == "CUB"  # score blocks leftmost: no band, no separator column
 
 
 def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
@@ -635,6 +661,8 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     # meaned per dataset (across trials) then across datasets with completed trials, rounded to the
     # nearest int. hp's cub trial times (100.4, 200.4) mean to 150.4, then with bryo's 350.0 ->
     # 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level aggregation matters).
+    # The Total Crashes RAM/VRAM/Other columns come straight from setting_metadata.json's n_crashes
+    # (per-setting totals across seeds + datasets), not from the per-trial readings.
     hw_vals = {  # (setting, dataset, seed) -> (trial, train mean, eval mean, ram, vram)
         ("hp", "cub", "42"): ("100.40", "10.10", "5.10", "100.2/128.0 GB", "20.2/178.4 GB"),
         ("hp", "cub", "43"): ("200.40", "20.10", "7.10", "110.2/128.0 GB", "24.2/178.4 GB"),
@@ -652,12 +680,13 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
             "runtime": {"train": {"mean": train_t}, "eval": {"mean": eval_t}, "trial": trial_t},
             "memory": {"ram": ram, "vram": vram},
         }))
-    for setting, overrides, meta in (
-        ("hp", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}),
-        ("sw", {"loss.targ": "sw"}, {"loss": {"targ": "sw"}}),
+    for setting, overrides, meta, crashes in (
+        ("hp", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 2, "vram": 1, "other": 0}),
+        ("sw", {"loss.targ": "sw"}, {"loss": {"targ": "sw"}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
         (tmp_path / "settings" / setting / "overrides.json").write_text(json.dumps(overrides))
-        (tmp_path / "settings" / setting / "setting_metadata.json").write_text(json.dumps(meta))
+        (tmp_path / "settings" / setting / "config.json").write_text(json.dumps(meta))
+        (tmp_path / "settings" / setting / "setting_metadata.json").write_text(json.dumps({"n_crashes": crashes}))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub", "bryo"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
@@ -667,23 +696,25 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
-    # bands left to right: hw at A..E + separator F, overrides at G..H + separator I, score blocks
-    # from J; all share the Mean table's banner row (two 3-row dataset tables precede it -> row 13)
+    # bands left to right: hw at A..H + separator I, overrides at J..K + separator L, score blocks
+    # from M; all share the Mean table's banner row (two 3-row dataset tables precede it -> row 13)
     assert grid[12][0] == "Hardware Performance"
-    assert grid[12][6] == "Baseline Overrides"
-    assert grid[12][9] == "Mean"
+    assert grid[12][9] == "Baseline Overrides"
+    assert grid[12][12] == "Mean"
     merged = {str(m) for m in ws.merged_cells.ranges}
-    assert "A13:E13" in merged and "G13:H13" in merged
-    assert grid[13][:5] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
-    assert grid[13][6:8] == ["loss2.mix", "loss.targ"]
-    # hp: cub means (150.4, 15.1, 6.1, 105.2, 22.2) averaged with bryo's single trial, then rounded
-    assert grid[14][:5] == ["250", "23", "8", "113", "26"]
-    assert grid[14][6:8] == ["0.3", "-"]
-    assert grid[14][9] == "hp"  # labeled by the Mean's Setting column
+    assert "A13:H13" in merged and "J13:K13" in merged
+    assert grid[13][:8] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+                            "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
+    assert grid[13][9:11] == ["loss2.mix", "loss.targ"]
+    # hp: cub means (150.4, 15.1, 6.1, 105.2, 22.2) averaged with bryo's single trial, then rounded;
+    # crash totals straight from setting_metadata.json
+    assert grid[14][:8] == ["250", "23", "8", "113", "26", "2", "1", "0"]
+    assert grid[14][9:11] == ["0.3", "-"]
+    assert grid[14][12] == "hp"  # labeled by the Mean's Setting column
     # sw: single cub trial, values pass straight through the two-level mean before rounding
-    assert grid[15][:5] == ["63", "8", "6", "117", "26"]
-    assert grid[15][9] == "sw"
-    assert all(r[5] is None and r[8] is None for r in grid)  # both separator columns stay empty
+    assert grid[15][:8] == ["63", "8", "6", "117", "26", "0", "0", "3"]
+    assert grid[15][12] == "sw"
+    assert all(r[8] is None and r[11] is None for r in grid)  # both separator columns stay empty
     # hw header styled like other headers; value cells get no winner-bold/heatmap styling
     assert ws.cell(row=14, column=1).font.bold is True
     assert ws.cell(row=14, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
@@ -694,3 +725,4 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     assert agrid[12][0] == "Baseline Overrides"
     assert agrid[12][3] == "Mean"
     assert not any(v == "Hardware Performance" for r in agrid for v in r)
+    assert not any(v == "Total Crashes RAM" for r in agrid for v in r)

@@ -261,14 +261,21 @@ class ArtifactManager:
                     if unit_scaled:
                         del wting["norm"]["agg"]
 
-        fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
         metadata = asdict(cfg_train)
         clean_metadata(metadata)
-        if fpath_meta.exists():
-            metadata_loaded = load_json(fpath_meta)
-            assert metadata == metadata_loaded, "Setting params changed!"
+
+        # setting-level config params live in config.json (write-once; asserted unchanged on later trials of
+        # the setting). setting_metadata.json holds only n_crashes -- mutable per-cause counters the
+        # campaign runner bumps on crashes -- so the two concerns don't share a file.
+        fpath_config = ArtifactManager.dpath_setting / "config.json"
+        if fpath_config.exists():
+            assert metadata == load_json(fpath_config), "Setting params changed!"
         else:
-            save_json(metadata, fpath_meta)
+            save_json(metadata, fpath_config)
+
+        fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
+        if not fpath_meta.exists():
+            save_json({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}, fpath_meta)
 
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):
@@ -317,6 +324,7 @@ class ArtifactManager:
                 "datetime_start": now,
                 "datetime_last_seen": now,
                 "complete": False,
+                "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # crashes this trial has recovered from, bucketed by cause; bumped by campaign_runner._bump_crash_counts
             }
         else:
             metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)

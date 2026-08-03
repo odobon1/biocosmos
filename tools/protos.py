@@ -52,11 +52,10 @@ for i in tqdm(range(len(cids) // config_eval.batch_size + 1)):
 
     imgs = [modelw.img_pp_inf(Image.open(fpath_imgs / rfpath).convert("RGB")) for rfpath in rfpaths_b]
     n_imgs = len(imgs)
-    imgs = torch.stack(imgs).to(device)
+    imgs = torch.stack(imgs)  # uint8; prep (device, fp32, normalize) happens in embed_images
 
     with torch.no_grad():
-        img_embs = modelw.model.encode_image(imgs)  # pt[B, D]
-        img_embs = F.normalize(img_embs, p=2, dim=1)  # normalized to unit length
+        img_embs = modelw.embed_images(imgs)  # pt[B, D], unit length
 
     for j in range(n_imgs):
         partition_j = partition_b[j]

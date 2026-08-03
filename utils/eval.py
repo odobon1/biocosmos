@@ -184,7 +184,7 @@ class PartitionEvaluationPipeline:
             leave=False,
             disable=(dist.get_rank() != 0),
         ):
-            imgs_sb = imgs_sb.to(modelw.device, non_blocking=True)
+            imgs_sb = modelw.prep_imgs(imgs_sb)  # uint8 -> device, fp32, normalized
 
             if self.mixed_prec:
                 with autocast(device_type=modelw.device.type, dtype=torch.bfloat16):

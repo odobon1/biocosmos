@@ -435,7 +435,7 @@ class TrainPipeline:
                     if self.idx_epoch == 1 and idx_batch == 0:
                         PrintLog.texts(texts_sb)
 
-                    imgs_sb = imgs_sb.to(self.cfg.device, non_blocking=True)
+                    imgs_sb = self.modelw.prep_imgs(imgs_sb)  # uint8 -> device, fp32, normalized
                     class_encs_sb = class_encs_sb.to(self.cfg.device, non_blocking=True)
                     B = imgs_sb.size(0) * dist.get_world_size()
                     self.n_samps_seen += B

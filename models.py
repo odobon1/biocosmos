@@ -17,7 +17,7 @@ from pathlib import Path
 from utils.utils import paths, load_split
 from utils.loss import Criterion, chunked_bce_loss_backward
 from utils.head import compute_sim
-from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train
+from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
 from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
 
@@ -315,14 +315,24 @@ class VLMWrapper(abc.ABC):
             self.norm_std = split.norm_std[config.train_pt]
 
     def set_image_preprocessors(self) -> None:
-        self.img_pp_inf = make_image_preprocessor_inference(self.img_res, norm_mean=self.norm_mean, norm_std=self.norm_std)
+        self.img_pp_inf = make_image_preprocessor_inference(self.img_res)
         if hasattr(self.cfg, "aug"):
             self.img_pp_train = make_image_preprocessor_train(
                 self.img_res,
-                norm_mean=self.norm_mean,
-                norm_std=self.norm_std,
                 aug_cfg=self.cfg.aug,
             )
+        # normalization runs on-device (prep_imgs), not in the preprocessors: [C, 1, 1] fp32 tensors
+        self._norm_mean_t = torch.as_tensor(self.norm_mean, dtype=torch.float32, device=self.device).view(-1, 1, 1)
+        self._norm_std_t = torch.as_tensor(self.norm_std, dtype=torch.float32, device=self.device).view(-1, 1, 1)
+
+    def prep_imgs(self, imgs: torch.Tensor) -> torch.Tensor:
+        """
+        uint8 image batch from a dataloader (CPU or device) -> normalized fp32 on device: the
+        second half of the preprocessing contract (the Compose emits raw uint8 so workers/queues
+        carry 1 byte per element and the H2D copy is 4x smaller).
+        """
+        imgs = imgs.to(self.device, non_blocking=True)
+        return normalize_imgs_u8(imgs, self._norm_mean_t, self._norm_std_t)
 
     @rank0
     def save(self, dpath: Path) -> None:
@@ -343,13 +353,14 @@ class VLMWrapper(abc.ABC):
         Runs batch of images through image encoder and returns batch of unit-length embeddings.
 
         Args:
-        - imgs_b --- Batch of images; Tensor(B, C, H, W)
+        - imgs_b --- Batch of preprocessor-emitted uint8 images (CPU or device); Tensor(B, C, H, W)
 
         Returns:
         - Normalized image embeddings; Tensor(B, D)
         """
         model = self._unwrapped_model
-        
+
+        imgs_b = self.prep_imgs(imgs_b)
         with torch.set_grad_enabled(self.model.training):  # enable autograd if model in train mode, disable if in eval mode
             embs_imgs_b = model.encode_image(imgs_b)
 

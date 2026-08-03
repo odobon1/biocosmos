@@ -10,7 +10,6 @@ from torchvision.transforms import (
     Resize,
     CenterCrop,
     RandomResizedCrop,
-    Normalize,
     InterpolationMode,
     RandomHorizontalFlip,
     ColorJitter,
@@ -102,17 +101,17 @@ def build_train_augmentation_transforms(
     return Compose(transforms)
 
 def make_image_preprocessor_inference(
-    img_res: int, 
-    norm_mean: Tuple[float], 
-    norm_std: Tuple[float],
+    img_res: int,
 ):
     """
     Create a preprocessing pipeline for inference.
 
+    Emits uint8 pt[C, H, W]: the fp32 cast + normalization happen on-device
+    (VLMWrapper.prep_imgs), so dataloader workers/queues carry 1 byte per element
+    instead of 4.
+
     Args:
         img_res (int): Image resolution
-        norm_mean (Tuple[float]): Mean for normalization (3-tuple for RGB channels)
-        norm_std (Tuple[float]): Standard deviation for normalization (3-tuple for RGB channels)
 
     Returns:
         Compose: A torchvision Compose object with the preprocessing steps
@@ -124,24 +123,24 @@ def make_image_preprocessor_inference(
         ),
         CenterCrop(size=(img_res, img_res)),
         MaybeConvertMode(),
-        MaybeToTensor(),
-        Normalize(mean=norm_mean, std=norm_std),
+        MaybePILToTensor(),
     ])
     return pp_inf
 
 def make_image_preprocessor_train(
-    img_res: int, 
-    norm_mean: Tuple[float],
-    norm_std: Tuple[float],
+    img_res: int,
     aug_cfg: Mapping[str, Any] | None = None,
 ):
     """
     Create a preprocessing pipeline for training.
 
+    Emits uint8 pt[C, H, W]: the fp32 cast + normalization happen on-device
+    (VLMWrapper.prep_imgs), so dataloader workers/queues carry 1 byte per element
+    instead of 4. All augmentations run on the PIL image (uint8 domain), so this
+    loses nothing vs converting to fp32 in the worker.
+
     Args:
         img_res (int): Image resolution
-        norm_mean (Tuple[float]): Mean for normalization (3-tuple for RGB channels)
-        norm_std (Tuple[float]): Standard deviation for normalization (3-tuple for RGB channels)
 
     Returns:
         Compose: A torchvision Compose object with the preprocessing steps
@@ -150,11 +149,7 @@ def make_image_preprocessor_train(
         list(build_train_augmentation_transforms(img_res, aug_cfg=aug_cfg).transforms)
         + [
             MaybeConvertMode(),
-            MaybeToTensor(),
-            Normalize(
-                mean=norm_mean,
-                std=norm_std,
-            ),
+            MaybePILToTensor(),
         ]
     )
     return pp_train
@@ -168,14 +163,28 @@ class MaybeConvertMode:
         return image
 
 # helper for make_image_preprocessor_inference() and make_image_preprocessor_train()
-class MaybeToTensor:
+class MaybePILToTensor:
     def __call__(self, image):
         import torch
-        from torchvision.transforms.functional import to_tensor
+        from torchvision.transforms.functional import pil_to_tensor
         # avoid double-conversion
         if isinstance(image, torch.Tensor):
             return image
-        return to_tensor(image)
+        return pil_to_tensor(image)  # uint8 pt[C, H, W], no scaling
+
+def normalize_imgs_u8(imgs, norm_mean, norm_std):
+    """
+    uint8 pt[..., C, H, W] (as emitted by the preprocessors) -> normalized fp32, replicating the
+    worker-side to_tensor + Normalize arithmetic exactly: float()/255, then sub(mean)/div(std),
+    with fp32 mean/std of shape [C, 1, 1] on the same device. Bit-identical to the old in-worker
+    pipeline (fp32 elementwise ops are correctly rounded on CPU and CUDA alike).
+    """
+    if imgs.dtype != torch.uint8:
+        raise TypeError(f"expected uint8 images from the preprocessors, got {imgs.dtype}")
+    # 255 as a 0-dim device tensor: CUDA's scalar-divisor fast path multiplies by the reciprocal
+    # (~1 ulp off true division); a tensor divisor keeps true division, matching to_tensor bitwise
+    u8_max = torch.full((), 255.0, dtype=torch.float32, device=imgs.device)
+    return imgs.float().div_(u8_max).sub_(norm_mean).div_(norm_std)
 
 def assemble_data_index(data_indexes: Dict[str, Any], partition: str) -> List[Dict[str, Any]]:
     """Assemble the flat data-index list for `partition` from the nested data_indexes dict.

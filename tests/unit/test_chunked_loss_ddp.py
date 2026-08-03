@@ -3,9 +3,12 @@ DDP equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss
 
 The single-GPU tests in test_chunked_loss.py pin down the tiling math across the full config space; the
 2-rank test here pins down the DISTRIBUTED machinery that only exists across ranks: the cross-rank
-embedding gather (_AllGather fwd/bwd), the world_size-factor cancellation, no_sync, the representation
-backward through the gather, the per-parameter manual all-reduce, and the two-pass precompute constants
-(which must be identical across ranks since they derive from the gathered global embeddings).
+embedding gather (_AllGather fwd/bwd), the SigLIP-style row-band sharding of the tile sweep (each rank
+computes only its B/world_size band), the summation of disjoint-band partial grads (encoder params via
+the _AllGather-routed representation backward, post-gather logit params via the manual per-parameter
+all-reduce -- plain sum, no /world_size), no_sync, the banded precompute constants (band-partial sums
+all-reduced to rank-identical values), and the post-backward leaf-grad fold that grad-norm logging
+relies on.
 
 It binds the REAL VLMWrapper methods to a lightweight harness `self`, wraps a tiny dual-encoder in DDP, and
 asserts three paths agree to fp32 precision on every rank, per config case:
@@ -14,9 +17,11 @@ asserts three paths agree to fp32 precision on every rank, per config case:
   (REF)   standard DDP: batch_step + loss.backward()      -- production path
   (CHUNK) batch_step_chunked                              -- no_sync + tiled backward + manual all-reduce
 
-Cases: a plain BCE step, and a BCE+BCE mix with norm.agg + mix_unit_scale (exercises the secondary logit
-params and the embedding-dependent precompute sweeps under DDP). The 2-rank test requires >= 2 CUDA
-devices; skipped otherwise. An assertion failure in any rank propagates out of mp.spawn and fails the test.
+Cases: a plain BCE step, a BCE+BCE mix with norm.agg + mix_unit_scale (exercises the secondary logit
+params and the embedding-dependent precompute sweeps under DDP), and a tax-target case (exercises the
+banded soft-target dsmr-mass all-reduce and the tax target tiles under sharding). The 2-rank test
+requires >= 2 CUDA devices; skipped otherwise. An assertion failure in any rank propagates out of
+mp.spawn and fails the test.
 
 test_chunked_ddp_single_rank_matches_full_batch runs the same harness at world_size=1 (>= 1 CUDA device):
 torchrun with one GPU still wraps the model in DDP, and DDP's reducer arms on any forward taken outside
@@ -56,6 +61,7 @@ def cfg_loss(targ="sw", norm_agg=False):
 CASES = [
     ("plain", cfg_loss("sw"), None, 0.0, False),
     ("mix_normagg_unitscale", cfg_loss("sw", norm_agg=True), cfg_loss("sw", norm_agg=True), 0.3, True),
+    ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
 ]
 
 
@@ -111,9 +117,13 @@ def build_harness(model_ddp, crit1, crit2, mix, mix_unit_scale, world_size, devi
 
 
 def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, ft, fc, ftd):
-    """Single-process full-batch blended loss on `toy` -- the ground truth."""
+    """Single-process full-batch blended loss on `toy` -- the ground truth. Returns the normalized
+    embeddings too (grads retained): their post-backward .grad is the full-batch dL/dembs that the
+    chunked path's returned leaves must carry for grad-norm logging."""
     img = F.normalize(toy.img_enc(fi), dim=1)
     txt = F.normalize(toy.txt_enc(ft), dim=1)
+    img.retain_grad()
+    txt.retain_grad()
 
     def clogits(sim, clamp, secondary):
         s = toy.logit_scale2 if secondary else toy.logit_scale
@@ -130,12 +140,12 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
 
     loss1, loss1_raw = crit_loss(crit1, False)
     if mix == 0.0:
-        return loss1, loss1_raw
+        return loss1, loss1_raw, img, txt
     loss2, loss2_raw = crit_loss(crit2, True)
     if mix_unit_scale:
         loss1 = loss1 / loss1.detach().clamp_min(1e-12)
         loss2 = loss2 / loss2.detach().clamp_min(1e-12)
-    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw
+    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, img, txt
 
 
 def grads(model):
@@ -170,12 +180,13 @@ def run(rank, world_size, port):
     full_imgs = torch.randn(B, d_in, generator=g)
     full_txts = torch.randn(B, d_in, generator=g)
     full_cls = torch.randint(0, K, (B,), generator=g)
+    full_td = [{"rank_encs": torch.randint(0, 3, (4,), generator=g).tolist()} for _ in range(B)]  # for tax
     sl = slice(rank * SB, (rank + 1) * SB)
     imgs_sb, txts_sb, cls_sb = full_imgs[sl].to(device), full_txts[sl].to(device), full_cls[sl].to(device)
-    targ_sb = [None] * SB
+    targ_sb = full_td[sl]
 
     for name, cfg1, cfg2, mix, mix_unit_scale in CASES:
-        for chunk_size in (B // 3, B):  # multi-tile + single-tile; both divide B at any world_size
+        for chunk_size in (SB // 3, SB):  # multi-tile + single-tile per band; both divide the per-rank band (B/world_size = SB)
             crit1 = make_crit(BCECriterion, cfg1, K, B, device)
             crit2 = make_crit(BCECriterion, cfg2, K, B, device) if mix != 0.0 else None
 
@@ -189,8 +200,8 @@ def run(rank, world_size, port):
 
             # (GT) single-process full-batch ground truth
             fi, ft, fc = full_imgs.to(device), full_txts.to(device), full_cls.to(device)
-            loss_gt, loss_raw_gt = full_batch_blended(toy_gt, compute_sim, crit1, crit2, mix, mix_unit_scale,
-                                                      fi, ft, fc, [None] * B)
+            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt = full_batch_blended(
+                toy_gt, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, ft, fc, full_td)
             toy_gt.zero_grad(set_to_none=True)
             loss_gt.backward()
             g_gt = grads(toy_gt)
@@ -206,7 +217,7 @@ def run(rank, world_size, port):
             h_chunk = build_harness(ddp_chunk, crit1, crit2, mix, mix_unit_scale, world_size, device)
             h_chunk.cfg.hw.loss_chunk_size = chunk_size
             ddp_chunk.zero_grad(set_to_none=True)
-            loss_chunk, _, *_ = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
+            loss_chunk, _, img_leaf, txt_leaf, *_ = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
             g_chunk = grads(toy_chunk)
 
             def rel(a, b):
@@ -215,6 +226,11 @@ def run(rank, world_size, port):
             tag = f"[rank {rank} case={name} chunk={chunk_size} B={B}]"
             assert abs(loss_chunk.item() - loss_gt.item()) < 1e-4 * (abs(loss_gt.item()) + 1e-6), \
                 f"{tag} CHUNK loss {loss_chunk.item()} != GT {loss_gt.item()}"
+            # the returned leaves must carry FULL-BATCH dL/dembs on every rank (grad-norm logging contract)
+            r_il = rel(img_leaf.grad, embs_img_gt.grad)
+            r_tl = rel(txt_leaf.grad, embs_txt_gt.grad)
+            assert r_il < 3e-4, f"{tag} leaf img-grad mismatch: rel={r_il:.2e}"
+            assert r_tl < 3e-4, f"{tag} leaf txt-grad mismatch: rel={r_tl:.2e}"
             for n in g_gt:
                 if g_gt[n] is None:  # param unused this case (e.g. secondary logits at mix==0)
                     assert g_chunk[n] is None, f"{tag} {n}: CHUNK grad set but GT is None"

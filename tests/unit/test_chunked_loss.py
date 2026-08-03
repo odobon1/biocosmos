@@ -172,7 +172,7 @@ def test_chunked_matches_full(targ1, targ2, dsmr, focal, agg, freq, norm_ci, nor
     pc = _params(1)
     loss_c, loss_raw_c, _ = L.chunked_bce_loss_backward(
         imgc, txtc, class_encs_b, targ_data_b, crit1, crit2, mix, unit_scale,
-        _compute_logits_fn(pc), C, False, device,
+        _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
     )
 
     torch.testing.assert_close(loss_c, loss_ref.detach(), rtol=1e-4, atol=1e-6)
@@ -199,7 +199,7 @@ def test_stats_min_max_mean_exact():
     targs = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
     _, _, stats = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, targ_data_b, crit, None, 0.0, False,
-        lambda s, clamp, secondary=False: s * 10.0 - 0.5, C, False, torch.device("cpu"),
+        lambda s, clamp, secondary=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
     )
     assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
     assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)

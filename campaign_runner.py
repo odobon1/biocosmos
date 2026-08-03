@@ -22,7 +22,7 @@ import psutil
 import torch
 import yaml
 
-from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, get_config_train, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
@@ -365,6 +365,21 @@ def _stash_nccl_dumps(dpath_campaign: Path) -> None:
     for fpath in fpaths:
         fpath.rename(dpath_traces / fpath.name.removeprefix("nccl_trace_"))
 
+def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setting_payload: dict,
+                          seed: int, dataset: str, idx_seed: int) -> dict:
+    """Effective per-trial config dict: frozen campaign snapshot + trial identity + setting overrides."""
+    cfg_dict = deepcopy(cfg_snapshot["train"])
+    cfg_dict["campaign"] = campaign
+    cfg_dict["setting"] = setting
+    cfg_dict["seed"] = seed
+    cfg_dict["dataset"] = dataset
+    cfg_dict["idx_seed"] = idx_seed
+    cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
+    cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
+    cfg_dict["hw"] = cfg_snapshot["hardware"]
+    cfg_dict["_setting_overrides"] = setting_payload
+    return apply_overrides(cfg_dict, setting_payload)
+
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
     cmd = [
         "torchrun",
@@ -535,10 +550,20 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
 
     cfg_snapshot = _load_or_create_campaign_config(campaign)
     cfg_baseline = cfg_snapshot["train"]
-    cfg_manifold_viz = cfg_snapshot["manifold_viz"]
-    cfg_model_specific = cfg_snapshot["model_specific"]
     cfg_hardware = cfg_snapshot["hardware"]
     max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
+
+    # Fail-fast config validation: construct every setting x dataset's effective TrainConfig now, so a
+    # misconfigured setting (e.g. a batch_size that doesn't band-shard over world_size x loss_chunk_size)
+    # kills the campaign at kickoff instead of erroring when its trial finally launches. Seed only needs
+    # to be representative -- config validation is seed-independent beyond requiring a non-null seed.
+    for setting, setting_payload in settings:
+        for dataset in datasets:
+            cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seeds[0], dataset, 0)
+            try:
+                get_config_train(cfg_dict=cfg_dict)
+            except Exception as e:
+                raise ValueError(f"invalid config for setting '{setting}' on dataset '{dataset}': {e}") from e
 
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
@@ -594,17 +619,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 # planned setting whose trials never start leaves no artifacts/<campaign>/settings/ entry
                 _write_setting_overrides(campaign, setting, setting_payload)
 
-                cfg_dict = deepcopy(cfg_baseline)
-                cfg_dict["campaign"] = campaign
-                cfg_dict["setting"] = setting
-                cfg_dict["seed"] = seed
-                cfg_dict["dataset"] = dataset
-                cfg_dict["idx_seed"] = idx_seed
-                cfg_dict["manifold_viz"] = cfg_manifold_viz
-                cfg_dict["model_specific"] = cfg_model_specific
-                cfg_dict["hw"] = cfg_hardware
-                cfg_dict["_setting_overrides"] = setting_payload
-                cfg_dict = apply_overrides(cfg_dict, setting_payload)
+                cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seed, dataset, idx_seed)
 
                 if dpath_trial.exists():
                     print(f"[{idx_trial}/{n_trials_total}] RESUME: {setting}/{dataset}/{seed}")

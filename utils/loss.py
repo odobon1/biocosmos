@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 import abc
 from contextlib import nullcontext
 
@@ -326,16 +327,24 @@ def _aggregate_weights(agg, W_ci, W_foc, W_dsmr=None):
 #
 # The full-batch contrastive loss materializes several BxB matrices (sim, logits, weights, loss) and
 # their autograd graph -- O(B^2) VRAM, the wall that OOMs bs32k. The chunked path computes the exact
-# same weighted-BCE loss and gradients while never holding the full BxB matrices: it sums the loss over
-# B/C row-blocks of C x B (C = loss_chunk_size rows, B an exact multiple of C) and backpropagates each block
-# into the detached embedding leaves (GradCache-style representation gradients), so peak VRAM is O(C*B).
+# same weighted-BCE loss and gradients while never holding the full BxB matrices, and no rank computes
+# more than its share of them: the BxB rows are sharded across ranks into world_size equal row-bands of
+# b = B/world_size (SigLIP-style decomposition -- the pairwise-independent BCE loss has no batch-global
+# normalizer, so each rank sweeps only its own band instead of redundantly recomputing the full matrix),
+# and each rank sums its band over b/C row-blocks of C x B (C = loss_chunk_size rows, b an exact multiple
+# of C), backpropagating each block into the detached embedding leaves (GradCache-style representation
+# gradients). Peak VRAM is O(C*B); per-rank loss compute is O(B^2/world_size). Cross-band couplings --
+# the loss/raw totals, the batch stats, and the precomputed constants below -- are folded with small
+# all-reduces so every rank returns identical full-batch values; the leaves' band-partial dL/dembs sum
+# to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
 # Supports the full BCE config space (incl. sw/iw/tax/phylo targets, norm.cls_imb, norm.agg, a BCE+BCE
 # secondary-loss mix, and mix_unit_scale) -- only InfoNCE is excluded (validate_chunking_supported).
 # The reductions that couple across the whole BxB matrix -- the norm.cls_imb / norm.agg weight-mean
 # normalizers, the DSMR mass, and the per-loss mix_unit_scale scalar -- are all DETACHED constants, so
-# they are precomputed (cheap embedding-free closed forms + no_grad tile sweeps) before the single
-# grad-carrying backward sweep applies them as constants. See _precompute_crit_consts.
+# they are precomputed (cheap embedding-free closed forms + no_grad band sweeps, all-reduced to
+# rank-identical values) before the single grad-carrying backward sweep applies them as constants.
+# See _precompute_crit_consts.
 # ------------------------------------------------------------------------------------------------
 
 def validate_chunking_supported(cfg_loss, cfg_loss2):
@@ -378,11 +387,12 @@ def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     if targ_type == "phylo":
         return get_phylo_vcv(targ_data_b[0]["dataset"]).make_targ_block_fn(targ_data_b, device)
 
-def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size):
+def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size):
     """
     Global DSMR mass over the full BxB target matrix: mass_pos = sum(targs), mass_neg = B^2 - sum(targs)
     (== sum(1 - targs) for targets in [0, 1]). For sw/iw (0/1 targets) mass_pos is the O(B) closed form
-    sum_k count_k^2 / B; for soft tax/phylo targets it is summed over the target tiles (embedding-free).
+    sum_k count_k^2 / B (rank-identical, no collective); for soft tax/phylo targets it is summed over
+    this rank's band [lo, hi) of target tiles (embedding-free) and all-reduced across bands.
     Matches torch.sum(targs) / torch.sum(1 - targs) in BCECriterion.__call__.
     """
     device = class_encs_b.device
@@ -391,10 +401,12 @@ def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size):
         mass_pos = (counts * counts).sum()
     elif targ_type == "iw":
         mass_pos = torch.tensor(float(B), dtype=torch.float64, device=device)
-    else:  # tax, phylo -- soft targets: sum over tiles
+    else:  # tax, phylo -- soft targets: sum over this rank's band of tiles, fold across bands
         mass_pos = torch.zeros((), dtype=torch.float64, device=device)
-        for rs in range(0, B, chunk_size):
+        for rs in range(lo, hi, chunk_size):
             mass_pos += targ_block_fn(rs, rs + chunk_size).double().sum()
+        if world_size > 1:
+            dist.all_reduce(mass_pos)
     mass_pos = mass_pos.to(device=device, dtype=torch.float32)
     mass_neg = torch.tensor(float(B) * float(B), dtype=torch.float32, device=device) - mass_pos
     return mass_pos, mass_neg
@@ -432,18 +444,38 @@ class _SimTargStatsAccum:
         self.sim_samp.append(s[::stride])
         self.targ_samp.append(t[::stride])
 
-    def finalize(self):
-        sim_median = torch.cat(self.sim_samp).median()
-        targ_median = torch.cat(self.targ_samp).median()
+    def finalize(self, world_size):
+        sim_samp = torch.cat(self.sim_samp)
+        targ_samp = torch.cat(self.targ_samp)
+        sim_min, sim_max, sim_sum = self.sim_min, self.sim_max, self.sim_sum
+        targ_min, targ_max, targ_sum = self.targ_min, self.targ_max, self.targ_sum
+        count = self.count
+        if world_size > 1:  # fold per-band partials; the bands partition the BxB rows exactly
+            ext = torch.stack([-sim_min, -targ_min, sim_max, targ_max])
+            dist.all_reduce(ext, op=dist.ReduceOp.MAX)
+            sim_min, targ_min, sim_max, targ_max = -ext[0], -ext[1], ext[2], ext[3]
+            sums = torch.stack([sim_sum, targ_sum])
+            dist.all_reduce(sums)
+            sim_sum, targ_sum = sums[0], sums[1]
+            count *= world_size  # equal bands -> equal per-rank counts
+            # median subsamples: equal bands + equal tile sizes -> equal lengths on every rank, so a
+            # plain all_gather reassembles the exact same subsample pool a single full sweep produces
+            samp = torch.stack([sim_samp, targ_samp])
+            parts = [torch.empty_like(samp) for _ in range(world_size)]
+            dist.all_gather(parts, samp)
+            sim_samp = torch.cat([p[0] for p in parts])
+            targ_samp = torch.cat([p[1] for p in parts])
+        sim_median = sim_samp.median()
+        targ_median = targ_samp.median()
         return {
-            "sim_min":     self.sim_min.item(),
-            "sim_max":     self.sim_max.item(),
+            "sim_min":     sim_min.item(),
+            "sim_max":     sim_max.item(),
             "sim_median":  sim_median.item(),
-            "sim_mean":    (self.sim_sum / self.count).item(),
-            "targ_min":    (2.0 * self.targ_min - 1.0).item(),
-            "targ_max":    (2.0 * self.targ_max - 1.0).item(),
+            "sim_mean":    (sim_sum / count).item(),
+            "targ_min":    (2.0 * targ_min - 1.0).item(),
+            "targ_max":    (2.0 * targ_max - 1.0).item(),
             "targ_median": (2.0 * targ_median - 1.0).item(),
-            "targ_mean":   (2.0 * self.targ_sum / self.count - 1.0).item(),
+            "targ_mean":   (2.0 * targ_sum / count - 1.0).item(),
         }
 
 
@@ -477,12 +509,15 @@ def _crit_block_logits_f(crit, secondary, img_rows, txt, compute_logits):
     return sim_block, logits_block.float()
 
 def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs_b, B,
-                            compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx):
+                            compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
+                            lo, hi, world_size):
     """
     Detached global constants for one criterion (see module header). cls_imb_mean (mean of W_ci) and
     dsmr_mass are embedding-free; norm_agg_mean (mean of the aggregated weight) and L_value (the
     criterion's full weighted loss, needed for mix_unit_scale) require a no_grad tile sweep, run only
-    when norm.agg or mix_unit_scale is active. Returns (consts dict for _crit_block_weight_bce, L_value|None).
+    when norm.agg or mix_unit_scale is active. All sweeps cover only this rank's row-band [lo, hi);
+    the partial sums are all-reduced so every rank derives identical constants.
+    Returns (consts dict for _crit_block_weight_bce, L_value|None).
     """
     cfg_w = crit.cfg["wting"]
     targ_type = crit.cfg["targ"]
@@ -490,13 +525,15 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
     cls_imb_mean = None
     if cfg_w["norm"]["cls_imb"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
         s = torch.zeros((), dtype=torch.float64, device=device)
-        for rs in range(0, B, chunk_size):
+        for rs in range(lo, hi, chunk_size):
             W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b[rs:rs + chunk_size],
                                        crit.wting_dim, crit.wt_mean, crit.batch_size, class_encs_cols=class_encs_b)
             s += W_ci.double().sum()
+        if world_size > 1:
+            dist.all_reduce(s)
         cls_imb_mean = (s / (B * B)).float()
 
-    dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size) if cfg_w["dsmr"] else None
+    dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["dsmr"] else None
 
     norm_agg_mean = None
     L_value = None
@@ -505,7 +542,7 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
         sum_W = torch.zeros((), dtype=torch.float64, device=device)
         sum_Wbce = torch.zeros((), dtype=torch.float64, device=device)
         with torch.no_grad():
-            for rs in range(0, B, chunk_size):
+            for rs in range(lo, hi, chunk_size):
                 re = rs + chunk_size
                 with autocast_ctx():
                     _, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits)
@@ -513,6 +550,10 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
                     W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_raw)
                 sum_W += W.double().sum()
                 sum_Wbce += (W * bce).double().sum()
+        if world_size > 1:
+            packed = torch.stack([sum_W, sum_Wbce])
+            dist.all_reduce(packed)
+            sum_W, sum_Wbce = packed[0], packed[1]
         if cfg_w["norm"]["agg"]:
             norm_agg_mean = (sum_W / (B * B)).clamp_min(1e-12).float()
         if need_L:
@@ -522,25 +563,41 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
     return {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass, "norm_agg_mean": norm_agg_mean}, L_value
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, mix_unit_scale,
-                              compute_logits, chunk_size, mixed_prec, device):
+                              compute_logits, chunk_size, mixed_prec, device, rank, world_size):
     """
-    Tiled global-batch BCE loss + backward (GradCache-style representation gradients). Computes the exact
-    same weighted BCE loss and gradients as the full-batch path (BCECriterion.__call__ blended by
-    _global_batch_loss) over the full BxB matrix, but never materializes it: the loss is summed over B/C
-    row-blocks of C x B (B an exact multiple of C = chunk_size), each block's gradient backpropagated into
-    the embedding leaves as computed, so peak VRAM is O(C*B). Exact up to floating-point summation order.
+    Tiled + row-band-sharded global-batch BCE loss + backward (GradCache-style representation gradients).
+    Computes the exact same weighted BCE loss and gradients as the full-batch path (BCECriterion.__call__
+    blended by _global_batch_loss) over the full BxB matrix, but never materializes it and shares the work
+    across ranks: the BxB rows split into world_size equal bands (SigLIP-style decomposition), this rank
+    sums only its band [rank*b, (rank+1)*b) over row-blocks of C x B (b an exact multiple of C =
+    chunk_size), and each block's gradient is backpropagated into the embedding leaves as computed, so
+    peak VRAM is O(C*B) and per-rank compute is O(B^2/world_size). The loss/raw totals and batch stats
+    are all-reduced, so every rank returns identical full-batch values; the leaves' .grad hold this
+    band's PARTIAL dL/dembs, which sum to the full gradient across ranks (the caller completes them --
+    see batch_step_chunked). Exact up to floating-point summation order.
 
     Supports a BCE+BCE loss mix: loss = (1 - mix)*s1*L1 + mix*s2*L2, where Lk is criterion k's weighted
     loss and sk = 1/Lk.detach() if mix_unit_scale else 1 (mix == 0 -> just crit1). All cross-tile-coupled
     normalizers are precomputed detached constants (_precompute_crit_consts), so the backward is single-pass.
 
-    - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive dL/dembs in their .grad.
+    - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive band-partial dL/dembs
+                         in their .grad.
     - crit1, crit2 ----- primary / secondary BCECriterion (crit2 None when mix == 0).
     - compute_logits --- VLMWrapper.compute_logits(sim, clamp, secondary) -> logits tile.
+    - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
 
     Returns (loss, loss_raw, batch_stats), all detached; gradients left in the leaves' / params' .grad.
     """
     B = img.size(0)
+    b = B // world_size
+    # checking that the BxB rows split into world_size equal bands of whole chunk_size-row blocks:
+    # ragged bands would silently double-count rows across ranks (wrong gradients, no error)
+    if b * world_size != B or b % chunk_size != 0:
+        raise ValueError(
+            f"global batch ({B}) must split into world_size ({world_size}) equal row-bands, each an exact "
+            f"multiple of hardware.loss_chunk_size ({chunk_size}); got band size {b}"
+        )
+    lo, hi = rank * b, (rank + 1) * b
     crits = [(crit1, False)] + ([(crit2, True)] if mix != 0.0 else [])
 
     def autocast_ctx():
@@ -551,7 +608,8 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     for crit, secondary in crits:
         targ_fn = make_targ_block_fn(crit.cfg["targ"], class_encs_b, targ_data_b, B, device)
         consts, L_val = _precompute_crit_consts(crit, secondary, img, txt, targ_fn, class_encs_b, B,
-                                                compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx)
+                                                compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
+                                                lo, hi, world_size)
         targ_fns.append(targ_fn); consts_list.append(consts); L_values.append(L_val)
 
     mix_w = [1.0] if mix == 0.0 else [1.0 - mix, mix]
@@ -564,8 +622,8 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     raw_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
     stats = _SimTargStatsAccum(device)
 
-    for rs in range(0, B, chunk_size):
-        re = rs + chunk_size  # B is an exact multiple of chunk_size (enforced in TrainConfig)
+    for rs in range(lo, hi, chunk_size):
+        re = rs + chunk_size  # the band is an exact multiple of chunk_size (checked above)
         targ_blocks = []
         with autocast_ctx():
             block_loss = 0.0
@@ -585,9 +643,15 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
         targ_stat = targ_blocks[0] if mix == 0.0 else (1.0 - mix) * targ_blocks[0] + mix * targ_blocks[1]
         stats.update(sim1_block, targ_stat)
 
+    if world_size > 1:  # fold the band-partial loss totals; the leaves' .grad stay band-partial
+        packed = torch.stack(wbce_tot + raw_tot)
+        dist.all_reduce(packed)
+        wbce_tot = [packed[k] for k in range(len(crits))]
+        raw_tot = [packed[len(crits) + k] for k in range(len(crits))]
+
     loss = torch.zeros((), dtype=torch.float64, device=device)
     loss_raw = torch.zeros((), dtype=torch.float64, device=device)
     for k in range(len(crits)):
         loss += coeffs[k] * (wbce_tot[k] / B)
         loss_raw += mix_w[k] * (raw_tot[k] / B)
-    return loss.float(), loss_raw.float(), stats.finalize()
+    return loss.float(), loss_raw.float(), stats.finalize(world_size)

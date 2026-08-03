@@ -385,9 +385,24 @@ def test_train_config_rejects_batch_size_indivisible_by_loss_chunk(monkeypatch: 
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(batch_size=24)
-    cfg_dict["hw"]["loss_chunk_size"] = 16  # 24 % 16 != 0; ragged final block unsupported
+    cfg_dict["hw"]["loss_chunk_size"] = 16  # 24 % (1 * 16) != 0; ragged band unsupported
 
-    with pytest.raises(ValueError, match="must be evenly divisible by hardware.loss_chunk_size"):
+    with pytest.raises(ValueError, match="must be an exact multiple of world_size"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_batch_size_indivisible_by_world_size_x_loss_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # divisible by the chunk alone but not by world_size x chunk: the BxB rows must split into
+    # world_size equal bands of whole chunks (world_size = the alloc's GPU count, one rank per GPU)
+    monkeypatch.setattr(
+        "utils.config.compute_dataloader_workers_prefetch",
+        lambda *args, **kwargs: (2, 2, {"n_gpus": 2, "n_cpus": 4, "ram": 32}),
+    )
+
+    cfg_dict = make_train_config_dummy(batch_size=16)
+    cfg_dict["hw"]["loss_chunk_size"] = 16  # 16 % (2 * 16) != 0
+
+    with pytest.raises(ValueError, match="must be an exact multiple of world_size"):
         TrainConfig(**cfg_dict)
 
 

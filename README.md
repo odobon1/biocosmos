@@ -59,7 +59,7 @@ The repo includes a `pytest` suite under `tests/` for fast unit tests and lightw
 # Train & Eval
 Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train.yaml` and the standalone eval config at `config/eval.yaml`.
 
-Note: The full similarity matrix is computed for all model types, including SigLIP (i.e. the chunked implementation described in the seminal SigLIP work is not currently utilized).
+Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is computed for all model types, including SigLIP. Setting an integer `loss_chunk_size` enables a SigLIP-style implementation of the global-batch BCE loss: the BxB rows are sharded across ranks (each rank computes only its B/world_size band, as in the chunked loss decomposition from the SigLIP paper) and swept in C-row tiles, with negatives taken from gathered embeddings rather than the paper's ring permute. See `config/hardware.yaml` for details.
 
 ## Train
 1. Edit `config/train.yaml`:
@@ -283,5 +283,5 @@ T: Num. tokens i.e. context length <br>
 P: Num. text sequences <br>
 Q: Num queries (retrieval) <br>
 N: Gallery size (retrieval) <br>
-G: Num. GPUs (DDP) <br>
+G: Num. GPUs (DDP) i.e. world size <br>
 U: Chunk size <br>

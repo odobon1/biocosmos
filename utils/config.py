@@ -197,14 +197,6 @@ class TrainConfig:
             self.aug.pop("gblur", None)
 
         self.hw = HardwareConfig(**self.hw)
-        if self.hw.loss_chunk_size is not None:
-            if self.batch_size % self.hw.loss_chunk_size != 0:
-                raise ValueError(
-                    f"batch_size ({self.batch_size}) must be evenly divisible by hardware.loss_chunk_size "
-                    f"({self.hw.loss_chunk_size}); the tiled loss does not support a ragged final row-block"
-                )
-            from utils.loss import validate_chunking_supported  # local: avoid importing Bio.Phylo at config load
-            validate_chunking_supported(self.loss, self.loss2)  # tiled loss supports the full BCE config; only InfoNCE is rejected
         self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
             max_n_workers_gpu=self.hw.max_n_workers_gpu,
@@ -213,6 +205,17 @@ class TrainConfig:
         self.n_gpus = slurm_alloc["n_gpus"]
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
+
+        if self.hw.loss_chunk_size is not None:
+            from utils.loss import validate_chunking_supported  # local: avoid importing Bio.Phylo at config load
+            validate_chunking_supported(self.loss, self.loss2)  # tiled loss supports the full BCE config; only InfoNCE is rejected
+            world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
+            if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
+                raise ValueError(
+                    f"batch_size ({self.batch_size}) must be an exact multiple of world_size ({world_size}) "
+                    f"x hardware.loss_chunk_size ({self.hw.loss_chunk_size}): the chunked loss shards the BxB rows "
+                    f"into equal per-rank bands of whole C-row blocks"
+                )
 
         self.device = torch.device("cuda")
 
@@ -330,7 +333,7 @@ class HardwareConfig:
 
     mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
-    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss; None -> full BxB (no tiling). See config/hardware.yaml.
+    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss, row-band-sharded across ranks; None -> full BxB (no tiling/sharding). See config/hardware.yaml.
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None

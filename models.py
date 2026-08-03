@@ -450,6 +450,13 @@ class VLMWrapper(abc.ABC):
         embs_img_b, embs_txt_b, class_encs_b, targ_data_b = self._gather_batch(
             embs_img_sb, embs_txt_sb, class_encs_sb, targ_data_sb
         )
+        # the gathered embeddings are what batch_step returns to the grad-norm logger; retain so
+        # .grad carries the full-batch dL/dembs after backward (same quantity the chunked path
+        # all-reduces into its returned leaves)
+        if embs_img_b.requires_grad:
+            embs_img_b.retain_grad()
+        if embs_txt_b.requires_grad:
+            embs_txt_b.retain_grad()
 
         if not loss_flag:
             return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b, None
@@ -597,11 +604,6 @@ class VLMWrapper(abc.ABC):
         embs_img_sb = F.normalize(output[0], dim=1)
         embs_txt_sb = F.normalize(output[1], dim=1)
 
-        if embs_img_sb.requires_grad:
-            embs_img_sb.retain_grad()  # for batch-level logging of image embeddings gradient norm
-        if embs_txt_sb.requires_grad:
-            embs_txt_sb.retain_grad()  # for batch-level logging of text embeddings gradient norm
-
         loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b, batch_stats = self._global_batch_loss(
             embs_img_sb,
             embs_txt_sb,
@@ -619,17 +621,23 @@ class VLMWrapper(abc.ABC):
         encoder forward, the tiled loss, AND the full backward internally, so the caller must NOT call
         loss.backward() afterwards.
 
-        The BxB loss is never materialized: after gathering the global-batch embeddings, they are
-        detached into leaves and the loss is summed over C x B row-blocks, each backpropagated into
-        those leaves as it is computed (chunked_bce_loss_backward). A single representation-gradient backward
-        then pushes dL/dembs into the encoder. DDP grad sync is suppressed during these multiple
-        backwards and replaced with one manual all-reduce of every parameter's grad -- which reproduces
-        DDP's averaging exactly, since every rank computes the identical global-batch loss (the
-        world_size factor from _AllGather.backward cancels the manual /world_size).
+        The BxB loss is never materialized, and no rank computes more than its share of it: after
+        gathering the global-batch embeddings, they are detached into leaves and the BxB rows are
+        sharded across ranks into equal row-bands (SigLIP-style decomposition of the pairwise-
+        independent BCE loss; per-rank loss compute is O(B^2/world_size)). Each rank sums its band
+        over C x B row-blocks, backpropagating each block into those leaves as it is computed
+        (chunked_bce_loss_backward, which all-reduces the loss/stats so every rank returns full-batch
+        values). A single representation-gradient backward then pushes the band-partial dL/dembs into
+        the encoder. DDP grad sync is suppressed during these multiple backwards and replaced with one
+        manual all-reduce of every parameter's grad, which completes the exact full-batch gradient:
+        each rank's param grads -- encoder params via the _AllGather-routed band partials, post-gather
+        logit scale/bias params via their direct band partials -- are disjoint-band contributions that
+        SUM to the full-batch value, so there is no /world_size (unlike DDP's replicated-loss averaging).
 
         Returns batch_step's tuple shape, with loss/loss_raw detached, logits = (None, None) (no full
         logit matrix is formed, so its grad-norm diagnostic is unavailable), and the embedding leaves
-        (carrying dL/dembs in .grad) in place of embs_img_b / embs_txt_b for grad-norm logging.
+        (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
+        embs_img_b / embs_txt_b for grad-norm logging.
         """
         chunk = self.cfg.hw.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
@@ -652,13 +660,17 @@ class VLMWrapper(abc.ABC):
             img = embs_img_b.detach().requires_grad_(True)
             txt = embs_txt_b.detach().requires_grad_(True)
 
+            rank = dist.get_rank() if self.world_size > 1 else 0
             loss, loss_raw, batch_stats = chunked_bce_loss_backward(
                 img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss2["mix"],
-                self.cfg.loss2["mix_unit_scale"], self.compute_logits, chunk, mixed_prec, device
+                self.cfg.loss2["mix_unit_scale"], self.compute_logits, chunk, mixed_prec, device,
+                rank, self.world_size
             )
 
-            # representation gradient: push accumulated dL/dembs into the encoder (one backward, only
-            # for sides whose encoder is trainable -- a frozen tower's embeddings do not require grad)
+            # representation gradient: push the accumulated band-partial dL/dembs into the encoder (one
+            # backward, only for sides whose encoder is trainable -- a frozen tower's embeddings do not
+            # require grad); _AllGather.backward sums the partials, so each rank's encoder grads land as
+            # exact disjoint-band contributions
             reps, grads = [], []
             for emb, leaf in ((embs_img_b, img), (embs_txt_b, txt)):
                 if emb.requires_grad:
@@ -668,10 +680,14 @@ class VLMWrapper(abc.ABC):
                 torch.autograd.backward(reps, grads)
 
         if self.world_size > 1:
+            # disjoint-band partials sum to the full-batch gradient -- plain sum, no /world_size
             for p in self.model.parameters():
                 if p.grad is not None:
                     dist.all_reduce(p.grad)
-                    p.grad /= self.world_size
+            # the representation backward has consumed the leaves' band-partial grads; fold them so the
+            # returned leaves carry full-batch dL/dembs for grad-norm logging
+            dist.all_reduce(img.grad)
+            dist.all_reduce(txt.grad)
 
         return loss, loss_raw, img, txt, (None, None), class_encs_b, batch_stats
 

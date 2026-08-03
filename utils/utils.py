@@ -422,7 +422,11 @@ class PrintLog:
 
         logits1 = logits[0]
         logits2 = logits[1]
-        if logits2 is None:
+        if logits1 is None:
+            # chunked path (loss_chunk_size != null): no full logit matrix exists, so the
+            # diagnostic is structurally unavailable -- omit the field rather than log nan
+            line_logits = ""
+        elif logits2 is None:
             line_logits = f"logit={tensor_grad_l2_norm(logits1):.2e} "
         else:
             line_logits = f"logit1={tensor_grad_l2_norm(logits1):.2e} "

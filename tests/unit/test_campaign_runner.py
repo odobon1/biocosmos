@@ -8,6 +8,15 @@ import campaign_runner as cr
 from utils.utils import PrintLog
 
 
+@pytest.fixture(autouse=True)
+def _stub_kickoff_config_validation(monkeypatch):
+    """run_campaign constructs every setting's effective TrainConfig at kickoff (fail-fast validation);
+    the minimal baselines these tests inject can't build the real one (and there's no SLURM alloc in the
+    test env), so stub the constructor. The kickoff loop itself still runs --
+    test_run_campaign_invalid_setting_config_fails_at_kickoff re-patches it to raise."""
+    monkeypatch.setattr(cr, "get_config_train", lambda cfg_dict: None)
+
+
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     """Mimic a real successful trial subprocess: leave chkpts/in_progress + incomplete metadata behind so
     run_campaign's success path (rmtree in_progress + flip complete=True) has something to act on."""
@@ -523,6 +532,28 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         assert json.load(f)["n_crashes"] == {"ram": 1, "vram": 1, "other": 1}
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": 1}
+
+
+def test_run_campaign_invalid_setting_config_fails_at_kickoff(tmp_path, monkeypatch) -> None:
+    # a setting whose effective TrainConfig fails validation kills the campaign at kickoff, with the
+    # failing setting named -- no trial is ever launched
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
+
+    def _fake_get_config_train(cfg_dict):
+        if cfg_dict["setting"] == "bad":
+            raise ValueError("batch_size (1024) must be an exact multiple of world_size (2) x hardware.loss_chunk_size (1024)")
+
+    monkeypatch.setattr(cr, "get_config_train", _fake_get_config_train)
+
+    with pytest.raises(ValueError, match="invalid config for setting 'bad' on dataset 'cub'"):
+        cr.run_campaign(
+            campaign="cmp_badcfg",
+            n_trials=1,
+            datasets=("cub",),
+            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}, {"loss.targ": "sw", "name": "bad"}]],
+            baseline=False,
+        )
+    assert scheduled == []
 
 
 def test_classify_crash_buckets() -> None:

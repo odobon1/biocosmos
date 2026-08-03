@@ -2,14 +2,11 @@ mixed_prec: true  # {true, false}; mixed precision
 
 act_chkpt: true  # {true, false}; activation checkpointing
 
-loss_chunk_size: null  # {null, power-of-2 int}; row-block height C for the global-batch (BxB) contrastive loss.
-                       # null -> materialize the full BxB matrices (current behavior). An int C computes the loss
-                       # in B/C row-blocks of C x B (e.g. B=32_768, C=8_192 -> 4 blocks of 8k x 32k), tiling
-                       # both the loss and its gradient so peak VRAM is O(C*B) instead of O(B^2) -- exact-equivalent
-                       # (GradCache-style representation gradients), just more compute. batch_size must be an exact
-                       # multiple of C (no ragged final block; config errors otherwise). Supports the full BCE
-                       # config (all targets, norm.cls_imb/agg, BCE+BCE loss2 mix, mix_unit_scale); only InfoNCE
-                       # is unsupported -- config errors if loss.type or a mixed loss2.type is infonce1/infonce2.
+# row-block height U for the global-batch (BxB) contrastive loss. null -> materialize the
+# full BxB matrices. An int U shards the rows across ranks and sweeps each rank's band in
+# U x B blocks -- exact-equivalent, peak VRAM O(U*B). batch_size must be a multiple of
+# G x U. BCE-only; InfoNCE errors at config time.
+loss_chunk_size: null  # {null, [power-of-2 int]}
 
 cudnn_benchmark: false  # {true, false}; cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
                         # batches, trades away algo-choice reproducibility (PyTorch default is false)

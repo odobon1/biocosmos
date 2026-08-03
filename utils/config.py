@@ -199,6 +199,8 @@ class TrainConfig:
         self.hw = HardwareConfig(**self.hw)
         self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
+            batch_size=self.batch_size,
+            model_type=self.arch["model_type"],
             max_n_workers_gpu=self.hw.max_n_workers_gpu,
             prefetch_factor=self.hw.prefetch_factor,
         )
@@ -390,16 +392,6 @@ class EvalConfig:
         if self.rdpath_model is None and self.img_norm == "dataset":
             raise ValueError("img_norm='dataset' requires a model checkpoint (rdpath_model) to infer which partition's norm stats were used during training")
 
-        cfg_hw = get_config_hardware()
-        self.use_img_cache = cfg_hw.use_img_cache
-        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
-            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
-            prefetch_factor=cfg_hw.prefetch_factor,
-        )
-        self.n_gpus = slurm_alloc["n_gpus"]
-        self.n_cpus = slurm_alloc["n_cpus"]
-        self.ram = slurm_alloc["ram"]
-
         # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
         # exposes no non_causal/vis_proj knobs; checkpoint eval overrides from the setting's config.json below
         self.arch["clip"] = {"non_causal": False}
@@ -422,6 +414,19 @@ class EvalConfig:
             self.img_norm = config_setting["img_norm"]  # override img_norm
             self.dataset = metadata_trial["dataset"]  # override dataset
             self.split = metadata_trial["split"]  # override split
+
+        # after the arch override: the worker RAM bound keys off the checkpoint's actual model_type
+        cfg_hw = get_config_hardware()
+        self.use_img_cache = cfg_hw.use_img_cache
+        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
+            batch_size=self.batch_size,
+            model_type=self.arch["model_type"],
+            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
+            prefetch_factor=cfg_hw.prefetch_factor,
+        )
+        self.n_gpus = slurm_alloc["n_gpus"]
+        self.n_cpus = slurm_alloc["n_cpus"]
+        self.ram = slurm_alloc["ram"]
 
         self.device = torch.device("cuda")
 

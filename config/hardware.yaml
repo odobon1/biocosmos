@@ -8,20 +8,26 @@ act_chkpt: true  # {true, false}; activation checkpointing
 # G x U. BCE-only; InfoNCE errors at config time.
 loss_chunk_size: null  # {null, [power-of-2 int]}
 
-cudnn_benchmark: false  # {true, false}; cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
-                        # batches, trades away algo-choice reproducibility (PyTorch default is false)
+# cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
+# batches, trades away algo-choice reproducibility (PyTorch default is false)
+cudnn_benchmark: false  # {true, false}
 
-prefetch_factor: 4  # dataloader prefetch factor
-max_n_workers_gpu: null  # hard ceiling on workers/GPU; null -> auto = (n_cpus // n_gpus) - 2, scales with the live alloc
+prefetch_factor: 2  # dataloader prefetch factor
+# hard ceiling on workers/GPU; null -> auto = min(CPU bound: (n_cpus // n_gpus) - 2,
+# RAM bound: workers whose ~(2 + prefetch_factor) uint8 sub-batches each -- x2 for the
+# train+eval loader overlap at train-time evals -- plus the main processes' 3, fit the
+# alloc's RAM less headroom), scales with the live alloc + batch_size + model resolution
+max_n_workers_gpu: null  # {null, [int]}
 pin_memory: false  # {true, false}; dataloader pins host RAM for faster host --> GPU copies, higher RAM cost
 
 persistent_workers:
   train: true  # {true, false}; keep train dataloader workers alive across train epochs
   eval: false  # {true, false}; keep eval dataloader workers alive across validation epochs
 
-use_img_cache: true  # {true, false}; read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
-                     # staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces
-                     # per-sample reads from the shared FS. Errors at startup if the pack hasn't been built.
+# read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
+# staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces
+# per-sample reads from the shared FS. Errors at startup if the pack hasn't been built.
+use_img_cache: true  # {true, false}
 
 eval:
   map_chunk_size:
@@ -31,12 +37,15 @@ eval:
   # doesn't change the projection: bigger X = faster if you have VRAM, smaller X if it OOMs.
   tsne_chunk_log2: 30
 
-ram_poll_interval: 1.0  # seconds between cgroup RAM polls by the peak-RAM tracker (trial processes); the running
-                        # max of these readings is what trial/campaign metadata report as peak RAM
+# seconds between cgroup RAM polls by the peak-RAM tracker (trial processes); the running
+# max of these readings is what trial/campaign metadata report as peak RAM
+ram_poll_interval: 1.0  # {[float]}; seconds
 
-pg_timeout: 600  # NCCL collective watchdog timeout, in seconds. A hang aborts (and dumps its flight-recorder
-                 # trace) after this; the campaign runner then resumes the trial from its last checkpoint. Keep
-                 # it above the longest legit gap between collectives -- the per-partition eval embedding pass
-                 # -- or large-dataset evals false-timeout. (PyTorch default is 600s)
-max_retries: 2  # max *consecutive* trial retries that make no forward progress before giving up; retries that
-                # advance the checkpoint reset this, so genuine flakes at different points recover unbounded.
+# NCCL collective watchdog timeout, in seconds. A hang aborts (and dumps its flight-recorder
+# trace) after this; the campaign runner then resumes the trial from its last checkpoint. Keep
+# it above the longest legit gap between collectives -- the per-partition eval embedding pass
+# -- or large-dataset evals false-timeout. (PyTorch default is 600s)
+pg_timeout: 600  # {[int]}; seconds
+# max *consecutive* trial retries that make no forward progress before giving up; retries that
+# advance the checkpoint reset this, so genuine flakes at different points recover unbounded.
+max_retries: 1  # {[int]}

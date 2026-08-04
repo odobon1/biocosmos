@@ -234,6 +234,8 @@ class ArtifactManager:
     def save_metadata_setting(cfg_train):
         
         def clean_metadata(metadata):
+            """Params rendered inert by other config params are pruned, so absence in config.json
+            is the inert signal (the stats overrides table renders absent params as '-')."""
 
             del metadata["campaign"]
             del metadata["setting"]
@@ -244,22 +246,84 @@ class ArtifactManager:
 
             del metadata["dev"]
 
+            # family-specific sections: models.py reads arch.siglip / dropout.siglip only when
+            # is_siglip, and arch.clip.non_causal drives disable_causal_mask_text (CLIPWrapper-only)
+            is_siglip = "siglip" in metadata["arch"]["model_type"].lower()
+            if is_siglip:
+                del metadata["arch"]["clip"]
+                if metadata["arch"]["siglip"]["vis_proj_head"] is None:
+                    del metadata["dropout"]["siglip"]["proj_head"]  # head dropout needs a projection head
+            else:
+                del metadata["arch"]["siglip"]
+                del metadata["dropout"]["siglip"]
+
             if metadata["loss2"]["mix"] == 0.0:
                 del metadata["loss2"]
 
-            # drop inert wting.norm params (per the train.yaml inertness notes): the unit-scale
-            # blend (loss / loss.detach()) cancels any per-batch scalar factor on a loss, making
-            # norm.agg inert; norm.cls_imb's rescale is such a scalar under multiplicative aggs,
-            # cancelled by norm.agg or unit-scaling. loss2 is already gone when mix = 0.0, under
-            # which mix_unit_scale never applies
+            # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
+            # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's logit params
+            # are always fresh learnable Parameters, so loss2.logits is never pruned.
+            if not is_siglip and metadata["loss"]["logits"]["bias"]["init"] is None:
+                del metadata["loss"]["logits"]["bias"]
+
+            # per-loss weighting: drop params the loss type never reads (InfoNCE1/2 hardcode
+            # W_foc * W_ci -- the bce sub-block is BCE-only; freq_type_2d and focal.comp_type only
+            # enter the 2D paths, absent from InfoNCE1's 1D weighting), params their own toggle
+            # disables (cls_imb.type null, focal.gamma 0.0), and the scalar cancellations noted
+            # in train.yaml: the unit-scale blend (loss / loss.detach()) cancels any per-batch
+            # scalar factor on a loss, making norm.agg inert; norm.cls_imb's rescale is such a
+            # scalar under multiplicative aggs (cancelled by norm.agg or unit-scaling) and a
+            # no-op when cls_imb is off; InfoNCE's num / den self-normalization likewise cancels
+            # the wt_mean scalar, making wt_mean_type inert outside BCE. loss2 is already gone
+            # when mix = 0.0, under which mix_unit_scale never applies.
             unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
             for key in ("loss", "loss2"):
-                if key in metadata:
-                    wting = metadata[key]["wting"]
-                    if wting["agg"] in ("prod", "geo_mean") and (wting["norm"]["agg"] or unit_scaled):
-                        del wting["norm"]["cls_imb"]
+                if key not in metadata:
+                    continue
+                wting = metadata[key]["wting"]
+                is_bce = metadata[key]["crit"] == "bce"
+                is_1d = metadata[key]["crit"] == "infonce1"  # wting_dim 1; infonce2/bce weight 2D
+
+                cls_imb_on = wting["cls_imb"]["type"] is not None
+                focal_on = wting["focal"]["gamma"] > 0.0
+                dsmr_on = is_bce and wting["bce"]["dsmr"]
+                if not (cls_imb_on or focal_on or dsmr_on):
+                    del metadata[key]["wting"]  # no active weight factor -> W == ones -> whole block inert
+                    continue
+
+                cls_imb = wting["cls_imb"]
+                if not cls_imb_on:
+                    del wting["cls_imb"]
+                else:
+                    if cls_imb["type"] == "inv_freq":
+                        del cls_imb["class_bal"]
+                    elif cls_imb["type"] == "class_bal":
+                        del cls_imb["inv_freq"]
+                    if is_1d:
+                        del cls_imb["freq_type_2d"]
+                    if not is_bce:
+                        del cls_imb["wt_mean_type"]
+
+                if not focal_on:
+                    del wting["focal"]
+                else:
+                    targ = metadata[key]["targ"]
+                    # comp_type is unread on the 1D path; with config-guaranteed binary targets (bce: iw/sw raw
+                    # 0/1; infonce2: iw row-normalizes to an eye) the two comp forms coincide in values and gradients
+                    binary_targs = (is_bce and targ in ("iw", "sw")) or (not is_bce and not is_1d and targ == "iw")
+                    if is_1d or binary_targs:
+                        del wting["focal"]["comp_type"]
+
+                if not is_bce:
+                    del wting["bce"]
+                else:
+                    bce_w = wting["bce"]
+                    if not cls_imb_on or (bce_w["agg"] in ("prod", "geo_mean") and (bce_w["norm"]["agg"] or unit_scaled)):
+                        del bce_w["norm"]["cls_imb"]
                     if unit_scaled:
-                        del wting["norm"]["agg"]
+                        del bce_w["norm"]["agg"]
+                    if not bce_w["norm"]:
+                        del bce_w["norm"]
 
         metadata = asdict(cfg_train)
         clean_metadata(metadata)
@@ -357,13 +421,13 @@ class ArtifactManager:
         """Combo key for one base-eval reading: the config settings that determine the base model's
         eval output. Numerics-level knobs (hw mixed_prec, t-SNE perplexity) are
         deliberately not keyed. Family-inert components are normalized to None so equivalent configs
-        share one entry: non_causal is CLIP-only, vis_proj is SigLIP-only, and seed only enters
-        through the random init of a linear/mlp vis_proj head."""
+        share one entry: non_causal is CLIP-only, vis_proj_head is SigLIP-only, and seed only enters
+        through the random init of a linear/mlp vis_proj_head."""
         from models import CLIP_MODELS, SIGLIP_MODELS  # local: models pulls open_clip/transformers, too heavy for module import
         model_type = cfg_train.arch["model_type"]
         non_causal = cfg_train.arch["clip"]["non_causal"] if model_type in CLIP_MODELS else None
-        vis_proj = cfg_train.arch["siglip"]["vis_proj"] if model_type in SIGLIP_MODELS else None
-        seed = cfg_train.seed if vis_proj is not None else None
+        vis_proj_head = cfg_train.arch["siglip"]["vis_proj_head"] if model_type in SIGLIP_MODELS else None
+        seed = cfg_train.seed if vis_proj_head is not None else None
         return (
             model_type,
             cfg_train.img_norm,
@@ -371,7 +435,7 @@ class ArtifactManager:
             cfg_train.split,
             non_causal,
             cfg_train.text_template["eval"],
-            vis_proj,
+            vis_proj_head,
             seed,
         )
 

@@ -44,14 +44,13 @@ import torch.multiprocessing as mp
 
 def cfg_loss(targ="sw", norm_agg=False):
     return {
-        "type": "bce", "sim": "cos", "targ": targ,
+        "crit": "bce", "sim": "cos", "targ": targ,
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
                         "class_bal": {"beta": 0.9999}, "freq_type_2d": "naive",
                         "wt_mean_type": "per_class"},
             "focal": {"gamma": 2.0, "comp_type": 1},
-            "dsmr": True, "agg": "prod",
-            "norm": {"cls_imb": False, "agg": norm_agg},
+            "bce": {"dsmr": True, "agg": "prod", "norm": {"cls_imb": False, "agg": norm_agg}},
         },
         "logits": {"scale": {"clamp": False}, "bias": {}},
     }

@@ -1,24 +1,24 @@
-n_stoch_layers: 7  # sample draw-order shuffles per eval frame (>= 1). =1 -> static PNG; >1 -> strobe GIF
-eval_duration: 1500  # ms each eval is shown in any GIF; per-frame ms = eval_duration / n_stoch_layers
-# n_stoch_layers: 28
-# eval_duration: 6000
-bg_color: "#F5F5DC"  # background color in hex format; null -> white; #F2E8CF (soft warm beige); #F5F5DC (CSS beige); #EAE0C8 (more tan)
-
 tsne:
   perplexity: 30
   n_iter: 1000
-  ema_tau: 0.5  # (0.0, 1.0]; t-SNE orientation smoothing: each eval is aligned (orthogonal Procrustes, rotation + reflection) to a running reference of per-class CoMs, into which this fraction of the eval's oriented CoMs is then mixed (1.0 = align to the previous eval only; smaller damps drift across evals)
+  ema_tau: 0.5  # (0.0, 1.0]; t-SNE orientation smoothing: each eval is aligned (orthogonal Procrustes, rotation + 
+  # reflection) to a running reference of per-class CoMs, into which this fraction of the eval's oriented CoMs is then 
+  # mixed (=1.0 --> align to the previous eval only, >1.0 --> damps drift across evals)
+
+n_stoch_layers: 7  # Sample draw-order shuffles per eval frame (>= 1). =1 -> static PNG; >1 -> strobe GIF
+eval_duration: 1500  # ms each eval is shown in any GIF; per-frame ms = eval_duration / n_stoch_layers
+# n_stoch_layers: 28
+# eval_duration: 6000
+bg_color: "#F5F5DC"  # Background color in hex format; (null) White background
 
 color:
-  seed: 42  # rotates the whole palette (phase offset); changes the colors, keeps the count-ordering
+  seed: 42  # Rotates the whole palette (phase offset); Changes the colors, keeps the count-ordering;
   # Colors are assigned to classes in order of sample count (golden-ratio hue + low-discrepancy
   # vibrancy), so similar-count classes get maximally different colors and near-identical colors
-  # only land on classes with very different counts. Each band fixes a "vibrancy" via saturation
+  # only land on classes with very different counts; Each band fixes a "vibrancy" via saturation
   # (0-1, color intensity) and lightness (0-1, darkness->brightness); `weight` is each band's
-  # relative share of classes (need not sum to 1). Add/remove/retune bands freely; more bands =
-  # more variety. Tip: high saturation + high lightness = neon; high saturation + mid lightness =
-  # bright; low saturation + high lightness = pastel; high saturation + low lightness = deep;
-  # low saturation + mid lightness = muted.
+  # relative share of classes (need not sum to 1); Add/remove/retune bands freely, more bands =
+  # more variety
   bands:
     - {weight: 2.0, saturation: 1.00, lightness: 0.50}
     - {weight: 0.7, saturation: 1.00, lightness: 0.30}

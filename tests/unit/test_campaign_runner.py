@@ -39,7 +39,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -126,7 +126,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -178,7 +178,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -244,7 +244,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -291,7 +291,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -337,7 +337,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -382,7 +382,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": True, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -426,7 +426,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": True}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -475,7 +475,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -581,7 +581,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -871,7 +871,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -924,7 +924,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
@@ -1167,7 +1167,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -1244,7 +1244,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "type": "bce", "sim": "cos"},
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
         "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {

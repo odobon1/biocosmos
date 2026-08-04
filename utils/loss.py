@@ -86,7 +86,7 @@ class Criterion(abc.ABC):
             "infonce1": InfoNCE1Criterion,
             "infonce2": InfoNCE2Criterion,
             "bce":      BCECriterion,
-        }[cfg_loss["type"]]
+        }[cfg_loss["crit"]]
 
         return crit_cls(cfg_loss, dataset, split, train_pt, device, batch_size)
 
@@ -227,7 +227,7 @@ class BCECriterion(Criterion):
         if train:
 
             W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
-            if self.cfg["wting"]["norm"]["cls_imb"]:
+            if self.cfg["wting"]["bce"]["norm"]["cls_imb"]:
                 W_ci = W_ci / W_ci.detach().mean()
             
             if self.cfg["wting"]["focal"]["gamma"] > 0.0:
@@ -236,16 +236,16 @@ class BCECriterion(Criterion):
             else:
                 W_foc = torch.ones_like(targs)
 
-            if self.cfg["wting"]["dsmr"]:
+            if self.cfg["wting"]["bce"]["dsmr"]:
                 mass_pos = torch.sum(targs)
                 mass_neg = torch.sum(1.0 - targs)
                 W_dsmr = _dsmr_weight(targs, mass_pos, mass_neg, B)
             else:
                 W_dsmr = None
 
-            W = _aggregate_weights(self.cfg["wting"]["agg"], W_ci, W_foc, W_dsmr)
+            W = _aggregate_weights(self.cfg["wting"]["bce"]["agg"], W_ci, W_foc, W_dsmr)
 
-            if self.cfg["wting"]["norm"]["agg"]:
+            if self.cfg["wting"]["bce"]["norm"]["agg"]:
                 W = W / W.detach().mean().clamp_min(1e-12)
 
         else:
@@ -353,10 +353,10 @@ def validate_chunking_supported(cfg_loss, cfg_loss2):
     columns, which a row-block cannot tile). Fail loud rather than silently miscomputing the loss.
     """
     reasons = []
-    if cfg_loss["type"] != "bce":
-        reasons.append(f"loss.type={cfg_loss['type']!r} (only 'bce'; InfoNCE not tileable)")
-    if cfg_loss2["mix"] != 0.0 and cfg_loss2["type"] != "bce":
-        reasons.append(f"loss2.type={cfg_loss2['type']!r} with loss2.mix={cfg_loss2['mix']} (secondary loss must be 'bce')")
+    if cfg_loss["crit"] != "bce":
+        reasons.append(f"loss.crit={cfg_loss['crit']!r} (only 'bce'; InfoNCE not tileable)")
+    if cfg_loss2["mix"] != 0.0 and cfg_loss2["crit"] != "bce":
+        reasons.append(f"loss2.crit={cfg_loss2['crit']!r} with loss2.mix={cfg_loss2['mix']} (secondary loss must be 'bce')")
     if reasons:
         raise NotImplementedError(
             "hardware.loss_chunk_size is set but the loss config is outside the chunking-supported subset: "
@@ -495,8 +495,8 @@ def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_co
         W_foc = _focal_2d(torch.sigmoid(logits_f), targs, cfg_w["focal"], clamp_base=True)
     else:
         W_foc = torch.ones_like(targs)
-    W_dsmr = _dsmr_weight(targs, *consts["dsmr_mass"], B) if cfg_w["dsmr"] else None
-    W = _aggregate_weights(cfg_w["agg"], W_ci, W_foc, W_dsmr)
+    W_dsmr = _dsmr_weight(targs, *consts["dsmr_mass"], B) if cfg_w["bce"]["dsmr"] else None
+    W = _aggregate_weights(cfg_w["bce"]["agg"], W_ci, W_foc, W_dsmr)
     if consts["norm_agg_mean"] is not None:
         W = W / consts["norm_agg_mean"]
     bce = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")
@@ -523,7 +523,7 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
     targ_type = crit.cfg["targ"]
 
     cls_imb_mean = None
-    if cfg_w["norm"]["cls_imb"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
+    if cfg_w["bce"]["norm"]["cls_imb"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
         s = torch.zeros((), dtype=torch.float64, device=device)
         for rs in range(lo, hi, chunk_size):
             W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b[rs:rs + chunk_size],
@@ -533,11 +533,11 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
             dist.all_reduce(s)
         cls_imb_mean = (s / (B * B)).float()
 
-    dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["dsmr"] else None
+    dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["bce"]["dsmr"] else None
 
     norm_agg_mean = None
     L_value = None
-    if cfg_w["norm"]["agg"] or need_L:
+    if cfg_w["bce"]["norm"]["agg"] or need_L:
         consts_raw = {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass, "norm_agg_mean": None}
         sum_W = torch.zeros((), dtype=torch.float64, device=device)
         sum_Wbce = torch.zeros((), dtype=torch.float64, device=device)
@@ -554,7 +554,7 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
             packed = torch.stack([sum_W, sum_Wbce])
             dist.all_reduce(packed)
             sum_W, sum_Wbce = packed[0], packed[1]
-        if cfg_w["norm"]["agg"]:
+        if cfg_w["bce"]["norm"]["agg"]:
             norm_agg_mean = (sum_W / (B * B)).clamp_min(1e-12).float()
         if need_L:
             denom = norm_agg_mean if norm_agg_mean is not None else 1.0

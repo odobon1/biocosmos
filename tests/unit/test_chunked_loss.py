@@ -47,13 +47,12 @@ L = import_loss_module()
 def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, agg="prod", freq_type="naive", sim="cos",
          norm_cls_imb=False, norm_agg=False):
     return {
-        "type": "bce", "sim": sim, "targ": targ,
+        "crit": "bce", "sim": sim, "targ": targ,
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
                         "freq_type_2d": freq_type, "wt_mean_type": "per_class"},
             "focal": {"gamma": focal_gamma, "comp_type": 1},
-            "dsmr": dsmr, "agg": agg,
-            "norm": {"cls_imb": norm_cls_imb, "agg": norm_agg},
+            "bce": {"dsmr": dsmr, "agg": agg, "norm": {"cls_imb": norm_cls_imb, "agg": norm_agg}},
         },
         "logits": {"scale": {"clamp": False}, "bias": {}},
     }
@@ -208,9 +207,9 @@ def test_stats_min_max_mean_exact():
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
-    ({"type": "infonce2", "targ": "sw"}, {"mix": 0.0, "type": "bce"}),         # infonce primary
-    ({"type": "infonce1", "targ": "sw"}, {"mix": 0.0, "type": "bce"}),
-    ({"type": "bce", "targ": "sw"}, {"mix": 0.3, "type": "infonce2"}),          # infonce secondary (mixed)
+    ({"crit": "infonce2", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),         # infonce primary
+    ({"crit": "infonce1", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "infonce2"}),          # infonce secondary (mixed)
 ])
 def test_validate_chunking_rejects_infonce(cfg_loss, cfg_loss2):
     with pytest.raises(NotImplementedError):
@@ -218,9 +217,9 @@ def test_validate_chunking_rejects_infonce(cfg_loss, cfg_loss2):
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
-    ({"type": "bce", "targ": "phylo"}, {"mix": 0.0, "type": "bce"}),            # phylo now supported
-    ({"type": "bce", "targ": "sw"}, {"mix": 0.3, "type": "bce"}),               # bce+bce mix supported
-    ({"type": "bce", "targ": "sw"}, {"mix": 0.0, "type": "infonce2"}),          # infonce loss2 inert at mix=0
+    ({"crit": "bce", "targ": "phylo"}, {"mix": 0.0, "crit": "bce"}),            # phylo now supported
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce2"}),          # infonce loss2 inert at mix=0
 ])
 def test_validate_chunking_accepts(cfg_loss, cfg_loss2):
     L.validate_chunking_supported(cfg_loss, cfg_loss2)  # no raise

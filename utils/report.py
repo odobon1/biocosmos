@@ -160,29 +160,30 @@ def _collect_comps(settings, datasets, set_key, grp):
 
 def _collect_hw(settings, datasets):
     """Each (setting, dataset)'s completed-trial hardware/wall-clock readings, parsed from
-    trial_metadata.json: one {_HW_LABELS label -> float} dict per trial -- runtime.trial /
-    runtime.train.mean / runtime.eval.mean are float-seconds strings, memory.ram / memory.vram
-    are 'used/total GB' strings (numerator taken). A written final-eval metrics file is the
-    completion signal, same as _collect_comps. Also each setting's n_crashes totals
-    ({'ram'/'vram'/'other' -> int}, summed across all its trials -- seeds + datasets, completed or
-    not) from setting_metadata.json, whose counters survive the trial-dir wipes that reset
+    trial_metadata.json and keyed by trial seed (the trial dir name, like _collect_comps): one
+    {_HW_LABELS label -> float} dict per trial -- runtime.trial / runtime.train.mean /
+    runtime.eval.mean are float-seconds strings, memory.ram / memory.vram are 'used/total GB'
+    strings (numerator taken). A written final-eval metrics file is the completion signal, same
+    as _collect_comps. Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
+    summed across all its trials -- seeds + datasets, completed or not) from
+    setting_metadata.json, whose counters survive the trial-dir wipes that reset
     trial_metadata's."""
     hw_by = {}
     for setting in settings:
         for dataset in datasets:
             dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
-            trials = []
+            trials = {}
             if dpath_dataset.exists():
                 for dpath_trial in sorted(dpath_dataset.iterdir()):
                     if (dpath_trial / "evals/final/metrics.json").exists():
                         meta = load_json(dpath_trial / "trial_metadata.json")
-                        trials.append({
+                        trials[dpath_trial.name] = {
                             "Time Trial": float(meta["runtime"]["trial"]),
                             "Mean Time Train": float(meta["runtime"]["train"]["mean"]),
                             "Mean Time Eval": float(meta["runtime"]["eval"]["mean"]),
                             "Peak RAM": float(meta["memory"]["ram"].split("/")[0]),
                             "Peak VRAM": float(meta["memory"]["vram"].split("/")[0]),
-                        })
+                        }
             hw_by[(setting, dataset)] = trials
     crashes_by = {
         setting: load_json(ArtifactManager.dpath_campaign / "settings" / setting / "setting_metadata.json")["n_crashes"]
@@ -370,18 +371,22 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     under that configuration (e.g. loss2.* with loss2.mix 0.0). Params whose effective value is
     identical across every setting row are omitted (they differentiate nothing); when every param
     is uniform the table is omitted entirely. This table gets no
-    winner-bold/heatmap styling. hw_perf adds a 'Hardware Performance' table to the mAP sheet
-    only, a band of the same kind sitting leftmost (before the Baseline Overrides band when both
-    are on, each followed by its own blank separator column), likewise Mean-aligned and
-    unstyled: Time Trial / Mean Time Train / Mean Time Eval (whole seconds) and Peak RAM / Peak
-    VRAM (whole GB) columns, each cell the mean across datasets with completed trials of the
-    setting's per-dataset trial means, rounded to the nearest int -- per-trial readings parsed
-    from trial_metadata.json (float-seconds runtime strings; 'used/total GB' memory strings,
-    numerator taken) -- plus Total Crashes RAM / VRAM / Other columns, each cell the setting's
-    crash total of that cause across all its trials (seeds + datasets, completed or not), read
-    from setting_metadata.json's n_crashes. Column widths hug each column's longest header/data cell
-    (banner/label text overflows); blank separator columns get a small ~square width. Regenerated
-    at each trial completion."""
+    winner-bold/heatmap styling. hw_perf adds a companion 'Hardware Performance' table to the
+    right of every scores table on the mAP sheet only (one blank separator column between the
+    two; the accuracy sheet gets none), row-aligned with its scores table so the scores Setting
+    column labels its rows, and likewise unstyled: Time Trial / Mean Time Train / Mean Time Eval
+    (whole seconds) and Peak RAM / Peak VRAM (whole GB) columns, per-trial readings parsed from
+    trial_metadata.json (float-seconds runtime strings; 'used/total GB' memory strings, numerator
+    taken), every cell rounded to the nearest int. Each companion aggregates the same trials as
+    its scores table: dataset-table companions the mean across that dataset's completed trials
+    ('-' rows where the setting has none there), seed-block companions that seed's single-trial
+    readings ('-' where its trial hasn't completed), and the Mean-table companion the mean across
+    datasets with completed trials of the setting's per-dataset trial means -- plus Total Crashes
+    RAM / VRAM / Other columns (Mean companion only, since they don't decompose per dataset/seed),
+    each cell the setting's crash total of that cause across all its trials (seeds + datasets,
+    completed or not), read from setting_metadata.json's n_crashes. Column widths hug each
+    column's longest header/data cell (banner/label text overflows); blank separator columns get
+    a small ~square width. Regenerated at each trial completion."""
     set_key, grp, _ = _TABLE_EVAL_GROUPS[table_eval_group]
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
     settings, datasets = metadata["settings"], metadata["datasets"]
@@ -416,21 +421,35 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
 
     hw_by, crashes_by = _collect_hw(settings, datasets) if hw_perf else (None, None)
 
-    def build_blocks(score_key, labels):
-        """The sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
-        block (label None): one table per campaign dataset, then the always-shown 'Mean'
+    def build_blocks(score_key, labels, with_hw):
+        """The sheet's blocks, left to right: (label, [(title, cell grid, hw grid), ...]) -- the
+        aggregate block (label None): one table per campaign dataset, then the always-shown 'Mean'
         cross-dataset summary table at the bottom; then one block per completed seed (label
         'seed <seed>'): the per-dataset tables only (no Mean summary), built from that seed's
         trials alone -- plain setting labels (no trial counts), single-trial 'XX.XX' cells, '-'
         where that seed's trial hasn't completed. Setting rows are shared across all blocks --
         when ordered, pinned to the aggregate Mean-table's first score column (labels[0]),
-        descending. Returns (blocks, ogrid, hgrid): ogrid is the 'Baseline Overrides' grid
-        (param-name header + one value row per setting in this sheet's row order), or None when
-        disabled or nothing is overridden; hgrid is the 'Hardware Performance' grid (_HW_LABELS
-        header + one value row per setting, same row order -- cells the cross-dataset mean of
-        per-dataset trial means, rounded to the nearest int), or None when disabled."""
+        descending. Each table's hw grid is its 'Hardware Performance' companion (None when
+        with_hw is off): _HW_LABELS header + one value row per setting (same row order, no
+        Setting column of its own), cells the rounded mean over the same trials as the scores
+        table beside it ('-' when the setting has none there); the Mean companion instead holds
+        the cross-dataset mean of per-dataset trial means plus the _HW_CRASH_LABELS per-setting
+        crash-total columns. Also returns ogrid, the 'Baseline Overrides' grid (param-name
+        header + one value row per setting in this sheet's row order), or None when disabled or
+        nothing is overridden."""
         xmeans = _cross_dataset_means(settings, datasets, comps_by, score_key, labels)
         rows = _order_settings(settings, xmeans, labels[0]) if ordered else settings
+
+        def hw_grid(readings_by_row):
+            # one companion grid: per setting row a list of that row's per-trial readings dicts
+            # (empty -> '-' cells), meaned per label and rounded to the nearest int
+            grid = [list(_HW_LABELS)]
+            for readings in readings_by_row:
+                if readings:
+                    grid.append([str(round(np.mean([r[label] for r in readings]))) for label in _HW_LABELS])
+                else:
+                    grid.append(["-"] * len(_HW_LABELS))
+            return grid
 
         tables = []
         for dataset in datasets:
@@ -439,11 +458,21 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                 [(setting, [comp[score_key] for comp in comps_by[(setting, dataset)].values()]) for setting in rows],
                 spread_type,
             )
-            tables.append((DATASET_ALIAS2NAME[dataset], grid))
+            hw = hw_grid([list(hw_by[(s, dataset)].values()) for s in rows]) if with_hw else None
+            tables.append((DATASET_ALIAS2NAME[dataset], grid, hw))
         xgrid = [["Setting", *labels]]
         for s in rows:
             xgrid.append([s] + [f"{xmeans[(s, label)]:.2f}" for label in labels])
-        tables.append(("Mean", xgrid))
+        xhw = None
+        if with_hw:
+            xhw = [list(_HW_LABELS) + list(_HW_CRASH_LABELS)]
+            for s in rows:
+                xhw.append([
+                    str(round(np.mean([np.mean([trial[label] for trial in hw_by[(s, dataset)].values()])
+                                       for dataset in datasets if hw_by[(s, dataset)]])))
+                    for label in _HW_LABELS
+                ] + [str(crashes_by[s][kind]) for kind in ("ram", "vram", "other")])
+        tables.append(("Mean", xgrid, xhw))
         blocks = [(None, tables)]
 
         for seed in seeds:
@@ -454,7 +483,11 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                     comp = comps_by[(s, dataset)].get(seed)
                     grid.append([s] + ["-" if comp is None else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
                                        for label in labels])
-                stables.append((DATASET_ALIAS2NAME[dataset], grid))
+                hw = None
+                if with_hw:
+                    hw = hw_grid([[hw_by[(s, dataset)][seed]] if seed in hw_by[(s, dataset)] else []
+                                  for s in rows])
+                stables.append((DATASET_ALIAS2NAME[dataset], grid, hw))
             blocks.append((f"seed {seed}", stables))
 
         ogrid = None
@@ -464,18 +497,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
             ogrid = [list(okeys)]
             for s in rows:
                 ogrid.append([override_value(s, key) for key in okeys])
-
-        hgrid = None
-        if hw_by:
-            # same headerless-row layout as ogrid: rows labeled by the Mean table's Setting column
-            hgrid = [list(_HW_LABELS) + list(_HW_CRASH_LABELS)]
-            for s in rows:
-                hgrid.append([
-                    str(round(np.mean([np.mean([trial[label] for trial in hw_by[(s, dataset)]])
-                                       for dataset in datasets if hw_by[(s, dataset)]])))
-                    for label in _HW_LABELS
-                ] + [str(crashes_by[s][kind]) for kind in ("ram", "vram", "other")])
-        return blocks, ogrid, hgrid
+        return blocks, ogrid
 
     bold = Font(bold=True)
     center = Alignment(horizontal="center", vertical="center")
@@ -484,16 +506,20 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    def write_sheet(ws, blocks, groups, ogrid, hgrid):
+    def write_sheet(ws, blocks, groups, ogrid):
         """groups: None -> each table's banner is its title merged across the full table width;
         else [(group_title, n_group_cols), ...] -> the title sits unmerged in the block's first
         column, followed by one grey merged group-header cell per group (e.g. 'Composite Scores'
-        over the composite columns, 'Primitive Scores' over the primitive columns). hgrid/ogrid
-        (each None or a header + one-value-row-per-setting grid, sheet row order) render as left
-        column bands -- 'Hardware Performance' then 'Baseline Overrides', one blank separator
-        column after each, with the score blocks all shifted right past them -- vertically
-        aligned with the aggregate block's bottom Mean table so the Mean's Setting column labels
-        their rows; band cells get no winner-bold/heatmap styling."""
+        over the composite columns, 'Primitive Scores' over the primitive columns). Each table's
+        hw grid (None when off) renders as its 'Hardware Performance' companion, one blank
+        separator column to the scores table's right: a merged title banner in the scores banner
+        row, then the _HW_LABELS header + value rows row-aligned with the scores rows (the scores
+        Setting column labels them); companion cells get no winner-bold/heatmap styling. ogrid
+        (None or a header + one-value-row-per-setting grid, sheet row order) renders as the
+        'Baseline Overrides' left column band, one blank separator column after it, with the
+        score blocks all shifted right past it -- vertically aligned with the aggregate block's
+        bottom Mean table so the Mean's Setting column labels its rows; band cells likewise get
+        no winner-bold/heatmap styling."""
         n_cols = len(blocks[0][1][0][1][0])  # corner + one col per score label (same for every grid in the sheet)
         widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
@@ -501,10 +527,10 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
         campaign.font = bold
         campaign.alignment = left
 
-        bands = [(t, g) for t, g in (("Hardware Performance", hgrid), ("Baseline Overrides", ogrid)) if g]
+        bands = [("Baseline Overrides", ogrid)] if ogrid else []
         offset = sum(len(g[0]) + 1 for _, g in bands)  # left bands + their separator columns
-        for i_block, (block_label, tables) in enumerate(blocks):
-            col0 = 1 + offset + i_block * (n_cols + 1)  # blocks side by side, one blank separator column apart
+        col0 = 1 + offset  # blocks side by side, one blank separator column apart
+        for block_label, tables in blocks:
             if block_label is not None:
                 label_cell = ws.cell(row=1, column=col0, value=block_label)  # campaign-banner row, atop the block
                 label_cell.font = bold
@@ -512,7 +538,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
             # banner row + blank row above the tables; dataset tables lead in every block, so they
             # sit in the same rows across blocks (only the aggregate has the trailing Mean table)
             row = 3
-            for title_text, grid in tables:
+            for title_text, grid, hw in tables:
                 title = ws.cell(row=row, column=col0, value=title_text)
                 title.font = bold
                 title.alignment = left
@@ -531,6 +557,14 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                         gcell.alignment = center
                         ws.merge_cells(start_row=row, start_column=gcol, end_row=row, end_column=gcol + n_group - 1)
                         gcol += n_group
+                if hw:
+                    hw_col0 = col0 + n_cols + 1  # companion sits one blank separator column right of the scores table
+                    hw_title = ws.cell(row=row, column=hw_col0, value="Hardware Performance")
+                    hw_title.font = bold
+                    hw_title.alignment = left
+                    for c in range(hw_col0, hw_col0 + len(hw[0])):
+                        ws.cell(row=row, column=c).border = border
+                    ws.merge_cells(start_row=row, start_column=hw_col0, end_row=row, end_column=hw_col0 + len(hw[0]) - 1)
                 row += 1
 
                 styles = _col_styles(grid, bold_high)
@@ -549,11 +583,22 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                             cell.font = bold
                         if heatmap and r in means:
                             cell.fill = PatternFill("solid", fgColor=_heat_hex(heatmap, means[r], col_min, col_max))
+                    if hw:  # companion rows align with the scores rows (header + one row per setting)
+                        for c, val in enumerate(hw[r]):
+                            cell = ws.cell(row=row, column=hw_col0 + c, value=val)
+                            cell.alignment = center
+                            cell.border = border
+                            widths[hw_col0 + c] = max(widths.get(hw_col0 + c, 0), len(val))
+                            if r == 0:
+                                cell.font = bold
+                                cell.fill = header_fill
                     row += 1
                 row += 1  # blank spacer row between tables
+            # widest table decides the block's width (the Mean companion carries extra crash columns)
+            col0 += n_cols + max((len(hw[0]) + 1 for _, _, hw in tables if hw), default=0) + 1
 
         # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
-        band_row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
+        band_row = 3 + sum(len(grid) + 2 for _, grid, _ in blocks[0][1][:-1])
         band_col = 1
         for band_title, band_grid in bands:
             b_cols = len(band_grid[0])
@@ -570,7 +615,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
                     cell.alignment = center
                     cell.border = border
                     widths[band_col + c] = max(widths.get(band_col + c, 0), len(val))
-                    if r == 0:  # header row (param names / hw stat labels)
+                    if r == 0:  # header row (param names)
                         cell.font = bold
                         cell.fill = header_fill
                 row += 1
@@ -587,11 +632,11 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     wb = Workbook()
     ws_map = wb.active
     ws_map.title = "Composite mAP"
-    map_blocks, map_ogrid, map_hgrid = build_blocks("map", map_labels)
-    write_sheet(ws_map, map_blocks, map_groups, map_ogrid, map_hgrid)
-    # hw table is mAP-sheet only: the accuracy sheet keeps just the overrides band
-    acc_blocks, acc_ogrid, _ = build_blocks("acc", acc_labels)
-    write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid, None)
+    map_blocks, map_ogrid = build_blocks("map", map_labels, hw_perf)
+    write_sheet(ws_map, map_blocks, map_groups, map_ogrid)
+    # hw companions are mAP-sheet only: the accuracy sheet keeps just the overrides band
+    acc_blocks, acc_ogrid = build_blocks("acc", acc_labels, False)
+    write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid)
 
     dpath_stats = ArtifactManager.dpath_campaign / "stats"
     dpath_stats.mkdir(parents=True, exist_ok=True)

@@ -152,9 +152,9 @@ class TrainConfig:
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
-        if self.arch["siglip"]["vis_proj"] is None and self.dropout["siglip"]["vis_proj"] > 0.0:
+        if self.arch["siglip"]["vis_proj_head"] is None and self.dropout["siglip"]["proj_head"] > 0.0:
             raise ValueError(
-                "dropout.siglip.vis_proj > 0 requires arch.siglip.vis_proj to be 'linear' or 'mlp' "
+                "dropout.siglip.proj_head > 0 requires arch.siglip.vis_proj_head to be 'linear' or 'mlp' "
                 "(projection-head dropout needs a projection head)"
             )
 
@@ -168,10 +168,10 @@ class TrainConfig:
             if self.seed is None:
                 raise ValueError("htarg_shuf=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss["type"] not in ("infonce1", "infonce2", "bce"):
-            raise ValueError(f"Unknown Loss 1 Type: '{self.loss['type']}', must be one of {{infonce1, infonce2, bce}}")
-        if self.loss2["type"] not in ("infonce1", "infonce2", "bce"):
-            raise ValueError(f"Unknown Loss 2 Type: '{self.loss2['type']}', must be one of {{infonce1, infonce2, bce}}")
+        if self.loss["crit"] not in ("infonce1", "infonce2", "bce"):
+            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce1, infonce2, bce}}")
+        if self.loss2["crit"] not in ("infonce1", "infonce2", "bce"):
+            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce1, infonce2, bce}}")
         
         if self.loss["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
@@ -230,11 +230,8 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     cfg_dict = dict(cfg_dict)
     dev_cfg = cfg_dict.get("dev", {}) or {}
     if dev_cfg.get("debug_mode", False):
-        cfg_dict["split"] = "dev"
-        cfg_dict["sample_volume"] = dev_cfg["debug"]["sample_volume"]
-        cfg_dict["chkpt_every"] = dev_cfg["debug"]["chkpt_every"]
-        cfg_dict["batch_size"] = dev_cfg["debug"]["batch_size"]
-        cfg_dict["opt"] = {**cfg_dict["opt"], "lr": {**cfg_dict["opt"]["lr"], "warmup": dev_cfg["debug"]["lr_warmup"]}}
+        cfg_dict = apply_overrides(cfg_dict, dev_cfg["debug"])  # keys are dot-paths into this config (e.g. opt.lr.warmup)
+        cfg_dict["split"] = "dev"  # forced after the overrides: debug always runs on the dev split
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
@@ -393,9 +390,9 @@ class EvalConfig:
             raise ValueError("img_norm='dataset' requires a model checkpoint (rdpath_model) to infer which partition's norm stats were used during training")
 
         # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
-        # exposes no non_causal/vis_proj knobs; checkpoint eval overrides from the setting's config.json below
+        # exposes no non_causal/vis_proj_head knobs; checkpoint eval overrides from the setting's config.json below
         self.arch["clip"] = {"non_causal": False}
-        self.arch["siglip"] = {"vis_proj": None}
+        self.arch["siglip"] = {"vis_proj_head": None}
 
         if self.rdpath_model is not None:
             dpath_model = paths["root"] / self.rdpath_model
@@ -409,8 +406,12 @@ class EvalConfig:
             metadata_trial = load_json(fpath_metadata_trial)
 
             self.arch["model_type"] = config_setting["arch"]["model_type"]  # override model_type
-            self.arch["clip"]["non_causal"] = config_setting["arch"]["clip"]["non_causal"]  # override non_causal
-            self.arch["siglip"]["vis_proj"] = config_setting["arch"]["siglip"]["vis_proj"]  # override vis_proj (projection head must match checkpoint)
+            # config.json carries only the checkpoint family's arch section (the other family's is
+            # pruned as inert); the absent one keeps its released default set above
+            if "clip" in config_setting["arch"]:
+                self.arch["clip"]["non_causal"] = config_setting["arch"]["clip"]["non_causal"]  # override non_causal
+            if "siglip" in config_setting["arch"]:
+                self.arch["siglip"]["vis_proj_head"] = config_setting["arch"]["siglip"]["vis_proj_head"]  # override vis_proj_head (projection head must match checkpoint)
             self.img_norm = config_setting["img_norm"]  # override img_norm
             self.dataset = metadata_trial["dataset"]  # override dataset
             self.split = metadata_trial["split"]  # override split
@@ -460,6 +461,7 @@ class ManifoldVizConfig:
     n_stoch_layers: int
     eval_duration: int
     bg_color: str | None
+    
     tsne: dict = field(default_factory=dict)
     color: dict = field(default_factory=dict)
 
@@ -490,7 +492,7 @@ class StatsConfig:
     heatmap: str | None  # {None, scaled, fixed}
     prim_scores: bool  # (True) append per-partition primitive score columns to the tables
     baseline_overrides: bool  # (True) append a "Baseline Overrides" config table to each xlsx sheet
-    hw_perf: bool  # (True) append a "Hardware Performance" table to the xlsx mAP sheet
+    hw_perf: bool  # (True) put a "Hardware Performance" companion table right of every xlsx mAP-sheet scores table
 
     def __post_init__(self):
 

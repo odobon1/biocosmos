@@ -712,7 +712,7 @@ class PrintLog:
             lines.append("=== Loss (Secondary) ===")
             info.append(("Mix", str(cfg_loss["mix"])))
         
-        info.append(("Type", cfg_loss["type"]))
+        info.append(("Crit", cfg_loss["crit"]))
         info.append(("Sim", cfg_loss["sim"]))
         info.append(("Targs", cfg_loss["targ"]))
         lines.append(PrintLog._dash_aligned_lines(info))
@@ -742,7 +742,7 @@ class PrintLog:
             ]
             lines.extend(lines_focal)
 
-        if cfg_loss.get("wting", {}).get("dsmr", False):
+        if cfg_loss.get("wting", {}).get("bce", {}).get("dsmr", False):
             lines.append("DSMR Enabled")
 
         cfg_logits = cfg_loss["logits"]

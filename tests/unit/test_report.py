@@ -655,14 +655,18 @@ def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path
 
 
 def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
-    # hw_perf=True renders a "Hardware Performance" table on the mAP sheet only, leftmost in the
-    # bottom band (before the Baseline Overrides band, each followed by its own separator column),
-    # rows labeled by the Mean table's Setting column: per-trial readings from trial_metadata.json,
-    # meaned per dataset (across trials) then across datasets with completed trials, rounded to the
-    # nearest int. hp's cub trial times (100.4, 200.4) mean to 150.4, then with bryo's 350.0 ->
-    # 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level aggregation matters).
-    # The Total Crashes RAM/VRAM/Other columns come straight from setting_metadata.json's n_crashes
-    # (per-setting totals across seeds + datasets), not from the per-trial readings.
+    # hw_perf=True renders a "Hardware Performance" companion table to the right of every scores
+    # table on the mAP sheet (one separator column between the two), row-aligned so the scores
+    # Setting column labels its rows: per-trial readings from trial_metadata.json, meaned over the
+    # same trials as the scores table beside it, rounded to the nearest int. Dataset companions
+    # mean that dataset's completed trials ("-" row where a setting has none), seed-block
+    # companions carry that seed's single trial, and the Mean companion means the per-dataset
+    # trial means across datasets -- hp's cub trial times (100.4, 200.4) mean to 150.4, then with
+    # bryo's 350.0 -> 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level
+    # aggregation matters) -- plus the Total Crashes RAM/VRAM/Other columns (Mean companion only,
+    # crash totals don't decompose per dataset/seed) straight from setting_metadata.json's
+    # n_crashes (per-setting totals across seeds + datasets). The Baseline Overrides band is the
+    # only left band remaining.
     hw_vals = {  # (setting, dataset, seed) -> (trial, train mean, eval mean, ram, vram)
         ("hp", "cub", "42"): ("100.40", "10.10", "5.10", "100.2/128.0 GB", "20.2/178.4 GB"),
         ("hp", "cub", "43"): ("200.40", "20.10", "7.10", "110.2/128.0 GB", "24.2/178.4 GB"),
@@ -696,31 +700,57 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     wb = load_workbook(tmp_path / "stats" / "metrics.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
-    # bands left to right: hw at A..H + separator I, overrides at J..K + separator L, score blocks
-    # from M; all share the Mean table's banner row (two 3-row dataset tables precede it -> row 13)
-    assert grid[12][0] == "Hardware Performance"
-    assert grid[12][9] == "Baseline Overrides"
-    assert grid[12][12] == "Mean"
     merged = {str(m) for m in ws.merged_cells.ranges}
-    assert "A13:H13" in merged and "J13:K13" in merged
-    assert grid[13][:8] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
-                            "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
-    assert grid[13][9:11] == ["loss2.mix", "loss.targ"]
-    # hp: cub means (150.4, 15.1, 6.1, 105.2, 22.2) averaged with bryo's single trial, then rounded;
-    # crash totals straight from setting_metadata.json
-    assert grid[14][:8] == ["250", "23", "8", "113", "26", "2", "1", "0"]
-    assert grid[14][9:11] == ["0.3", "-"]
-    assert grid[14][12] == "hp"  # labeled by the Mean's Setting column
+    # overrides band at A..B + separator C (the only left band now); aggregate scores at D..J +
+    # separator K; companions at L -- dataset companions 5 stat columns (L..P), the Mean companion
+    # 8 (L..S, crash columns appended), so the aggregate block spans D..S and seed 42 starts at U
+    assert grid[2][3] == "CUB"
+    assert grid[12][3] == "Mean"
+    assert grid[12][0] == "Baseline Overrides"
+    assert "A13:B13" in merged
+    assert grid[13][:2] == ["loss2.mix", "loss.targ"]
+    assert grid[14][:2] == ["0.3", "-"]
+    assert grid[15][:2] == ["-", "sw"]
+    # CUB companion: banner in the scores banner row, stat header aligned with the scores header,
+    # value rows labeled by the scores Setting column; hp means its 2 cub trials, sw its 1
+    assert grid[2][11] == "Hardware Performance"
+    assert "L3:P3" in merged
+    assert grid[3][11:16] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert grid[4][3] == "hp (2)"
+    assert grid[4][11:16] == ["150", "15", "6", "105", "22"]
+    assert grid[5][11:16] == ["63", "8", "6", "117", "26"]
+    # Bryozoa companion: hp's single trial passes through; sw has no bryo trials -> "-" row
+    assert grid[7][3] == "Bryozoa"
+    assert grid[7][11] == "Hardware Performance"
+    assert grid[9][11:16] == ["350", "30", "9", "120", "30"]
+    assert grid[10][11:16] == ["-", "-", "-", "-", "-"]
+    # Mean companion: cross-dataset means of the per-dataset trial means + the crash-total columns
+    assert grid[12][11] == "Hardware Performance"
+    assert "L13:S13" in merged
+    assert grid[13][11:19] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+                               "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
+    assert grid[14][11:19] == ["250", "23", "8", "113", "26", "2", "1", "0"]
     # sw: single cub trial, values pass straight through the two-level mean before rounding
-    assert grid[15][:8] == ["63", "8", "6", "117", "26", "0", "0", "3"]
-    assert grid[15][12] == "sw"
-    assert all(r[8] is None and r[11] is None for r in grid)  # both separator columns stay empty
+    assert grid[15][11:19] == ["63", "8", "6", "117", "26", "0", "0", "3"]
+    # seed blocks keep their companions too: seed 42 scores at U..AA + separator AB, companion at
+    # AC..AG; seed 43 one 13-wide block + separator later, companion at AQ..AU
+    assert grid[0][20] == "seed 42"
+    assert grid[0][34] == "seed 43"
+    assert grid[2][28] == "Hardware Performance"
+    assert grid[4][28:33] == ["100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
+    assert grid[5][28:33] == ["63", "8", "6", "117", "26"]     # sw's only trial
+    assert grid[9][28:33] == ["350", "30", "9", "120", "30"]   # seed 42 Bryozoa
+    assert grid[10][28:33] == ["-", "-", "-", "-", "-"]        # sw: no bryo trial
+    assert grid[4][42:47] == ["200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
+    assert grid[5][42:47] == ["-", "-", "-", "-", "-"]         # sw has no 43 trial
+    # separator columns between scores tables and companions / between blocks stay empty
+    assert all(r[2] is None and r[10] is None and r[19] is None and r[27] is None for r in grid)
     # hw header styled like other headers; value cells get no winner-bold/heatmap styling
-    assert ws.cell(row=14, column=1).font.bold is True
-    assert ws.cell(row=14, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
-    assert ws.cell(row=15, column=1).font.bold is not True
-    assert ws.cell(row=15, column=1).fill.patternType is None
-    # accuracy sheet: no hw band -- the overrides band stays leftmost
+    assert ws.cell(row=4, column=12).font.bold is True
+    assert ws.cell(row=4, column=12).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=5, column=12).font.bold is not True
+    assert ws.cell(row=5, column=12).fill.patternType is None
+    # accuracy sheet: no hw companions -- the overrides band stays leftmost
     agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
     assert agrid[12][0] == "Baseline Overrides"
     assert agrid[12][3] == "Mean"

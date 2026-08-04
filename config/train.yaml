@@ -1,66 +1,90 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 16_000_000
-chkpt_every: 500_000
+sample_volume: 1_000_000
+chkpt_every: 100_000
 batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
-epoch_floor: 100_000  # {null, [int]}; min samples per "epoch": when train set < epoch_floor, each epoch chains ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max batch_size) from dataset size; (null | train set >= epoch_floor) one pass per epoch
-dv_batching: false  # (true) dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
+epoch_floor: 100_000  # {null, [int]}; Min samples per "epoch": when train set < epoch_floor, each epoch chains
+# ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max 
+# batch_size) from dataset size; (null | train set >= epoch_floor) One pass per epoch
+dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
-arch:  # architecture
+arch:  # Architecture
   model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
-  clip:  # CLIP-specific
-    non_causal: false  # (true) converts text encoder causal attention mask to non-causal (zeros on diagonal + lower triangle, -inf on upper --> all zeros); base eval: the native causal mask is always restored (non_causal undone) so the shared base_eval_cache stays a stable pretrained-as-released reference
-  siglip:  # SigLIP-specific
-    vis_proj: null  # {null, linear, mlp}; vision projection head over the MAP-pooled image feature -- null: none, use the pretrained MAP output directly (current); linear: Linear(768-->768); mlp: 768-->1536-->768 GELU MLP. linear/mlp add randomly-initialized params (absent from the pretrained checkpoint) and are the only settings under which dropout.siglip.vis_proj is active. base eval: this head is always skipped (headless pretrained MAP output) so the shared base_eval_cache stays head-/seed-invariant
+  clip:  # CLIP-specific; Inert iff (arch.model_type: [siglip model])
+    non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
+    # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
+    # (non_causal undone) so the shared base_eval_cache stays a stable pretrained-as-released reference
+  siglip:  # SigLIP-specific; Inert iff (arch.model_type: [clip model])
+    vis_proj_head: null  # {null, linear, mlp}; Vision projection head over the attention-pooled image representation; 
+    # (null) No projection head; (linear) Linear(D->D); (mlp) GeLU-MLP(D->2*D->D); (linear | mlp) Randomly-initialized 
+    # params added; Note: this head is always skipped for base model evaluation (headless pretrained output used) so 
+    # the shared base_eval_cache stays head-/seed-invariant
 
-dropout:  # vision-tower (image encoder) regularization only -- text tower is unaffected; all off by default (== current behavior)
-  patch_dropout: 0.0  # [0.0, 1.0); CLIP + SigLIP; fraction of image patches dropped each training step (0.0 = disabled)
-  siglip:  # SigLIP-specific
-    vis_proj: 0.0  # [0.0, 1.0); dropout on the vision projection head; (0.0) disabled; inert with `arch.siglip.vis_proj = null`
-    stoch_depth: null  # {null, [0.0, 1.0)}; vision-backbone stochastic depth / drop-path rate (null = disabled)
+dropout:  # Applies only to the vision tower
+  patch_dropout: 0.0  # [0.0, 1.0); Fraction of image patches dropped each training step; (0.0) Disabled
+  siglip:  # SigLIP-specific params; Inert iff (arch.model_type: [clip model])
+    proj_head: 0.0  # [0.0, 1.0); Dropout on the vision projection head; (0.0) Disabled; Inert iff
+    # (arch.siglip.vis_proj_head: null)
+    stoch_depth: null  # {null, [0.0, 1.0)}; (null) Disabled; ([float]) Stochastic depth / drop-path rate
 
 freeze:
-  image: false
-  text: false
+  image: false  # {true, false}
+  text: false  # {true, false}
 
-htarg_shuf: false
+htarg_shuf: false  # {true, false}
 
-loss:  # primary loss
-  type: bce  # {infonce1, infonce2, bce}
+loss:  # Primary loss
+  crit: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: sw  # {iw, sw, tax, phylo}
   wting:
-    cls_imb:
-      type: inv_freq  # {inv_freq, class_bal, null}; `inv_freq` --> inverse-frequency, `class_bal` --> class-balanced, `null` to disable
-      inv_freq:  # inverse-frequency weighting; only relevant if `type: inv_freq`
-        gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; gamma=1.0 → classic, gamma=0.5 → sqrt, gamma=0.0 → uniform (no weighting)
-      class_bal:  # class-balanced weighting; only relevant if `type: class_bal`
-        beta: 0.9999  # [0.0, 1.0); only used for `type: class_bal`; controls aggressiveness
-      freq_type_2d: naive  # {naive, cmx2, pair_prob}; class-pair frequency/counting type (only relevant for 2D-weighting); (naive) vanilla (i2t, t2i for same pair treated as separate "classes"); (cmx2) "cross-model x2" negative pairs multiplied by 2, upper triangle extracted and used to normalize, full matrix constructed with normalized weights (i2t, t2i for same pair treated as same "classes"); (pair_prob) "pair-probability" weighting
-      wt_mean_type: per_class  # {per_class, per_sample}
-    focal:
-      gamma: 2.0  # (0.0, inf); down-weights easy samples, larger gamma → stronger focus on hard cases; 1-2 for softmax (InfoNCE), 2 for sigmoid (BCE); FL reduces to CE (FL → CE) when gamma = 0.0; set to 0.0 to disable focal loss; gamma < 1.0 & gamma > 3.0 may be unstable
-      comp_type: 1  # {1, 2}; continuous-form focal loss computation type; identical behavior to discrete form when targets=0/1; not relevant for 1D-weighted InfoNCE
-    dsmr: true  # dynamic similarity mass rebalancing; only relevant for BCE
-    agg: prod  # {prod, mean, geo_mean, harm_mean}
-    norm:
-      cls_imb: false  # {true, false}; inert with 1. `loss.wting.agg = {prod, geo_mean}` & `loss.wting.norm.agg = true`, 2. `loss.wting.agg = {prod, geo_mean}` & `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
-      agg: false  # {true, false}; (true) normalize aggregate of class-imb, focal, dsmr weights; inert with `loss2.mix_unit_scale = true` & `loss2.mix != 0.0`
+    cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
+      type: inv_freq  # {inv_freq, class_bal, null}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
+      # (null) Disable class-imbalance weighting
+      inv_freq:  # Inverse-frequency weighting params; Inert iff (cls_imb.type != inv_freq)
+        gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; (1.0) Classic inverse-frequency; (0.5) Inverse-sqrt-frequency;
+        # As gamma → 0.0, weights → uniform (no weighting)
+      class_bal:  # Class-balanced weighting params; Inert iff (cls_imb.type != class_bal)
+        beta: 0.9999  # [0.0, 1.0)
+      freq_type_2d: naive  # {naive, cmx2, pair_prob}; Class-pair frequency/counting type; (naive) Vanilla (i2t, t2i 
+      # for same pair treated as separate "classes"); (cmx2) Non-matching pair-counts multiplied by 2 (i2t, t2i for 
+      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit: infonce1)
+      wt_mean_type: per_class  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
+      # (per_class) Each class (1D) / class pair (2D) counts once --> the average class has unit weight; 
+      # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
+      # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (loss.crit != bce)
+    focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
+      gamma: 2.0  # (0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
+      # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
+      comp_type: 1  # {1, 2}; Continuous-form focal loss computation type; Identical behavior to discrete form (values 
+      # and gradients) with binary targets; Inert iff (loss.crit: bce AND loss.targ: {iw, sw}) OR 
+      # (loss.crit: infonce2 AND loss.targ: iw) OR (loss.crit: infonce1)
+    bce:  # BCE-specific weighting params; Inert iff (loss.crit != bce)
+      dsmr: true  # Dynamic similarity mass rebalancing
+      agg: prod  # {prod, mean, geo_mean, harm_mean}
+      norm:
+        cls_imb: true  # {true, false}; Inert if (bce.agg: {prod, geo_mean} AND bce.norm.agg: true) OR
+        # (bce.agg: {prod, geo_mean} AND loss2.mix_unit_scale: true AND loss2.mix: >0.0)
+        agg: false  # {true, false}; (true) Normalize aggregate of class-imb, focal, dsmr weights;
+        # Inert if (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
   logits:
     scale:
-      init: null  # {null [float]}; (null) existing learnable param (or 0.0 non-learnable if non-existent); ([float]) override init, learnable param
-      freeze: false  # {true, false}; (true) non-learnable scale
-      clamp: false  # {true, false}; (true) cap logit scale at ln(100) before exp() so scale multiplier stays <= 100 (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) unbounded
+      init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
+      # ([float]) Override init, learnable param
+      freeze: false  # {true, false}; (true) Non-learnable scale
+      clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
+      # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) Unbounded
     bias:
-      init: null  # {null [float]}; null existing learnable param (or 0.0 non-learnable if non-existent); ([float]) override init, learnable param
-      freeze: false  # {true, false}; (true) non-learnable bias
+      init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
+      # ([float]) Override init, learnable param
+      freeze: false  # {true, false}; (true) Non-learnable bias
 
-loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
-  mix: 0.0  # [0.0, 1.0); set to 0.0 to disable
-  mix_unit_scale: false  # {true, false}; (true) rescale each loss to unit magnitude (loss / loss.detach()) before the (1-mix)*loss1 + mix*loss2 blend, so `mix` sets the true gradient-contribution ratio regardless of each loss's raw scale
-  type: bce  # {infonce1, infonce2, bce}
-  sim: cos  # {cos, geo1, geo2}; note: if loss2.sim is different from loss.sim, min/max/mean/median similarity metrics are incorrect
+loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
+  mix: 0.3  # [0.0, 1.0); (0.0) Disable secondary loss
+  mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending
+  crit: bce  # {infonce1, infonce2, bce}
+  sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {iw, sw, tax, phylo}
   wting:
     cls_imb:
@@ -74,75 +98,87 @@ loss2:  # secondary loss; all params inert with `loss2.mix = 0.0`
     focal:
       gamma: 2.0  # (0.0, inf)
       comp_type: 1  # {1, 2}
-    dsmr: true
-    agg: prod  # {prod, mean, geo_mean, harm_mean}
-    norm:
-      cls_imb: false  # {true, false}
-      agg: false  # {true, false}
+    bce:
+      dsmr: true
+      agg: prod  # {prod, mean, geo_mean, harm_mean}
+      norm:
+        cls_imb: true  # {true, false}
+        agg: false  # {true, false}
   logits:
     scale:
-      init: null  # {null [float]}
+      init: null  # {null, [float]}
       freeze: false  # {true, false}
       clamp: false  # {true, false}
     bias:
-      init: null  # {null [float]}
+      init: null  # {null, [float]}
       freeze: false  # {true, false}
 
-aug:  # image augmentation
-  rrcrop:  # random resized crop
-    scale_min: 0.9  # down-scale wrt area, scale randomly picked from [scale_min, 1.0]; OpenCLIP default: [0.9, 1.0]
-  hflip: false  # {true, false}; horizontal flip w/ 50% probability
-  cjit:  # color jitter
+aug:  # Image augmentation
+  rrcrop:  # Random resized crop
+    scale_min: 0.9  # Down-scale wrt area, scale randomly picked from [scale_min, 1.0]; OpenCLIP default: [0.9, 1.0]
+  hflip: false  # {true, false}; Horizontal flip w/ 50% probability
+  cjit:  # Color jitter
     brightness: 0.1
     contrast: 0.2
     saturation: 0.1
     hue: 0.01
     prob: 0.0
   sharpness:
-    factor: 1.333  # (1.0, inf); sharpness range = [1.0 / factor, factor]; 1.0 --> no change; less than 1.0 reduces sharpness, greater than 1.0 increases sharpness
+    factor: 1.333  # (1.0, inf); Sharpness range = [1.0 / factor, factor]; =1.0 --> no change, <1.0 --> reduces 
+    # sharpness, >1.0 --> increases sharpness
     prob: 0.00
-  gblur:  # gaussian blur
-    kernel_size: 3  # must be odd int
+  gblur:  # Gaussian blur
+    kernel_size: 3  # [odd int]
     sigma:
       min: 0.0
       max: 1.0
     prob: 0.00
+
 img_norm: default  # {default, dataset}
 
 text_template:
   train: train
-  eval: sci  # following BioCLIP eval protocol
+  eval: sci  # Following BioCLIP eval protocol
 
-opt:  # optimization
-  lr:  # learning rate
+opt:  # Optimization
+  lr:  # Learning rate
     init: 1.0e-5
-    decay_factor: 1.0e-4  # cosine scheduler eta_min = opt.lr.init * opt.lr.decay_factor
-    warmup: 200_000  # sample volume for linear LR warmup
-  l2reg: null  # if `null`, resolved from model-specific default hyperparam config
-  beta1: 0.9  # CLIP paper recommends Beta1 = 0.9
-  beta2: null  # if `null`, resolved from model-specific default hyperparam config
-  eps: 1.0e-6  # CLIP paper recommends eps = 1.0e-6 (ViT)
+    decay_factor: 1.0e-4  # Cosine scheduler eta_min = lr.init * lr.decay_factor
+    warmup: 200_000  # Sample volume for linear LR warmup
+  l2reg: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
+  beta1: 0.9  # CLIP paper recommends 0.9
+  beta2: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
+  eps: 1.0e-6  # CLIP paper recommends 1.0e-6 (ViT)
 
 dev:
   debug_mode: false  # {true, false}
-  debug:  # parameters overridden with `debug_mode: true`
+  debug:  # Config overrides applied iff (dev.debug_mode: true)
     sample_volume: 3_000
     chkpt_every: 3_000
     batch_size: 256
-    lr_warmup: 0  # overrides opt.lr.warmup
-  traintime_evals: true  # {true, false}; (true) run evals at each checkpoint threshold (metrics + viz + evolution GIFs); (false) only base/final evals run
+    opt.lr.warmup: 0
+  traintime_evals: true  # {true, false}; (true) Run evals at each checkpoint threshold (metrics + viz + evolution
+  # GIFs); (false) Only base/final evals run
   manifold_viz:
-    n_trials: 0  # number of trials (per setting) to compute and save PCA + t-SNE projections to disk; setting to 0 overrides plot_Xpanel flags to false
-    plot_2panel: true  # {true, false}; (true) plot 2-panel PCA's + t-SNE's
-    plot_4panel: true  # {true, false}; (true) plot 4-panel PCA's + t-SNE's
-    plot_7panel: true  # {true, false}; (true) plot 7-panel PCA's + t-SNE's
-    # note: with n_trials >= 1 and all 3 flags = false, projections will still be computed and saved to disk
-    pooled:  # "pooled" shared-frame manifold viz: one PCA + t-SNE fit on all eval thresholds' embeddings pooled, then each threshold plotted as a masked subset of the shared layout (plot_Xpanel flags select the same groups, rendered under viz_pooled/)
-      enabled: true  # {true, false}; (true) cache per-eval embeddings, compute the pooled projection at end-of-trial, and render the pooled plots
-      budget: 100_000  # pooled t-SNE point budget as a total sample volume across all thresholds; if (N_id + N_ood) * n_evals <= budget all samples are used, else the pool is class-stratified subsampled to ~budget points total (larger budget needs proportionally more GPU memory)
+    n_trials: 0  # Number of trials (per setting) to compute and save PCA + t-SNE projections; (0) Overrides
+    # plot_{2,4,7}panel flags to false
+    plot_2panel: true  # {true, false}; (true) Plot 2-panel PCA's + t-SNE's
+    plot_4panel: true  # {true, false}; (true) Plot 4-panel PCA's + t-SNE's
+    plot_7panel: true  # {true, false}; (true) Plot 7-panel PCA's + t-SNE's
+    pooled:  # Shared-frame manifold viz: one PCA + t-SNE fit on all eval thresholds' embeddings pooled, then each 
+    # threshold plotted as a masked subset of the shared layout (plot_Xpanel flags select the same groups, rendered 
+    # under viz_pooled/); Note: (n_trials >= 1 AND (all 3 flags: false)) --> projections still computed + saved
+      enabled: true  # {true, false}; (true) Cache per-eval embeddings, compute the pooled projection at end-of-trial, 
+      # and render the pooled plots
+      budget: 100_000  # Pooled t-SNE point budget as a total sample volume across all thresholds;
+      # ((N_id + N_ood) * n_evals <= budget) --> all samples used, otherwise the pool is class-stratified subsampled to
+      # ~budget points total (larger budget needs proportionally more GPU memory)
       pca_bounds: final  # {null, final}
   logging: true
-  continue_campaign: false  # {true, false}; (true) resume/extend an existing campaign of the same name; (false) if the campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
+  continue_campaign: false  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
+  # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
   del_base_eval_cache:
-    campaign: true  # {true, false}; (true) delete base_eval_cache/ once, when the campaign is first created (relaunches keep the cache the campaign's own trials built)
-    trial: false  # {true, false}; (true) delete base_eval_cache/ before each trial launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons)
+    campaign: false  # {true, false}; (true) Delete base_eval_cache/ once, when the campaign is first created
+    # (relaunches keep the cache the campaign's own trials built)
+    trial: true  # {true, false}; (true) Delete base_eval_cache/ before each trial launch, so every trial re-runs its 
+    # base eval (apples-to-apples wall-clock comparisons)

@@ -126,7 +126,7 @@ class VLMWrapper(abc.ABC):
 
         # Vision-tower overrides, merged into one vision_cfg passed via model_kwargs (which replaces vision_cfg
         # wholesale, so every override is folded into a copy of the base config).
-        #   - vis_proj -> timm_proj: an ARCHITECTURE choice, applied for train AND eval so a checkpoint's
+        #   - vis_proj_head -> timm_proj: an ARCHITECTURE choice, applied for train AND eval so a checkpoint's
         #     projection head reloads with a matching module.
         #   - patch/head/stochastic-depth dropout: parameterless and train-only (EvalConfig carries no `dropout`,
         #     and eval runs in eval mode regardless).
@@ -135,14 +135,14 @@ class VLMWrapper(abc.ABC):
         vision_cfg_extra = {}
         is_siglip = config.arch["model_type"] in SIGLIP_MODELS
 
-        if is_siglip and config.arch["siglip"]["vis_proj"] is not None:
-            vision_cfg_extra["timm_proj"] = config.arch["siglip"]["vis_proj"]
+        if is_siglip and config.arch["siglip"]["vis_proj_head"] is not None:
+            vision_cfg_extra["timm_proj"] = config.arch["siglip"]["vis_proj_head"]
 
         if hasattr(config, "dropout"):
             dropout = config.dropout
             if is_siglip:
                 vision_cfg_extra["patch_dropout"] = dropout["patch_dropout"]
-                vision_cfg_extra["timm_drop"] = dropout["siglip"]["vis_proj"]
+                vision_cfg_extra["timm_drop"] = dropout["siglip"]["proj_head"]
                 if dropout["siglip"]["stoch_depth"] is not None:
                     vision_cfg_extra["timm_drop_path"] = dropout["siglip"]["stoch_depth"]
             else:
@@ -183,7 +183,7 @@ class VLMWrapper(abc.ABC):
         self.world_size = dist.get_world_size()
 
         self.device = config.device
-        self.type = config.arch['model_type']
+        self.type = config.arch["model_type"]
         self.model = model.to(self.device).eval()
         self.img_pp_train = img_pp_train
         self.img_pp_inf = img_pp_inf
@@ -194,7 +194,7 @@ class VLMWrapper(abc.ABC):
         if config.hw.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        if hasattr(config, 'loss'):
+        if hasattr(config, "loss"):
             cfg_logits = config.loss["logits"]
             if cfg_logits["scale"]["init"] is not None:  # scale.init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
@@ -216,7 +216,7 @@ class VLMWrapper(abc.ABC):
             if cfg_logits["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
-        if hasattr(config, 'loss2') and config.loss2["mix"] != 0.0:
+        if hasattr(config, "loss2") and config.loss2["mix"] != 0.0:
             cfg_logits2 = config.loss2["logits"]
             if cfg_logits2["scale"]["init"] is None:  # (scale.init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
@@ -257,15 +257,15 @@ class VLMWrapper(abc.ABC):
             if verbose:
                 print("Loading base model...")
 
-        if config.arch['model_type'] in CLIP_MODELS:
+        if config.arch["model_type"] in CLIP_MODELS:
             modelw = CLIPWrapper(config)
-        elif config.arch['model_type'] in SIGLIP_MODELS:
+        elif config.arch["model_type"] in SIGLIP_MODELS:
             modelw = SigLIPWrapper(config)
         else:
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
-        if hasattr(config, 'loss'):
-            modelw.loss_type = config.loss['type']
+        if hasattr(config, "loss"):
+            modelw.loss_crit = config.loss["crit"]
         if checkpoint is not None:
             modelw._unwrapped_model.load_state_dict(checkpoint["model"], strict=False)
             for key in ("logit_scale2", "logit_bias2"):
@@ -278,7 +278,7 @@ class VLMWrapper(abc.ABC):
 
         modelw.set_image_preprocessors()
 
-        if config.arch['clip']['non_causal']:
+        if config.arch["clip"]["non_causal"]:
             modelw.disable_causal_mask_text()
 
         if verbose:
@@ -691,7 +691,10 @@ class VLMWrapper(abc.ABC):
                 torch.autograd.backward(reps, grads)
 
         if self.world_size > 1:
-            # disjoint-band partials sum to the full-batch gradient -- plain sum, no /world_size
+            # disjoint per-rank contributions (encoder grads by sample shard, logit scale/bias by band)
+            # sum to the full-batch gradient -- plain sum, no /world_size. NCCL matches collectives by
+            # issue order, so the p.grad-is-None pattern must be rank-identical: true while participation
+            # is config-driven (freeze flags), broken (silent hang/corrupt) by any data-dependent module skip
             for p in self.model.parameters():
                 if p.grad is not None:
                     dist.all_reduce(p.grad)
@@ -764,7 +767,6 @@ class VLMWrapper(abc.ABC):
         targ_data = [targ_data[i] for i in perm.tolist()]
 
         loss_total = 0.0
-        n_samps = 0
         chunk_stats = []
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
@@ -784,14 +786,13 @@ class VLMWrapper(abc.ABC):
             else:
                 targs_stat = targs1
             chunk_stats.append(sim_targ_batch_stats(sim1, targs_stat))
-            loss_total += loss_raw.item() * chunk_size_loss
-            n_samps += chunk_size_loss
+            loss_total += loss_raw.item()
 
-        return loss_total / n_samps, chunk_stats
+        return loss_total / len(chunk_stats), chunk_stats
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
-        model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch['model_type']]
+        model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_inf.transforms[1].size[0]
@@ -818,7 +819,7 @@ class CLIPWrapper(VLMWrapper):
 
 class SigLIPWrapper(VLMWrapper):
     def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
-        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch['model_type']]
+        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_inf.transforms[0].size[0]

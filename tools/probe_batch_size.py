@@ -49,7 +49,7 @@ def probe_model(
     model_id:  str,
     device:    torch.device,
     sizes:     List[int],
-    loss_type: str,
+    loss_crit: str,
 ):
     print(f"\n=== {model_id} ===")
 
@@ -61,7 +61,7 @@ def probe_model(
     config_train.loss2["targ"] = "iw"
 
     config_train.model_type = model_id
-    config_train.loss_type  = loss_type
+    config_train.loss_crit  = loss_crit
 
     modelw = VLMWrapper.build(config_train)
     modelw.crit1 = Criterion.build(config_train.loss, DATASET, config_train.split, config_train.train_pt, device, config_train.batch_size)
@@ -105,6 +105,7 @@ def main():
         probe_model(model_id, device, sizes, "bce")
     for model_id in models_infonce:
         probe_model(model_id, device, sizes, "infonce1")
+
 
 if __name__ == "__main__":
     main()

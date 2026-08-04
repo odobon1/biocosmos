@@ -20,11 +20,11 @@ def make_train_config_dummy(**overrides):
         "dv_batching": False,
         "htarg_shuf": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
-        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj": None}},
-        "dropout": {"patch_dropout": 0.0, "siglip": {"vis_proj": 0.0, "stoch_depth": None}},
+        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
+        "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
-        "loss": {"type": "bce", "sim": "cos", "targ": "iw", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
-        "loss2": {"type": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "l2reg": 0.0,
@@ -64,10 +64,10 @@ def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_train_config_rejects_head_dropout_without_proj_head(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="requires arch.siglip.vis_proj"):
+    with pytest.raises(ValueError, match="requires arch.siglip.vis_proj_head"):
         TrainConfig(**make_train_config_dummy(
-            arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj": None}},
-            dropout={"patch_dropout": 0.0, "siglip": {"vis_proj": 0.3, "stoch_depth": None}},
+            arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
+            dropout={"patch_dropout": 0.0, "siglip": {"proj_head": 0.3, "stoch_depth": None}},
         ))
 
 
@@ -82,7 +82,7 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
-        TrainConfig(**make_train_config_dummy(loss2={"type": "bce", "sim": "cos", "targ": "iw", "mix": 1.5}))
+        TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "iw", "mix": 1.5}))
 
 
 def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,7 +120,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"type": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -133,7 +133,7 @@ def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.Monk
         TrainConfig(**make_train_config_dummy(
             htarg_shuf=True,
             seed=None,
-            loss={"type": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
         ))
 
 
@@ -420,7 +420,7 @@ def test_train_config_rejects_infonce_with_chunking(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"type": "infonce2", "sim": "cos", "targ": "sw",
+    cfg_dict["loss"] = {"crit": "infonce2", "sim": "cos", "targ": "sw",
                         "logits": {"scale": {"init": None}, "bias": {"init": None}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8  # divisible; only the InfoNCE loss should trip validation
 

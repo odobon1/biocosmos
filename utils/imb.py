@@ -71,10 +71,6 @@ def _pair_freqs(counts, class_encs, freq_type_2d, batch_size, class_encs_cols=No
     Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings. `class_encs_cols`
     gives a rectangular pt[K_rows, K_cols] tile (rows = `class_encs`, cols = `class_encs_cols`); None ->
     square (cols == rows).
-
-    `freq_type_2d = cmx2` counts negative pairs double. "Negative" is by class identity, not position -- two
-    entries of the same class are a positive pair wherever they land in the matrix, which for a
-    batch means anywhere two samples share a class, not just the diagonal.
     """
     class_encs_rows = class_encs
     if class_encs_cols is None:
@@ -83,7 +79,7 @@ def _pair_freqs(counts, class_encs, freq_type_2d, batch_size, class_encs_cols=No
     counts_c = counts[class_encs_cols]
     pair_freqs = torch.outer(counts_r, counts_c)
 
-    if freq_type_2d == "cmx2":
+    if freq_type_2d == "cmx2":  # counts non-matching pairs double
         matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
         pair_freqs = torch.where(matches, pair_freqs, pair_freqs * 2)
     elif freq_type_2d == "pair_prob":

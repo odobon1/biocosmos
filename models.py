@@ -21,6 +21,8 @@ from utils.data import make_image_preprocessor_inference, make_image_preprocesso
 from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
 
+import pdb
+
 
 #                            open_clip model name            pretrain  quick-gelu
 CLIP_MODELS = {
@@ -196,10 +198,10 @@ class VLMWrapper(abc.ABC):
 
         if hasattr(config, "loss"):
             cfg_logits = config.loss["logits"]
-            if cfg_logits["scale"]["init"] is not None:  # scale.init set in config
+            if cfg_logits["temperature"]["init"] is not None:  # temperature.init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
-                        self.model.logit_scale.fill_(cfg_logits["scale"]["init"])
+                        self.model.logit_scale.fill_(-math.log(cfg_logits["temperature"]["init"]))  # tau -> log(1/tau)
             if cfg_logits["bias"]["init"] is None:  # (bias.init: null) in config
                 if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
                     delattr(self.model, "logit_bias")
@@ -211,22 +213,22 @@ class VLMWrapper(abc.ABC):
                 else:  # logit_bias attribute is not a nn.Parameter
                     delattr(self.model, "logit_bias")
                     self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bias"]["init"], device=self.device)))
-            if cfg_logits["scale"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
+            if cfg_logits["temperature"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
                 self.model.logit_scale.requires_grad_(False)
             if cfg_logits["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
         if hasattr(config, "loss2") and config.loss2["mix"] != 0.0:
             cfg_logits2 = config.loss2["logits"]
-            if cfg_logits2["scale"]["init"] is None:  # (scale.init: null) in config
+            if cfg_logits2["temperature"]["init"] is None:  # (temperature.init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
-            else:  # scale.init set in config
-                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(cfg_logits2["scale"]["init"], device=self.device)))
+            else:  # temperature.init set in config
+                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(-math.log(cfg_logits2["temperature"]["init"]), device=self.device)))  # tau -> log(1/tau)
             if cfg_logits2["bias"]["init"] is None:
                 self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(self.model.logit_bias.detach().item(), device=self.device)))
             else:
                 self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(cfg_logits2["bias"]["init"], device=self.device)))
-            if cfg_logits2["scale"]["freeze"]:
+            if cfg_logits2["temperature"]["freeze"]:
                 self.model.logit_scale2.requires_grad_(False)
             if cfg_logits2["bias"]["freeze"]:
                 self.model.logit_bias2.requires_grad_(False)
@@ -439,7 +441,7 @@ class VLMWrapper(abc.ABC):
         Computes loss for the full global batch under a given criterion (primary or secondary).
         """
         sim = compute_sim(embs_img_all, embs_txt_all, crit.cfg["sim"])
-        logits = self.compute_logits(sim, crit.cfg["logits"]["scale"]["clamp"], secondary=secondary)
+        logits = self.compute_logits(sim, crit.cfg["logits"]["temperature"]["clamp"], secondary=secondary)
         loss, loss_raw, targs = crit(logits, class_encs_all, targ_data_all, train=self.model.training)
 
         return loss, loss_raw, logits, sim, targs

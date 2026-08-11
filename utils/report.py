@@ -1,6 +1,7 @@
 """
-Campaign reporting/presentation: metric-stats aggregation, composite-score summary tables
-(map.png / acc.png), metrics.xlsx, and per-trial learning-curve plots. Everything here renders
+Campaign reporting/presentation: metric-stats aggregation, per-eval-group composite-score
+summary tables (stats/<dataset>/map/*.png, acc/*.png) and metrics workbooks
+(stats/metrics/*.xlsx), and per-trial learning-curve plots. Everything here renders
 from artifacts already on disk and reads its paths from ArtifactManager; trial/checkpoint state
 I/O lives in utils/train.py.
 """
@@ -10,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter, FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -29,12 +30,13 @@ from utils.utils import (
 import pdb
 
 
-# table_eval_group -> (scores set_key, group key, human-readable name); drives map.png and metrics.xlsx
-_TABLE_EVAL_GROUPS = {
-    "closed_standard": ("closed_set", "standard", "Closed-Set, Standard"),
-    "closed_macro": ("closed_set", "per_class", "Closed-Set, Macro"),
-    "full_standard": ("full_set", "standard", "Full-Set, Standard"),
-    "full_macro": ("full_set", "per_class", "Full-Set, Macro"),
+# eval group stem (also the stats artifact filename) -> (scores set_key, averaging group key,
+# display name); every stats table/xlsx artifact is rendered once per group
+_EVAL_GROUPS = {
+    "nativegall": ("nativegall", "standard", "Native"),
+    "nativegall_macro": ("nativegall", "macro", "Native-Macro"),
+    "jointgall": ("jointgall", "standard", "Joint"),
+    "jointgall_macro": ("jointgall", "macro", "Joint-Macro"),
 }
 
 # "Hardware Performance" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
@@ -85,15 +87,17 @@ def _listview_metric_stats(values, percent=True):
 @rank0
 def update_metric_stats(spread_type):
     dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
+    n_chkpts = load_json(ArtifactManager.dpath_setting / "config.json")["n_chkpts"]
     metric_dicts = []
     for dpath_trial in sorted(dpath_dataset.iterdir()):
-        # a written final-eval metrics file is the signal a trial finished; the `complete` flag is
-        # marked later (campaign_runner, after a clean exit) so it can't gate this aggregation
-        fpath_metrics = dpath_trial / "evals/final/metrics.json"
+        # a written final-eval (evals/eval<n_chkpts>/) metrics file is the signal a trial finished;
+        # the `complete` flag is marked later (campaign_runner, after a clean exit) so it can't
+        # gate this aggregation
+        fpath_metrics = dpath_trial / f"evals/eval{n_chkpts}/metrics.json"
         if not fpath_metrics.exists():
             continue
         metrics = load_json(fpath_metrics)
-        metrics.pop("n_samps_seen", None)
+        metrics.pop("eval", None)
         metric_dicts.append(metrics)
 
     if not metric_dicts:
@@ -133,49 +137,63 @@ def _stats_table_grid(labels, setting_score_maps, spread_type):
         grid.append(row)
     return grid
 
-def _collect_comps(settings, datasets, set_key, grp):
-    """Each (setting, dataset)'s completed-trial score maps, keyed by trial seed (the trial dir
-    name; empty dict -> no trials yet): per trial a {'map': ..., 'acc': ...} pair of flat
-    label->score dicts merging the comp scores with the per-partition primitives ('id i2t' ...
-    'ood t2i'), so table labels map to keys by lowercasing. A written final-eval metrics file is
-    the completion signal, same as update_metric_stats."""
-    comps_by = {}
+def _setting_n_chkpts(setting):
+    """n_chkpts from the setting's frozen config.json -- names the setting's final eval dir
+    (evals/eval<n_chkpts>/, the completion signal). None when the setting has no launched trials
+    yet (no config.json on disk -- and then no trial dirs to scan either)."""
+    fpath_config = ArtifactManager.dpath_campaign / "settings" / setting / "config.json"
+    return load_json(fpath_config)["n_chkpts"] if fpath_config.exists() else None
+
+
+def _collect_comps(settings, datasets):
+    """Per eval group, each (setting, dataset)'s completed-trial score maps, keyed by trial seed
+    (the trial dir name; empty dict -> no trials yet): comps_all[group_key][(setting, dataset)]
+    [seed] is a {'map': ..., 'acc': ...} pair of flat label->score dicts merging the comp scores
+    with the per-partition primitives ('id i2t' ... 'ood t2i'), so table labels map to keys by
+    lowercasing. One pass over the metrics files serves every group. A written final-eval
+    (evals/eval<n_chkpts>/) metrics file is the completion signal, same as update_metric_stats."""
+    comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
     for setting in settings:
+        n_chkpts = _setting_n_chkpts(setting)
         for dataset in datasets:
             dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
-            comps = {}
+            comps = {group_key: {} for group_key in _EVAL_GROUPS}
             if dpath_dataset.exists():
                 for dpath_trial in sorted(dpath_dataset.iterdir()):
-                    fpath_metrics = dpath_trial / "evals/final/metrics.json"
+                    fpath_metrics = dpath_trial / f"evals/eval{n_chkpts}/metrics.json"
                     if fpath_metrics.exists():
-                        scores_grp = load_json(fpath_metrics)["scores"][set_key][grp]
-                        comps[dpath_trial.name] = {
-                            "map": {**scores_grp["comp"]["map"],
-                                    **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")}},
-                            "acc": {**scores_grp["comp"]["acc"],
-                                    **{f"{p} i2t": scores_grp[p]["acc"]["i2t"] for p in ("id", "ood")}},
-                        }
-            comps_by[(setting, dataset)] = comps
-    return comps_by
+                        scores = load_json(fpath_metrics)["scores"]
+                        for group_key, (set_key, grp, _) in _EVAL_GROUPS.items():
+                            scores_grp = scores[set_key][grp]
+                            comps[group_key][dpath_trial.name] = {
+                                "map": {**scores_grp["comp"]["map"],
+                                        **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")}},
+                                "acc": {**scores_grp["comp"]["acc"],
+                                        **{f"{p} i2t": scores_grp[p]["acc"]["i2t"] for p in ("id", "ood")}},
+                            }
+            for group_key in _EVAL_GROUPS:
+                comps_all[group_key][(setting, dataset)] = comps[group_key]
+    return comps_all
 
 def _collect_hw(settings, datasets):
     """Each (setting, dataset)'s completed-trial hardware/wall-clock readings, parsed from
     trial_metadata.json and keyed by trial seed (the trial dir name, like _collect_comps): one
     {_HW_LABELS label -> float} dict per trial -- runtime.trial / runtime.train.mean /
     runtime.eval.mean are float-seconds strings, memory.ram / memory.vram are 'used/total GB'
-    strings (numerator taken). A written final-eval metrics file is the completion signal, same
-    as _collect_comps. Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
+    strings (numerator taken). A written final-eval (evals/eval<n_chkpts>/) metrics file is the
+    completion signal, same as _collect_comps. Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
     summed across all its trials -- seeds + datasets, completed or not) from
     setting_metadata.json, whose counters survive the trial-dir wipes that reset
     trial_metadata's."""
     hw_by = {}
     for setting in settings:
+        n_chkpts = _setting_n_chkpts(setting)
         for dataset in datasets:
             dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
             trials = {}
             if dpath_dataset.exists():
                 for dpath_trial in sorted(dpath_dataset.iterdir()):
-                    if (dpath_trial / "evals/final/metrics.json").exists():
+                    if (dpath_trial / f"evals/eval{n_chkpts}/metrics.json").exists():
                         meta = load_json(dpath_trial / "trial_metadata.json")
                         trials[dpath_trial.name] = {
                             "Time Trial": float(meta["runtime"]["trial"]),
@@ -279,73 +297,79 @@ def _render_stats_table(grid, title, fpath, bold_high, heatmap):
     plt.close(fig)
 
 @rank0
-def update_stats_tables(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores):
-    """Render the campaign-level composite-score summary tables for this trial's dataset to
-    artifacts/<campaign>/stats/<dataset>/map.png (comp mAP: All/ID/OOD/I2T/I2I/T2I score
-    columns) and acc.png (comp I2T accuracy: single I2T column) -- prim_scores appends the
-    per-partition primitive score columns (ID/OOD x modality) to both: one row per setting with >= 1
-    completed trial in this dataset (settings without local trials are omitted -- no blank rows
-    in the pngs), stats aggregated across each setting's completed trials. bold_high/ordered/
-    heatmap style the
-    tables the same way as metrics.xlsx: bold_high bolds each score column's highest-mean cell
-    (ties included; '-' cells ignored), ordered orders each table's setting rows by its own
-    metric's mean over THIS dataset's completed trials (map.png by the mAP 'All' column,
-    acc.png by the acc 'I2T' column) -- localized per dataset, independent of the cross-dataset
-    order used in metrics.xlsx -- heatmap shades score cells white->#ff5533 (None/scaled/fixed
-    as in update_metrics_xlsx). Re-rendered at each trial completion."""
-    set_key, grp, group_name = _TABLE_EVAL_GROUPS[table_eval_group]
-
-    settings = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
+def update_stats_tables(spread_type, bold_high, ordered, heatmap, prim_scores):
+    """Render the campaign-level composite-score summary tables for this trial's dataset, one pair
+    per eval group: artifacts/<campaign>/stats/<dataset>/map/<group>.png (comp mAP: All/ID/OOD/
+    I2T/I2I/T2I score columns) and acc/<group>.png (comp I2T accuracy: single I2T column) --
+    prim_scores appends the per-partition primitive score columns (ID/OOD x modality) to both: one
+    row per setting with >= 1 completed trial in this dataset (settings without local trials are
+    omitted -- no blank rows in the pngs), stats aggregated across each setting's completed
+    trials. bold_high/ordered/heatmap style the tables the same way as the metrics workbooks:
+    bold_high bolds each score column's highest-mean cell (ties included; '-' cells ignored),
+    ordered orders each table's setting rows by its own metric's mean over THIS dataset's
+    completed trials (map pngs by the mAP 'All' column, acc pngs by the acc 'I2T' column) --
+    localized per dataset and per group, independent of the cross-dataset order used in the
+    workbooks -- heatmap shades score cells white->#ff5533 (None/scaled/fixed as in
+    update_metrics_xlsx). Re-rendered at each trial completion."""
+    settings_all = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
     dataset = ArtifactManager.dataset
-    comps_by = _collect_comps(settings, (dataset,), set_key, grp)
-    # a setting gets a row only once it has >= 1 completed trial in THIS dataset (no blank rows)
-    settings = [s for s in settings if comps_by[(s, dataset)]]
-
-    def ordered_settings(score_key, label):
-        # localized order: this dataset's per-setting trial means (single-dataset degenerate
-        # case of _cross_dataset_means), not the cross-dataset means backing the xlsx order
-        means = _cross_dataset_means(settings, (dataset,), comps_by, score_key, (label,))
-        return _order_settings(settings, means, label)
-
-    settings_map = ordered_settings("map", "All") if ordered else settings
-    settings_acc = ordered_settings("acc", "I2T") if ordered else settings
+    comps_all = _collect_comps(settings_all, (dataset,))
+    # completion is per-trial (each metrics file carries every eval group), so row presence is
+    # group-independent: a setting gets a row only once it has >= 1 completed trial in THIS
+    # dataset (no blank rows)
+    comps_ref = next(iter(comps_all.values()))
+    settings = [s for s in settings_all if comps_ref[(s, dataset)]]
     map_labels, acc_labels = _score_labels(prim_scores)
 
-    title_suffix = f" -- {DATASET_ALIAS2NAME[dataset]} ({group_name})"
     dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
-    dpath_stats.mkdir(parents=True, exist_ok=True)
+    (dpath_stats / "map").mkdir(parents=True, exist_ok=True)
+    (dpath_stats / "acc").mkdir(parents=True, exist_ok=True)
 
-    grid_map = _stats_table_grid(
-        map_labels,
-        [(setting, [comp["map"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_map],
-        spread_type,
-    )
-    _render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map.png", bold_high, heatmap)
+    for group_key, (_, _, group_name) in _EVAL_GROUPS.items():
+        comps_by = comps_all[group_key]
 
-    grid_acc = _stats_table_grid(
-        acc_labels,
-        [(setting, [comp["acc"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_acc],
-        spread_type,
-    )
-    _render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc.png", bold_high, heatmap)
+        def ordered_settings(score_key, label):
+            # localized order: this dataset's per-setting trial means (single-dataset degenerate
+            # case of _cross_dataset_means), not the cross-dataset means backing the workbook order
+            means = _cross_dataset_means(settings, (dataset,), comps_by, score_key, (label,))
+            return _order_settings(settings, means, label)
+
+        settings_map = ordered_settings("map", "All") if ordered else settings
+        settings_acc = ordered_settings("acc", "I2T") if ordered else settings
+        title_suffix = f" -- {DATASET_ALIAS2NAME[dataset]} ({group_name})"
+
+        grid_map = _stats_table_grid(
+            map_labels,
+            [(setting, [comp["map"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_map],
+            spread_type,
+        )
+        _render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map" / f"{group_key}.png", bold_high, heatmap)
+
+        grid_acc = _stats_table_grid(
+            acc_labels,
+            [(setting, [comp["acc"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_acc],
+            spread_type,
+        )
+        _render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc" / f"{group_key}.png", bold_high, heatmap)
 
 @rank0
-def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides, hw_perf):
-    """Write artifacts/<campaign>/stats/metrics.xlsx: two sheets, 'Composite mAP' (comp map scores,
+def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides, hw_perf):
+    """Write one workbook per eval group to artifacts/<campaign>/stats/metrics/<group>.xlsx, each
+    with two sheets, 'Composite mAP' (comp map scores,
     All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy' (comp acc, single I2T
     column) -- prim_scores appends the per-partition primitive score columns (ID/OOD x modality)
     to both sheets' tables, and splits each mAP-sheet table banner into the title cell (first
     column, unmerged) plus grey merged 'Composite Scores' / 'Primitive Scores' group headers over
     their column groups (the accuracy sheet keeps full-width merged title banners). Each sheet
-    opens with a bold '<repo-parent-dir> - <campaign>' title cell (e.g.
-    'bc_dev - dev') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
+    opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>)' title cell (e.g.
+    'bc_dev - dev (Native)') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
     title banner, then a table of header row 'Setting' + one column per score label and one
     '<setting> (n_trials)' row per setting, then a blank spacer row before the next dataset -- with
     the always-shown 'Mean' summary table at the bottom: one row per setting, each cell the
     arithmetic mean, across datasets with completed trials, of that setting/label's per-dataset
     mean (a point value, no spread). Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or 'XX.XX ± XX.XX'
     (>1 trial, mean ± spread), aggregated across each setting's completed trials'
-    scores.<set_key>.<grp>.comp for the eval group selected by table_eval_group. A setting gets
+    scores.<set_key>.<grp>.comp for the workbook's eval group. A setting gets
     rows only once it has >= 1 completed trial in some dataset -- it then appears in every table of
     both sheets, with blank '-' rows in dataset tables lacking its trials; settings with no
     completed trials anywhere are omitted entirely. When bold_high is
@@ -387,15 +411,17 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     completed or not), read from setting_metadata.json's n_crashes. Column widths hug each
     column's longest header/data cell (banner/label text overflows); blank separator columns get
     a small ~square width. Regenerated at each trial completion."""
-    set_key, grp, _ = _TABLE_EVAL_GROUPS[table_eval_group]
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
     settings, datasets = metadata["settings"], metadata["datasets"]
 
-    comps_by = _collect_comps(settings, datasets, set_key, grp)
-    # a setting gets rows only once it has >= 1 completed trial in some dataset; it then appears in
-    # every dataset table (blank '-' row where that dataset has no trials for it yet)
-    settings = [s for s in settings if any(comps_by[(s, dataset)] for dataset in datasets)]
-    seeds = sorted({seed for comps in comps_by.values() for seed in comps}, key=int)
+    comps_all = _collect_comps(settings, datasets)
+    # completion is per-trial (each metrics file carries every eval group), so row presence and
+    # seeds are group-independent. a setting gets rows only once it has >= 1 completed trial in
+    # some dataset; it then appears in every dataset table (blank '-' row where that dataset has
+    # no trials for it yet)
+    comps_ref = next(iter(comps_all.values()))
+    settings = [s for s in settings if any(comps_ref[(s, dataset)] for dataset in datasets)]
+    seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
 
     if baseline_overrides:
         dpath_settings = ArtifactManager.dpath_campaign / "settings"
@@ -421,7 +447,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
 
     hw_by, crashes_by = _collect_hw(settings, datasets) if hw_perf else (None, None)
 
-    def build_blocks(score_key, labels, with_hw):
+    def build_blocks(comps_by, score_key, labels, with_hw):
         """The sheet's blocks, left to right: (label, [(title, cell grid, hw grid), ...]) -- the
         aggregate block (label None): one table per campaign dataset, then the always-shown 'Mean'
         cross-dataset summary table at the bottom; then one block per completed seed (label
@@ -506,7 +532,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    def write_sheet(ws, blocks, groups, ogrid):
+    def write_sheet(ws, blocks, groups, ogrid, group_name):
         """groups: None -> each table's banner is its title merged across the full table width;
         else [(group_title, n_group_cols), ...] -> the title sits unmerged in the block's first
         column, followed by one grey merged group-header cell per group (e.g. 'Composite Scores'
@@ -523,7 +549,7 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
         n_cols = len(blocks[0][1][0][1][0])  # corner + one col per score label (same for every grid in the sheet)
         widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
-        campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_campaign.name}")
+        campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_campaign.name} ({group_name})")
         campaign.font = bold
         campaign.alignment = left
 
@@ -629,27 +655,27 @@ def update_metrics_xlsx(table_eval_group, spread_type, bold_high, ordered, heatm
     # with prim_scores, mAP-sheet banners split into title + 'Composite Scores'/'Primitive Scores'
     # group headers; the accuracy sheet keeps full-width title banners
     map_groups = [("Composite Scores", 6), ("Primitive Scores", 6)] if prim_scores else None
-    wb = Workbook()
-    ws_map = wb.active
-    ws_map.title = "Composite mAP"
-    map_blocks, map_ogrid = build_blocks("map", map_labels, hw_perf)
-    write_sheet(ws_map, map_blocks, map_groups, map_ogrid)
-    # hw companions are mAP-sheet only: the accuracy sheet keeps just the overrides band
-    acc_blocks, acc_ogrid = build_blocks("acc", acc_labels, False)
-    write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid)
+    dpath_metrics = ArtifactManager.dpath_campaign / "stats" / "metrics"
+    dpath_metrics.mkdir(parents=True, exist_ok=True)
+    for group_key, (_, _, group_name) in _EVAL_GROUPS.items():
+        comps_by = comps_all[group_key]
+        wb = Workbook()
+        ws_map = wb.active
+        ws_map.title = "Composite mAP"
+        map_blocks, map_ogrid = build_blocks(comps_by, "map", map_labels, hw_perf)
+        write_sheet(ws_map, map_blocks, map_groups, map_ogrid, group_name)
+        # hw companions are mAP-sheet only: the accuracy sheet keeps just the overrides band
+        acc_blocks, acc_ogrid = build_blocks(comps_by, "acc", acc_labels, False)
+        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid, group_name)
+        wb.save(dpath_metrics / f"{group_key}.xlsx")
 
-    dpath_stats = ArtifactManager.dpath_campaign / "stats"
-    dpath_stats.mkdir(parents=True, exist_ok=True)
-    wb.save(dpath_stats / "metrics.xlsx")
-
-
-def _samples_seen_tick_formatter(value, _pos):
-    return f"{value / 1_000_000:g}"
 
 @rank0
 def plot_metrics(
         data_tracker,
         dpath_trial,
+        nshot_bucket_names,
+        epoch_size,
         fontsize_axes=12,
         fontsize_ticks=8,
         fontsize_legend=8,
@@ -664,19 +690,11 @@ def plot_metrics(
 
     # eval panels (retrieval / n-shot / accuracy) are populated only when eval ran;
     # train panels (loss / grad norm / lr) plot whenever train data is present (e.g. train_pt=trainval).
-    partitions = [k for k in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).keys() if k != "comp"]
+    has_eval = "scores" in data_eval
 
-    x_eval = data_eval["n_samps_seen"]
-    x_train = data_epoch["n_samps_seen"]
-
-    bucket_partition = "id" if "id" in partitions else None
-    bucket_comp_keys_standard = [
-        key for key in data_eval.get("scores", {}).get("closed_set", {}).get("standard", {}).get(bucket_partition, {}).get("map", {}).get("n-shot", {}).keys()
-    ]
-    bucket_comp_keys_full_set = [
-        key
-        for key in data_eval.get("scores", {}).get("full_set", {}).get("standard", {}).get(bucket_partition, {}).get("map", {}).get("n-shot", {}).keys()
-    ]
+    # tracked in samples under the hood; plotted in epoch units
+    x_eval = [v / epoch_size for v in data_eval["n_samps_seen"]]
+    x_train = [v / epoch_size for v in data_epoch["n_samps_seen"]]
 
     plot_composite_metrics(
         data_epoch,
@@ -684,9 +702,8 @@ def plot_metrics(
         x_train,
         x_eval,
         dpath_trial,
-        partitions,
-        bucket_partition,
-        bucket_comp_keys_standard,
+        has_eval,
+        nshot_bucket_names,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
@@ -694,12 +711,13 @@ def plot_metrics(
         figsize,
         height_ratios,
         partition_metric_group="standard",
-        full_set=False,
-        retrieval_ylabel="mAP Scores",
-        accuracy_ylabel="I2T Accuracy",
-        nshot_accuracy_ylabel="n-shot Accuracy (ID)",
-        plot_title=f"Train Metrics{title_suffix}",
-        output_filename="closed_standard.png",
+        jointgall=False,
+        retrieval_ylabel="Native Gallery mAP Scores",
+        nshot_ylabel="Native Gallery n-shot mAP (ID)",
+        accuracy_ylabel="Native Gallery I2T Accuracy",
+        nshot_accuracy_ylabel="Native Gallery n-shot Accuracy (ID)",
+        plot_title=f"Train Metrics (Native Gallery){title_suffix}",
+        output_filename="nativegall.png",
     )
 
     plot_composite_metrics(
@@ -708,22 +726,22 @@ def plot_metrics(
         x_train,
         x_eval,
         dpath_trial,
-        partitions,
-        bucket_partition,
-        bucket_comp_keys_standard,
+        has_eval,
+        nshot_bucket_names,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="per_class",
-        full_set=False,
-        retrieval_ylabel="Macro mAP Scores",
-        accuracy_ylabel="I2T Per-Class Accuracy",
-        nshot_accuracy_ylabel="n-shot Per-Class\nAccuracy (ID)",
-        plot_title=f"Train Metrics (Macro){title_suffix}",
-        output_filename="closed_macro.png",
+        partition_metric_group="macro",
+        jointgall=False,
+        retrieval_ylabel="Native Gallery Macro mAP Scores",
+        nshot_ylabel="Native Gallery n-shot Macro mAP (ID)",
+        accuracy_ylabel="Native Gallery I2T Macro Accuracy",
+        nshot_accuracy_ylabel="Native Gallery n-shot Macro\nAccuracy (ID)",
+        plot_title=f"Train Metrics (Native Gallery Macro){title_suffix}",
+        output_filename="nativegall_macro.png",
     )
 
     plot_composite_metrics(
@@ -732,9 +750,8 @@ def plot_metrics(
         x_train,
         x_eval,
         dpath_trial,
-        partitions,
-        bucket_partition,
-        bucket_comp_keys_full_set,
+        has_eval,
+        nshot_bucket_names,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
@@ -742,12 +759,13 @@ def plot_metrics(
         figsize,
         height_ratios,
         partition_metric_group="standard",
-        full_set=True,
-        retrieval_ylabel="Full-Set mAP Scores",
-        accuracy_ylabel="Full-Set I2T Accuracy",
-        nshot_accuracy_ylabel="Full-Set n-shot Accuracy (ID)",
-        plot_title=f"Train Metrics (Full-Set){title_suffix}",
-        output_filename="full_standard.png",
+        jointgall=True,
+        retrieval_ylabel="Joint Gallery mAP Scores",
+        nshot_ylabel="Joint Gallery n-shot mAP (ID)",
+        accuracy_ylabel="Joint Gallery I2T Accuracy",
+        nshot_accuracy_ylabel="Joint Gallery n-shot Accuracy (ID)",
+        plot_title=f"Train Metrics (Joint Gallery){title_suffix}",
+        output_filename="jointgall.png",
     )
 
     plot_composite_metrics(
@@ -756,22 +774,22 @@ def plot_metrics(
         x_train,
         x_eval,
         dpath_trial,
-        partitions,
-        bucket_partition,
-        bucket_comp_keys_full_set,
+        has_eval,
+        nshot_bucket_names,
         fontsize_axes,
         fontsize_ticks,
         fontsize_legend,
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="per_class",
-        full_set=True,
-        retrieval_ylabel="Full-Set Macro mAP Scores",
-        accuracy_ylabel="Full-Set I2T Per-Class Accuracy",
-        nshot_accuracy_ylabel="Full-Set n-shot Per-Class\nAccuracy (ID)",
-        plot_title=f"Train Metrics (Macro Full-Set){title_suffix}",
-        output_filename="full_macro.png",
+        partition_metric_group="macro",
+        jointgall=True,
+        retrieval_ylabel="Joint Gallery Macro mAP Scores",
+        nshot_ylabel="Joint Gallery n-shot Macro mAP (ID)",
+        accuracy_ylabel="Joint Gallery I2T Macro Accuracy",
+        nshot_accuracy_ylabel="Joint Gallery n-shot Macro\nAccuracy (ID)",
+        plot_title=f"Train Metrics (Joint Gallery Macro){title_suffix}",
+        output_filename="jointgall_macro.png",
     )
 
 def plot_composite_metrics(
@@ -780,8 +798,7 @@ def plot_composite_metrics(
     x_train,
     x_eval,
     dpath_trial,
-    partitions,
-    bucket_partition,
+    has_eval,
     bucket_comp_keys,
     fontsize_axes,
     fontsize_ticks,
@@ -790,8 +807,9 @@ def plot_composite_metrics(
     figsize,
     height_ratios,
     partition_metric_group,
-    full_set,
+    jointgall,
     retrieval_ylabel,
+    nshot_ylabel,
     accuracy_ylabel,
     nshot_accuracy_ylabel,
     plot_title,
@@ -802,28 +820,19 @@ def plot_composite_metrics(
 
     ax0 = fig.add_subplot(gs[0, 0])
 
-    id_partition = "id" if "id" in partitions else None
-    ood_partition = "ood" if "ood" in partitions else None
     retrieval_specs = (
         ("i2t", "I2T", "blue"),
         ("i2i", "I2I", "red"),
         ("t2i", "T2I", "green"),
     )
-    set_key = "full_set" if full_set else "closed_set"
-    style_specs = (
-        (id_partition, "ID", "-"),
-        (ood_partition, "OOD", "--"),
-    )
-    for partition, partition_label, linestyle in style_specs:
-        if partition is None:
-            continue
-        partition_group_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(partition, {})
-        partition_group_scores = partition_group_scores.get("map", {})
-        for metric_name, metric_label, color in retrieval_specs:
-            if metric_name in partition_group_scores:
+    set_key = "jointgall" if jointgall else "nativegall"
+    if has_eval:
+        for partition, partition_label, linestyle in (("id", "ID", "-"), ("ood", "OOD", "--")):
+            partition_map = data_eval["scores"][set_key][partition_metric_group][partition]["map"]
+            for metric_name, metric_label, color in retrieval_specs:
                 ax0.plot(
                     x_eval,
-                    partition_group_scores[metric_name],
+                    partition_map[metric_name],
                     label=f"{partition_label} {metric_label}",
                     color=color,
                     linestyle=linestyle,
@@ -831,24 +840,17 @@ def plot_composite_metrics(
 
     ax0.set_ylabel(retrieval_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
-    if partitions:
+    if has_eval:
         ax0.legend(loc="lower right", fontsize=fontsize_legend)
     ax0.grid(True)
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    is_macro_plot = partition_metric_group == "per_class"
-    id_mode_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(bucket_partition, {})
-    nshot_key = "n-shot"
-    if is_macro_plot:
-        nshot_ylabel = "Full-Set n-shot Macro mAP (ID)" if full_set else "n-shot Macro mAP (ID)"
-    else:
-        nshot_ylabel = "Full-Set n-shot mAP (ID)" if full_set else "n-shot mAP (ID)"
-    comp_nshot = id_mode_scores.get("map", {}).get(nshot_key, {})
+    id_mode_scores = data_eval["scores"][set_key][partition_metric_group]["id"] if has_eval else {}
+    comp_nshot = id_mode_scores["map"].get("n-shot", {}) if has_eval else {}
     if bucket_comp_keys:
         for key in reversed(bucket_comp_keys):
-            label = key
-            maybe_plot(ax1, x_eval, comp_nshot, key, label, linestyle=":")
+            maybe_plot(ax1, x_eval, comp_nshot, key, key, linestyle=":")
         if comp_nshot:
             ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.set_ylabel(nshot_ylabel, fontsize=fontsize_axes, fontweight="bold")
@@ -857,24 +859,22 @@ def plot_composite_metrics(
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
-    for partition in partitions:
-        partition_group_scores = data_eval.get("scores", {}).get(set_key, {}).get(partition_metric_group, {}).get(partition, {})
-        partition_group_scores = partition_group_scores.get("acc", {})
-        if "i2t" in partition_group_scores:
+    if has_eval:
+        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
             ax2.plot(
                 x_eval,
-                partition_group_scores["i2t"],
-                label="-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition.split("_"))]),
+                data_eval["scores"][set_key][partition_metric_group][partition]["acc"]["i2t"],
+                label=partition_label,
             )
     ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
-    if partitions:
+    if has_eval:
         ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
-    comp_nshot_acc = id_mode_scores.get("acc", {}).get("n-shot", {})
+    comp_nshot_acc = id_mode_scores["acc"].get("n-shot", {}) if has_eval else {}
     if bucket_comp_keys:
         for key in reversed(bucket_comp_keys):
             maybe_plot(ax3, x_eval, comp_nshot_acc, key, key, linestyle=":")
@@ -886,17 +886,13 @@ def plot_composite_metrics(
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-    if len(data_epoch.get("loss_train", [])) == len(x_train):
+    if len(data_epoch["loss_train"]) == len(x_train):
         ax4.plot(x_train, data_epoch["loss_train"], label="Train Loss")
-    if len(data_epoch.get("loss_raw_train", [])) == len(x_train):
+    if len(data_epoch["loss_raw_train"]) == len(x_train):
         ax4.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
-    for partition in partitions:
-        if len(data_eval.get("loss_raw", {}).get(partition, [])) == len(x_eval):
-            ax4.plot(
-                x_eval,
-                data_eval["loss_raw"][partition],
-                label=f'{"-".join([s.upper() if i == 0 else s.title() for i, s in enumerate(partition.split("_"))])} Val Loss',
-            )
+    if has_eval:
+        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
+            ax4.plot(x_eval, data_eval["loss_raw"][partition], label=f"{partition_label} Val Loss")
     ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
     ax4.set_yscale("log")
     ax4.minorticks_on()
@@ -906,7 +902,7 @@ def plot_composite_metrics(
     ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
-    if len(data_epoch.get("grad_norm_model", [])) == len(x_train):
+    if len(data_epoch["grad_norm_model"]) == len(x_train):
         ax5.plot(x_train, data_epoch["grad_norm_model"], color="green")
     ax5.set_ylabel("Grad Norm", fontsize=fontsize_axes, fontweight="bold")
     ax5.set_yscale("log")
@@ -922,7 +918,7 @@ def plot_composite_metrics(
     for stat_prefix, stat_color in (("targ", color_targ), ("sim", color_sim)):
         for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
             stat_key = f"{stat_prefix}_{stat_name}"
-            if len(data_epoch.get(stat_key, [])) == len(x_train):
+            if len(data_epoch[stat_key]) == len(x_train):
                 ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
     ax6.set_ylabel("Similarity / Target", fontsize=fontsize_axes, fontweight="bold")
     ax6.set_ylim(-1.0, 1.0)
@@ -942,15 +938,14 @@ def plot_composite_metrics(
     ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax7 = fig.add_subplot(gs[7, 0], sharex=ax0)
-    if len(data_epoch.get("lr", [])) == len(x_train):
+    if len(data_epoch["lr"]) == len(x_train):
         ax7.plot(x_train, data_epoch["lr"])
     ax7.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
     ax7.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
     ax7.yaxis.set_offset_position("right")
     ax7.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
     ax7.yaxis.get_offset_text().set_visible(False)
-    ax7.set_xlabel("Samples Seen (M)", fontsize=fontsize_axes, fontweight="bold")
-    ax7.xaxis.set_major_formatter(FuncFormatter(_samples_seen_tick_formatter))
+    ax7.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     ax7.grid(True)
     ax7.tick_params(labelsize=fontsize_ticks)
 

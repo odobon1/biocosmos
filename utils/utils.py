@@ -297,7 +297,7 @@ class PrintLog:
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
         as 'trial_id --- D-HH:MM:SS', dash-aligned per section; Failed entries additionally carry sample
-        progress as ' --- X.XM/X.XM' (samples seen / sample_volume) and the failure type as
+        progress as ' --- E/N' (epoch index / n_epochs) and the failure type as
         ' --- RAM|VRAM|Other|Mixed' (the aggregate cause over the fatal retry loop's crashes, parsed
         from error.log's 'failure=' marker written by campaign_runner._log_trial_error). A trial that
         failed before ever writing metadata shows 'n/a'. Trials run sequentially, so the filesystem can't tell a running trial
@@ -312,7 +312,7 @@ class PrintLog:
 
         def fmt_trial_progress(metadata_trial):
             progress = metadata_trial["progress"]
-            return f"{progress['n_samps_seen'] / 1e6:.1f}M/{progress['sample_volume'] / 1e6:.1f}M"
+            return f"{progress['epoch']}/{progress['n_epochs']:g}"
 
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
@@ -367,14 +367,15 @@ class PrintLog:
             PrintLog.wrote_text_eval = True
 
     @staticmethod
-    def _make_epoch_header(idx_epoch, n_epochs, width=75):
-        return f"{f' Epoch {idx_epoch}/{n_epochs} ':#^{width}}"
+    def _make_epoch_header(epoch_first, epoch_last, n_epochs, width=75):
+        label = f"Epoch {epoch_last}" if epoch_first == epoch_last else f"Epochs {epoch_first}-{epoch_last}"
+        return f"{f' {label}/{n_epochs:g} ':#^{width}}"
 
     @staticmethod
     @rank0
-    def batch_logs_epoch_header(idx_epoch, n_epochs):
+    def batch_logs_epoch_header(epoch_first, epoch_last, n_epochs):
         if PrintLog.logging:
-            header_epoch = PrintLog._make_epoch_header(idx_epoch, n_epochs) + "\n"
+            header_epoch = PrintLog._make_epoch_header(epoch_first, epoch_last, n_epochs) + "\n"
             PrintLog.log_batch_general.write(header_epoch)
             PrintLog.log_batch_grad_norm.write(header_epoch)
             PrintLog.log_batch_temp_bias.write(header_epoch)
@@ -382,12 +383,12 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def epoch(time_train, time_train_avg, time_data_wait_ranks, loss_train_avg, loss_train_raw_avg, n_samps_seen, idx_epoch, n_epochs):
+    def epoch(time_train, time_train_avg, time_data_wait_ranks, loss_train_avg, loss_train_raw_avg, n_samps_seen, epoch_first, epoch_last, n_epochs):
 
         SECTION_WIDTH = 66
 
         lines_epoch = [
-            PrintLog._make_epoch_header(idx_epoch, n_epochs, width=SECTION_WIDTH),
+            PrintLog._make_epoch_header(epoch_first, epoch_last, n_epochs, width=SECTION_WIDTH),
             PrintLog._dash_aligned_lines((
                 ("Loss", f"{loss_train_avg:.3e}"),
                 ("Raw Loss", f"{loss_train_raw_avg:.3e}"),
@@ -503,24 +504,22 @@ class PrintLog:
         lines_comp = f"{' ID/OOD Eval ':=^{SECTION_WIDTH}}\n"
 
         lines_comp += _format_composite_block(
-            " Composite mAP ",
-            eval_metrics["scores"]["closed_set"]["standard"]["comp"]["map"],
+            " Composite Native Gallery mAP ",
+            eval_metrics["scores"]["nativegall"]["standard"]["comp"]["map"],
         )
-        if "comp" in eval_metrics["scores"]["full_set"]["standard"]:
-            lines_comp += _format_composite_block(
-                " Composite Full-Set mAP ",
-                eval_metrics["scores"]["full_set"]["standard"]["comp"]["map"],
-            )
+        lines_comp += _format_composite_block(
+            " Composite Joint Gallery mAP ",
+            eval_metrics["scores"]["jointgall"]["standard"]["comp"]["map"],
+        )
 
         lines_comp_macro = _format_composite_block(
-            " Composite macro mAP ",
-            eval_metrics["scores"]["closed_set"]["per_class"]["comp"]["map"],
+            " Composite Native Gallery Macro mAP ",
+            eval_metrics["scores"]["nativegall"]["macro"]["comp"]["map"],
         )
-        if "comp" in eval_metrics["scores"]["full_set"]["per_class"]:
-            lines_comp_macro += _format_composite_block(
-                " Composite macro Full-Set mAP ",
-                eval_metrics["scores"]["full_set"]["per_class"]["comp"]["map"],
-            )
+        lines_comp_macro += _format_composite_block(
+            " Composite Joint Gallery Macro mAP ",
+            eval_metrics["scores"]["jointgall"]["macro"]["comp"]["map"],
+        )
         
         loss_pairs = [
             (partition.upper(), f"{eval_metrics['loss_raw'][partition]:.3e}")
@@ -584,8 +583,8 @@ class PrintLog:
             )),
             "",
             PrintLog._dash_aligned_lines((
-                ("Sample Volume", f"{cfg_train.sample_volume:,}"),
-                ("Checkpoint Every", f"{cfg_train.chkpt_every:,} samples"),
+                ("Epochs", f"{cfg_train.n_epochs:g} ({cfg_train.sample_volume:,} samples)"),
+                ("Checkpoints", f"{cfg_train.n_chkpts} (every {cfg_train.chkpt_interval:,} samples)"),
                 ("Batch Size", f"{cfg_train.batch_size}"),
                 ("DV Batching", f"{cfg_train.dv_batching}"),
             )),
@@ -749,9 +748,9 @@ class PrintLog:
         lines_logits = [
             "Logits",
             PrintLog._dash_aligned_lines((
-                ("- Scale Init",   cfg_logits["scale"]["init"]),
-                ("- Scale Freeze", cfg_logits["scale"]["freeze"]),
-                ("- Scale Clamp",  cfg_logits["scale"]["clamp"]),
+                ("- Temp Init",   cfg_logits["temperature"]["init"]),
+                ("- Temp Freeze", cfg_logits["temperature"]["freeze"]),
+                ("- Temp Clamp",  cfg_logits["temperature"]["clamp"]),
                 ("- Bias Init",    cfg_logits["bias"]["init"]),
                 ("- Bias Freeze",  cfg_logits["bias"]["freeze"]),
             )),

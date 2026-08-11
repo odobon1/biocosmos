@@ -1,12 +1,15 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-sample_volume: 1_000_000
-chkpt_every: 100_000
-batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}
-epoch_floor: 100_000  # {null, [int]}; Min samples per "epoch": when train set < epoch_floor, each epoch chains
-# ceil(epoch_floor / train_set_size) full shuffled permutations of the train set, decoupling epoch length (and max 
-# batch_size) from dataset size; (null | train set >= epoch_floor) One pass per epoch
+n_epochs: 10  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_chkpts: 4  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
+# sample_volume / n_chkpts samples
+batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
+# clip_vitb16 and siglip_vitb16 (and perhaps all) was 32_768
+chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
+# ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
+# batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
+# (null | train set >= chain_floor) One pass per epoch
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # Architecture
@@ -40,7 +43,7 @@ loss:  # Primary loss
   targ: sw  # {iw, sw, tax, phylo}
   wting:
     cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
-      type: inv_freq  # {inv_freq, class_bal, null}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
+      type: null  # {inv_freq, class_bal, null}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
       # (null) Disable class-imbalance weighting
       inv_freq:  # Inverse-frequency weighting params; Inert iff (cls_imb.type != inv_freq)
         gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; (1.0) Classic inverse-frequency; (0.5) Inverse-sqrt-frequency;
@@ -55,40 +58,36 @@ loss:  # Primary loss
       # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
       # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (loss.crit != bce)
     focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
-      gamma: 2.0  # (0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
+      gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
       comp_type: 1  # {1, 2}; Continuous-form focal loss computation type; Identical behavior to discrete form (values 
       # and gradients) with binary targets; Inert iff (loss.crit: bce AND loss.targ: {iw, sw}) OR 
       # (loss.crit: infonce2 AND loss.targ: iw) OR (loss.crit: infonce1)
     bce:  # BCE-specific weighting params; Inert iff (loss.crit != bce)
-      dsmr: true  # Dynamic similarity mass rebalancing
-      agg: prod  # {prod, mean, geo_mean, harm_mean}
+      dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
       norm:
-        cls_imb: true  # {true, false}; Inert if (bce.agg: {prod, geo_mean} AND bce.norm.agg: true) OR
-        # (bce.agg: {prod, geo_mean} AND loss2.mix_unit_scale: true AND loss2.mix: >0.0)
-        agg: false  # {true, false}; (true) Normalize aggregate of class-imb, focal, dsmr weights;
-        # Inert if (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
+        cls_imb: false  # {true, false}; Inert if (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
   logits:
-    scale:
+    temperature:
       init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
-      # ([float]) Override init, learnable param
-      freeze: false  # {true, false}; (true) Non-learnable scale
+      # ([float]) Override init; base: (siglip_vitb16: ~8.523e-3), (clip_vitb16: ~1.000e-2)
+      freeze: false  # {true, false}; (true) Non-learnable log-scale
       clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
       # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) Unbounded
-    bias:
-      init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
-      # ([float]) Override init, learnable param
+    bias:  # Inert iff (loss.crit: infonce1) OR (loss.crit: infonce2 AND loss.targ: iw)(?)
+      init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
+      # ([float]) Override init; base: (siglip_vitb16: -12.9324)
       freeze: false  # {true, false}; (true) Non-learnable bias
 
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
-  mix: 0.3  # [0.0, 1.0); (0.0) Disable secondary loss
+  mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
   mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending
   crit: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {iw, sw, tax, phylo}
   wting:
     cls_imb:
-      type: inv_freq  # {inv_freq, class_bal, null}
+      type: null  # {inv_freq, class_bal, null}
       inv_freq:
         gamma: 0.5  # (0.0, 1.0]
       class_bal:
@@ -96,16 +95,14 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
       freq_type_2d: naive  # {naive, cmx2, pair_prob}
       wt_mean_type: per_class  # {per_class, per_sample}
     focal:
-      gamma: 2.0  # (0.0, inf)
+      gamma: 0.0  # [0.0, inf)
       comp_type: 1  # {1, 2}
     bce:
-      dsmr: true
-      agg: prod  # {prod, mean, geo_mean, harm_mean}
+      dsmr: false  # {true, false}
       norm:
-        cls_imb: true  # {true, false}
-        agg: false  # {true, false}
+        cls_imb: false  # {true, false}
   logits:
-    scale:
+    temperature:
       init: null  # {null, [float]}
       freeze: false  # {true, false}
       clamp: false  # {true, false}
@@ -143,8 +140,8 @@ text_template:
 opt:  # Optimization
   lr:  # Learning rate
     init: 1.0e-5
-    decay_factor: 1.0e-4  # Cosine scheduler eta_min = lr.init * lr.decay_factor
-    warmup: 200_000  # Sample volume for linear LR warmup
+    decay_factor: 1.0e-4  # {null, [float]}; Cosine scheduler eta_min = lr.init * decay_factor; (null) Decay to 0.0
+    warmup: 0.05  # [0.0, 1.0]; Linear LR warmup duration as a fraction of sample_volume (e.g. 0.02 -> 2% of sample_volume)
   l2reg: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends 0.9
   beta2: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
@@ -153,12 +150,10 @@ opt:  # Optimization
 dev:
   debug_mode: false  # {true, false}
   debug:  # Config overrides applied iff (dev.debug_mode: true)
-    sample_volume: 3_000
-    chkpt_every: 3_000
+    n_epochs: 1
+    n_chkpts: 1
     batch_size: 256
-    opt.lr.warmup: 0
-  traintime_evals: true  # {true, false}; (true) Run evals at each checkpoint threshold (metrics + viz + evolution
-  # GIFs); (false) Only base/final evals run
+    opt.lr.warmup: 0.0
   manifold_viz:
     n_trials: 0  # Number of trials (per setting) to compute and save PCA + t-SNE projections; (0) Overrides
     # plot_{2,4,7}panel flags to false
@@ -176,7 +171,8 @@ dev:
       pca_bounds: final  # {null, final}
   logging: true
   continue_campaign: false  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
-  # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ...
+  # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign
+  # runner reads this flag from here (not from cfg_baseline.json)
   del_base_eval_cache:
     campaign: false  # {true, false}; (true) Delete base_eval_cache/ once, when the campaign is first created
     # (relaunches keep the cache the campaign's own trials built)

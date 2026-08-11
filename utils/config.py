@@ -73,10 +73,10 @@ class TrainConfig:
     split: str
     train_pt: str
 
-    sample_volume: int
-    chkpt_every: int
+    n_epochs: int | float
+    n_chkpts: int
     batch_size: int
-    epoch_floor: int | None
+    chain_floor: int | None
     dv_batching: bool
 
     arch: dict
@@ -111,30 +111,53 @@ class TrainConfig:
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
-        if self.epoch_floor is not None and self.epoch_floor <= 0:
-            raise ValueError(f"epoch_floor must be greater than 0 or null, got {self.epoch_floor}")
-        # chain-shuffle: when the train set is smaller than epoch_floor, each epoch chains this many
-        # full shuffled permutations of it (ChainShuffleDistributedSampler)
-        if self.epoch_floor is not None and size_train < self.epoch_floor:
-            self.chain_perms = math.ceil(self.epoch_floor / size_train)
+        self.size_train = size_train
+
+        if self.n_epochs <= 0:
+            raise ValueError(f"n_epochs must be greater than 0, got {self.n_epochs}")
+        # epochs specify duration; everything downstream still drives on samples
+        self.sample_volume = round(self.n_epochs * size_train)
+
+        if self.chain_floor is not None and self.chain_floor <= 0:
+            raise ValueError(f"chain_floor must be greater than 0 or null, got {self.chain_floor}")
+        # chain-shuffle: when the train set is smaller than chain_floor, each dataloader pass chains
+        # this many full shuffled permutations of it (ChainShuffleDistributedSampler)
+        if self.chain_floor is not None and size_train < self.chain_floor:
+            self.chain_perms = math.ceil(self.chain_floor / size_train)  # E_chain_nom
         else:
             self.chain_perms = None
-        samps_epoch = size_train * (self.chain_perms or 1)
-        if self.batch_size > samps_epoch:
+        samps_pass_nom = size_train * (self.chain_perms or 1)  # X_chain_nom
+        if self.batch_size > samps_pass_nom:
             raise ValueError(
-                f"batch_size {self.batch_size} exceeds epoch size {samps_epoch} "
+                f"batch_size {self.batch_size} exceeds epoch size {samps_pass_nom} "
                 f"(train set size {size_train} x {self.chain_perms or 1} chained permutations)"
             )
-        samps_per_epoch = samps_epoch - samps_epoch % self.batch_size
-        self.n_epochs = math.ceil(self.sample_volume / samps_per_epoch)
-        
-        if self.chkpt_every <= 0:
-            raise ValueError(f"chkpt_every must be greater than 0, got {self.chkpt_every}")
+        # samples a pass actually consumes (drop_last batch truncation): X_chain
+        self.samps_per_pass = samps_pass_nom - samps_pass_nom % self.batch_size
+        # epochs credited per pass -- the number of permutations the batched pass touches: E_chain
+        self.epochs_per_pass = math.ceil(self.samps_per_pass / size_train)
+        self.n_passes = math.ceil(self.sample_volume / self.samps_per_pass)
 
-        if self.sample_volume % self.chkpt_every != 0:
+        if self.n_chkpts <= 0:
+            raise ValueError(f"n_chkpts must be greater than 0, got {self.n_chkpts}")
+        # sample interval between checkpoint/eval thresholds; sample_volume is data-derived so it need
+        # not divide evenly -- the trainer skips the last mid-train threshold and the final eval covers
+        # it at sample_volume
+        self.chkpt_interval = self.sample_volume // self.n_chkpts
+        if self.chkpt_interval == 0:
+            raise ValueError(f"n_chkpts ({self.n_chkpts}) exceeds sample_volume ({self.sample_volume})")
+
+        for key, val in (("opt.lr.init", self.opt["lr"]["init"]), ("opt.l2reg", self.opt["l2reg"])):
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                raise ValueError(
+                    f"{key} must be numeric, got {val!r} -- note YAML parses scientific notation "
+                    f"without a decimal point (e.g. 1e-6) as a string; write 1.0e-6"
+                )
+
+        lr_warmup = self.opt["lr"]["warmup"]
+        if not 0.0 <= lr_warmup < 1.0:
             raise ValueError(
-                f"sample_volume ({self.sample_volume}) must be a multiple of chkpt_every "
-                f"({self.chkpt_every}) so the final checkpoint threshold lands on sample_volume"
+                f"opt.lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
             )
 
         n_trials_viz = self.dev["manifold_viz"]["n_trials"]
@@ -209,15 +232,17 @@ class TrainConfig:
         self.ram = slurm_alloc["ram"]
 
         if self.hw.loss_chunk_size is not None:
-            from utils.loss import validate_chunking_supported  # local: avoid importing Bio.Phylo at config load
-            validate_chunking_supported(self.loss, self.loss2)  # tiled loss supports the full BCE config; only InfoNCE is rejected
-            world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
-            if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
-                raise ValueError(
-                    f"batch_size ({self.batch_size}) must be an exact multiple of world_size ({world_size}) "
-                    f"x hardware.loss_chunk_size ({self.hw.loss_chunk_size}): the chunked loss shards the BxB rows "
-                    f"into equal per-rank bands of whole C-row blocks"
-                )
+            from utils.loss import chunking_supported  # local: avoid importing Bio.Phylo at config load
+            if not chunking_supported(self.loss, self.loss2):  # tiled loss supports the full BCE config; inert with InfoNCE
+                self.hw.loss_chunk_size = None
+            else:
+                world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
+                if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
+                    raise ValueError(
+                        f"batch_size ({self.batch_size}) must be an exact multiple of world_size ({world_size}) "
+                        f"x hardware.loss_chunk_size ({self.hw.loss_chunk_size}): the chunked loss shards the BxB rows "
+                        f"into equal per-rank bands of whole C-row blocks"
+                    )
 
         self.device = torch.device("cuda")
 
@@ -481,12 +506,11 @@ def get_config_manifold_viz():
 
 @dataclass
 class StatsConfig:
-    """stats.yaml contents -- campaign stats-artifact rendering settings (stats tables + metrics.xlsx).
+    """stats.yaml contents -- campaign stats-artifact rendering settings (stats tables + metrics workbooks).
     Render-time only: read live at each render (trial completion / tools.regen_stats), never frozen
     into campaign baselines, so edits apply to the next re-render of any campaign."""
 
     spread_type: str  # {std, ste}
-    table_eval_group: str  # {closed_standard, closed_macro, full_standard, full_macro}
     bold_high: bool
     ordered: bool
     heatmap: str | None  # {None, scaled, fixed}
@@ -498,12 +522,6 @@ class StatsConfig:
 
         if self.spread_type not in ("std", "ste"):
             raise ValueError(f"Unknown stats spread_type: '{self.spread_type}', must be one of {{std, ste}}")
-
-        if self.table_eval_group not in ("closed_standard", "closed_macro", "full_standard", "full_macro"):
-            raise ValueError(
-                f"Unknown stats table_eval_group: '{self.table_eval_group}', "
-                f"must be one of {{closed_standard, closed_macro, full_standard, full_macro}}"
-            )
 
 
 def load_stats_config_dict() -> dict:

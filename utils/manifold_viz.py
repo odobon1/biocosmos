@@ -38,7 +38,7 @@ class VizContext:
 @dataclass(frozen=True)
 class RenderStyle:
     """Static styling + strobe schedule for the composite renderers. Bundled because the same set
-    rides through generate_* -> composite_plot/strobe_gif/evolution_gif -> _composite_canvas, and is
+    rides through generate_* -> composite_plot/strobe_gif/evolving_gif -> _composite_canvas, and is
     pickled to the render workers. `method` ("t-SNE"/"PCA") and `col_titles` vary per (method, grid);
     the rest are fixed per generate_* call (composite_plot ignores n_stoch_layers/frame_ms)."""
     method: str
@@ -54,7 +54,7 @@ def _manifold_title(method, viz_context, subject, suffix=""):
     """Suptitle for a manifold grid, e.g. 't-SNE: Full-Set (ID) Validation -- hp, Nymphalidae, 50k'."""
     return f"{method}: {subject} {_EVAL_ALIAS2NAME[viz_context.eval_type]} -- {viz_context.setting}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
 
-_GIF_DPI = 100  # evolution-GIF frame resolution (lower than the 300-dpi static PNGs)
+_GIF_DPI = 100  # evolving-GIF frame resolution (lower than the 300-dpi static PNGs)
 _OOD_LABEL = "__OOD__"  # sentinel label for OOD points in the n-shot panel (always drawn black)
 
 def _log(msg):
@@ -412,7 +412,7 @@ def _square_limits(projs, margin=0.05):
     -> (xlim, ylim) sharing one +/- bound. t-SNE plots are equal-aspect and origin-centered, so their
     axes auto-scale to a single square bound that fits the data (instead of a fixed config bound that
     doesn't transfer across datasets). Over a list of per-eval projections this unions them, freezing
-    one bound across the whole evolution GIF."""
+    one bound across the whole evolving GIF."""
     allp = np.concatenate(projs, axis=0)
     bound = np.abs(allp).max() * (1 + margin)
     return (-bound, bound), (-bound, bound)
@@ -455,9 +455,9 @@ def _save_gif(frames, fpath_gif, frame_ms):
 
 def _save_gif_stream(frame_iter, fpath_gif, frame_ms, palette_sample):
     """Like _save_gif but for an arbitrarily long frame stream: peak memory is bounded to `palette_sample`
-    frames regardless of the total frame count (== n_evals * n_stoch_layers for the evolution GIF), so it
+    frames regardless of the total frame count (== n_evals * n_stoch_layers for the evolving GIF), so it
     doesn't scale with the number of checkpoints. The shared fixed palette is built from the first
-    `palette_sample` frames -- representative because an evolution GIF's frames share one color SET (same
+    `palette_sample` frames -- representative because an evolving GIF's frames share one color SET (same
     eval points, same color maps; only positions move) -- then each frame is quantized and written one at a
     time via the legacy getheader/getdata frame blocks. Image.save(append_images=...) can't stream: it
     buffers every diffed frame before writing, so its peak memory scales with the frame count."""
@@ -729,9 +729,9 @@ def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau, orient=True, f
                     resolved[(method, stem)] = (proj, np.array([color_map[label] for label in labels]), alpha)
         yield name, resolved
 
-def composite_evolution_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style,
+def composite_evolving_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style,
                             orient=True, fname="projections.npz"):
-    """Training-evolution GIF of a flush grid: each eval contributes n_stoch_layers strobe frames, axes
+    """Training-evolving GIF of a flush grid: each eval contributes n_stoch_layers strobe frames, axes
     frozen to the cross-eval union (`limits`, precomputed by render_evolution). Loads + renders one eval's
     cache at a time and streams the frames to disk, so peak memory is independent of the number of
     evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name.
@@ -819,9 +819,9 @@ def quad_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=Non
         plt.close(fig)
         _save_gif(frames, fpath, style.frame_ms)
 
-def quad_evolution_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
+def quad_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
                        limits, fpath_gif, style, orient=True, fname="projections.npz"):
-    """Cross-method (PCA top / t-SNE bottom) training-evolution GIF for one subject's leaf/penult pair.
+    """Cross-method (PCA top / t-SNE bottom) training-evolving GIF for one subject's leaf/penult pair.
     Sweeps both methods' caches in lockstep (one eval per method loaded at a time) and streams the frames
     to disk, so peak memory is independent of the eval count; axes frozen to the precomputed cross-eval
     union (`limits`, keyed (method, stem)). `orient`/`fname` select per-eval (oriented) vs pooled
@@ -1045,7 +1045,7 @@ def _load_projections(dpath_cache, fname="projections.npz"):
             list(npz["cids_id"]), list(npz["cids_ood"]))
 
 def _ordered_eval_dirs(dpath_evals, fname="projections.npz"):
-    """Eval dirs that hold a cached <fname>, in chronological order (_base, thresholds, final). `fname`
+    """Eval dirs that hold a cached <fname>, in chronological order (base, eval1..evalN). `fname`
     selects the per-eval cache (projections.npz), the pooled cache (projections_pooled.npz), or the raw
     embedding cache (embs.npz, swept by the pooled compute)."""
     return sorted((d for d in dpath_evals.iterdir() if (d / fname).exists()),
@@ -1053,7 +1053,7 @@ def _ordered_eval_dirs(dpath_evals, fname="projections.npz"):
 
 def _ema_through(dpath_evals, eval_name, ema_tau):
     """Accumulate the t-SNE orientation reference over the evals chronologically BEFORE `eval_name`, so it
-    seeds `eval_name`'s orientation -- identical to that eval's frame in the evolution GIF (which sweeps
+    seeds `eval_name`'s orientation -- identical to that eval's frame in the evolving GIF (which sweeps
     the same caches in the same order). Recomputed from the on-disk caches each call, so the pipeline
     carries no live/resume orientation state. Returns {key: ref} ({} when `eval_name` is the first eval)."""
     ref = {}  # keyed by proj key -- each t-SNE proj key has its own orientation reference
@@ -1103,7 +1103,7 @@ def _no_panels_enabled(plot_flags):
 def _final_pca_limits(dpath_final, fname):
     """PCA axis limits per proj key frozen to the FINAL eval's pooled projection (id/ood/fullset each its
     own bounding box) -- the dev.manifold_viz.pooled.pca_bounds='final' frame shared by every pooled PCA
-    plot, so the per-threshold plots and the evolution GIF all sit in the converged final layout's box
+    plot, so the per-threshold plots and the evolving GIF all sit in the converged final layout's box
     (earlier thresholds' points can fall outside it)."""
     _, pca_projs, _, _ = _load_projections(dpath_final, fname)
     return {k: _common_limits([pca_projs[k]]) for k in ("id", "ood", "fullset")}
@@ -1114,7 +1114,7 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
 
     Default (per-eval, `orient=True`, projections.npz): the independently-fit t-SNE is re-oriented against
     the reference accumulated over the prior evals on disk, so it matches that eval's frame in the
-    evolution GIF -- and needs no live state.
+    evolving GIF -- and needs no live state.
 
     Pooled (`orient=False`, fname=projections_pooled.npz): the projection already shares one frame across
     thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz_pooled/. The
@@ -1147,7 +1147,7 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
         _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
     else:  # pooled: shared frame across thresholds -> no orientation
         tsne_render = tsne_projs
-    tag = "base" if eval_name == "_base" else eval_name
+    tag = eval_name
     pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
                   if not orient and plot_flags["pooled"]["pca_bounds"] == "final" else None)
     _render_grids(tsne_render, pca_projs, cids_id, cids_ood, penults_id, penults_ood,
@@ -1156,12 +1156,8 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, plot_flag
                   pca_limits)
 
 def _eval_sort_key(name):
-    """Chronological order of eval dirs: _base first, numeric thresholds ascending, final last."""
-    if name == "_base":
-        return (0, 0)
-    if name == "final":
-        return (2, 0)
-    return (1, int(name[:-1]) * 1000 if name.endswith("k") else int(name))
+    """Chronological order of eval dirs: base first, then eval1..evalN ascending."""
+    return 0 if name == "base" else int(name.removeprefix("eval"))
 
 @rank0
 def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
@@ -1195,7 +1191,7 @@ def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
 
 def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot_flags, orient=True, fname="projections.npz"):
     """Rank-0. Assemble one GIF per grid (`_GRIDS`) showing the training evolution
-    (_base -> ... -> final): each eval contributes the strobe schedule's frames, then the GIF hard-cuts
+    (base -> eval1 -> ... -> evalN): each eval contributes the strobe schedule's frames, then the GIF hard-cuts
     to the next eval, axes/gridlines frozen across evals so only the points move. Reads each eval's
     cached <fname> and writes the per-method grids under dpath_out/{2panel,7panel}/<method>/ plus
     the cross-method PCA-over-t-SNE 4panel under dpath_out/4panel/.
@@ -1211,7 +1207,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
     evals = _ordered_eval_dirs(dpath_evals, fname)
     if not evals:
         return
-    names = ["base" if d.name == "_base" else d.name for d in evals]
+    names = [d.name for d in evals]
 
     cfg_color = cfg_manifold_viz["color"]
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
@@ -1231,7 +1227,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
         for k, lim in _final_pca_limits(evals[-1], fname).items():
             limits_by[("PCA", k)] = lim
 
-    jobs = []  # one evolution-GIF job per (render target, grid); fanned out across cores below
+    jobs = []  # one evolving-GIF job per (render target, grid); fanned out across cores below
     # per-method grids: PCA + t-SNE, under <dpath_out>/<group>/<method_dir>/
     for method, method_dir in [("PCA", "pca"), ("t-SNE", "tsne")]:
         for out_name, subject, grid in _GRIDS:
@@ -1244,9 +1240,9 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
             limits = {s: limits_by[(method, _STEM_PROJKEY[s])] for s in stems}
             fpath = dpath_out / group / method_dir / f"{stem}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((composite_evolution_gif, (grid, subject, viz_context, evals, names, cmaps,
+            jobs.append((composite_evolving_gif, (grid, subject, viz_context, evals, names, cmaps,
                                                    ema_tau, limits, fpath, style, orient, fname)))
-    # cross-method 4panel evolution GIFs (PCA top / t-SNE bottom): under <dpath_out>/4panel/
+    # cross-method 4panel evolving GIFs (PCA top / t-SNE bottom): under <dpath_out>/4panel/
     if plot_flags["plot_4panel"]:
         quad_style = RenderStyle(None, marker_size, legends, n_stoch_layers, frame_ms, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _4PANEL_SUBJECTS:
@@ -1254,7 +1250,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, plot
             limits.update({("t-SNE", s): limits_by[("t-SNE", _STEM_PROJKEY[s])] for s in (leaf_stem, penult_stem)})
             fpath = dpath_out / "4panel" / f"{out_name}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((quad_evolution_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
+            jobs.append((quad_evolving_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
                                               cmaps, ema_tau, limits, fpath, quad_style, orient, fname)))
     _log("rendering evolution")
     _parallel_render(jobs)

@@ -39,22 +39,22 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
 
     eval_metrics = {
         "scores": {
-            "closed_set": {
+            "nativegall": {
                 "standard": {
                     "id": {"map": {"i2t": 0.1, "i2i": 0.2, "t2i": 0.3}, "acc": {"i2t": 0.4}},
                     "comp": {"map": {"all": 0.2, "i2i": 0.2, "id": 0.2}},
                 },
-                "per_class": {
+                "macro": {
                     "id": {"map": {"i2t": 0.12, "i2i": 0.22, "t2i": 0.32}, "acc": {"i2t": 0.42}},
                     "comp": {"map": {"all": 0.22, "i2i": 0.22, "id": 0.22}},
                 },
             },
-            "full_set": {
+            "jointgall": {
                 "standard": {
                     "id": {"map": {"i2t": 0.11, "i2i": 0.21, "t2i": 0.31}, "acc": {"i2t": 0.41}},
                     "comp": {"map": {"all": 0.21, "i2i": 0.21, "id": 0.21}},
                 },
-                "per_class": {
+                "macro": {
                     "id": {"map": {"i2t": 0.13, "i2i": 0.23, "t2i": 0.33}, "acc": {"i2t": 0.43}},
                     "comp": {"map": {"all": 0.23, "i2i": 0.23, "id": 0.23}},
                 },

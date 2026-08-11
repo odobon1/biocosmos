@@ -5,8 +5,8 @@ act_chkpt: true  # {true, false}; activation checkpointing
 # row-block height U for the global-batch (BxB) contrastive loss. null -> materialize the
 # full BxB matrices. An int U shards the rows across ranks and sweeps each rank's band in
 # U x B blocks -- exact-equivalent, peak VRAM O(U*B). batch_size must be a multiple of
-# G x U. BCE-only; InfoNCE errors at config time.
-loss_chunk_size: null  # {null, [power-of-2 int]}
+# G x U. BCE-only; inert (silently ignored) with InfoNCE.
+loss_chunk_size: 128  # {null, 64, 128}
 
 # cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
 # batches, trades away algo-choice reproducibility (PyTorch default is false)
@@ -22,7 +22,7 @@ pin_memory: false  # {true, false}; dataloader pins host RAM for faster host -->
 
 persistent_workers:
   train: true  # {true, false}; keep train dataloader workers alive across train epochs
-  eval: false  # {true, false}; keep eval dataloader workers alive across validation epochs
+  eval: true  # {true, false}; keep eval dataloader workers alive across validation epochs
 
 # read images from the prebuilt per-dataset pack (tools/build_img_cache.py),
 # staged once per node to node-local scratch (SLURM_TMPDIR/TMPDIR//tmp) -- replaces
@@ -31,8 +31,8 @@ use_img_cache: true  # {true, false}
 
 eval:
   map_chunk_size:
-    img2img: 512  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
-    cross_modal: 512
+    img2img: 4_096  # {512, 1_024, 2_048, 4_096, 8_192, 16_384}
+    cross_modal: 4_096
   # t-SNE transient GPU buffer = 2^X fp32 (X=28 -> 1 GiB, each +1 doubles it). Pure memory<->speed,
   # doesn't change the projection: bigger X = faster if you have VRAM, smaller X if it OOMs.
   tsne_chunk_log2: 30

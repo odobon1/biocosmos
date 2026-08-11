@@ -243,7 +243,7 @@ class EpochEncodingDistributedSampler(DistributedSampler):
         return (idx + epoch_offset for idx in super().__iter__())
 
 class ChainShuffleDistributedSampler(DistributedSampler):
-    """DistributedSampler for train sets smaller than cfg.epoch_floor: each epoch chains n_perms
+    """DistributedSampler for train sets smaller than cfg.chain_floor: each epoch chains n_perms
     independently shuffled permutations of the dataset, decoupling epoch length (and max batch
     size) from dataset size. Every aligned block of len(dataset) consecutive samples in the
     chained stream covers the dataset exactly once. Yields pass-encoded indexes
@@ -314,7 +314,7 @@ class DorsalVentralBatchSampler:
     Always shuffles
     Always drops partial batch
 
-    n_perms > 1 (epoch_floor chaining): each epoch chains n_perms independently shuffled
+    n_perms > 1 (chain_floor chaining): each epoch chains n_perms independently shuffled
     permutations of each position category, with pass-encoded index offsets like
     ChainShuffleDistributedSampler; batch counts are cut from the chained streams.
     """

@@ -23,7 +23,7 @@ def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
-        json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+        json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
 
 def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
@@ -40,7 +40,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -57,7 +57,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
     return scheduled
@@ -127,7 +127,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -179,7 +179,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline_cfg,
@@ -245,7 +245,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -292,7 +292,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -338,7 +338,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -355,7 +355,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         (dpath_trial / "chkpts" / "in_progress").mkdir(parents=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
@@ -383,7 +383,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": True, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": True, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -427,7 +427,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": True}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": True}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -476,7 +476,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -500,7 +500,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         calls.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
         dpath_trial.mkdir(parents=True, exist_ok=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         raise subprocess.CalledProcessError(1, ["torchrun"], stderr=crash_stderrs[len(calls) - 1])
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -582,7 +582,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -605,7 +605,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         fpath_ckpt.write_text(f"state-{calls['n']}")
         os.utime(fpath_ckpt, (calls["n"] * 1000, calls["n"] * 1000))  # strictly-increasing mtime = progress
         with open(dpath_trial / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         if calls["n"] <= n_flakes:
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -872,7 +872,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -933,7 +933,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
             "beta2": None,
             "eps": 1.0e-6,
         },
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -1046,7 +1046,7 @@ def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypat
     # once a checkpoint advances progress, crashes are keyed by samples seen; repeated crashes at the same
     # sample count get incrementing indices instead of clobbering
     with open(dpath_trial / "trial_metadata.json", "w") as f:
-        json.dump({"progress": {"n_samps_seen": 1_058_816, "sample_volume": 5_000_000}}, f)
+        json.dump({"progress": {"epoch": 3, "n_epochs": 35, "n_samps_seen": 1_058_816}}, f)
     cr._log_crash(dpath_trial, subprocess.CalledProcessError(1, ["torchrun"], stderr="boom-a"))
     cr._log_crash(dpath_trial, subprocess.CalledProcessError(1, ["torchrun"], stderr="boom-b"))
 
@@ -1057,7 +1057,7 @@ def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypat
 def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
-    def _make_trial(setting, dataset, seed, complete=None, failure=None, runtime=None, n_samps_seen=0):
+    def _make_trial(setting, dataset, seed, complete=None, failure=None, runtime=None, epoch=0):
         d = dpath_campaign / "settings" / setting / dataset / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
@@ -1066,13 +1066,13 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
                     "dataset": dataset,
                     "complete": complete,
                     "runtime": {"trial": runtime},
-                    "progress": {"n_samps_seen": n_samps_seen, "sample_volume": 4_000_000},
+                    "progress": {"epoch": epoch, "n_epochs": 35, "n_samps_seen": 0},
                 }, f)
         if failure is not None:  # errored, with the failure= marker _log_trial_error writes
             (d / "error.log").write_text(f"TRIAL FAILED\n  seed={seed}, dataset={dataset}, setting={setting}, failure={failure}\nboom")
 
-    _make_trial("hp", "cub", 42, complete=True, runtime="113723.9", n_samps_seen=4_000_000)  # completed
-    _make_trial("hp", "lepid", 42, complete=False, failure="VRAM", runtime="3723.4", n_samps_seen=2_200_000)  # failed
+    _make_trial("hp", "cub", 42, complete=True, runtime="113723.9", epoch=35)  # completed
+    _make_trial("hp", "lepid", 42, complete=False, failure="VRAM", runtime="3723.4", epoch=19)  # failed
     # hp/moss/42 -> failed before ever writing metadata (e.g. crashed at startup): no runtime to show
     _make_trial("hp", "moss", 42, failure="Mixed")
     # hp/nymph/42 -> in progress: it's a resume-after-failure, so it carries a stale error.log; the
@@ -1094,7 +1094,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "hp/lepid/42 --- 0-01:02:03 --- 2.2M/4.0M --- VRAM\n"
+        "hp/lepid/42 --- 0-01:02:03 --- 19/35 --- VRAM\n"
         "hp/moss/42 ---- n/a --- Mixed\n"
         "\n"
         "✅ Completed:\n"
@@ -1118,7 +1118,7 @@ def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
             "dataset": "cub",
             "complete": True,
             "runtime": {"trial": "45296.0"},
-            "progress": {"n_samps_seen": 4_000_000, "sample_volume": 4_000_000},
+            "progress": {"epoch": 35, "n_epochs": 35, "n_samps_seen": 4_000_000},
         }, f)
     (d / "error.log").write_text("old failure")
 
@@ -1168,7 +1168,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -1198,7 +1198,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         if cfg_dict["dataset"] == "lepid":
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
 
@@ -1222,7 +1222,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "iw/lepid/42 --- 0-01:01:01 --- 0.2M/4.0M --- Other\n"
+        "iw/lepid/42 --- 0-01:01:01 --- 1/35 --- Other\n"
         "\n"
         "✅ Completed:\n"
         "iw/cub/42 --- 0-01:01:01\n"
@@ -1245,7 +1245,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
-        "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -1261,7 +1261,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
-            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"n_samps_seen": 200_000, "sample_volume": 4_000_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+            json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -1454,7 +1454,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1481,7 +1481,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
     monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1508,7 +1508,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"traintime_evals": False, "del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {},
         "model_specific": {},

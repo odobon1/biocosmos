@@ -13,20 +13,20 @@ def make_train_config_dummy(**overrides):
         "dataset": "cub",
         "split": "D10",
         "train_pt": "train",
-        "sample_volume": 1_000,
-        "chkpt_every": 100,
+        "n_epochs": 1,
+        "n_chkpts": 10,
         "batch_size": 8,
-        "epoch_floor": None,
+        "chain_floor": None,
         "dv_batching": False,
         "htarg_shuf": False,
         "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
-        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
-        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
         "opt": {
-            "lr": {"decay_factor": 1.0e-3},
+            "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "l2reg": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
@@ -108,6 +108,35 @@ def test_train_config_rejects_invalid_pca_bounds(monkeypatch: pytest.MonkeyPatch
             dev={"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": "first"}}}))
 
 
+def test_train_config_rejects_yaml_string_scientific_notation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # YAML parses "1e-6" (no decimal point in the mantissa) as a STRING; a swept opt.lr.init like
+    # that must fail at config time, not deep inside AdamW
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="opt.lr.init must be numeric"):
+        TrainConfig(**make_train_config_dummy(opt={
+            "lr": {"init": "1e-6", "decay_factor": 1.0e-3, "warmup": 0.02},
+            "l2reg": 0.0,
+            "beta1": 0.9,
+            "beta2": 0.95,
+            "eps": 1.0e-6,
+        }))
+
+
+def test_train_config_rejects_warmup_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    # opt.lr.warmup is a fraction of sample_volume -- a stale absolute sample count must fail loudly
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="opt.lr.warmup must be a fraction of sample_volume"):
+        TrainConfig(**make_train_config_dummy(opt={
+            "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 200_000},
+            "l2reg": 0.0,
+            "beta1": 0.9,
+            "beta2": 0.95,
+            "eps": 1.0e-6,
+        }))
+
+
 def test_train_config_rejects_htarg_shuf_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
@@ -120,7 +149,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -133,7 +162,7 @@ def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.Monk
         TrainConfig(**make_train_config_dummy(
             htarg_shuf=True,
             seed=None,
-            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"scale": {"init": None}, "bias": {"init": None}}},
+            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
         ))
 
 
@@ -330,38 +359,49 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
 
 
 # cub D10 train split has 4_944 samples (the dummy's dataset/split)
-def test_train_config_epoch_floor_null_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_chain_floor_null_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy())
 
     assert cfg.chain_perms is None
-    assert cfg.n_epochs == 1  # ceil(1_000 / 4_944)
+    assert cfg.sample_volume == 4_944  # n_epochs 1 x train set size
+    assert cfg.samps_per_pass == 4_944  # divisible by batch_size 8, no truncation
+    assert cfg.epochs_per_pass == 1
+    assert cfg.n_passes == 1
 
 
-def test_train_config_epoch_floor_below_train_set_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_chain_floor_below_train_set_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=1_000))
+    cfg = TrainConfig(**make_train_config_dummy(chain_floor=1_000))
 
     assert cfg.chain_perms is None
 
 
-def test_train_config_epoch_floor_chains_permutations(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_chain_floor_chains_permutations(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=100_000, sample_volume=1_000_000))
+    cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, n_epochs=202))
 
-    assert cfg.chain_perms == 21  # ceil(100_000 / 4_944)
-    assert cfg.n_epochs == 10  # ceil(1_000_000 / (21 * 4_944))
+    assert cfg.chain_perms == 21  # E_chain_nom = ceil(100_000 / 4_944)
+    assert cfg.samps_per_pass == 103_824  # X_chain = 21 x 4_944 (divisible by batch_size 8)
+    assert cfg.epochs_per_pass == 21  # E_chain: no truncation, all 21 permutations fully covered
+    assert cfg.sample_volume == 998_688  # 202 x 4_944
+    assert cfg.n_passes == 10  # ceil(998_688 / 103_824)
 
 
-def test_train_config_chaining_allows_batch_size_above_train_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_chaining_credits_epochs_touched_by_truncated_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # batch_size > train set size: drop_last trims more than a full permutation off the nominal
+    # chain (103_824 -> 98_304 consumed, 5_520 trimmed > 4_944), so the pass credits only the
+    # permutations it actually touches: ceil(98_304 / 4_944) = 20 < chain_perms 21
     patch_hw(monkeypatch)
 
-    cfg = TrainConfig(**make_train_config_dummy(epoch_floor=100_000, batch_size=8_192))
+    cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, batch_size=8_192))
 
     assert cfg.chain_perms == 21
+    assert cfg.samps_per_pass == 98_304  # 12 batches of 8_192
+    assert cfg.epochs_per_pass == 20
 
 
 def test_train_config_rejects_batch_size_above_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -371,14 +411,14 @@ def test_train_config_rejects_batch_size_above_epoch(monkeypatch: pytest.MonkeyP
         TrainConfig(**make_train_config_dummy(batch_size=8_192))
 
     with pytest.raises(ValueError, match="exceeds epoch size"):
-        TrainConfig(**make_train_config_dummy(epoch_floor=5_000, batch_size=16_384))  # 2 perms = 9_888
+        TrainConfig(**make_train_config_dummy(chain_floor=5_000, batch_size=16_384))  # 2 perms = 9_888
 
 
-def test_train_config_rejects_nonpositive_epoch_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_rejects_nonpositive_chain_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="epoch_floor must be greater than 0"):
-        TrainConfig(**make_train_config_dummy(epoch_floor=0))
+    with pytest.raises(ValueError, match="chain_floor must be greater than 0"):
+        TrainConfig(**make_train_config_dummy(chain_floor=0))
 
 
 def test_train_config_rejects_batch_size_indivisible_by_loss_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -416,22 +456,21 @@ def test_train_config_accepts_batch_size_divisible_by_loss_chunk(monkeypatch: py
     assert cfg.hw.loss_chunk_size == 16
 
 
-def test_train_config_rejects_infonce_with_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
     cfg_dict["loss"] = {"crit": "infonce2", "sim": "cos", "targ": "sw",
-                        "logits": {"scale": {"init": None}, "bias": {"init": None}}}
-    cfg_dict["hw"]["loss_chunk_size"] = 8  # divisible; only the InfoNCE loss should trip validation
+                        "logits": {"temperature": {"init": None}, "bias": {"init": None}}}
+    cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 
-    with pytest.raises(NotImplementedError, match="chunking-supported subset"):
-        TrainConfig(**cfg_dict)
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.hw.loss_chunk_size is None
 
 
 def _make_stats_config_dummy(**overrides):
     config = {
         "spread_type": "std",
-        "table_eval_group": "closed_standard",
         "bold_high": True,
         "ordered": True,
         "heatmap": None,
@@ -446,8 +485,3 @@ def _make_stats_config_dummy(**overrides):
 def test_stats_config_rejects_invalid_spread_type() -> None:
     with pytest.raises(ValueError, match="spread_type"):
         StatsConfig(**_make_stats_config_dummy(spread_type="var"))
-
-
-def test_stats_config_rejects_invalid_table_eval_group() -> None:
-    with pytest.raises(ValueError, match="table_eval_group"):
-        StatsConfig(**_make_stats_config_dummy(table_eval_group="open_standard"))

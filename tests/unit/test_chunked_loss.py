@@ -4,7 +4,7 @@ Equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss_chu
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
 primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ blended by
 _global_batch_loss), up to floating-point summation order -- across the full BCE config space:
-sw/iw/tax/phylo targets, norm.cls_imb, norm.agg, a BCE+BCE loss2 mix, and mix_unit_scale.
+sw/iw/tax/phylo targets, norm.cls_imb, a BCE+BCE loss2 mix, and mix_unit_scale.
 """
 import importlib
 import math
@@ -44,17 +44,17 @@ def import_loss_module():
 L = import_loss_module()
 
 
-def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, agg="prod", freq_type="naive", sim="cos",
-         norm_cls_imb=False, norm_agg=False):
+def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
+         norm_cls_imb=False):
     return {
         "crit": "bce", "sim": sim, "targ": targ,
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
                         "freq_type_2d": freq_type, "wt_mean_type": "per_class"},
             "focal": {"gamma": focal_gamma, "comp_type": 1},
-            "bce": {"dsmr": dsmr, "agg": agg, "norm": {"cls_imb": norm_cls_imb, "agg": norm_agg}},
+            "bce": {"dsmr": dsmr, "norm": {"cls_imb": norm_cls_imb}},
         },
-        "logits": {"scale": {"clamp": False}, "bias": {}},
+        "logits": {"temperature": {"clamp": False}, "bias": {}},
     }
 
 
@@ -101,7 +101,7 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
 
     def crit_loss(crit, secondary):
         sim = compute_sim(img, txt, crit.cfg["sim"])
-        logits = clogits(sim, crit.cfg["logits"]["scale"]["clamp"], secondary=secondary)
+        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], secondary=secondary)
         loss, loss_raw, _ = crit(logits, class_encs_b, targ_data_b, train=True)
         return loss, loss_raw
 
@@ -116,40 +116,36 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
 
 
 CASES = [
-    # (targ1, targ2, dsmr, focal, agg, freq, norm_ci, norm_agg, mix, unit_scale)
-    ("sw",    None,  True,  2.0, "prod",      "naive",     False, False, 0.0, False),  # baseline
-    ("iw",    None,  True,  2.0, "prod",      "naive",     False, False, 0.0, False),
-    ("tax",   None,  True,  2.0, "prod",      "naive",     False, False, 0.0, False),
-    ("phylo", None,  True,  2.0, "prod",      "naive",     False, False, 0.0, False),
-    ("sw",    None,  False, 0.0, "prod",      "naive",     False, False, 0.0, False),  # no dsmr, no focal
-    ("sw",    None,  True,  2.0, "mean",      "naive",     False, False, 0.0, False),
-    ("sw",    None,  True,  2.0, "geo_mean",  "cmx2",      False, False, 0.0, False),
-    ("sw",    None,  True,  2.0, "harm_mean", "pair_prob", False, False, 0.0, False),
-    ("sw",    None,  True,  2.0, "prod",      "naive",     True,  False, 0.0, False),  # norm.cls_imb
-    ("sw",    None,  True,  2.0, "prod",      "naive",     False, True,  0.0, False),  # norm.agg
-    ("sw",    None,  True,  2.0, "geo_mean",  "cmx2",      True,  True,  0.0, False),  # both norms
-    ("tax",   None,  True,  2.0, "prod",      "naive",     False, True,  0.0, False),  # norm.agg + soft targets
-    ("sw",    "sw",  True,  2.0, "prod",      "naive",     False, False, 0.3, False),  # mix, no unit scale
-    ("sw",    "phylo", True, 2.0, "prod",     "naive",     False, False, 0.3, False),  # mixed target types
-    ("sw",    "sw",  True,  2.0, "prod",      "naive",     False, False, 0.3, True),   # mix + unit scale
-    ("tax",   "sw",  True,  2.0, "mean",      "cmx2",      True,  True,  0.3, True),    # everything at once
-    ("sw",    "sw",  False, 0.0, "prod",      "naive",     False, False, 0.5, True),    # unit scale, no weighting
+    # (targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale)
+    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False),  # baseline
+    ("iw",    None,  True,  2.0, "naive",     False, 0.0, False),
+    ("tax",   None,  True,  2.0, "naive",     False, 0.0, False),
+    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False),
+    ("sw",    None,  False, 0.0, "naive",     False, 0.0, False),  # no dsmr, no focal
+    ("sw",    None,  True,  2.0, "pair_prob", False, 0.0, False),
+    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False),  # norm.cls_imb
+    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False),  # norm.cls_imb + cmx2
+    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, False),  # mix, no unit scale
+    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False),  # mixed target types
+    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True),   # mix + unit scale
+    ("tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True),    # everything at once
+    ("sw",    "sw",  False, 0.0, "naive",     False, 0.5, True),    # unit scale, no weighting
 ]
 
 
 @pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
-@pytest.mark.parametrize("targ1,targ2,dsmr,focal,agg,freq,norm_ci,norm_agg,mix,unit_scale", CASES)
-def test_chunked_matches_full(targ1, targ2, dsmr, focal, agg, freq, norm_ci, norm_agg, mix, unit_scale, C):
+@pytest.mark.parametrize("targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale", CASES)
+def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, C):
     device = torch.device("cpu")
     B, K, D, R = 48, 20, 16, 4
 
-    cfg1 = _cfg(targ=targ1, dsmr=dsmr, focal_gamma=focal, agg=agg, freq_type=freq,
-                norm_cls_imb=norm_ci, norm_agg=norm_agg)
+    cfg1 = _cfg(targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+                norm_cls_imb=norm_ci)
     crit1 = _make_crit(cfg1, K, B)
     crit2 = None
     if mix != 0.0:
-        cfg2 = _cfg(targ=targ2, dsmr=dsmr, focal_gamma=focal, agg=agg, freq_type=freq,
-                    norm_cls_imb=norm_ci, norm_agg=norm_agg)
+        cfg2 = _cfg(targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+                    norm_cls_imb=norm_ci)
         crit2 = _make_crit(cfg2, K, B)
 
     g = torch.Generator().manual_seed(0)
@@ -211,9 +207,8 @@ def test_stats_min_max_mean_exact():
     ({"crit": "infonce1", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "infonce2"}),          # infonce secondary (mixed)
 ])
-def test_validate_chunking_rejects_infonce(cfg_loss, cfg_loss2):
-    with pytest.raises(NotImplementedError):
-        L.validate_chunking_supported(cfg_loss, cfg_loss2)
+def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
+    assert not L.chunking_supported(cfg_loss, cfg_loss2)
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
@@ -221,8 +216,8 @@ def test_validate_chunking_rejects_infonce(cfg_loss, cfg_loss2):
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce2"}),          # infonce loss2 inert at mix=0
 ])
-def test_validate_chunking_accepts(cfg_loss, cfg_loss2):
-    L.validate_chunking_supported(cfg_loss, cfg_loss2)  # no raise
+def test_chunking_supported(cfg_loss, cfg_loss2):
+    assert L.chunking_supported(cfg_loss, cfg_loss2)
 
 
 def _synthetic_vcv():

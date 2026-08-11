@@ -169,7 +169,7 @@ class ArtifactManager:
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_model_final = ArtifactManager.dpath_trial / "chkpts/final"
-        ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals/final"
+        ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals" / f"eval{cfg_train.n_chkpts}"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
         if ArtifactManager.dpath_trial.exists():
@@ -271,9 +271,8 @@ class ArtifactManager:
             # enter the 2D paths, absent from InfoNCE1's 1D weighting), params their own toggle
             # disables (cls_imb.type null, focal.gamma 0.0), and the scalar cancellations noted
             # in train.yaml: the unit-scale blend (loss / loss.detach()) cancels any per-batch
-            # scalar factor on a loss, making norm.agg inert; norm.cls_imb's rescale is such a
-            # scalar under multiplicative aggs (cancelled by norm.agg or unit-scaling) and a
-            # no-op when cls_imb is off; InfoNCE's num / den self-normalization likewise cancels
+            # scalar factor on a loss, making norm.cls_imb's rescale inert under unit-scaling
+            # (it's a no-op when cls_imb is off); InfoNCE's num / den self-normalization likewise cancels
             # the wt_mean scalar, making wt_mean_type inert outside BCE. loss2 is already gone
             # when mix = 0.0, under which mix_unit_scale never applies.
             unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
@@ -318,10 +317,8 @@ class ArtifactManager:
                     del wting["bce"]
                 else:
                     bce_w = wting["bce"]
-                    if not cls_imb_on or (bce_w["agg"] in ("prod", "geo_mean") and (bce_w["norm"]["agg"] or unit_scaled)):
+                    if not cls_imb_on or unit_scaled:
                         del bce_w["norm"]["cls_imb"]
-                    if unit_scaled:
-                        del bce_w["norm"]["agg"]
                     if not bce_w["norm"]:
                         del bce_w["norm"]
 
@@ -374,9 +371,10 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, n_samps_seen: int, sample_volume: int, mem, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, init_flag=False):
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
-        progress_data = {"n_samps_seen": n_samps_seen, "sample_volume": sample_volume}
+        # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
+        progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if init_flag:
             metadata_trial = {
@@ -400,12 +398,12 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_eval_data(dpath_model, eval_metrics, n_samps_seen_chkpt, n_samps_seen):
+    def save_eval_data(dpath_model, eval_metrics, idx_eval, n_chkpts, n_samps_seen, sample_volume):
         dpath_model.mkdir(parents=True, exist_ok=True)
         fpath_meta = dpath_model / "metrics.json"
         metadata = {
             **format_scores(eval_metrics),
-            "n_samps_seen": f"{n_samps_seen_chkpt:,}/{n_samps_seen:,}",
+            "eval": f"{idx_eval}/{n_chkpts} ({n_samps_seen / 1e6:.1f}M/{sample_volume / 1e6:.1f}M samples)",
         }
         save_json(metadata, fpath_meta)
 
@@ -463,7 +461,7 @@ class ArtifactManager:
     @rank0
     def save_base_eval_cache(cfg_train, eval_metrics):
         """Write this combo's entry to its own cache file and return the entry. The npz arrays are
-        ingested from this trial's evals/_base/, where compute_projections just wrote them
+        ingested from this trial's evals/base/, where compute_projections just wrote them
         (projections absent for non-viz trials, embs for non-pooled trials). Written via temp file +
         atomic replace: concurrent same-combo campaigns overwrite each other with equivalent entries,
         and readers never see a torn file; other combos' files are untouched."""
@@ -472,7 +470,7 @@ class ArtifactManager:
             "projections": None,
             "embs": None,
         }
-        dpath_base = ArtifactManager.dpath_trial / "evals" / "_base"
+        dpath_base = ArtifactManager.dpath_trial / "evals" / "base"
         for name in ("projections", "embs"):
             fpath_npz = dpath_base / f"{name}.npz"
             if fpath_npz.exists():

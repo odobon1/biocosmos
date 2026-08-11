@@ -472,15 +472,13 @@ def _mark_trial_complete(dpath_trial: Path) -> None:
     metadata_trial["complete"] = True
     save_json(metadata_trial, fpath_metadata_trial)
 
-def _spawn_render(trial_rel: str, render_evo: bool) -> subprocess.Popen:
+def _spawn_render(trial_rel: str) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
     trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
     campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs,
     and RENDER_MAX_WORKERS caps its CPU fan-out to a quarter of the cores so it doesn't oversubscribe the
     next trial's dataloaders -- the render has the whole next trial to finish, so it can afford to go slow."""
     cmd = [sys.executable, "-m", "tools.manifold_viz", trial_rel, "snapshot"]
-    if not render_evo:
-        cmd.append("no_evo")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
     env.setdefault("RENDER_MAX_WORKERS", str(max(1, len(os.sched_getaffinity(0)) // 4)))
     return subprocess.Popen(cmd, env=env, start_new_session=True)
@@ -602,7 +600,6 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     PrintLog.manifest(dpath_campaign, trials, in_progress=None)
 
     render_proc: subprocess.Popen | None = None
-    render_evo = cfg_baseline["dev"]["traintime_evals"]  # evolution GIFs need mid-evals to evolve across
 
     idx_trial = 0
     for idx_seed, seed in enumerate(seeds):
@@ -696,7 +693,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 # practice, since a trial far outlasts a render).
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.wait()
-                render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}", render_evo)
+                render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}")
 
     # let the last trial's render finish before the campaign exits
     if render_proc is not None:

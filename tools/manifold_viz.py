@@ -9,8 +9,8 @@ python -m tools.manifold_viz <campaign>/settings/<setting>/<dataset>/<seed>
 python -m tools.manifold_viz <campaign>/settings/<setting>/<dataset>/<seed> evo_only
 
 <campaign>/settings/<setting>/<dataset>/<seed> e.g. dev/settings/hp/lepid/43 (resolved under artifacts/)
-evo_only    re-render only the cross-eval evolution GIFs (per-eval plots left as-is)
-no_evo      render only the per-eval plots, skip the cross-eval evolution GIFs
+evo_only    re-render only the cross-eval evolving GIFs (per-eval plots left as-is)
+no_evo      render only the per-eval plots, skip the cross-eval evolving GIFs
 snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under artifacts/<campaign>/,
             reading its manifold_viz + train.dev.manifold_viz fields) instead of the live config/*.yaml --
             used by the campaign render worker

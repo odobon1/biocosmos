@@ -236,17 +236,11 @@ class BCECriterion(Criterion):
             else:
                 W_foc = torch.ones_like(targs)
 
+            W = W_ci * W_foc
             if self.cfg["wting"]["bce"]["dsmr"]:
                 mass_pos = torch.sum(targs)
                 mass_neg = torch.sum(1.0 - targs)
-                W_dsmr = _dsmr_weight(targs, mass_pos, mass_neg, B)
-            else:
-                W_dsmr = None
-
-            W = _aggregate_weights(self.cfg["wting"]["bce"]["agg"], W_ci, W_foc, W_dsmr)
-
-            if self.cfg["wting"]["bce"]["norm"]["agg"]:
-                W = W / W.detach().mean().clamp_min(1e-12)
+                W = W * _dsmr_weight(targs, mass_pos, mass_neg, B)
 
         else:
 
@@ -264,7 +258,7 @@ def _focal_2d(preds, targs, cfg_focal, clamp_base=False):
     comp_type = cfg_focal["comp_type"]
 
     if comp_type == 1:
-        p_t = (1 - preds) + targs * (2 * preds - 1)
+        p_t = (preds * targs) + (1 - preds) * (1 - targs)
     elif comp_type == 2:
         p_t = 1 - torch.abs(targs - preds)
 
@@ -293,35 +287,6 @@ def _dsmr_weight(targs, mass_pos, mass_neg, B):
     )
     return W_dsmr
 
-def _aggregate_weights(agg, W_ci, W_foc, W_dsmr=None):
-    """
-    Combine the class-imbalance, focal, and (optional) DSMR pair-weight factors into one weight matrix.
-    Elementwise, so it applies identically to a full BxB matrix or a [C, B] tile. Shared by the full and
-    tiled paths. geo_mean floors each factor at finfo.tiny (log domain); harm_mean floors only the focal
-    factor at 1e-8 (the one that underflows to ~0).
-    """
-    m = 3 if W_dsmr is not None else 2
-    if agg == "prod":
-        W = W_ci * W_foc
-        if W_dsmr is not None:
-            W = W * W_dsmr
-    elif agg == "mean":
-        W = W_ci + W_foc + (W_dsmr if W_dsmr is not None else 0)
-        W = W / m
-    elif agg == "geo_mean":
-        eps = torch.finfo(W_ci.dtype).tiny  # per-factor log floor; engages only when a factor is already ~0 (e.g. focal underflow)
-        acc = W_ci.clamp_min(eps).log() + W_foc.clamp_min(eps).log()
-        if W_dsmr is not None:
-            acc = acc + W_dsmr.clamp_min(eps).log()
-        W = torch.exp(acc / m)  # log-space: no product underflow / clamp-floor artifact
-    elif agg == "harm_mean":
-        acc = 1.0 / W_ci + 1.0 / W_foc.clamp_min(1e-8)
-        if W_dsmr is not None:
-            acc = acc + 1.0 / W_dsmr
-        W = m / acc
-    return W
-
-
 # ------------------------------------------------------------------------------------------------
 # Tiled / chunked global-batch loss (hardware.loss_chunk_size)
 #
@@ -338,30 +303,26 @@ def _aggregate_weights(agg, W_ci, W_foc, W_dsmr=None):
 # all-reduces so every rank returns identical full-batch values; the leaves' band-partial dL/dembs sum
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
-# Supports the full BCE config space (incl. sw/iw/tax/phylo targets, norm.cls_imb, norm.agg, a BCE+BCE
-# secondary-loss mix, and mix_unit_scale) -- only InfoNCE is excluded (validate_chunking_supported).
-# The reductions that couple across the whole BxB matrix -- the norm.cls_imb / norm.agg weight-mean
+# Supports the full BCE config space (incl. sw/iw/tax/phylo targets, norm.cls_imb, a BCE+BCE
+# secondary-loss mix, and mix_unit_scale) -- only InfoNCE is excluded (chunking_supported).
+# The reductions that couple across the whole BxB matrix -- the norm.cls_imb weight-mean
 # normalizers, the DSMR mass, and the per-loss mix_unit_scale scalar -- are all DETACHED constants, so
 # they are precomputed (cheap embedding-free closed forms + no_grad band sweeps, all-reduced to
 # rank-identical values) before the single grad-carrying backward sweep applies them as constants.
 # See _precompute_crit_consts.
 # ------------------------------------------------------------------------------------------------
 
-def validate_chunking_supported(cfg_loss, cfg_loss2):
+def chunking_supported(cfg_loss, cfg_loss2):
     """
     The tiled loss reproduces every BCE config but not InfoNCE (its row/column softmax couples along
-    columns, which a row-block cannot tile). Fail loud rather than silently miscomputing the loss.
+    columns, which a row-block cannot tile). Config treats hardware.loss_chunk_size as inert (full
+    BxB path) when this returns False.
     """
-    reasons = []
     if cfg_loss["crit"] != "bce":
-        reasons.append(f"loss.crit={cfg_loss['crit']!r} (only 'bce'; InfoNCE not tileable)")
+        return False
     if cfg_loss2["mix"] != 0.0 and cfg_loss2["crit"] != "bce":
-        reasons.append(f"loss2.crit={cfg_loss2['crit']!r} with loss2.mix={cfg_loss2['mix']} (secondary loss must be 'bce')")
-    if reasons:
-        raise NotImplementedError(
-            "hardware.loss_chunk_size is set but the loss config is outside the chunking-supported subset: "
-            + "; ".join(reasons)
-        )
+        return False
+    return True
 
 def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     """
@@ -483,8 +444,8 @@ def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_co
     """
     For one criterion and one [C, B] row-block: the aggregated per-pair weight W (differentiable via the
     focal factor) and the raw BCE matrix. `consts` carries the precomputed detached global scalars
-    (cls_imb_mean, dsmr_mass, norm_agg_mean); a None entry means that normalizer is off. Mirrors the
-    train-mode weighting of BCECriterion.__call__ tile-by-tile via shared _dsmr_weight / _aggregate_weights.
+    (cls_imb_mean, dsmr_mass); a None entry means that normalizer is off. Mirrors the
+    train-mode weighting of BCECriterion.__call__ tile-by-tile via the shared _dsmr_weight.
     """
     cfg_w = crit.cfg["wting"]
     W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_rows, crit.wting_dim,
@@ -495,17 +456,16 @@ def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_co
         W_foc = _focal_2d(torch.sigmoid(logits_f), targs, cfg_w["focal"], clamp_base=True)
     else:
         W_foc = torch.ones_like(targs)
-    W_dsmr = _dsmr_weight(targs, *consts["dsmr_mass"], B) if cfg_w["bce"]["dsmr"] else None
-    W = _aggregate_weights(cfg_w["bce"]["agg"], W_ci, W_foc, W_dsmr)
-    if consts["norm_agg_mean"] is not None:
-        W = W / consts["norm_agg_mean"]
+    W = W_ci * W_foc
+    if cfg_w["bce"]["dsmr"]:
+        W = W * _dsmr_weight(targs, *consts["dsmr_mass"], B)
     bce = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")
     return W, bce
 
 def _crit_block_logits_f(crit, secondary, img_rows, txt, compute_logits):
     """[C, B] similarity tile and its float32 logits tile for a criterion (its sim_type + logit scale/bias)."""
     sim_block = compute_sim(img_rows, txt, crit.cfg["sim"])
-    logits_block = compute_logits(sim_block, crit.cfg["logits"]["scale"]["clamp"], secondary=secondary)
+    logits_block = compute_logits(sim_block, crit.cfg["logits"]["temperature"]["clamp"], secondary=secondary)
     return sim_block, logits_block.float()
 
 def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs_b, B,
@@ -513,9 +473,9 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
                             lo, hi, world_size):
     """
     Detached global constants for one criterion (see module header). cls_imb_mean (mean of W_ci) and
-    dsmr_mass are embedding-free; norm_agg_mean (mean of the aggregated weight) and L_value (the
-    criterion's full weighted loss, needed for mix_unit_scale) require a no_grad tile sweep, run only
-    when norm.agg or mix_unit_scale is active. All sweeps cover only this rank's row-band [lo, hi);
+    dsmr_mass are embedding-free; L_value (the criterion's full weighted loss, needed for
+    mix_unit_scale) requires a no_grad tile sweep, run only when mix_unit_scale is active. All
+    sweeps cover only this rank's row-band [lo, hi);
     the partial sums are all-reduced so every rank derives identical constants.
     Returns (consts dict for _crit_block_weight_bce, L_value|None).
     """
@@ -535,11 +495,9 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
 
     dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["bce"]["dsmr"] else None
 
-    norm_agg_mean = None
     L_value = None
-    if cfg_w["bce"]["norm"]["agg"] or need_L:
-        consts_raw = {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass, "norm_agg_mean": None}
-        sum_W = torch.zeros((), dtype=torch.float64, device=device)
+    if need_L:
+        consts_raw = {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass}
         sum_Wbce = torch.zeros((), dtype=torch.float64, device=device)
         with torch.no_grad():
             for rs in range(lo, hi, chunk_size):
@@ -548,19 +506,12 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
                     _, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits)
                     targs_block = targ_block_fn(rs, re)
                     W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_raw)
-                sum_W += W.double().sum()
                 sum_Wbce += (W * bce).double().sum()
         if world_size > 1:
-            packed = torch.stack([sum_W, sum_Wbce])
-            dist.all_reduce(packed)
-            sum_W, sum_Wbce = packed[0], packed[1]
-        if cfg_w["bce"]["norm"]["agg"]:
-            norm_agg_mean = (sum_W / (B * B)).clamp_min(1e-12).float()
-        if need_L:
-            denom = norm_agg_mean if norm_agg_mean is not None else 1.0
-            L_value = ((sum_Wbce / B) / denom).float()
+            dist.all_reduce(sum_Wbce)
+        L_value = (sum_Wbce / B).float()
 
-    return {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass, "norm_agg_mean": norm_agg_mean}, L_value
+    return {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass}, L_value
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, mix_unit_scale,
                               compute_logits, chunk_size, mixed_prec, device, rank, world_size):

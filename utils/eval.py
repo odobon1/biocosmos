@@ -269,7 +269,7 @@ class PartitionEvaluationPipeline:
                     "t2i": scores_t2i["map"],
                 },
             },
-            "per_class": {
+            "macro": {
                 "acc": {
                     "i2t": scores_i2t["macro_acc"],
                 },
@@ -364,11 +364,11 @@ class PartitionEvaluationPipeline:
 
             if bucket_macro_vals:
                 bucket_comp_macro = harmonic_mean(bucket_macro_vals)
-                eval_scores["per_class"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
+                eval_scores["macro"]["map"].setdefault("n-shot", {})[bucket_name] = bucket_comp_macro
 
             bucket_macro_acc = bucket_i2t_macro_acc.get(bucket_name)
             if bucket_macro_acc is not None and not (isinstance(bucket_macro_acc, float) and math.isnan(bucket_macro_acc)):
-                eval_scores["per_class"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_macro_acc
+                eval_scores["macro"]["acc"].setdefault("n-shot", {})[bucket_name] = bucket_macro_acc
 
         return eval_scores
 
@@ -670,6 +670,7 @@ class EvaluationPipeline:
         self.header_tag = header_tag
 
         self.split = load_split(config.dataset, config.split)
+        self.nshot_bucket_names = list(self.split.nshot["names"])
         self.partitions = list_eval_partitions(self.split, config.eval_type)
         self.partition_pipes = {
             partition: PartitionEvaluationPipeline(
@@ -699,8 +700,8 @@ class EvaluationPipeline:
 
         eval_metrics: Dict[str, Any] = {
             "scores": {
-                "closed_set": {"standard": {}, "per_class": {}},
-                "full_set": {"standard": {}, "per_class": {}},
+                "nativegall": {"standard": {}, "macro": {}},
+                "jointgall": {"standard": {}, "macro": {}},
             },
             "loss_raw": {},
             "sim": {stat: None for stat in ("min", "max", "median", "mean")},
@@ -708,8 +709,8 @@ class EvaluationPipeline:
         }
         accum = {
             (set_key, grp): {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
-            for set_key in ("closed_set", "full_set")
-            for grp in ("standard", "per_class")
+            for set_key in ("nativegall", "jointgall")
+            for grp in ("standard", "macro")
         }
         eval_bundles: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
@@ -730,19 +731,19 @@ class EvaluationPipeline:
                     for stat in ("min", "max", "median", "mean")
                 }
 
-        full_set_embs_img = torch.cat(
+        jointgall_embs_img = torch.cat(
             [eval_bundles[partition]["embs_img"] for partition in self.partitions],
             dim=0,
         )
-        full_set_class_encs_img = torch.cat(
+        jointgall_class_encs_img = torch.cat(
             [eval_bundles[partition]["class_encs_img"] for partition in self.partitions],
             dim=0,
         )
-        full_set_embs_text = torch.cat(
+        jointgall_embs_text = torch.cat(
             [eval_bundles[partition]["embs_text"] for partition in self.partitions],
             dim=0,
         )
-        full_set_class_encs_text = torch.cat(
+        jointgall_class_encs_text = torch.cat(
             [eval_bundles[partition]["class_encs_text"] for partition in self.partitions],
             dim=0,
         )
@@ -753,7 +754,7 @@ class EvaluationPipeline:
             eval_bundle_partition = eval_bundles[partition]
             loss_avg_partition = partition_losses[partition]
 
-            closed_set_scores = pipe.compute_map_scores(
+            nativegall_scores = pipe.compute_map_scores(
                 embs_img_q=eval_bundle_partition["embs_img"],
                 class_encs_img_q=eval_bundle_partition["class_encs_img"],
                 embs_text_q=eval_bundle_partition["embs_text"],
@@ -774,22 +775,22 @@ class EvaluationPipeline:
             )
             img_offset += eval_bundle_partition["embs_img"].size(0)
 
-            full_set_scores = pipe.compute_map_scores(
+            jointgall_scores = pipe.compute_map_scores(
                 embs_img_q=eval_bundle_partition["embs_img"],
                 class_encs_img_q=eval_bundle_partition["class_encs_img"],
                 embs_text_q=eval_bundle_partition["embs_text"],
                 class_encs_text_q=eval_bundle_partition["class_encs_text"].to(eval_bundle_partition["embs_img"].device),
-                embs_img_g=full_set_embs_img,
-                class_encs_img_g=full_set_class_encs_img,
-                embs_text_g=full_set_embs_text,
-                class_encs_text_g=full_set_class_encs_text,
+                embs_img_g=jointgall_embs_img,
+                class_encs_img_g=jointgall_class_encs_img,
+                embs_text_g=jointgall_embs_text,
+                class_encs_text_g=jointgall_class_encs_text,
                 self_match_idxs_g=self_match_idxs_g,
                 class_enc_to_bucket=pipe.class_enc_to_bucket,
                 nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
-            for set_key, scores in (("closed_set", closed_set_scores), ("full_set", full_set_scores)):
-                for grp in ("standard", "per_class"):
+            for set_key, scores in (("nativegall", nativegall_scores), ("jointgall", jointgall_scores)):
+                for grp in ("standard", "macro"):
                     a = accum[(set_key, grp)]
                     a["all"].append(harmonic_mean([scores[grp]["map"][m] for m in RETRIEVAL_MODALITIES]))
                     a["i2t"].append(scores[grp]["map"]["i2t"])
@@ -797,10 +798,10 @@ class EvaluationPipeline:
                     a["t2i"].append(scores[grp]["map"]["t2i"])
                     a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
 
-            eval_metrics["scores"]["closed_set"]["standard"][partition] = closed_set_scores["standard"]
-            eval_metrics["scores"]["closed_set"]["per_class"][partition] = closed_set_scores["per_class"]
-            eval_metrics["scores"]["full_set"]["standard"][partition] = full_set_scores["standard"]
-            eval_metrics["scores"]["full_set"]["per_class"][partition] = full_set_scores["per_class"]
+            eval_metrics["scores"]["nativegall"]["standard"][partition] = nativegall_scores["standard"]
+            eval_metrics["scores"]["nativegall"]["macro"][partition] = nativegall_scores["macro"]
+            eval_metrics["scores"]["jointgall"]["standard"][partition] = jointgall_scores["standard"]
+            eval_metrics["scores"]["jointgall"]["macro"][partition] = jointgall_scores["macro"]
             if loss_flag and loss_avg_partition is not None:
                 eval_metrics["loss_raw"][partition] = loss_avg_partition
             else:

@@ -60,13 +60,6 @@ def _timed_next(loader, wait_acc):
         yield batch
 
 
-def _fmt_thresh(n_samps):
-    """Compact dir name for a sample-count eval threshold, e.g. 100_000 -> '100k'."""
-    if n_samps % 1000 == 0:
-        return f"{n_samps // 1000}k"
-    return str(n_samps)
-
-
 class TrainPipeline:
     """DDP rank discipline: every undecorated method is entered by ALL ranks and may run
     collectives (all_reduce / all_gather / sharded t-SNE), so no caller may rank-gate one.
@@ -117,10 +110,10 @@ class TrainPipeline:
         else:
             self.eval_pipe = None
 
-        self.lr_warmup = self.cfg.opt["lr"]["warmup"]
+        self.lr_warmup = round(self.cfg.opt["lr"]["warmup"] * self.cfg.sample_volume)  # warmup fraction -> samples
         self.init_opt_and_lr_sched()
         self.n_batches_seen = 0
-        self.chkpt_thresh = self.cfg.chkpt_every
+        self.chkpt_thresh = self.cfg.chkpt_interval
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
 
         self.n_samps_seen = 0
@@ -169,7 +162,8 @@ class TrainPipeline:
         )
 
         lr_init = self.opt.param_groups[0]["lr"]
-        eta_min = lr_init * float(self.cfg.opt['lr']['decay_factor'])
+        decay_factor = self.cfg.opt["lr"]["decay_factor"]
+        eta_min = 0.0 if decay_factor is None else lr_init * float(decay_factor)
         total_steps = max(1, math.ceil(self.cfg.sample_volume / self.cfg.batch_size) - math.ceil(self.lr_warmup / self.cfg.batch_size))
         self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
 
@@ -206,18 +200,18 @@ class TrainPipeline:
         )
 
     @rank0
-    def _save_eval_data(self, dpath):
-        ArtifactManager.save_eval_data(dpath, self.data.eval_metrics, self.n_samps_seen, self.n_samps_seen)
+    def _save_eval_data(self, dpath, idx_eval):
+        ArtifactManager.save_eval_data(dpath, self.data.eval_metrics, idx_eval, self.cfg.n_chkpts, self.n_samps_seen, self.cfg.sample_volume)
 
     @rank0
     def _write_base_eval(self, entry):
-        # materialize the base-eval cache entry into evals/_base/ so base is a uniform member of the
+        # materialize the base-eval cache entry into evals/base/ so base is a uniform member of the
         # eval sequence the render pass sweeps. metrics.json always (every trial records its base eval);
         # projections only for viz trials -- a non-viz trial computes none of its own projections, so it
         # mustn't inherit the cache's base projections either; embs only for pooled trials, whose cache
         # hit is gated on the entry carrying them (require_embs). On a fresh base eval the npz files were
-        # computed straight into _base/ (already on disk, skipped here); only a cache hit writes them.
-        dst = ArtifactManager.dpath_trial / "evals" / "_base"
+        # computed straight into base/ (already on disk, skipped here); only a cache hit writes them.
+        dst = ArtifactManager.dpath_trial / "evals" / "base"
         dst.mkdir(parents=True, exist_ok=True)
         save_json(entry["metrics"], dst / "metrics.json")
         if self._viz_manifold and not (dst / "projections.npz").exists():
@@ -256,8 +250,9 @@ class TrainPipeline:
     def _save_mid_eval(self, threshold_hit, eval_bundles):
         # _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank must
         # enter here; the metrics write (_save_eval_data) is @rank0.
-        eval_name = _fmt_thresh(threshold_hit)
-        self._save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name)
+        idx_eval = threshold_hit // self.cfg.chkpt_interval
+        eval_name = f"eval{idx_eval}"
+        self._save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name, idx_eval)
         if self._viz_manifold:
             self._viz_eval(eval_bundles, eval_name)
 
@@ -284,25 +279,25 @@ class TrainPipeline:
         dist.all_reduce(vram, op=dist.ReduceOp.MAX)
         return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
 
-    def _checkpoint(self, header, idx_batch, record_eval=True):
+    def _checkpoint(self, header, idx_batch):
         # the memory snapshot all-reduces across ranks, so every rank must enter; the writes are @rank0
         mem = self._snapshot_memory()
-        self._checkpoint_writes(header, idx_batch, record_eval, mem)
+        self._checkpoint_writes(header, idx_batch, mem)
 
     @rank0
-    def _checkpoint_writes(self, header, idx_batch, record_eval, mem):
-        if self.eval_enabled and record_eval:
+    def _checkpoint_writes(self, header, idx_batch, mem):
+        if self.eval_enabled:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
-            self._save_eval_data(ArtifactManager.dpath_model_checkpoint)
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, mem)
+            self._save_eval_data(ArtifactManager.dpath_model_checkpoint, self.chkpt_thresh // self.cfg.chkpt_interval - 1)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
 
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
-        plot_metrics(self.data, ArtifactManager.dpath_trial)
+        plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.size_train)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.loss_chunk_size is not None:
@@ -332,7 +327,7 @@ class TrainPipeline:
 
             if self._resume_state is None:
                 mem = self._snapshot_memory()  # COLLECTIVE -- every rank must enter
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen, self.cfg.sample_volume, mem, init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 
@@ -343,7 +338,7 @@ class TrainPipeline:
                 # single-source the hit/miss decision: a concurrent campaign's cache write landing between
                 # independent per-rank reads would split the branch, and the miss branch enters collective
                 # ops (evaluate / sharded t-SNE) that every rank must join. Only the small metrics dict is
-                # broadcast; the bulky projections/embs stay on rank 0, the only rank that writes _base.
+                # broadcast; the bulky projections/embs stay on rank 0, the only rank that writes base/.
                 sync = [cached["metrics"] if cached is not None else None]
                 dist.broadcast_object_list(sync, src=0)
                 metrics_cached = sync[0]
@@ -364,9 +359,9 @@ class TrainPipeline:
                         collect_eval_bundles=self._viz_manifold,
                     )
                     if self._viz_manifold:
-                        self._viz_eval(eval_bundles, "_base")  # projections (+ embs if pooled) straight into evals/_base
+                        self._viz_eval(eval_bundles, "base")  # projections (+ embs if pooled) straight into evals/base
                     entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics)  # rank0 gets the entry back; None elsewhere
-                self._write_base_eval(entry)  # base -> evals/_base (uniform member of the eval sequence)
+                self._write_base_eval(entry)  # base -> evals/base (uniform member of the eval sequence)
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
@@ -386,11 +381,13 @@ class TrainPipeline:
                         random.setstate(rng["rng_random"])
                     self._resume_state = None
 
-            for _ in range(self.cfg.n_epochs - self.idx_epoch):
+            for _ in range(self.cfg.n_passes - self.idx_epoch):
                 self.timer_train.start()
                 self.idx_epoch += 1
 
-                PrintLog.batch_logs_epoch_header(self.idx_epoch, self.cfg.n_epochs)
+                epoch_first = (self.idx_epoch - 1) * self.cfg.epochs_per_pass + 1
+                epoch_last = min(self.idx_epoch * self.cfg.epochs_per_pass, math.ceil(self.cfg.n_epochs))
+                PrintLog.batch_logs_epoch_header(epoch_first, epoch_last, self.cfg.n_epochs)
 
                 # Let samplers know current epoch (crucial for shuffling)
                 sampler = getattr(self.dataloader, "sampler", None)
@@ -472,14 +469,13 @@ class TrainPipeline:
 
                         while self.n_samps_seen >= self.chkpt_thresh:
                             threshold_hit = self.chkpt_thresh
-                            self.chkpt_thresh += self.cfg.chkpt_every
+                            self.chkpt_thresh += self.cfg.chkpt_interval
 
-                        # skip the train-time eval+checkpoint when the threshold lands on
-                        # sample_volume -- the final eval+checkpoint right below cover it
-                        if threshold_hit != self.cfg.sample_volume:
-                            # TRAIN-TIME EVAL (skipped entirely when traintime_evals is off -- only base/final eval)
-                            traintime_eval = self.eval_enabled and self.cfg.dev["traintime_evals"]
-                            if traintime_eval:
+                        # skip the last train-time eval+checkpoint (idx >= n_chkpts) -- the final
+                        # eval+checkpoint right below cover eval<n_chkpts> at sample_volume
+                        if threshold_hit // self.cfg.chkpt_interval < self.cfg.n_chkpts:
+                            # TRAIN-TIME EVAL
+                            if self.eval_enabled:
                                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                                     self.modelw,
                                     loss_flag=True,
@@ -491,7 +487,6 @@ class TrainPipeline:
                             self._checkpoint(
                                 header=f"{threshold_hit:,}",
                                 idx_batch=idx_batch,
-                                record_eval=traintime_eval,
                             )
                             ArtifactManager.save_rng_states(self._local_rank)
                             dist.barrier()
@@ -522,7 +517,8 @@ class TrainPipeline:
                     loss_mean.value(),
                     loss_raw_mean.value(),
                     self.n_samps_seen,
-                    self.idx_epoch,
+                    epoch_first,
+                    epoch_last,
                     self.cfg.n_epochs,
                 )
 
@@ -536,9 +532,9 @@ class TrainPipeline:
                 )
                 self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
-                self._save_eval_data(ArtifactManager.dpath_eval_final)
+                self._save_eval_data(ArtifactManager.dpath_eval_final, self.cfg.n_chkpts)
                 if self._viz_manifold:
-                    self._viz_eval(eval_bundles, "final")  # COLLECTIVE compute+cache; rendered post-trial off-process
+                    self._viz_eval(eval_bundles, f"eval{self.cfg.n_chkpts}")  # COLLECTIVE compute+cache; rendered post-trial off-process
             self._checkpoint(
                 header="Final",
                 idx_batch=-1,
@@ -595,7 +591,7 @@ def run_training(cfg):
     train_pipe.train()
     cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
     update_metric_stats(cfg_stats.spread_type)
-    update_stats_tables(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
-    update_metrics_xlsx(cfg_stats.table_eval_group, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
+    update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
+    update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
 
     cleanup_ddp()

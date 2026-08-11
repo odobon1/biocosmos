@@ -22,10 +22,10 @@ def _full_loss_cfg(crit="bce", targ="sw"):
                 "wt_mean_type": "per_class",
             },
             "focal": {"gamma": 2.0, "comp_type": 1},
-            "bce": {"dsmr": True, "agg": "prod", "norm": {"cls_imb": True, "agg": False}},
+            "bce": {"dsmr": True, "norm": {"cls_imb": True}},
         },
         "logits": {
-            "scale": {"init": None, "freeze": False, "clamp": False},
+            "temperature": {"init": None, "freeze": False, "clamp": False},
             "bias": {"init": None, "freeze": False},
         },
     }
@@ -85,7 +85,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
     assert cls_imb["freq_type_2d"] == "naive" and cls_imb["wt_mean_type"] == "per_class"  # BCE weights 2D, no self-norm
     assert "comp_type" not in config["loss"]["wting"]["focal"]  # bce + sw: binary targets -> comp forms coincide
-    assert config["loss"]["wting"]["bce"]["norm"] == {"cls_imb": True, "agg": False}  # no unit-scale / norm.agg -> the rescale sticks
+    assert config["loss"]["wting"]["bce"]["norm"] == {"cls_imb": True}  # no unit-scale -> the rescale sticks
     assert "freeze" in config["loss"]["logits"]["bias"]  # SigLIP logit_bias is a real Parameter
 
     # CLIP + InfoNCE1 + class_bal: the 1D path reads none of the 2D/BCE-only machinery
@@ -118,7 +118,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss"]
     assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True
-    assert "norm" not in config["loss2"]["wting"]["bce"]  # cls_imb (prod agg) and agg both cancelled -> emptied out
+    assert "norm" not in config["loss2"]["wting"]["bce"]  # cls_imb cancelled by unit-scaling -> emptied out
     assert config["loss2"]["wting"]["focal"]["comp_type"] == 1  # bce + phylo: continuous targets keep comp_type live
 
 
@@ -173,13 +173,13 @@ def test_load_base_eval_cache_misses_when_entry_lacks_needed_pieces(tmp_path, mo
 
 
 def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> None:
-    # each save ingests the npz files compute_projections wrote into this trial's evals/_base/
+    # each save ingests the npz files compute_projections wrote into this trial's evals/base/
     # (absent for non-viz trials -> None) and writes its combo's entry to that combo's own file,
     # leaving other combos' files untouched
     dpath_cache = tmp_path / "base_eval_cache"
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo.pkl")
     monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial")
-    dpath_base = tmp_path / "trial" / "evals" / "_base"
+    dpath_base = tmp_path / "trial" / "evals" / "base"
     dpath_base.mkdir(parents=True)
     np.savez(dpath_base / "projections.npz", pca_id=np.arange(3))
     eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None}}
@@ -192,7 +192,7 @@ def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> No
     assert entry["embs"] is None
 
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo2.pkl")
-    monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial2")  # no _base npzs -> non-viz trial
+    monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial2")  # no base npzs -> non-viz trial
 
     ArtifactManager.save_base_eval_cache(None, eval_metrics)
 

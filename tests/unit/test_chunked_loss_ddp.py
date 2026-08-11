@@ -42,7 +42,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="sw", norm_agg=False):
+def cfg_loss(targ="sw", norm_cls_imb=False):
     return {
         "crit": "bce", "sim": "cos", "targ": targ,
         "wting": {
@@ -50,16 +50,16 @@ def cfg_loss(targ="sw", norm_agg=False):
                         "class_bal": {"beta": 0.9999}, "freq_type_2d": "naive",
                         "wt_mean_type": "per_class"},
             "focal": {"gamma": 2.0, "comp_type": 1},
-            "bce": {"dsmr": True, "agg": "prod", "norm": {"cls_imb": False, "agg": norm_agg}},
+            "bce": {"dsmr": True, "norm": {"cls_imb": norm_cls_imb}},
         },
-        "logits": {"scale": {"clamp": False}, "bias": {}},
+        "logits": {"temperature": {"clamp": False}, "bias": {}},
     }
 
 
 # (name, cfg1, cfg2, mix, mix_unit_scale)
 CASES = [
     ("plain", cfg_loss("sw"), None, 0.0, False),
-    ("mix_normagg_unitscale", cfg_loss("sw", norm_agg=True), cfg_loss("sw", norm_agg=True), 0.3, True),
+    ("mix_normci_unitscale", cfg_loss("sw", norm_cls_imb=True), cfg_loss("sw", norm_cls_imb=True), 0.3, True),
     ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
 ]
 
@@ -133,7 +133,7 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
 
     def crit_loss(crit, secondary):
         sim = compute_sim(img, txt, crit.cfg["sim"])
-        logits = clogits(sim, crit.cfg["logits"]["scale"]["clamp"], secondary)
+        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], secondary)
         loss, loss_raw, _ = crit(logits, fc, ftd, train=True)
         return loss, loss_raw
 

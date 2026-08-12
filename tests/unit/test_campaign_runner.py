@@ -1331,6 +1331,28 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
     assert len(relaunch_calls) == 7
 
 
+def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_commit",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline=False,
+    )
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(cr.__file__).parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    meta = json.loads((tmp_path / "cmp_commit" / "campaign_metadata.json").read_text())
+    assert meta["commit"] == head
+
+
 def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
     # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
     # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created

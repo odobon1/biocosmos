@@ -74,9 +74,10 @@ class TrainConfig:
     train_pt: str
 
     n_epochs: int | float
-    n_chkpts: int
-    batch_size: int
     chain_floor: int | None
+    n_chkpts: int
+    eval_group: str  # eval group used for checkpoint selection (weights of its best checkpoint -> chkpts/best/)
+    batch_size: int
     dv_batching: bool
 
     arch: dict
@@ -94,6 +95,8 @@ class TrainConfig:
     aug: dict = field(default_factory=_default_train_aug_cfg)
     manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
     idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
+    idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
+    n_trials_total: int | None = None  # total planned trials in the campaign matrix
 
     eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
 
@@ -106,6 +109,9 @@ class TrainConfig:
 
         if self.train_pt not in ("train", "trainval"):
             raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
+
+        if self.eval_group not in ("native", "native_macro", "joint", "joint_macro"):
+            raise ValueError(f"Unknown eval_group: '{self.eval_group}', must be one of {{native, native_macro, joint, joint_macro}}")
 
         self.eval_type = "val" if self.train_pt == "train" else None
 

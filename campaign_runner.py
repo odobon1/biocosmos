@@ -128,6 +128,16 @@ def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> No
 def _dpath_campaign(campaign: str) -> Path:
     return paths["artifacts"] / campaign
 
+def _get_commit_hash() -> str:
+    """HEAD commit hash of the repo this runner lives in, for campaign provenance."""
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
@@ -366,7 +376,8 @@ def _stash_nccl_dumps(dpath_campaign: Path) -> None:
         fpath.rename(dpath_traces / fpath.name.removeprefix("nccl_trace_"))
 
 def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setting_payload: dict,
-                          seed: int, dataset: str, idx_seed: int) -> dict:
+                          seed: int, dataset: str, idx_seed: int,
+                          idx_trial: int | None = None, n_trials_total: int | None = None) -> dict:
     """Effective per-trial config dict: frozen campaign snapshot + trial identity + setting overrides."""
     cfg_dict = deepcopy(cfg_snapshot["train"])
     cfg_dict["campaign"] = campaign
@@ -374,6 +385,8 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setti
     cfg_dict["seed"] = seed
     cfg_dict["dataset"] = dataset
     cfg_dict["idx_seed"] = idx_seed
+    cfg_dict["idx_trial"] = idx_trial
+    cfg_dict["n_trials_total"] = n_trials_total
     cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
     cfg_dict["hw"] = cfg_snapshot["hardware"]
@@ -534,6 +547,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     else:
         metadata_camp = {
             "duration": "0-00:00:00",
+            "commit": _get_commit_hash(),  # repo HEAD at first launch; not updated by relaunches
             "n_gpus": n_gpus,
             "n_cpus": slurm_alloc["n_cpus"],
             "ram": slurm_alloc["ram"],
@@ -616,7 +630,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 # planned setting whose trials never start leaves no artifacts/<campaign>/settings/ entry
                 _write_setting_overrides(campaign, setting, setting_payload)
 
-                cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seed, dataset, idx_seed)
+                cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seed, dataset, idx_seed,
+                                                 idx_trial, n_trials_total)
 
                 if dpath_trial.exists():
                     print(f"[{idx_trial}/{n_trials_total}] RESUME: {setting}/{dataset}/{seed}")

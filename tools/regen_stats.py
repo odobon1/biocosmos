@@ -2,12 +2,13 @@
 python -m tools.regen_stats <campaign>
 
 Regenerate a campaign's stats artifacts from its completed trials -- no train/eval rerun. Rewrites, per run
-(setting, dataset), settings/<setting>/<dataset>/stats/{metrics,metrics_listview}.json, and re-renders
-artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>.png and artifacts/<campaign>/stats/metrics/<group>.xlsx
-(one per eval group), all using the CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
+(setting, dataset), settings/<setting>/<dataset>/stats/{map,acc}/<group>.json and stats/{map,acc}/listview/<group>.json,
+and re-renders artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>.png and
+artifacts/<campaign>/stats/metrics/{map,acc}/<group>.xlsx (one per selection criterion x eval group), all using the
+CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
 edits to any of them take effect for an already-run campaign. Each trial's
-cached final-eval (evals/eval<n_chkpts>/) metrics.json is reused and re-aggregated exactly as on the trial-completion path in
-train.py (update_metric_stats -> update_stats_tables -> update_metrics_xlsx).
+cached best-checkpoint (evals/_best/{map,acc}/) per-group metrics files are reused and re-aggregated exactly as on the
+trial-completion path in train.py (update_metric_stats -> update_stats_tables -> update_metrics_xlsx).
 """
 
 import sys

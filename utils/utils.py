@@ -484,6 +484,7 @@ class PrintLog:
         eval_metrics: Dict[str, Any],
         eval_pipe,
         header: Optional[str] = None,
+        banner_suffix: Optional[str] = None,
         n_samps_seen: Optional[int] = None,
         time_eval: Optional[float] = None,
         time_eval_avg: Optional[float] = None,
@@ -505,20 +506,20 @@ class PrintLog:
 
         lines_comp += _format_composite_block(
             " Composite Native Gallery mAP ",
-            eval_metrics["scores"]["nativegall"]["standard"]["comp"]["map"],
+            eval_metrics["scores"]["native"]["comp"]["map"],
         )
         lines_comp += _format_composite_block(
             " Composite Joint Gallery mAP ",
-            eval_metrics["scores"]["jointgall"]["standard"]["comp"]["map"],
+            eval_metrics["scores"]["joint"]["comp"]["map"],
         )
 
         lines_comp_macro = _format_composite_block(
             " Composite Native Gallery Macro mAP ",
-            eval_metrics["scores"]["nativegall"]["macro"]["comp"]["map"],
+            eval_metrics["scores"]["native_macro"]["comp"]["map"],
         )
         lines_comp_macro += _format_composite_block(
             " Composite Joint Gallery Macro mAP ",
-            eval_metrics["scores"]["jointgall"]["macro"]["comp"]["map"],
+            eval_metrics["scores"]["joint_macro"]["comp"]["map"],
         )
         
         loss_pairs = [
@@ -555,8 +556,11 @@ class PrintLog:
             lines_info += PrintLog._dash_aligned_lines(info) + "\n"
 
         eval_header = f" Eval ({header}) " if header is not None else " Eval "
+        banner = f"{eval_header:#^{SECTION_WIDTH}}"
+        if banner_suffix is not None:
+            banner += f" {banner_suffix}"
         eval_printout = (
-            f"{eval_header:#^{SECTION_WIDTH}}\n"
+            f"{banner}\n"
             f"{lines_comp}"
             f"{lines_comp_macro}"
             f"{lines_loss}"

@@ -18,7 +18,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from utils.ddp import rank0
-from utils.train import ArtifactManager
+from utils.train import ArtifactManager, BEST_CRITERIA
 from utils.utils import (
     paths,
     save_json,
@@ -30,14 +30,17 @@ from utils.utils import (
 import pdb
 
 
-# eval group stem (also the stats artifact filename) -> (scores set_key, averaging group key,
-# display name); every stats table/xlsx artifact is rendered once per group
+# eval group key (the scores group key, also the stats artifact filename) -> display name;
+# every stats table/xlsx artifact is rendered once per group
 _EVAL_GROUPS = {
-    "nativegall": ("nativegall", "standard", "Native"),
-    "nativegall_macro": ("nativegall", "macro", "Native-Macro"),
-    "jointgall": ("jointgall", "standard", "Joint"),
-    "jointgall_macro": ("jointgall", "macro", "Joint-Macro"),
+    "native": "Native",
+    "native_macro": "Native-Macro",
+    "joint": "Joint",
+    "joint_macro": "Joint-Macro",
 }
+
+# checkpoint-selection criterion (BEST_CRITERIA / evals/_best/ subdir) -> banner display name
+_SELECTION_NAMES = {"map": "mAP-selection", "acc": "Acc-selection"}
 
 # "Hardware Performance" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
 # _HW_CRASH_LABELS the per-setting crash totals it reads from setting_metadata.json
@@ -87,35 +90,36 @@ def _listview_metric_stats(values, percent=True):
 @rank0
 def update_metric_stats(spread_type):
     dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
-    n_chkpts = load_json(ArtifactManager.dpath_setting / "config.json")["n_chkpts"]
-    metric_dicts = []
-    for dpath_trial in sorted(dpath_dataset.iterdir()):
-        # a written final-eval (evals/eval<n_chkpts>/) metrics file is the signal a trial finished;
-        # the `complete` flag is marked later (campaign_runner, after a clean exit) so it can't
-        # gate this aggregation
-        fpath_metrics = dpath_trial / f"evals/eval{n_chkpts}/metrics.json"
-        if not fpath_metrics.exists():
-            continue
-        metrics = load_json(fpath_metrics)
-        metrics.pop("eval", None)
-        metric_dicts.append(metrics)
-
-    if not metric_dicts:
-        return
-
-    n_trials = len(metric_dicts)
-    stats = {
-        "n_trials": n_trials,
-        **_aggregate_metric_stats(metric_dicts, spread_type),
-    }
-    listview = {
-        "n_trials": n_trials,
-        **_listview_metric_stats(metric_dicts),
-    }
     dpath_stats = dpath_dataset / "stats"
-    dpath_stats.mkdir(parents=True, exist_ok=True)
-    save_json(stats, dpath_stats / "metrics.json")
-    save_json_listview(listview, dpath_stats / "metrics_listview.json")
+    for criterion in BEST_CRITERIA:
+        for group_key in _EVAL_GROUPS:
+            metric_dicts = []
+            for dpath_trial in sorted(dpath_dataset.iterdir()):
+                # a written best-checkpoint (evals/_best/<criterion>/) metrics file -- materialized
+                # after the final eval -- is the signal a trial finished; the `complete` flag is
+                # marked later (campaign_runner, after a clean exit) so it can't gate this aggregation
+                fpath_metrics = dpath_trial / f"evals/_best/{criterion}/{group_key}.json"
+                if not fpath_metrics.exists():
+                    continue
+                metrics = load_json(fpath_metrics)
+                metrics.pop("chkpt", None)
+                metric_dicts.append(metrics)
+
+            if not metric_dicts:
+                return
+
+            n_trials = len(metric_dicts)
+            stats = {
+                "n_trials": n_trials,
+                **_aggregate_metric_stats(metric_dicts, spread_type),
+            }
+            listview = {
+                "n_trials": n_trials,
+                **_listview_metric_stats(metric_dicts),
+            }
+            (dpath_stats / criterion / "listview").mkdir(parents=True, exist_ok=True)
+            save_json(stats, dpath_stats / criterion / f"{group_key}.json")
+            save_json_listview(listview, dpath_stats / criterion / "listview" / f"{group_key}.json")
 
 def _stats_table_grid(labels, setting_score_maps, spread_type):
     """Build a composite-score table's cell grid from [(setting, [score dict per completed
@@ -137,34 +141,25 @@ def _stats_table_grid(labels, setting_score_maps, spread_type):
         grid.append(row)
     return grid
 
-def _setting_n_chkpts(setting):
-    """n_chkpts from the setting's frozen config.json -- names the setting's final eval dir
-    (evals/eval<n_chkpts>/, the completion signal). None when the setting has no launched trials
-    yet (no config.json on disk -- and then no trial dirs to scan either)."""
-    fpath_config = ArtifactManager.dpath_campaign / "settings" / setting / "config.json"
-    return load_json(fpath_config)["n_chkpts"] if fpath_config.exists() else None
-
-
-def _collect_comps(settings, datasets):
+def _collect_comps(settings, datasets, criterion):
     """Per eval group, each (setting, dataset)'s completed-trial score maps, keyed by trial seed
     (the trial dir name; empty dict -> no trials yet): comps_all[group_key][(setting, dataset)]
     [seed] is a {'map': ..., 'acc': ...} pair of flat label->score dicts merging the comp scores
     with the per-partition primitives ('id i2t' ... 'ood t2i'), so table labels map to keys by
-    lowercasing. One pass over the metrics files serves every group. A written final-eval
-    (evals/eval<n_chkpts>/) metrics file is the completion signal, same as update_metric_stats."""
+    lowercasing. Each group reads its own best-checkpoint metrics file for the given selection
+    criterion (evals/_best/<criterion>/), whose presence is also the completion signal, same as
+    update_metric_stats."""
     comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
     for setting in settings:
-        n_chkpts = _setting_n_chkpts(setting)
         for dataset in datasets:
             dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
             comps = {group_key: {} for group_key in _EVAL_GROUPS}
             if dpath_dataset.exists():
                 for dpath_trial in sorted(dpath_dataset.iterdir()):
-                    fpath_metrics = dpath_trial / f"evals/eval{n_chkpts}/metrics.json"
-                    if fpath_metrics.exists():
-                        scores = load_json(fpath_metrics)["scores"]
-                        for group_key, (set_key, grp, _) in _EVAL_GROUPS.items():
-                            scores_grp = scores[set_key][grp]
+                    for group_key in _EVAL_GROUPS:
+                        fpath_metrics = dpath_trial / f"evals/_best/{criterion}/{group_key}.json"
+                        if fpath_metrics.exists():
+                            scores_grp = load_json(fpath_metrics)["scores"]
                             comps[group_key][dpath_trial.name] = {
                                 "map": {**scores_grp["comp"]["map"],
                                         **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")}},
@@ -180,20 +175,20 @@ def _collect_hw(settings, datasets):
     trial_metadata.json and keyed by trial seed (the trial dir name, like _collect_comps): one
     {_HW_LABELS label -> float} dict per trial -- runtime.trial / runtime.train.mean /
     runtime.eval.mean are float-seconds strings, memory.ram / memory.vram are 'used/total GB'
-    strings (numerator taken). A written final-eval (evals/eval<n_chkpts>/) metrics file is the
-    completion signal, same as _collect_comps. Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
+    strings (numerator taken). A written best-checkpoint (evals/_best/map/) metrics file is the
+    completion signal, same as _collect_comps (native.json stands in for the set -- all per-group
+    files are materialized together at trial end). Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
     summed across all its trials -- seeds + datasets, completed or not) from
     setting_metadata.json, whose counters survive the trial-dir wipes that reset
     trial_metadata's."""
     hw_by = {}
     for setting in settings:
-        n_chkpts = _setting_n_chkpts(setting)
         for dataset in datasets:
             dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
             trials = {}
             if dpath_dataset.exists():
                 for dpath_trial in sorted(dpath_dataset.iterdir()):
-                    if (dpath_trial / f"evals/eval{n_chkpts}/metrics.json").exists():
+                    if (dpath_trial / "evals/_best/map/native.json").exists():
                         meta = load_json(dpath_trial / "trial_metadata.json")
                         trials[dpath_trial.name] = {
                             "Time Trial": float(meta["runtime"]["trial"]),
@@ -300,8 +295,10 @@ def _render_stats_table(grid, title, fpath, bold_high, heatmap):
 def update_stats_tables(spread_type, bold_high, ordered, heatmap, prim_scores):
     """Render the campaign-level composite-score summary tables for this trial's dataset, one pair
     per eval group: artifacts/<campaign>/stats/<dataset>/map/<group>.png (comp mAP: All/ID/OOD/
-    I2T/I2I/T2I score columns) and acc/<group>.png (comp I2T accuracy: single I2T column) --
-    prim_scores appends the per-partition primitive score columns (ID/OOD x modality) to both: one
+    I2T/I2I/T2I score columns) and acc/<group>.png (comp I2T accuracy: single I2T column) -- each
+    png sources its own selection criterion's best checkpoints (map pngs from evals/_best/map/,
+    acc pngs from evals/_best/acc/). prim_scores appends the per-partition primitive score columns
+    (ID/OOD x modality) to both: one
     row per setting with >= 1 completed trial in this dataset (settings without local trials are
     omitted -- no blank rows in the pngs), stats aggregated across each setting's completed
     trials. bold_high/ordered/heatmap style the tables the same way as the metrics workbooks:
@@ -313,11 +310,11 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, prim_scores):
     update_metrics_xlsx). Re-rendered at each trial completion."""
     settings_all = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
     dataset = ArtifactManager.dataset
-    comps_all = _collect_comps(settings_all, (dataset,))
-    # completion is per-trial (each metrics file carries every eval group), so row presence is
-    # group-independent: a setting gets a row only once it has >= 1 completed trial in THIS
-    # dataset (no blank rows)
-    comps_ref = next(iter(comps_all.values()))
+    comps_all = {criterion: _collect_comps(settings_all, (dataset,), criterion) for criterion in BEST_CRITERIA}
+    # completion is per-trial (every criterion's per-group _best files are materialized together at
+    # trial end), so row presence is criterion- and group-independent: a setting gets a row only
+    # once it has >= 1 completed trial in THIS dataset (no blank rows)
+    comps_ref = next(iter(comps_all["map"].values()))
     settings = [s for s in settings_all if comps_ref[(s, dataset)]]
     map_labels, acc_labels = _score_labels(prim_scores)
 
@@ -325,51 +322,55 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, prim_scores):
     (dpath_stats / "map").mkdir(parents=True, exist_ok=True)
     (dpath_stats / "acc").mkdir(parents=True, exist_ok=True)
 
-    for group_key, (_, _, group_name) in _EVAL_GROUPS.items():
-        comps_by = comps_all[group_key]
+    for group_key, group_name in _EVAL_GROUPS.items():
+        comps_map = comps_all["map"][group_key]
+        comps_acc = comps_all["acc"][group_key]
 
-        def ordered_settings(score_key, label):
+        def ordered_settings(comps_by, score_key, label):
             # localized order: this dataset's per-setting trial means (single-dataset degenerate
             # case of _cross_dataset_means), not the cross-dataset means backing the workbook order
             means = _cross_dataset_means(settings, (dataset,), comps_by, score_key, (label,))
             return _order_settings(settings, means, label)
 
-        settings_map = ordered_settings("map", "All") if ordered else settings
-        settings_acc = ordered_settings("acc", "I2T") if ordered else settings
+        settings_map = ordered_settings(comps_map, "map", "All") if ordered else settings
+        settings_acc = ordered_settings(comps_acc, "acc", "I2T") if ordered else settings
         title_suffix = f" -- {DATASET_ALIAS2NAME[dataset]} ({group_name})"
 
         grid_map = _stats_table_grid(
             map_labels,
-            [(setting, [comp["map"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_map],
+            [(setting, [comp["map"] for comp in comps_map[(setting, dataset)].values()]) for setting in settings_map],
             spread_type,
         )
         _render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map" / f"{group_key}.png", bold_high, heatmap)
 
         grid_acc = _stats_table_grid(
             acc_labels,
-            [(setting, [comp["acc"] for comp in comps_by[(setting, dataset)].values()]) for setting in settings_acc],
+            [(setting, [comp["acc"] for comp in comps_acc[(setting, dataset)].values()]) for setting in settings_acc],
             spread_type,
         )
         _render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc" / f"{group_key}.png", bold_high, heatmap)
 
 @rank0
 def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, prim_scores, baseline_overrides, hw_perf):
-    """Write one workbook per eval group to artifacts/<campaign>/stats/metrics/<group>.xlsx, each
-    with two sheets, 'Composite mAP' (comp map scores,
-    All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy' (comp acc, single I2T
-    column) -- prim_scores appends the per-partition primitive score columns (ID/OOD x modality)
+    """Write one workbook per selection criterion x eval group to
+    artifacts/<campaign>/stats/metrics/{map,acc}/<group>.xlsx, each with two sheets, 'Composite
+    mAP' (comp map scores, All/ID/OOD/I2T/I2I/T2I score columns) and 'Composite I2T Accuracy'
+    (comp acc, single I2T column) -- both sheets source the workbook's own criterion's best
+    checkpoints (evals/_best/<criterion>/), so e.g. the map/ workbooks' accuracy sheet holds the
+    acc scores at the best-mAP checkpoint and vice versa. prim_scores appends the per-partition
+    primitive score columns (ID/OOD x modality)
     to both sheets' tables, and splits each mAP-sheet table banner into the title cell (first
     column, unmerged) plus grey merged 'Composite Scores' / 'Primitive Scores' group headers over
     their column groups (the accuracy sheet keeps full-width merged title banners). Each sheet
-    opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>)' title cell (e.g.
-    'bc_dev - dev (Native)') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
+    opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>; <selection name>)' title
+    cell (e.g. 'bc_dev - dev (Native; mAP-selection)') and a blank row, then stacks one table per campaign dataset vertically -- a bold left-aligned
     title banner, then a table of header row 'Setting' + one column per score label and one
     '<setting> (n_trials)' row per setting, then a blank spacer row before the next dataset -- with
     the always-shown 'Mean' summary table at the bottom: one row per setting, each cell the
     arithmetic mean, across datasets with completed trials, of that setting/label's per-dataset
     mean (a point value, no spread). Cells are '-' (0 trials), 'XX.XX' (1 trial, mean) or 'XX.XX ± XX.XX'
     (>1 trial, mean ± spread), aggregated across each setting's completed trials'
-    scores.<set_key>.<grp>.comp for the workbook's eval group. A setting gets
+    scores.comp for the workbook's eval group. A setting gets
     rows only once it has >= 1 completed trial in some dataset -- it then appears in every table of
     both sheets, with blank '-' rows in dataset tables lacking its trials; settings with no
     completed trials anywhere are omitted entirely. When bold_high is
@@ -414,12 +415,12 @@ def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, prim_scores, b
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
     settings, datasets = metadata["settings"], metadata["datasets"]
 
-    comps_all = _collect_comps(settings, datasets)
-    # completion is per-trial (each metrics file carries every eval group), so row presence and
-    # seeds are group-independent. a setting gets rows only once it has >= 1 completed trial in
-    # some dataset; it then appears in every dataset table (blank '-' row where that dataset has
-    # no trials for it yet)
-    comps_ref = next(iter(comps_all.values()))
+    comps_all = {criterion: _collect_comps(settings, datasets, criterion) for criterion in BEST_CRITERIA}
+    # completion is per-trial (every criterion's per-group _best files are materialized together at
+    # trial end), so row presence and seeds are criterion- and group-independent. a setting gets
+    # rows only once it has >= 1 completed trial in some dataset; it then appears in every dataset
+    # table (blank '-' row where that dataset has no trials for it yet)
+    comps_ref = next(iter(comps_all["map"].values()))
     settings = [s for s in settings if any(comps_ref[(s, dataset)] for dataset in datasets)]
     seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
 
@@ -655,19 +656,23 @@ def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, prim_scores, b
     # with prim_scores, mAP-sheet banners split into title + 'Composite Scores'/'Primitive Scores'
     # group headers; the accuracy sheet keeps full-width title banners
     map_groups = [("Composite Scores", 6), ("Primitive Scores", 6)] if prim_scores else None
-    dpath_metrics = ArtifactManager.dpath_campaign / "stats" / "metrics"
-    dpath_metrics.mkdir(parents=True, exist_ok=True)
-    for group_key, (_, _, group_name) in _EVAL_GROUPS.items():
-        comps_by = comps_all[group_key]
-        wb = Workbook()
-        ws_map = wb.active
-        ws_map.title = "Composite mAP"
-        map_blocks, map_ogrid = build_blocks(comps_by, "map", map_labels, hw_perf)
-        write_sheet(ws_map, map_blocks, map_groups, map_ogrid, group_name)
-        # hw companions are mAP-sheet only: the accuracy sheet keeps just the overrides band
-        acc_blocks, acc_ogrid = build_blocks(comps_by, "acc", acc_labels, False)
-        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid, group_name)
-        wb.save(dpath_metrics / f"{group_key}.xlsx")
+    # one workbook set per selection criterion: every score in stats/metrics/<criterion>/ (both
+    # sheets) comes from that criterion's best checkpoints (e.g. the map/ workbooks' accuracy
+    # sheet holds the acc scores at the best-mAP checkpoint), with the banner naming the selection
+    for criterion, selection_name in _SELECTION_NAMES.items():
+        dpath_metrics = ArtifactManager.dpath_campaign / "stats" / "metrics" / criterion
+        dpath_metrics.mkdir(parents=True, exist_ok=True)
+        for group_key, group_name in _EVAL_GROUPS.items():
+            comps_by = comps_all[criterion][group_key]
+            wb = Workbook()
+            ws_map = wb.active
+            ws_map.title = "Composite mAP"
+            map_blocks, map_ogrid = build_blocks(comps_by, "map", map_labels, hw_perf)
+            write_sheet(ws_map, map_blocks, map_groups, map_ogrid, f"{group_name}; {selection_name}")
+            # hw companions are mAP-sheet only: the accuracy sheet keeps just the overrides band
+            acc_blocks, acc_ogrid = build_blocks(comps_by, "acc", acc_labels, False)
+            write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, acc_ogrid, f"{group_name}; {selection_name}")
+            wb.save(dpath_metrics / f"{group_key}.xlsx")
 
 
 @rank0
@@ -710,14 +715,13 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="standard",
-        jointgall=False,
+        group_key="native",
         retrieval_ylabel="Native Gallery mAP Scores",
         nshot_ylabel="Native Gallery n-shot mAP (ID)",
         accuracy_ylabel="Native Gallery I2T Accuracy",
         nshot_accuracy_ylabel="Native Gallery n-shot Accuracy (ID)",
         plot_title=f"Train Metrics (Native Gallery){title_suffix}",
-        output_filename="nativegall.png",
+        output_filename="native.png",
     )
 
     plot_composite_metrics(
@@ -734,14 +738,13 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="macro",
-        jointgall=False,
+        group_key="native_macro",
         retrieval_ylabel="Native Gallery Macro mAP Scores",
         nshot_ylabel="Native Gallery n-shot Macro mAP (ID)",
         accuracy_ylabel="Native Gallery I2T Macro Accuracy",
         nshot_accuracy_ylabel="Native Gallery n-shot Macro\nAccuracy (ID)",
         plot_title=f"Train Metrics (Native Gallery Macro){title_suffix}",
-        output_filename="nativegall_macro.png",
+        output_filename="native_macro.png",
     )
 
     plot_composite_metrics(
@@ -758,14 +761,13 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="standard",
-        jointgall=True,
+        group_key="joint",
         retrieval_ylabel="Joint Gallery mAP Scores",
         nshot_ylabel="Joint Gallery n-shot mAP (ID)",
         accuracy_ylabel="Joint Gallery I2T Accuracy",
         nshot_accuracy_ylabel="Joint Gallery n-shot Accuracy (ID)",
         plot_title=f"Train Metrics (Joint Gallery){title_suffix}",
-        output_filename="jointgall.png",
+        output_filename="joint.png",
     )
 
     plot_composite_metrics(
@@ -782,14 +784,13 @@ def plot_metrics(
         subplot_border_width,
         figsize,
         height_ratios,
-        partition_metric_group="macro",
-        jointgall=True,
+        group_key="joint_macro",
         retrieval_ylabel="Joint Gallery Macro mAP Scores",
         nshot_ylabel="Joint Gallery n-shot Macro mAP (ID)",
         accuracy_ylabel="Joint Gallery I2T Macro Accuracy",
         nshot_accuracy_ylabel="Joint Gallery n-shot Macro\nAccuracy (ID)",
         plot_title=f"Train Metrics (Joint Gallery Macro){title_suffix}",
-        output_filename="jointgall_macro.png",
+        output_filename="joint_macro.png",
     )
 
 def plot_composite_metrics(
@@ -806,8 +807,7 @@ def plot_composite_metrics(
     subplot_border_width,
     figsize,
     height_ratios,
-    partition_metric_group,
-    jointgall,
+    group_key,
     retrieval_ylabel,
     nshot_ylabel,
     accuracy_ylabel,
@@ -825,10 +825,9 @@ def plot_composite_metrics(
         ("i2i", "I2I", "red"),
         ("t2i", "T2I", "green"),
     )
-    set_key = "jointgall" if jointgall else "nativegall"
     if has_eval:
         for partition, partition_label, linestyle in (("id", "ID", "-"), ("ood", "OOD", "--")):
-            partition_map = data_eval["scores"][set_key][partition_metric_group][partition]["map"]
+            partition_map = data_eval["scores"][group_key][partition]["map"]
             for metric_name, metric_label, color in retrieval_specs:
                 ax0.plot(
                     x_eval,
@@ -846,7 +845,7 @@ def plot_composite_metrics(
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    id_mode_scores = data_eval["scores"][set_key][partition_metric_group]["id"] if has_eval else {}
+    id_mode_scores = data_eval["scores"][group_key]["id"] if has_eval else {}
     comp_nshot = id_mode_scores["map"].get("n-shot", {}) if has_eval else {}
     if bucket_comp_keys:
         for key in reversed(bucket_comp_keys):
@@ -863,7 +862,7 @@ def plot_composite_metrics(
         for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
             ax2.plot(
                 x_eval,
-                data_eval["scores"][set_key][partition_metric_group][partition]["acc"]["i2t"],
+                data_eval["scores"][group_key][partition]["acc"]["i2t"],
                 label=partition_label,
             )
     ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")

@@ -700,17 +700,18 @@ class EvaluationPipeline:
 
         eval_metrics: Dict[str, Any] = {
             "scores": {
-                "nativegall": {"standard": {}, "macro": {}},
-                "jointgall": {"standard": {}, "macro": {}},
+                "native": {},
+                "native_macro": {},
+                "joint": {},
+                "joint_macro": {},
             },
             "loss_raw": {},
             "sim": {stat: None for stat in ("min", "max", "median", "mean")},
             "targ": {stat: None for stat in ("min", "max", "median", "mean")},
         }
         accum = {
-            (set_key, grp): {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
-            for set_key in ("nativegall", "jointgall")
-            for grp in ("standard", "macro")
+            group_key: {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
+            for group_key in ("native", "native_macro", "joint", "joint_macro")
         }
         eval_bundles: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
@@ -789,26 +790,26 @@ class EvaluationPipeline:
                 nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
-            for set_key, scores in (("nativegall", nativegall_scores), ("jointgall", jointgall_scores)):
-                for grp in ("standard", "macro"):
-                    a = accum[(set_key, grp)]
-                    a["all"].append(harmonic_mean([scores[grp]["map"][m] for m in RETRIEVAL_MODALITIES]))
-                    a["i2t"].append(scores[grp]["map"]["i2t"])
-                    a["i2i"].append(scores[grp]["map"]["i2i"])
-                    a["t2i"].append(scores[grp]["map"]["t2i"])
-                    a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
-
-            eval_metrics["scores"]["nativegall"]["standard"][partition] = nativegall_scores["standard"]
-            eval_metrics["scores"]["nativegall"]["macro"][partition] = nativegall_scores["macro"]
-            eval_metrics["scores"]["jointgall"]["standard"][partition] = jointgall_scores["standard"]
-            eval_metrics["scores"]["jointgall"]["macro"][partition] = jointgall_scores["macro"]
+            for group_key, scores, grp in (
+                ("native", nativegall_scores, "standard"),
+                ("native_macro", nativegall_scores, "macro"),
+                ("joint", jointgall_scores, "standard"),
+                ("joint_macro", jointgall_scores, "macro"),
+            ):
+                a = accum[group_key]
+                a["all"].append(harmonic_mean([scores[grp]["map"][m] for m in RETRIEVAL_MODALITIES]))
+                a["i2t"].append(scores[grp]["map"]["i2t"])
+                a["i2i"].append(scores[grp]["map"]["i2i"])
+                a["t2i"].append(scores[grp]["map"]["t2i"])
+                a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
+                eval_metrics["scores"][group_key][partition] = scores[grp]
             if loss_flag and loss_avg_partition is not None:
                 eval_metrics["loss_raw"][partition] = loss_avg_partition
             else:
                 eval_metrics["loss_raw"][partition] = None
 
-        for (set_key, grp), a in accum.items():
-            eval_metrics["scores"][set_key][grp]["comp"] = {
+        for group_key, a in accum.items():
+            eval_metrics["scores"][group_key]["comp"] = {
                 "acc": {"i2t": harmonic_mean(a["acc_i2t"])},
                 "map": {
                     "all": harmonic_mean(a["all"]),

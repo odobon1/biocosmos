@@ -42,7 +42,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="sw", norm_cls_imb=False):
+def cfg_loss(targ="sw", norm_cls_imb=False, center=None):
     return {
         "crit": "bce", "sim": "cos", "targ": targ,
         "wting": {
@@ -52,8 +52,19 @@ def cfg_loss(targ="sw", norm_cls_imb=False):
             "focal": {"gamma": 2.0, "comp_type": 1},
             "bce": {"dsmr": True, "norm": {"cls_imb": norm_cls_imb}},
         },
-        "logits": {"temperature": {"clamp": False}, "bias": {}},
+        "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
+
+
+class _ZSG(torch.autograd.Function):
+    """Mirror of models._ZeroSumGrad for the single-process ground truth (full-batch mean)."""
+    @staticmethod
+    def forward(ctx, x):
+        return x
+
+    @staticmethod
+    def backward(ctx, g):
+        return g - g.mean()
 
 
 # (name, cfg1, cfg2, mix, mix_unit_scale)
@@ -61,6 +72,8 @@ CASES = [
     ("plain", cfg_loss("sw"), None, 0.0, False),
     ("mix_normci_unitscale", cfg_loss("sw", norm_cls_imb=True), cfg_loss("sw", norm_cls_imb=True), 0.3, True),
     ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
+    ("center_sim", cfg_loss("sw", center="sim"), None, 0.0, False),
+    ("center_gp2_sim_mix", cfg_loss("sw", center="grad_proj2"), cfg_loss("sw", center="sim"), 0.3, False),
 ]
 
 
@@ -117,34 +130,46 @@ def build_harness(model_ddp, crit1, crit2, mix, mix_unit_scale, world_size, devi
 
 def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, ft, fc, ftd):
     """Single-process full-batch blended loss on `toy` -- the ground truth. Returns the normalized
-    embeddings too (grads retained): their post-backward .grad is the full-batch dL/dembs that the
-    chunked path's returned leaves must carry for grad-norm logging."""
+    embeddings (grads retained: their post-backward .grad is the full-batch dL/dembs that the
+    chunked path's returned leaves must carry for grad-norm logging) and the per-criterion sim
+    matrices (grads retained: their post-backward .grad.sum() is the ground truth for the chunked
+    path's tile-accumulated grad_sum_sims)."""
     img = F.normalize(toy.img_enc(fi), dim=1)
     txt = F.normalize(toy.txt_enc(ft), dim=1)
     img.retain_grad()
     txt.retain_grad()
+    sims_ref = []
 
-    def clogits(sim, clamp, secondary):
+    def clogits(sim, clamp, center, secondary):
         s = toy.logit_scale2 if secondary else toy.logit_scale
         b = toy.logit_bias2 if secondary else toy.logit_bias
         if clamp:
             s = s.clamp(max=math.log(100))
-        return sim * s.exp() + b
+        if center == "grad_proj":
+            sim = _ZSG.apply(sim)
+        sim_scaled = sim * s.exp()
+        if center == "grad_proj2":
+            sim_scaled = _ZSG.apply(sim_scaled)
+        if center == "sim":
+            sim_scaled = sim_scaled - sim_scaled.mean()
+        return sim_scaled + b
 
     def crit_loss(crit, secondary):
         sim = compute_sim(img, txt, crit.cfg["sim"])
-        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], secondary)
+        sim.retain_grad()
+        sims_ref.append(sim)
+        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary)
         loss, loss_raw, _ = crit(logits, fc, ftd, train=True)
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)
     if mix == 0.0:
-        return loss1, loss1_raw, img, txt
+        return loss1, loss1_raw, img, txt, sims_ref
     loss2, loss2_raw = crit_loss(crit2, True)
     if mix_unit_scale:
         loss1 = loss1 / loss1.detach().clamp_min(1e-12)
         loss2 = loss2 / loss2.detach().clamp_min(1e-12)
-    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, img, txt
+    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, img, txt, sims_ref
 
 
 def grads(model):
@@ -199,11 +224,12 @@ def run(rank, world_size, port):
 
             # (GT) single-process full-batch ground truth
             fi, ft, fc = full_imgs.to(device), full_txts.to(device), full_cls.to(device)
-            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt = full_batch_blended(
+            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt, sims_gt = full_batch_blended(
                 toy_gt, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, ft, fc, full_td)
             toy_gt.zero_grad(set_to_none=True)
             loss_gt.backward()
             g_gt = grads(toy_gt)
+            gsum_gt = [s.grad.double().sum().item() for s in sims_gt]
 
             # (REF) standard DDP path (chunking off)
             h_ref = build_harness(ddp_ref, crit1, crit2, mix, mix_unit_scale, world_size, device)
@@ -216,7 +242,7 @@ def run(rank, world_size, port):
             h_chunk = build_harness(ddp_chunk, crit1, crit2, mix, mix_unit_scale, world_size, device)
             h_chunk.cfg.hw.loss_chunk_size = chunk_size
             ddp_chunk.zero_grad(set_to_none=True)
-            loss_chunk, _, img_leaf, txt_leaf, *_ = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
+            loss_chunk, _, img_leaf, txt_leaf, _, _, _, gsum_chunk = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
             g_chunk = grads(toy_chunk)
 
             def rel(a, b):
@@ -230,6 +256,12 @@ def run(rank, world_size, port):
             r_tl = rel(txt_leaf.grad, embs_txt_gt.grad)
             assert r_il < 3e-4, f"{tag} leaf img-grad mismatch: rel={r_il:.2e}"
             assert r_tl < 3e-4, f"{tag} leaf txt-grad mismatch: rel={r_tl:.2e}"
+            # tile-accumulated (all-reduced) sim-grad sums must match the full-batch retained-grad sums
+            for k, gs_gt in enumerate(gsum_gt):
+                assert abs(gsum_chunk[k] - gs_gt) < 1e-4 * (abs(gs_gt) + 1.0), \
+                    f"{tag} grad_sum_sim{k + 1}: CHUNK {gsum_chunk[k]} != GT {gs_gt}"
+            if mix == 0.0:
+                assert gsum_chunk[1] is None, f"{tag} grad_sum_sim2 set at mix==0"
             for n in g_gt:
                 if g_gt[n] is None:  # param unused this case (e.g. secondary logits at mix==0)
                     assert g_chunk[n] is None, f"{tag} {n}: CHUNK grad set but GT is None"

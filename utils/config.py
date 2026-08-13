@@ -178,6 +178,9 @@ class TrainConfig:
         if pca_bounds not in (None, "final"):
             raise ValueError(f"dev.manifold_viz.pooled.pca_bounds must be null or 'final', got {pca_bounds!r}")
 
+        if self.dev["plot_every"] not in ("trial", "chkpt"):
+            raise ValueError(f"dev.plot_every must be 'trial' or 'chkpt', got {self.dev['plot_every']!r}")
+
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")
 
@@ -211,7 +214,12 @@ class TrainConfig:
             raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{iw, sw, tax, phylo}}")
         if self.loss2["targ"] not in ("iw", "sw", "tax", "phylo"):
             raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{iw, sw, tax, phylo}}")
-        
+
+        if self.loss["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
+            raise ValueError(f"Unknown Loss 1 logits.bce.center: '{self.loss['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
+        if self.loss2["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
+            raise ValueError(f"Unknown Loss 2 logits.bce.center: '{self.loss2['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
+
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
 
@@ -242,6 +250,19 @@ class TrainConfig:
             if not chunking_supported(self.loss, self.loss2):  # tiled loss supports the full BCE config; inert with InfoNCE
                 self.hw.loss_chunk_size = None
             else:
+                # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
+                # exactly only through the cos-sim mean factorization mean(sim) = mean(img) . mean(txt)
+                # (see utils/loss.py) -- geo sims have no such closed form
+                for name, cfg_l in (("loss", self.loss), ("loss2", self.loss2)):
+                    if name == "loss2" and self.loss2["mix"] == 0.0:
+                        continue
+                    if cfg_l["logits"]["bce"]["center"] == "sim" and cfg_l["sim"] != "cos":
+                        raise ValueError(
+                            f"{name}.logits.bce.center: sim requires {name}.sim: cos under hardware.loss_chunk_size "
+                            f"(got {name}.sim: {cfg_l['sim']}): the tiled loss reproduces full-batch sim-centering "
+                            f"exactly only via the cos mean factorization; use center: grad_proj/grad_proj2 or "
+                            f"disable chunking"
+                        )
                 world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
                 if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
                     raise ValueError(

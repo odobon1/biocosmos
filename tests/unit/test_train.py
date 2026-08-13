@@ -26,7 +26,7 @@ def _full_loss_cfg(crit="bce", targ="sw"):
         },
         "logits": {
             "temperature": {"init": None, "freeze": False, "clamp": False},
-            "bias": {"init": None, "freeze": False},
+            "bce": {"center": None, "bias": {"init": None, "freeze": False}},
         },
     }
 
@@ -88,7 +88,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert cls_imb["freq_type_2d"] == "naive" and cls_imb["wt_mean_type"] == "per_class"  # BCE weights 2D, no self-norm
     assert "comp_type" not in config["loss"]["wting"]["focal"]  # bce + sw: binary targets -> comp forms coincide
     assert config["loss"]["wting"]["bce"]["norm"] == {"cls_imb": True}  # no unit-scale -> the rescale sticks
-    assert "freeze" in config["loss"]["logits"]["bias"]  # SigLIP logit_bias is a real Parameter
+    assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
     # CLIP + InfoNCE1 + class_bal: the 1D path reads none of the 2D/BCE-only machinery
     (tmp_path / "s2").mkdir()
@@ -105,7 +105,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "bce" not in wting  # BCE-only
     assert "comp_type" not in wting["focal"] and wting["focal"]["gamma"] == 2.0  # 1D focal path
     assert wting["cls_imb"] == {"type": "class_bal", "class_bal": {"beta": 0.9999}}  # inv_freq/freq_type_2d/wt_mean_type inert
-    assert "bias" not in config["loss"]["logits"]  # CLIP + bias.init null -> fixed 0.0 buffer
+    assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
 
     # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
     (tmp_path / "s3").mkdir()

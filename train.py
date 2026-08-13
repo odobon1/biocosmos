@@ -199,7 +199,7 @@ class TrainPipeline:
         self.data.time_eval = time_eval
 
     @rank0
-    def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, batch_stats):
+    def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, batch_stats, grad_sum_sim1, grad_sum_sim2):
         self.data.update_train_batch(
             self.n_samps_seen,
             lr=lr,
@@ -207,6 +207,8 @@ class TrainPipeline:
             loss_raw_train=loss_raw,
             grad_norm_model=grad_norm_model,
             batch_stats=batch_stats,
+            grad_sum_sim1=grad_sum_sim1,
+            grad_sum_sim2=grad_sum_sim2,
         )
 
     @rank0
@@ -313,13 +315,13 @@ class TrainPipeline:
         dist.all_reduce(vram, op=dist.ReduceOp.MAX)
         return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
 
-    def _checkpoint(self, header, idx_batch):
+    def _checkpoint(self, header, idx_batch, final=False):
         # the memory snapshot all-reduces across ranks, so every rank must enter; the writes are @rank0
         mem = self._snapshot_memory()
-        self._checkpoint_writes(header, idx_batch, mem)
+        self._checkpoint_writes(header, idx_batch, mem, final)
 
     @rank0
-    def _checkpoint_writes(self, header, idx_batch, mem):
+    def _checkpoint_writes(self, header, idx_batch, mem, final):
         if self.eval_enabled:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
@@ -331,27 +333,36 @@ class TrainPipeline:
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
-        plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.size_train)
+        if final or self.cfg.dev["plot_every"] == "chkpt":
+            plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.size_train)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.loss_chunk_size is not None:
             # tiled path: encoder forward, loss, AND backward happen inside (representation gradients),
-            # so no loss.backward() here. Autocast + DDP grad sync are handled internally.
-            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step_chunked(
+            # so no loss.backward() here. Autocast + DDP grad sync are handled internally. The sims slot
+            # already carries the (grad_sum_sim1, grad_sum_sim2) floats, accumulated tile-by-tile.
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, grad_sum_sims = self.modelw.batch_step_chunked(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
-            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
+            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
         if self.cfg.hw.mixed_prec:
             with autocast(device_type=self.cfg.device.type, dtype=torch.bfloat16):
-                loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
+                loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, sims = self.modelw.batch_step(
                     imgs_sb, texts_sb, class_encs_sb, targ_data_sb
                 )
         else:
-            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats = self.modelw.batch_step(
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, sims = self.modelw.batch_step(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
         loss.backward()
-        return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats
+        with torch.no_grad():
+            # .float(): the retained grads are bf16 under mixed_prec, and casting the SUM result back
+            # to bf16 quantizes it (~3 significant digits)
+            grad_sum_sims = (
+                sims[0].grad.float().sum().item() if sims[0] is not None else None,
+                sims[1].grad.float().sum().item() if sims[1] is not None else None,
+            )
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
 
     def _step_optimizer(self):
         self.opt.step()
@@ -474,7 +485,7 @@ class TrainPipeline:
                     lr = self._update_lr_warmup() if self.lr_warmup > 0 else self.opt.param_groups[0]["lr"]
 
                     self.opt.zero_grad(set_to_none=True)
-                    loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats = self._step_train(
+                    loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims = self._step_train(
                         imgs_sb,
                         texts_sb,
                         class_encs_sb,
@@ -495,7 +506,7 @@ class TrainPipeline:
                         loss_raw_mean.update(loss_raw)
                         self.n_batches_seen += 1
 
-                    self._record_train_batch(lr, loss, loss_raw, grad_norm_model, batch_stats)
+                    self._record_train_batch(lr, loss, loss_raw, grad_norm_model, batch_stats, grad_sum_sims[0], grad_sum_sims[1])
 
                     if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()
@@ -574,6 +585,7 @@ class TrainPipeline:
             self._checkpoint(
                 header="Final",
                 idx_batch=-1,
+                final=True,
             )
             self.modelw.save(ArtifactManager.dpath_model_final)  # @rank0
             if self.eval_enabled:

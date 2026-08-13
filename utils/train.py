@@ -90,6 +90,8 @@ class TrialData:
             "loss_train": [],
             "loss_raw_train": [],
             "grad_norm_model": [],
+            "grad_sum_sim1": [],
+            "grad_sum_sim2": [],
             "sim_min": [],
             "sim_max": [],
             "sim_median": [],
@@ -115,7 +117,8 @@ class TrialData:
         self.timer_trial = Timer()
         self.timer_trial.start()
 
-    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None, batch_stats=None):
+    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None, batch_stats=None,
+                           grad_sum_sim1=None, grad_sum_sim2=None):
 
         self.data_epoch["n_samps_seen"].append(n_samps_seen)
 
@@ -127,6 +130,10 @@ class TrialData:
             self.data_epoch["loss_raw_train"].append(loss_raw_train)
         if grad_norm_model is not None:
             self.data_epoch["grad_norm_model"].append(grad_norm_model)
+        if grad_sum_sim1 is not None:
+            self.data_epoch["grad_sum_sim1"].append(grad_sum_sim1)
+        if grad_sum_sim2 is not None:
+            self.data_epoch["grad_sum_sim2"].append(grad_sum_sim2)
         if batch_stats is not None:
             for stat_key, stat_value in batch_stats.items():
                 self.data_epoch[stat_key].append(stat_value)
@@ -294,8 +301,8 @@ class ArtifactManager:
             # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
             # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's logit params
             # are always fresh learnable Parameters, so loss2.logits is never pruned.
-            if not is_siglip and metadata["loss"]["logits"]["bias"]["init"] is None:
-                del metadata["loss"]["logits"]["bias"]
+            if not is_siglip and metadata["loss"]["logits"]["bce"]["bias"]["init"] is None:
+                del metadata["loss"]["logits"]["bce"]["bias"]
 
             # per-loss weighting: drop params the loss type never reads (InfoNCE1/2 hardcode
             # W_foc * W_ci -- the bce sub-block is BCE-only; freq_type_2d and focal.comp_type only

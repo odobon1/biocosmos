@@ -686,7 +686,7 @@ def plot_metrics(
         fontsize_legend=8,
         subplot_border_width=1,
         figsize=(10, 16),
-        height_ratios=[2, 2, 2, 2, 2, 1, 1, 1],
+        height_ratios=[2, 2, 2, 2, 2, 1, 1, 0.5, 1],
     ):
     data = data_tracker.data
     data_epoch = data["epoch"]
@@ -815,6 +815,12 @@ def plot_composite_metrics(
     plot_title,
     output_filename,
 ):
+    # loss2 active (mix != 0) -> its sim-grad sum gets its own strip between the Sim1 strip and LR,
+    # so each series keeps its own y-scale
+    has_gsum2 = len(data_epoch["grad_sum_sim2"]) == len(x_train)
+    if has_gsum2:
+        height_ratios = [*height_ratios[:8], 0.5, *height_ratios[8:]]
+
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
 
@@ -919,7 +925,7 @@ def plot_composite_metrics(
             stat_key = f"{stat_prefix}_{stat_name}"
             if len(data_epoch[stat_key]) == len(x_train):
                 ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
-    ax6.set_ylabel("Similarity / Target", fontsize=fontsize_axes, fontweight="bold")
+    ax6.set_ylabel("S/Y Stats", fontsize=fontsize_axes, fontweight="bold")
     ax6.set_ylim(-1.0, 1.0)
     ax6.legend(
         handles=[
@@ -937,21 +943,41 @@ def plot_composite_metrics(
     ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax7 = fig.add_subplot(gs[7, 0], sharex=ax0)
-    if len(data_epoch["lr"]) == len(x_train):
-        ax7.plot(x_train, data_epoch["lr"])
-    ax7.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax7.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax7.yaxis.set_offset_position("right")
-    ax7.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax7.yaxis.get_offset_text().set_visible(False)
-    ax7.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    if len(data_epoch["grad_sum_sim1"]) == len(x_train):
+        ax7.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:blue", linewidth=1.0)
+    ax7.axhline(0.0, color="gray", linewidth=0.5)
+    ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_gsum2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes, fontweight="bold")
     ax7.grid(True)
-    ax7.tick_params(labelsize=fontsize_ticks)
+    ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    for ax in (ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7):
+    axes = [ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7]
+
+    if has_gsum2:
+        ax7b = fig.add_subplot(gs[8, 0], sharex=ax0)
+        ax7b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
+        ax7b.axhline(0.0, color="gray", linewidth=0.5)
+        ax7b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes, fontweight="bold")
+        ax7b.grid(True)
+        ax7b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax7b)
+
+    ax8 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+    if len(data_epoch["lr"]) == len(x_train):
+        ax8.plot(x_train, data_epoch["lr"])
+    ax8.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
+    ax8.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax8.yaxis.set_offset_position("right")
+    ax8.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax8.yaxis.get_offset_text().set_visible(False)
+    ax8.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    ax8.grid(True)
+    ax8.tick_params(labelsize=fontsize_ticks)
+    axes.append(ax8)
+
+    for ax in axes:
         ax.label_outer()
 
-    for idx_ax, ax in enumerate((ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7)):
+    for idx_ax, ax in enumerate(axes):
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")

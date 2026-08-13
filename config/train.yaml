@@ -1,12 +1,12 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 10  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_epochs: 30  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
 # ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
 # batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
 # (null | train set >= chain_floor) One pass per epoch
-n_chkpts: 10  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
+n_chkpts: 30  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
 # sample_volume / n_chkpts samples
 eval_group: native  # {native, native_macro, joint, joint_macro}; eval group used for checkpoint selection: the
 # checkpoint with its best comp.map.all gets its model weights saved to chkpts/best/
@@ -76,13 +76,21 @@ loss:  # Primary loss
       freeze: false  # {true, false}; (true) Non-learnable log-scale
       clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
       # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) Unbounded
-    bias:  # Inert iff (loss.crit: infonce1) OR (loss.crit: infonce2 AND loss.targ: iw)(?)
-      init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
-      # ([float]) Override init; base: (siglip_vitb16: -12.9324)
-      freeze: false  # {true, false}; (true) Non-learnable bias
+    bce:  # Sigmoid/BCE-path logit params
+      center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum; (null) Disabled; (sim) Center
+      # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);
+      # (grad_proj) Forward untouched, backward-only global-mean projection of the gradient entering sim (temp AND bias
+      # learn from raw BCE grads); (grad_proj2) Same but projected at the scaled sims (bias raw, temp projected);
+      # Per-criterion (loss2 has its own flag); Chunked path (hw.loss_chunk_size) reproduces full-batch centering
+      # exactly; (sim) under chunking requires sim: cos (config error otherwise -- no closed-form global mean for geo);
+      # sensitive to mixed precision
+      bias:  # Inert iff (loss.crit: infonce1) OR (loss.crit: infonce2 AND loss.targ: iw)(?)
+        init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
+        # ([float]) Override init; base: (siglip_vitb16: -12.9324)
+        freeze: false  # {true, false}; (true) Non-learnable bias
 
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
-  mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
+  mix: 0.3  # [0.0, 1.0); (0.0) Disable secondary loss
   mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending
   crit: bce  # {infonce1, infonce2, bce}
   sim: cos  # {cos, geo1, geo2}
@@ -108,9 +116,11 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
       init: null  # {null, [float]}
       freeze: false  # {true, false}
       clamp: false  # {true, false}
-    bias:
-      init: null  # {null, [float]}
-      freeze: false  # {true, false}
+    bce:
+      center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum (see loss.logits.bce.center)
+      bias:
+        init: null  # {null, [float]}
+        freeze: false  # {true, false}
 
 aug:  # Image augmentation
   rrcrop:  # Random resized crop
@@ -150,9 +160,9 @@ opt:  # Optimization
   eps: 1.0e-6  # CLIP paper recommends 1.0e-6 (ViT)
 
 dev:
-  debug_mode: false  # {true, false}
+  debug_mode: true  # {true, false}
   debug:  # Config overrides applied iff (dev.debug_mode: true)
-    n_epochs: 1
+    n_epochs: 10
     chain_floor: null
     n_chkpts: 1
     batch_size: 256
@@ -173,11 +183,13 @@ dev:
       # ~budget points total (larger budget needs proportionally more GPU memory)
       pca_bounds: final  # {null, final}
   logging: true
+  plot_every: chkpt  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
+  # (trial) Only at the final checkpoint
   continue_campaign: false  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
   # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign
   # runner reads this flag from here (not from cfg_baseline.json)
   del_base_eval_cache:
-    campaign: false  # {true, false}; (true) Delete base_eval_cache/ once, when the campaign is first created
+    campaign: true  # {true, false}; (true) Delete base_eval_cache/ once, when the campaign is first created
     # (relaunches keep the cache the campaign's own trials built)
-    trial: true  # {true, false}; (true) Delete base_eval_cache/ before each trial launch, so every trial re-runs its 
+    trial: false  # {true, false}; (true) Delete base_eval_cache/ before each trial launch, so every trial re-runs its 
     # base eval (apples-to-apples wall-clock comparisons)

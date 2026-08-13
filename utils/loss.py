@@ -310,6 +310,13 @@ def _dsmr_weight(targs, mass_pos, mass_neg, B):
 # they are precomputed (cheap embedding-free closed forms + no_grad band sweeps, all-reduced to
 # rank-identical values) before the single grad-carrying backward sweep applies them as constants.
 # See _precompute_crit_consts.
+#
+# Centering (logits.bce.center) is reproduced exactly, never per-tile: "sim" recovers the full-batch
+# sim mean in-graph per block via the cos bilinearity mean(sim) = mean(img) . mean(txt) (geo sims have
+# no closed form -- TrainConfig rejects center: sim + chunking + geo, and this module asserts it);
+# grad_proj/grad_proj2 precompute the full-batch mean of the incoming gradient at the projection node
+# (_crit_center_grad_mean: a band sweep with tile-local autograd, all-reduced) and every tile subtracts
+# that constant (_ZeroSumGradConst via compute_logits's center_global) in place of the full path's g.mean().
 # ------------------------------------------------------------------------------------------------
 
 def chunking_supported(cfg_loss, cfg_loss2):
@@ -462,21 +469,29 @@ def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_co
     bce = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")
     return W, bce
 
-def _crit_block_logits_f(crit, secondary, img_rows, txt, compute_logits):
-    """[C, B] similarity tile and its float32 logits tile for a criterion (its sim_type + logit scale/bias)."""
+def _crit_block_logits_f(crit, secondary, img_rows, txt, compute_logits, center, center_global=None):
+    """
+    [C, B] similarity tile and its float32 logits tile for a criterion (its sim_type + logit scale/bias).
+
+    `center`/`center_global` are passed through to compute_logits: the chunked sweeps supply the
+    full-batch quantity (in-graph global sim mean for "sim"; detached full-batch incoming-grad mean
+    for grad_proj/grad_proj2) so tiles reproduce full-batch centering exactly, never the per-tile mean.
+    """
     sim_block = compute_sim(img_rows, txt, crit.cfg["sim"])
-    logits_block = compute_logits(sim_block, crit.cfg["logits"]["temperature"]["clamp"], secondary=secondary)
+    logits_block = compute_logits(sim_block, crit.cfg["logits"]["temperature"]["clamp"], center, secondary=secondary, center_global=center_global)
     return sim_block, logits_block.float()
 
 def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs_b, B,
                             compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
-                            lo, hi, world_size):
+                            lo, hi, world_size, center, center_global_det):
     """
     Detached global constants for one criterion (see module header). cls_imb_mean (mean of W_ci) and
     dsmr_mass are embedding-free; L_value (the criterion's full weighted loss, needed for
     mix_unit_scale) requires a no_grad tile sweep, run only when mix_unit_scale is active. All
     sweeps cover only this rank's row-band [lo, hi);
     the partial sums are all-reduced so every rank derives identical constants.
+    `center`/`center_global_det` reproduce the criterion's centered forward in the L sweep (for
+    "sim" the detached global sim mean; grad_proj* leave the forward untouched).
     Returns (consts dict for _crit_block_weight_bce, L_value|None).
     """
     cfg_w = crit.cfg["wting"]
@@ -503,7 +518,7 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
             for rs in range(lo, hi, chunk_size):
                 re = rs + chunk_size
                 with autocast_ctx():
-                    _, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits)
+                    _, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits, center, center_global_det)
                     targs_block = targ_block_fn(rs, re)
                     W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_raw)
                 sum_Wbce += (W * bce).double().sum()
@@ -512,6 +527,46 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
         L_value = (sum_Wbce / B).float()
 
     return {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass}, L_value
+
+def _crit_center_grad_mean(crit, secondary, img, txt, targ_fn, class_encs_b, B, consts, coeff,
+                           compute_logits, chunk_size, autocast_ctx, lo, hi, world_size, device):
+    """
+    grad_proj/grad_proj2: the detached full-batch mean of the incoming gradient at the criterion's
+    projection node, so every tile of the grad sweep subtracts the same constant the full-batch
+    _ZeroSumGrad projection would (a per-tile mean would be wrong). Sweeps this rank's band with
+    tile-local autograd (the sim tile as leaf, embeddings detached: graphs stay O(C*B), no param
+    .grad touched), which captures the focal-weight gradient terms exactly; band partials are
+    all-reduced. Returns the constant at the node the mode projects: the sim node for grad_proj
+    (e^t folded in by autograd), the scaled-sim node for grad_proj2 (the post-clamp e^t divided
+    back out, recovered as a probe gradient through compute_logits).
+    """
+    clamp = crit.cfg["logits"]["temperature"]["clamp"]
+    g_sum = torch.zeros((), dtype=torch.float64, device=device)
+    for rs in range(lo, hi, chunk_size):
+        re = rs + chunk_size
+        with autocast_ctx():
+            sim_leaf = compute_sim(img[rs:re].detach(), txt.detach(), crit.cfg["sim"]).requires_grad_(True)
+            logits_f = compute_logits(sim_leaf, clamp, None, secondary=secondary).float()
+            targs_block = targ_fn(rs, re)
+            W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts)
+            tile_loss = (W * bce).sum() / B
+        g_sum += torch.autograd.grad(tile_loss, sim_leaf)[0].double().sum()
+    if world_size > 1:
+        dist.all_reduce(g_sum)
+    c = (coeff * g_sum / (B * B)).float()  # mean incoming grad at the sim node, loss-mix coefficient folded in
+    if crit.cfg["logits"]["bce"]["center"] == "grad_proj2":
+        # the scaled-sim node's grad = (sim node's grad) / e^t; recover the post-clamp e^t as a probe gradient
+        probe = torch.zeros(1, 1, device=device, requires_grad=True)
+        e_det = torch.autograd.grad(compute_logits(probe, clamp, None, secondary=secondary).sum(), probe)[0].reshape(()).detach()
+        c = c / e_det
+    return c.detach()
+
+def _gsum_hook(acc):
+    """Tensor backward hook accumulating the incoming grad's sum into `acc`. Returns None so the
+    gradient itself passes through untouched (a non-None return would replace it)."""
+    def hook(g):
+        acc.add_(g.double().sum())
+    return hook
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, mix_unit_scale,
                               compute_logits, chunk_size, mixed_prec, device, rank, world_size):
@@ -534,10 +589,15 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive band-partial dL/dembs
                          in their .grad.
     - crit1, crit2 ----- primary / secondary BCECriterion (crit2 None when mix == 0).
-    - compute_logits --- VLMWrapper.compute_logits(sim, clamp, secondary) -> logits tile.
+    - compute_logits --- VLMWrapper.compute_logits(sim, clamp, center, secondary, center_global) -> logits
+                         tile; center_global carries the precomputed full-batch centering quantity
+                         (module header) so tiled centering is exact.
     - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
 
-    Returns (loss, loss_raw, batch_stats), all detached; gradients left in the leaves' / params' .grad.
+    Returns (loss, loss_raw, batch_stats, grad_sum_sims), all detached; gradients left in the leaves' /
+    params' .grad. grad_sum_sims = (sum(dL/dsim1), sum(dL/dsim2)|None), the full-batch sums accumulated
+    tile-by-tile via backward hooks (all-reduced across bands) -- the same values the full-batch path
+    reads off the retained sim grads.
     """
     B = img.size(0)
     b = B // world_size
@@ -554,13 +614,24 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     def autocast_ctx():
         return torch.autocast(device_type=device.type, dtype=torch.bfloat16) if mixed_prec else nullcontext()
 
+    centers = [crit.cfg["logits"]["bce"]["center"] for crit, _ in crits]
+    for k, (crit, _) in enumerate(crits):
+        # config rejects this combo too (TrainConfig); guard direct callers against a silently-wrong tile mean
+        assert not (centers[k] == "sim" and crit.cfg["sim"] != "cos"), "center: sim under chunking requires cos sim"
+    m_det = None
+    if "sim" in centers:
+        # full-batch sim-matrix mean via the cos bilinearity: mean_ij(img_i . txt_j) = mean(img) . mean(txt)
+        with torch.no_grad():
+            m_det = torch.dot(img.mean(0), txt.mean(0))
+
     need_L = mix != 0.0 and mix_unit_scale
     targ_fns, consts_list, L_values = [], [], []
-    for crit, secondary in crits:
+    for k, (crit, secondary) in enumerate(crits):
         targ_fn = make_targ_block_fn(crit.cfg["targ"], class_encs_b, targ_data_b, B, device)
         consts, L_val = _precompute_crit_consts(crit, secondary, img, txt, targ_fn, class_encs_b, B,
                                                 compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
-                                                lo, hi, world_size)
+                                                lo, hi, world_size,
+                                                centers[k], m_det if centers[k] == "sim" else None)
         targ_fns.append(targ_fn); consts_list.append(consts); L_values.append(L_val)
 
     mix_w = [1.0] if mix == 0.0 else [1.0 - mix, mix]
@@ -568,6 +639,21 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
         coeffs = [mix_w[k] / L_values[k].clamp_min(1e-12) for k in range(len(crits))]  # mix_unit_scale: /Lk.detach()
     else:
         coeffs = list(mix_w)
+
+    # grad_proj*: the detached full-batch incoming-grad mean per criterion -- the constant every tile
+    # of the grad sweep subtracts in place of the full path's g.mean() (_ZeroSumGradConst)
+    center_consts = [
+        _crit_center_grad_mean(crit, secondary, img, txt, targ_fns[k], class_encs_b, B, consts_list[k],
+                               coeffs[k], compute_logits, chunk_size, autocast_ctx, lo, hi, world_size, device)
+        if centers[k] in ("grad_proj", "grad_proj2") else None
+        for k, (crit, secondary) in enumerate(crits)
+    ]
+
+    # sim-grad-sum metric (learning-curve strip): accumulated tile-by-tile via backward hooks. Under
+    # "sim" centering part of the full-path dL/dsim routes through the global mean, which here lives
+    # on the leaves and bypasses the tiles -- a hook on the in-graph mean captures it (dm/dsim sums
+    # to exactly 1), so the folded totals match the full-batch sim.grad.sum().
+    grad_sums = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
 
     wbce_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
     raw_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
@@ -580,7 +666,16 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
             block_loss = 0.0
             sim1_block = None
             for k, (crit, secondary) in enumerate(crits):
-                sim_block, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits)
+                cg = center_consts[k]
+                if centers[k] == "sim":
+                    # in-graph per block: the centering's backward routes through the mean embeddings
+                    # into every leaf row, completing the exact full-batch projection across blocks
+                    cg = torch.dot(img.mean(0), txt.mean(0))
+                    if cg.requires_grad:
+                        cg.register_hook(_gsum_hook(grad_sums[k]))
+                sim_block, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits, centers[k], cg)
+                if sim_block.requires_grad:
+                    sim_block.register_hook(_gsum_hook(grad_sums[k]))
                 targs_block = targ_fns[k](rs, re)
                 W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_list[k])
                 num = (W * bce).sum()
@@ -595,14 +690,16 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
         stats.update(sim1_block, targ_stat)
 
     if world_size > 1:  # fold the band-partial loss totals; the leaves' .grad stay band-partial
-        packed = torch.stack(wbce_tot + raw_tot)
+        packed = torch.stack(wbce_tot + raw_tot + grad_sums)
         dist.all_reduce(packed)
         wbce_tot = [packed[k] for k in range(len(crits))]
         raw_tot = [packed[len(crits) + k] for k in range(len(crits))]
+        grad_sums = [packed[2 * len(crits) + k] for k in range(len(crits))]
 
     loss = torch.zeros((), dtype=torch.float64, device=device)
     loss_raw = torch.zeros((), dtype=torch.float64, device=device)
     for k in range(len(crits)):
         loss += coeffs[k] * (wbce_tot[k] / B)
         loss_raw += mix_w[k] * (raw_tot[k] / B)
-    return loss.float(), loss_raw.float(), stats.finalize(world_size)
+    grad_sum_sims = (grad_sums[0].item(), grad_sums[1].item() if len(crits) == 2 else None)
+    return loss.float(), loss_raw.float(), stats.finalize(world_size), grad_sum_sims

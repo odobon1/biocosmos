@@ -755,8 +755,9 @@ class PrintLog:
                 ("- Temp Init",   cfg_logits["temperature"]["init"]),
                 ("- Temp Freeze", cfg_logits["temperature"]["freeze"]),
                 ("- Temp Clamp",  cfg_logits["temperature"]["clamp"]),
-                ("- Bias Init",    cfg_logits["bias"]["init"]),
-                ("- Bias Freeze",  cfg_logits["bias"]["freeze"]),
+                ("- Center",       cfg_logits["bce"]["center"]),
+                ("- Bias Init",    cfg_logits["bce"]["bias"]["init"]),
+                ("- Bias Freeze",  cfg_logits["bce"]["bias"]["freeze"]),
             )),
         ]
         lines.extend(lines_logits)

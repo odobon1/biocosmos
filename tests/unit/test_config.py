@@ -20,12 +20,12 @@ def make_train_config_dummy(**overrides):
         "chain_floor": None,
         "dv_batching": False,
         "htarg_shuf": False,
-        "dev": {"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
+        "dev": {"logging": False, "plot_every": "trial", "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
-        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
-        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
+        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "l2reg": 0.0,
@@ -83,7 +83,8 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
-        TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "iw", "mix": 1.5}))
+        TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "iw", "mix": 1.5,
+                                                     "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
 
 
 def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,6 +139,15 @@ def test_train_config_rejects_warmup_out_of_range(monkeypatch: pytest.MonkeyPatc
         }))
 
 
+def test_train_config_rejects_unknown_plot_every(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["dev"]["plot_every"] = "epoch"
+    with pytest.raises(ValueError, match="dev.plot_every must be 'trial' or 'chkpt'"):
+        TrainConfig(**cfg_dict)
+
+
 def test_train_config_rejects_htarg_shuf_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
@@ -150,7 +160,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
+        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -163,7 +173,7 @@ def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.Monk
         TrainConfig(**make_train_config_dummy(
             htarg_shuf=True,
             seed=None,
-            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"temperature": {"init": None}, "bias": {"init": None}}},
+            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         ))
 
 
@@ -462,11 +472,33 @@ def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPat
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
     cfg_dict["loss"] = {"crit": "infonce2", "sim": "cos", "targ": "sw",
-                        "logits": {"temperature": {"init": None}, "bias": {"init": None}}}
+                        "logits": {"temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 
     cfg = TrainConfig(**cfg_dict)
     assert cfg.hw.loss_chunk_size is None
+
+
+def test_train_config_rejects_unknown_center(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss"]["logits"]["bce"]["center"] = "grad_proje"
+    with pytest.raises(ValueError, match="Unknown Loss 1 logits.bce.center"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # center: sim under the tiled loss needs the cos mean factorization for an exact global sim mean
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()  # batch_size 8
+    cfg_dict["loss"] = {"crit": "bce", "sim": "geo1", "targ": "sw",
+                        "logits": {"temperature": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
+    cfg_dict["hw"]["loss_chunk_size"] = 8
+
+    with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):
+        TrainConfig(**cfg_dict)
 
 
 def _make_stats_config_dummy(**overrides):

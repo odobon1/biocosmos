@@ -45,7 +45,7 @@ L = import_loss_module()
 
 
 def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
-         norm_cls_imb=False):
+         norm_cls_imb=False, center=None):
     return {
         "crit": "bce", "sim": sim, "targ": targ,
         "wting": {
@@ -54,7 +54,7 @@ def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
             "focal": {"gamma": focal_gamma, "comp_type": 1},
             "bce": {"dsmr": dsmr, "norm": {"cls_imb": norm_cls_imb}},
         },
-        "logits": {"temperature": {"clamp": False}, "bias": {}},
+        "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 
@@ -79,13 +79,45 @@ def _params(seed):
     }
 
 
+class _ZSG(torch.autograd.Function):
+    """Mirror of models._ZeroSumGrad (identity forward, g - g.mean() backward)."""
+    @staticmethod
+    def forward(ctx, x):
+        return x
+
+    @staticmethod
+    def backward(ctx, g):
+        return g - g.mean()
+
+
+class _ZSGC(torch.autograd.Function):
+    """Mirror of models._ZeroSumGradConst (identity forward, g - c backward)."""
+    @staticmethod
+    def forward(ctx, x, c):
+        ctx.c = c
+        return x
+
+    @staticmethod
+    def backward(ctx, g):
+        return g - ctx.c, None
+
+
 def _compute_logits_fn(p):
-    def compute_logits(sim, clamp, secondary=False):
+    """Stub mirroring VLMWrapper.compute_logits's center semantics (incl. the chunked path's
+    center_global hook) over the toy scale/bias params."""
+    def compute_logits(sim, clamp, center=None, secondary=False, center_global=None):
         s = p["scale2"] if secondary else p["scale"]
         b = p["bias2"] if secondary else p["bias"]
         if clamp:
             s = s.clamp(max=math.log(100))
-        return sim * s.exp() + b
+        if center == "grad_proj":
+            sim = _ZSG.apply(sim) if center_global is None else _ZSGC.apply(sim, center_global)
+        sim_scaled = sim * s.exp()
+        if center == "grad_proj2":
+            sim_scaled = _ZSG.apply(sim_scaled) if center_global is None else _ZSGC.apply(sim_scaled, center_global)
+        if center == "sim":
+            sim_scaled = sim_scaled - (sim_scaled.mean() if center_global is None else center_global * s.exp())
+        return sim_scaled + b
     return compute_logits
 
 
@@ -97,55 +129,66 @@ def _make_targ_data(B, K, R, class_encs_b):
 
 
 def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, targ_data_b, p):
+    """Returns (loss, loss_raw, sims_ref) -- sims_ref carry retained grads after the caller's backward,
+    the ground truth for the chunked path's tile-accumulated grad_sum_sims."""
     clogits = _compute_logits_fn(p)
+    sims_ref = []
 
     def crit_loss(crit, secondary):
         sim = compute_sim(img, txt, crit.cfg["sim"])
-        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], secondary=secondary)
+        sim.retain_grad()
+        sims_ref.append(sim)
+        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary=secondary)
         loss, loss_raw, _ = crit(logits, class_encs_b, targ_data_b, train=True)
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)
     if mix == 0.0:
-        return loss1, loss1_raw
+        return loss1, loss1_raw, sims_ref
     loss2, loss2_raw = crit_loss(crit2, True)
     if mix_unit_scale:
         loss1 = loss1 / loss1.detach().clamp_min(1e-12)
         loss2 = loss2 / loss2.detach().clamp_min(1e-12)
-    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw
+    return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, sims_ref
 
 
 CASES = [
-    # (targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale)
-    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False),  # baseline
-    ("iw",    None,  True,  2.0, "naive",     False, 0.0, False),
-    ("tax",   None,  True,  2.0, "naive",     False, 0.0, False),
-    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False),
-    ("sw",    None,  False, 0.0, "naive",     False, 0.0, False),  # no dsmr, no focal
-    ("sw",    None,  True,  2.0, "pair_prob", False, 0.0, False),
-    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False),  # norm.cls_imb
-    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False),  # norm.cls_imb + cmx2
-    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, False),  # mix, no unit scale
-    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False),  # mixed target types
-    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True),   # mix + unit scale
-    ("tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True),    # everything at once
-    ("sw",    "sw",  False, 0.0, "naive",     False, 0.5, True),    # unit scale, no weighting
+    # (targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2)
+    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None),  # baseline
+    ("iw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None),
+    ("tax",   None,  True,  2.0, "naive",     False, 0.0, False, None, None),
+    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None),
+    ("sw",    None,  False, 0.0, "naive",     False, 0.0, False, None, None),  # no dsmr, no focal
+    ("sw",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None),
+    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None),  # norm.cls_imb
+    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None),  # norm.cls_imb + cmx2
+    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, False, None, None),  # mix, no unit scale
+    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None),  # mixed target types
+    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  None, None),  # mix + unit scale
+    ("tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True,  None, None),   # everything at once
+    ("sw",    "sw",  False, 0.0, "naive",     False, 0.5, True,  None, None),   # unit scale, no weighting
+    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None),  # in-graph global sim mean
+    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None),  # constant grad projection
+    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None),
+    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None),  # soft targets + projection
+    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim"),  # mixed centers under mix
+    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj"),  # unit-scale coeff folding
 ]
 
 
 @pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
-@pytest.mark.parametrize("targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale", CASES)
-def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, C):
+@pytest.mark.parametrize("targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale,center1,center2", CASES)
+def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, C):
     device = torch.device("cpu")
     B, K, D, R = 48, 20, 16, 4
 
     cfg1 = _cfg(targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                norm_cls_imb=norm_ci)
+                norm_cls_imb=norm_ci, center=center1)
     crit1 = _make_crit(cfg1, K, B)
     crit2 = None
     if mix != 0.0:
         cfg2 = _cfg(targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                    norm_cls_imb=norm_ci)
+                    norm_cls_imb=norm_ci, center=center2)
         crit2 = _make_crit(cfg2, K, B)
 
     g = torch.Generator().manual_seed(0)
@@ -158,14 +201,15 @@ def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, uni
     img = img0.clone().requires_grad_(True)
     txt = txt0.clone().requires_grad_(True)
     p = _params(1)
-    loss_ref, loss_raw_ref = _full_reference(crit1, crit2, mix, unit_scale, img, txt, class_encs_b, targ_data_b, p)
+    loss_ref, loss_raw_ref, sims_ref = _full_reference(crit1, crit2, mix, unit_scale, img, txt, class_encs_b, targ_data_b, p)
     loss_ref.backward()
+    gsum_ref = [s.grad.double().sum().item() for s in sims_ref]
 
     # chunked
     imgc = img0.clone().requires_grad_(True)
     txtc = txt0.clone().requires_grad_(True)
     pc = _params(1)
-    loss_c, loss_raw_c, _ = L.chunked_bce_loss_backward(
+    loss_c, loss_raw_c, _, gsum_c = L.chunked_bce_loss_backward(
         imgc, txtc, class_encs_b, targ_data_b, crit1, crit2, mix, unit_scale,
         _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
     )
@@ -176,9 +220,13 @@ def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, uni
     torch.testing.assert_close(txtc.grad, txt.grad, rtol=1e-4, atol=1e-6)
     torch.testing.assert_close(pc["scale"].grad, p["scale"].grad, rtol=1e-4, atol=1e-6)
     torch.testing.assert_close(pc["bias"].grad, p["bias"].grad, rtol=1e-4, atol=1e-6)
+    assert gsum_c[0] == pytest.approx(gsum_ref[0], rel=1e-4, abs=1e-4)
     if mix != 0.0:
         torch.testing.assert_close(pc["scale2"].grad, p["scale2"].grad, rtol=1e-4, atol=1e-6)
         torch.testing.assert_close(pc["bias2"].grad, p["bias2"].grad, rtol=1e-4, atol=1e-6)
+        assert gsum_c[1] == pytest.approx(gsum_ref[1], rel=1e-4, abs=1e-4)
+    else:
+        assert gsum_c[1] is None
 
 
 def test_stats_min_max_mean_exact():
@@ -192,9 +240,9 @@ def test_stats_min_max_mean_exact():
 
     sim = compute_sim(img.detach(), txt.detach(), "cos")
     targs = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
-    _, _, stats = L.chunked_bce_loss_backward(
+    _, _, stats, _ = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, targ_data_b, crit, None, 0.0, False,
-        lambda s, clamp, secondary=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
+        lambda s, clamp, center=None, secondary=False, center_global=None: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
     )
     assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
     assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
@@ -218,6 +266,21 @@ def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
 ])
 def test_chunking_supported(cfg_loss, cfg_loss2):
     assert L.chunking_supported(cfg_loss, cfg_loss2)
+
+
+def test_chunked_asserts_on_geo_sim_center():
+    # center: sim needs the cos mean factorization for an exact global mean; TrainConfig rejects the
+    # combo at config time, and the chunked entrypoint guards direct callers too
+    B, K = 16, 5
+    crit = _make_crit(_cfg(sim="geo1", center="sim"), K, B)
+    g = torch.Generator().manual_seed(0)
+    img = torch.nn.functional.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
+    txt = torch.nn.functional.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
+    class_encs_b = torch.randint(0, K, (B,), generator=g)
+    with pytest.raises(AssertionError, match="requires cos sim"):
+        L.chunked_bce_loss_backward(img, txt, class_encs_b, [None] * B, crit, None, 0.0, False,
+                                    _compute_logits_fn(_params(1)), 8, False, torch.device("cpu"),
+                                    rank=0, world_size=1)
 
 
 def _synthetic_vcv():

@@ -752,6 +752,7 @@ class PrintLog:
         lines_logits = [
             "Logits",
             PrintLog._dash_aligned_lines((
+                ("- Scalar LR Factor", cfg_logits["scalar_lr_factor"]),
                 ("- Temp Init",   cfg_logits["temperature"]["init"]),
                 ("- Temp Freeze", cfg_logits["temperature"]["freeze"]),
                 ("- Temp Clamp",  cfg_logits["temperature"]["clamp"]),

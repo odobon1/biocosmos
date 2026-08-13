@@ -148,12 +148,24 @@ class TrainPipeline:
 
     def init_opt_and_lr_sched(self):
 
+        # logit scalars (temp/bias) train at lr * their loss's logits.scalar_lr_factor, decay-decoupled
+        scalar_factors = {
+            "logit_scale":  self.cfg.loss["logits"]["scalar_lr_factor"],
+            "logit_bias":   self.cfg.loss["logits"]["scalar_lr_factor"],
+            "logit_scale2": self.cfg.loss2["logits"]["scalar_lr_factor"],
+            "logit_bias2":  self.cfg.loss2["logits"]["scalar_lr_factor"],
+        }
+
         params_decay, params_no_decay = [], []
+        params_scalar = {}  # scalar_lr_factor -> params
         for name, param in self.modelw.model.named_parameters():
             if not param.requires_grad:
                 continue
-            # decoupled weight decay ~ decoupling biases, affine params, & logit scale/shift (temp/bias)
-            if name.endswith(".bias") or param.ndim == 1 or "norm" in name.lower():
+            leaf = name.split(".")[-1]  # DDP prefixes names with "module."
+            if leaf in scalar_factors:
+                params_scalar.setdefault(scalar_factors[leaf], []).append(param)
+            # decoupled weight decay ~ decoupling biases & affine params
+            elif name.endswith(".bias") or param.ndim == 1 or "norm" in name.lower():
                 params_no_decay.append(param)
             else:
                 params_decay.append(param)
@@ -162,6 +174,10 @@ class TrainPipeline:
         param_groups = [
             {"params": params_decay,    "weight_decay": self.cfg.opt["l2reg"], "lr": lr_init_nom},
             {"params": params_no_decay, "weight_decay": 0.0,                   "lr": lr_init_nom},
+        ]
+        param_groups += [
+            {"params": params, "weight_decay": 0.0, "lr": lr_init_nom * factor}
+            for factor, params in params_scalar.items()
         ]
 
         self.opt = torch.optim.AdamW(
@@ -183,8 +199,9 @@ class TrainPipeline:
         else:
             frac = self.n_samps_seen / self.lr_warmup
             lr = self.lr_init_nom * frac
-            for pg in self.opt.param_groups:
-                pg["lr"] = lr
+            # per-group bases so the logit scalars keep their scalar_lr_factor through warmup
+            for pg, lr_base in zip(self.opt.param_groups, self.lr_sched.base_lrs):
+                pg["lr"] = lr_base * frac
         return lr
 
     @rank0

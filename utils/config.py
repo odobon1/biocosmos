@@ -153,7 +153,12 @@ class TrainConfig:
         if self.chkpt_interval == 0:
             raise ValueError(f"n_chkpts ({self.n_chkpts}) exceeds sample_volume ({self.sample_volume})")
 
-        for key, val in (("opt.lr.init", self.opt["lr"]["init"]), ("opt.l2reg", self.opt["l2reg"])):
+        for key, val in (
+            ("opt.lr.init", self.opt["lr"]["init"]),
+            ("opt.l2reg", self.opt["l2reg"]),
+            ("loss.logits.scalar_lr_factor", self.loss["logits"]["scalar_lr_factor"]),
+            ("loss2.logits.scalar_lr_factor", self.loss2["logits"]["scalar_lr_factor"]),
+        ):
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 raise ValueError(
                     f"{key} must be numeric, got {val!r} -- note YAML parses scientific notation "

@@ -70,6 +70,9 @@ loss:  # Primary loss
       norm:
         cls_imb: false  # {true, false}; Inert if (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
   logits:
+    scalar_lr_factor: 10.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
+    # opt.lr.init (e.g. 10.0 -> x10 backbone LR); ratio held through warmup + cosine decay; scalars are
+    # weight-decay-decoupled; (1.0) Backbone LR
     temperature:
       init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
       # ([float]) Override init; base: (siglip_vitb16: ~8.523e-3), (clip_vitb16: ~1.000e-2)
@@ -112,6 +115,7 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
       norm:
         cls_imb: false  # {true, false}
   logits:
+    scalar_lr_factor: 10.0  # (0.0, inf)
     temperature:
       init: null  # {null, [float]}
       freeze: false  # {true, false}
@@ -160,7 +164,7 @@ opt:  # Optimization
   eps: 1.0e-6  # CLIP paper recommends 1.0e-6 (ViT)
 
 dev:
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # Config overrides applied iff (dev.debug_mode: true)
     n_epochs: 10
     chain_floor: null

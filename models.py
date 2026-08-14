@@ -295,8 +295,6 @@ class VLMWrapper(abc.ABC):
         else:
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
 
-        if hasattr(config, "loss"):
-            modelw.loss_crit = config.loss["crit"]
         if checkpoint is not None:
             modelw._unwrapped_model.load_state_dict(checkpoint["model"], strict=False)
             for key in ("logit_scale2", "logit_bias2"):

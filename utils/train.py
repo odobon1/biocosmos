@@ -278,9 +278,9 @@ class ArtifactManager:
             if not is_siglip and metadata["loss"]["logits"]["bce"]["bias"]["init"] is None:
                 del metadata["loss"]["logits"]["bce"]["bias"]
 
-            # per-loss weighting: drop params the loss type never reads (InfoNCE1/2 hardcode
+            # per-loss weighting: drop params the loss type never reads (InfoNCE hardcodes
             # W_foc * W_ci -- the bce sub-block is BCE-only; freq_type_2d and focal.comp_type only
-            # enter the 2D paths, absent from InfoNCE1's 1D weighting), params their own toggle
+            # enter the 2D paths, absent from InfoNCE's 1D weighting), params their own toggle
             # disables (cls_imb.type null, focal.gamma 0.0), and the scalar cancellations noted
             # in train.yaml: the unit-scale blend (loss / loss.detach()) cancels any per-batch
             # scalar factor on a loss, making norm.cls_imb's rescale inert under unit-scaling
@@ -292,8 +292,7 @@ class ArtifactManager:
                 if key not in metadata:
                     continue
                 wting = metadata[key]["wting"]
-                is_bce = metadata[key]["crit"] == "bce"
-                is_1d = metadata[key]["crit"] == "infonce1"  # wting_dim 1; infonce2/bce weight 2D
+                is_bce = metadata[key]["crit"] == "bce"  # wting_dim 2; infonce weights 1D
 
                 cls_imb_on = wting["cls_imb"]["type"] is not None
                 focal_on = wting["focal"]["gamma"] > 0.0
@@ -310,19 +309,17 @@ class ArtifactManager:
                         del cls_imb["class_bal"]
                     elif cls_imb["type"] == "class_bal":
                         del cls_imb["inv_freq"]
-                    if is_1d:
-                        del cls_imb["freq_type_2d"]
                     if not is_bce:
+                        del cls_imb["freq_type_2d"]
                         del cls_imb["wt_mean_type"]
 
                 if not focal_on:
                     del wting["focal"]
                 else:
                     targ = metadata[key]["targ"]
-                    # comp_type is unread on the 1D path; with config-guaranteed binary targets (bce: iw/sw raw
-                    # 0/1; infonce2: iw row-normalizes to an eye) the two comp forms coincide in values and gradients
-                    binary_targs = (is_bce and targ in ("iw", "sw")) or (not is_bce and not is_1d and targ == "iw")
-                    if is_1d or binary_targs:
+                    # comp_type is unread on the 1D (InfoNCE) path; with config-guaranteed binary targets
+                    # (bce: iw/sw raw 0/1) the two comp forms coincide in values and gradients
+                    if not is_bce or targ in ("iw", "sw"):
                         del wting["focal"]["comp_type"]
 
                 if not is_bce:

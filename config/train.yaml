@@ -38,7 +38,7 @@ freeze:
 htarg_shuf: false  # {true, false}
 
 loss:  # Primary loss
-  crit: bce  # {infonce1, infonce2, bce}
+  crit: bce  # {infonce, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: sw  # {iw, sw, tax, phylo}
   wting:
@@ -52,7 +52,7 @@ loss:  # Primary loss
         beta: 0.9999  # [0.0, 1.0)
       freq_type_2d: naive  # {naive, cmx2, pair_prob}; Class-pair frequency/counting type; (naive) Vanilla (i2t, t2i 
       # for same pair treated as separate "classes"); (cmx2) Non-matching pair-counts multiplied by 2 (i2t, t2i for 
-      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit: infonce1)
+      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit: infonce)
       wt_mean_type: per_class  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
       # (per_class) Each class (1D) / class pair (2D) counts once --> the average class has unit weight; 
       # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
@@ -61,8 +61,7 @@ loss:  # Primary loss
       gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
       comp_type: 1  # {1, 2}; Continuous-form focal loss computation type; Identical behavior to discrete form (values 
-      # and gradients) with binary targets; Inert iff (loss.crit: bce AND loss.targ: {iw, sw}) OR 
-      # (loss.crit: infonce2 AND loss.targ: iw) OR (loss.crit: infonce1)
+      # and gradients) with binary targets; Inert iff (loss.crit: bce AND loss.targ: {iw, sw}) OR (loss.crit: infonce)
     bce:  # BCE-specific weighting params; Inert iff (loss.crit != bce)
       dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
       norm:
@@ -85,7 +84,7 @@ loss:  # Primary loss
       # Per-criterion (loss2 has its own flag); Chunked path (hw.loss_chunk_size) reproduces full-batch centering
       # exactly; (sim) under chunking requires sim: cos (config error otherwise -- no closed-form global mean for geo);
       # sensitive to mixed precision
-      bias:  # Inert iff (loss.crit: infonce1) OR (loss.crit: infonce2 AND loss.targ: iw)(?)
+      bias:  # Inert iff (loss.crit: infonce)
         init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
         # ([float]) Override init; base: (siglip_vitb16: -12.9324)
         freeze: false  # {true, false}; (true) Non-learnable bias
@@ -93,7 +92,7 @@ loss:  # Primary loss
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
   mix: 0.3  # [0.0, 1.0); (0.0) Disable secondary loss
   mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending
-  crit: bce  # {infonce1, infonce2, bce}
+  crit: bce  # {infonce, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {iw, sw, tax, phylo}
   wting:

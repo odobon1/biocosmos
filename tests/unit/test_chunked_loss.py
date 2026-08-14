@@ -251,9 +251,8 @@ def test_stats_min_max_mean_exact():
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
-    ({"crit": "infonce2", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),         # infonce primary
-    ({"crit": "infonce1", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "infonce2"}),          # infonce secondary (mixed)
+    ({"crit": "infonce", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),          # infonce primary
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "infonce"}),           # infonce secondary (mixed)
 ])
 def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
     assert not L.chunking_supported(cfg_loss, cfg_loss2)
@@ -262,7 +261,7 @@ def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
     ({"crit": "bce", "targ": "phylo"}, {"mix": 0.0, "crit": "bce"}),            # phylo now supported
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce2"}),          # infonce loss2 inert at mix=0
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce"}),           # infonce loss2 inert at mix=0
 ])
 def test_chunking_supported(cfg_loss, cfg_loss2):
     assert L.chunking_supported(cfg_loss, cfg_loss2)

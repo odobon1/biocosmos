@@ -64,8 +64,8 @@ def compute_targs_phylo(targ_data_b):
 class Criterion(abc.ABC):
     """
     A loss paired with the class-imbalance weighting it consumes. The weighting dimensionality is a
-    property of the loss (`wting_dim`) -- 1D per-class weights for InfoNCE1, 2D per-class-pair
-    weights for InfoNCE2/BCE.
+    property of the loss (`wting_dim`) -- 1D per-class weights for InfoNCE, 2D per-class-pair
+    weights for BCE.
 
     Only the class counts and the normalization scalar are held; batch weights are computed from
     them on the fly, so no n_classes (1D) / n_classes^2 (2D) weight buffer persists for the run.
@@ -83,9 +83,8 @@ class Criterion(abc.ABC):
     @staticmethod
     def build(cfg_loss, dataset, split, train_pt, device, batch_size):
         crit_cls = {
-            "infonce1": InfoNCE1Criterion,
-            "infonce2": InfoNCE2Criterion,
-            "bce":      BCECriterion,
+            "infonce": InfoNCECriterion,
+            "bce":     BCECriterion,
         }[cfg_loss["crit"]]
 
         return crit_cls(cfg_loss, dataset, split, train_pt, device, batch_size)
@@ -108,7 +107,7 @@ class Criterion(abc.ABC):
         """
         raise NotImplementedError
 
-class InfoNCE1Criterion(Criterion):
+class InfoNCECriterion(Criterion):
     """
     InfoNCE weighted by 1D per-class weights, applied to per-sample cross-entropy terms.
 
@@ -153,55 +152,6 @@ class InfoNCE1Criterion(Criterion):
 
         num_i2t = (W_i2t * loss_i2t_raw_b).sum()
         num_t2i = (W_t2i * loss_t2i_raw_b).sum()
-        den_i2t = W_i2t.detach().sum().clamp_min(1e-12)
-        den_t2i = W_t2i.detach().sum().clamp_min(1e-12)
-
-        loss = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
-
-        return loss, loss_raw, targs_raw
-
-class InfoNCE2Criterion(Criterion):
-    """
-    InfoNCE weighted by 2D per-class-pair weights, applied elementwise to the loss matrix.
-
-    Note: may need to be adjusted for multiple GPUs (wrt reduction)
-    """
-
-    wting_dim = 2
-
-    def __call__(self, logits, class_encs_b, targ_data_b, train):
-        B = logits.size(0)
-        targs_raw = self._targets(B, class_encs_b, targ_data_b)
-        targs = targs_raw / targs_raw.sum(dim=1, keepdim=True)
-
-        log_p_i2t = F.log_softmax(logits,   dim=-1)
-        log_p_t2i = F.log_softmax(logits.T, dim=-1)
-
-        loss_i2t_raw = -(targs   * log_p_i2t)
-        loss_t2i_raw = -(targs.T * log_p_t2i)
-
-        loss_raw = 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
-
-        if not train:
-            return loss_raw, loss_raw, targs_raw
-
-        W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
-
-        if self.cfg["wting"]["focal"]["gamma"] > 0.0:
-            preds_i2t = log_p_i2t.exp()
-            preds_t2i = log_p_t2i.exp()
-            W_foc_i2t = _focal_2d(preds_i2t, targs, self.cfg["wting"]["focal"])
-            W_foc_t2i = _focal_2d(preds_t2i, targs.T, self.cfg["wting"]["focal"])
-        else:
-            W_foc_i2t = torch.ones_like(targs)
-            W_foc_t2i = torch.ones_like(targs.T)
-
-        W_i2t = W_foc_i2t * W_ci
-        W_t2i = W_foc_t2i * W_ci
-
-        num_i2t = (W_i2t * loss_i2t_raw).sum()
-        num_t2i = (W_t2i * loss_t2i_raw).sum()
-
         den_i2t = W_i2t.detach().sum().clamp_min(1e-12)
         den_t2i = W_t2i.detach().sum().clamp_min(1e-12)
 

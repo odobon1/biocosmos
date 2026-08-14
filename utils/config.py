@@ -201,10 +201,10 @@ class TrainConfig:
             if self.seed is None:
                 raise ValueError("htarg_shuf=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss["crit"] not in ("infonce1", "infonce2", "bce"):
-            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce1, infonce2, bce}}")
-        if self.loss2["crit"] not in ("infonce1", "infonce2", "bce"):
-            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce1, infonce2, bce}}")
+        if self.loss["crit"] not in ("infonce", "bce"):
+            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce, bce}}")
+        if self.loss2["crit"] not in ("infonce", "bce"):
+            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce, bce}}")
         
         if self.loss["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")

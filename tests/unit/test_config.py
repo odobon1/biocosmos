@@ -470,7 +470,7 @@ def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPat
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "infonce2", "sim": "cos", "targ": "sw",
+    cfg_dict["loss"] = {"crit": "infonce", "sim": "cos", "targ": "sw",
                         "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 

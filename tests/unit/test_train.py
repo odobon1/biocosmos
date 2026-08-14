@@ -93,12 +93,12 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert config["loss"]["wting"]["bce"]["norm"] == {"cls_imb": True}  # no unit-scale -> the rescale sticks
     assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
-    # CLIP + InfoNCE1 + class_bal: the 1D path reads none of the 2D/BCE-only machinery
+    # CLIP + InfoNCE + class_bal: the 1D path reads none of the 2D/BCE-only machinery
     (tmp_path / "s2").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s2")
     cfg = _FakeSettingCfg()
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
-    cfg.loss = _full_loss_cfg(crit="infonce1")
+    cfg.loss = _full_loss_cfg(crit="infonce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())

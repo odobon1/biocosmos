@@ -60,8 +60,8 @@ def probe_model(
     config_train.loss["targ"]  = "iw"
     config_train.loss2["targ"] = "iw"
 
-    config_train.model_type = model_id
-    config_train.loss_crit  = loss_crit
+    config_train.arch["model_type"] = model_id
+    config_train.loss["crit"]       = loss_crit
 
     modelw = VLMWrapper.build(config_train)
     modelw.crit1 = Criterion.build(config_train.loss, DATASET, config_train.split, config_train.train_pt, device, config_train.batch_size)
@@ -104,7 +104,7 @@ def main():
     for model_id in models_bce:
         probe_model(model_id, device, sizes, "bce")
     for model_id in models_infonce:
-        probe_model(model_id, device, sizes, "infonce1")
+        probe_model(model_id, device, sizes, "infonce")
 
 
 if __name__ == "__main__":

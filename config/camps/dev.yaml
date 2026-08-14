@@ -1,5 +1,5 @@
 n_trials: 3
-datasets: [nymph, lepid]
+datasets: [cub]
 
 baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:

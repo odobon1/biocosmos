@@ -1,4 +1,5 @@
-rdpath_model: null  # relative dirpath to checkpoint directory (contains model.pt; set null for base model)
+rdpath_model: null  # relative dirpath to checkpoint directory (contains model.pt; set null for base model). Trials no
+# longer save weights, so this needs an externally supplied checkpoint dir
 # rdpath_model: artifacts/devdev/settings/hp/nymph/42/chkpts/final  # dataset, split, model_type, img_norm are overridden if rdpath_model is specified
 dataset: nymph  # {bryo, cub, lepid, nymph}
 split: D10  # {D10, dev}

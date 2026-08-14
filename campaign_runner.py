@@ -22,9 +22,11 @@ import psutil
 import torch
 import yaml
 
-from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, get_config_train, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, get_config_stats, get_config_train, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
+from utils.report import update_stats_tables, update_metrics_xlsx
+from utils.train import ArtifactManager
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
@@ -105,6 +107,21 @@ def _classify_crash(exc: Exception) -> str:
     if "SIGKILL" in text or "killed by signal: Killed" in text:
         return "ram"
     return "other"
+
+def _render_campaign_tables(campaign: str, datasets: list[str]) -> None:
+    """Re-render the campaign-level tables/workbooks from whatever is on disk. Trials render these only
+    when a seed completes across the whole matrix (train.py), so a campaign that ends mid-sweep -- one
+    interrupted, or with a (setting, dataset) that never succeeds -- would otherwise leave them a sweep
+    behind. Checkpoint selection is NOT redone: every completed trial already reselected its own
+    (setting, dataset) at its own trial end."""
+    cfg_stats = get_config_stats()
+    ArtifactManager.dpath_campaign = _dpath_campaign(campaign)
+    for dataset in datasets:
+        ArtifactManager.dataset = dataset
+        update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                            cfg_stats.prim_scores)
+    update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                        cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
@@ -655,7 +672,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                     ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
                     try:
                         _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
-                        shutil.rmtree(dpath_trial / "chkpts/in_progress")
+                        shutil.rmtree(dpath_trial / "chkpts")  # only holds in_progress/ -- no weights are saved
                         _mark_trial_complete(dpath_trial)
                         PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                         succeeded = True
@@ -667,6 +684,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                         )
                         if render_proc is not None and render_proc.poll() is None:
                             render_proc.terminate()
+                        _render_campaign_tables(campaign, datasets)
                         PrintLog.manifest(dpath_campaign, trials, in_progress=None)
                         return
                     except Exception as e:
@@ -709,6 +727,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.wait()
                 render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}")
+
+    _render_campaign_tables(campaign, datasets)
 
     # let the last trial's render finish before the campaign exits
     if render_proc is not None:

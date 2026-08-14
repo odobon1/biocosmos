@@ -21,31 +21,9 @@ from utils.ddp import rank0
 import pdb
 
 
-EVAL_GROUPS = ("native", "native_macro", "joint", "joint_macro")
-
-# checkpoint-selection criteria: criterion (also the chkpts/best/ + evals/_best/ + stats subdir
-# name) -> the scores.comp.<key>.<metric> it maximizes
+# checkpoint-selection criteria: criterion (also the evals/_best/ + stats subdir name) ->
+# the scores.comp.<key>.<metric> it maximizes
 BEST_CRITERIA = {"map": ("map", "all"), "acc": ("acc", "i2t")}
-
-
-def best_evals(dpath_evals, n_chkpts, criterion):
-    """Per eval group, that group's best trained checkpoint by `criterion`'s comp score
-    (BEST_CRITERIA) over evals/eval1..eval<n_chkpts>/<group>.json: {group: {"idx", "score",
-    "chkpt"}} -- earliest wins ties, missing eval dirs are skipped (mid-trial scan on resume),
-    None when the group has no written eval yet. The base eval (idx 0) is not a candidate."""
-    score_key, metric = BEST_CRITERIA[criterion]
-    best = {}
-    for group_key in EVAL_GROUPS:
-        best[group_key] = None
-        for idx_eval in range(1, n_chkpts + 1):
-            fpath = dpath_evals / f"eval{idx_eval}" / f"{group_key}.json"
-            if not fpath.exists():
-                continue
-            metrics = load_json(fpath)
-            score = float(metrics["scores"]["comp"][score_key][metric])
-            if best[group_key] is None or score > best[group_key]["score"]:
-                best[group_key] = {"idx": idx_eval, "score": score, "chkpt": metrics["chkpt"]}
-    return best
 
 
 def format_scores(scores):
@@ -183,8 +161,6 @@ class ArtifactManager:
     dpath_setting = None
     dpath_trial = None
     fpath_metadata_trial = None
-    dpath_model_final = None
-    dpath_model_best = None
     dpath_eval_final = None
     dpath_model_checkpoint = None
     resuming = False
@@ -203,8 +179,6 @@ class ArtifactManager:
         ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
-        ArtifactManager.dpath_model_final = ArtifactManager.dpath_trial / "chkpts/final"
-        ArtifactManager.dpath_model_best = {criterion: ArtifactManager.dpath_trial / "chkpts/best" / criterion for criterion in BEST_CRITERIA}
         ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals" / f"eval{cfg_train.n_chkpts}"
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
@@ -222,7 +196,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "chkpts", "chkpts/in_progress", "learning_curves"):
+        for subdir in ("logs", "chkpts/in_progress", "learning_curves"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod
@@ -374,7 +348,9 @@ class ArtifactManager:
 
         fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
         if not fpath_meta.exists():
-            save_json({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}, fpath_meta)
+            # best_chkpt: per dataset x criterion x eval group, the checkpoint every trial of this
+            # setting is scored at -- filled in at each trial end by report.update_chkpt_selection
+            save_json({"n_crashes": {"ram": 0, "vram": 0, "other": 0}, "best_chkpt": {}}, fpath_meta)
 
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):
@@ -409,7 +385,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, best_chkpt=None, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, init_flag=False):
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
         progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}
@@ -420,7 +396,6 @@ class ArtifactManager:
                 "split": ArtifactManager.split,
                 "runtime": runtime_data,
                 "progress": progress_data,
-                "best_chkpt": best_chkpt,  # per criterion, cfg.eval_group's best-so-far: {"map"/"acc": "7/11 (6.9M/10.4M)" | None before its first eval}
                 "memory": format_mem(mem),
                 "datetime_start": now,
                 "datetime_last_seen": now,
@@ -431,24 +406,9 @@ class ArtifactManager:
             metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
             metadata_trial["runtime"] = runtime_data
             metadata_trial["progress"] = progress_data
-            metadata_trial["best_chkpt"] = best_chkpt
             metadata_trial["memory"] = merge_mem(metadata_trial["memory"], format_mem(mem))
             metadata_trial["datetime_last_seen"] = now
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
-
-    @staticmethod
-    @rank0
-    def save_best_evals(n_chkpts):
-        # materialize each eval group's best-checkpoint metrics into evals/_best/<criterion>/, one
-        # subdir per selection criterion (BEST_CRITERIA); the copied chkpt fields record which
-        # checkpoint each group's file came from. Reporting (utils/report.py) reads these, not the
-        # final eval.
-        dpath_evals = ArtifactManager.dpath_trial / "evals"
-        for criterion in BEST_CRITERIA:
-            dpath_best = dpath_evals / "_best" / criterion
-            dpath_best.mkdir(parents=True, exist_ok=True)
-            for group_key, entry in best_evals(dpath_evals, n_chkpts, criterion).items():
-                shutil.copyfile(dpath_evals / f"eval{entry['idx']}" / f"{group_key}.json", dpath_best / f"{group_key}.json")
 
     @staticmethod
     @rank0

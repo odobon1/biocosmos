@@ -15,7 +15,6 @@ def make_train_config_dummy(**overrides):
         "train_pt": "train",
         "n_epochs": 1,
         "n_chkpts": 10,
-        "eval_group": "native",
         "batch_size": 8,
         "chain_floor": None,
         "dv_batching": False,

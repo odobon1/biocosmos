@@ -28,8 +28,8 @@ from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
-from utils.train import TrialData, ArtifactManager, parse_scores, best_evals, BEST_CRITERIA
-from utils.report import plot_metrics, update_metric_stats, update_stats_tables, update_metrics_xlsx
+from utils.train import TrialData, ArtifactManager, parse_scores
+from utils.report import plot_metrics, update_metric_stats, update_chkpt_selection, seed_sweep_complete, update_stats_tables, update_metrics_xlsx
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -121,17 +121,6 @@ class TrainPipeline:
         self.time_tracker = TimeTracker()
 
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
-
-        # per selection criterion, cfg.eval_group's best trained checkpoint so far (BEST_CRITERIA
-        # comp scores; base excluded). On resume, re-derived from the on-disk eval metrics --
-        # chkpts/best/<criterion>/ weights persist alongside them.
-        self.best = {criterion: None for criterion in BEST_CRITERIA}  # criterion -> {"score", "idx", "chkpt"}
-        if resume_state is not None and self.eval_enabled:
-            for criterion in BEST_CRITERIA:
-                entry = best_evals(ArtifactManager.dpath_trial / "evals", self.cfg.n_chkpts, criterion)[self.cfg.eval_group]
-                if entry is not None:
-                    self.best[criterion] = {"score": entry["score"], "idx": entry["idx"],
-                                            "chkpt": entry["chkpt"].removesuffix(" samples")}
 
         if resume_state is not None:
             self.n_samps_seen = resume_state["n_samps_seen"]
@@ -286,28 +275,6 @@ class TrainPipeline:
         if self._viz_manifold:
             self._viz_eval(eval_bundles, eval_name)
 
-    def _update_best(self, eval_metrics, idx_eval):
-        # checkpoint selection: per criterion (BEST_CRITERIA), track cfg.eval_group's best trained
-        # checkpoint (called only for idx_eval >= 1 -- base is not a candidate; strict > keeps the
-        # earliest on ties) and capture its weights. eval_metrics is identical on every rank
-        # (evaluate() reduces over the full eval set); the weights saves are @rank0. Runs before
-        # save_train_state in the checkpoint block, so a mid-checkpoint crash re-runs this eval on
-        # resume.
-        comp = eval_metrics["scores"][self.cfg.eval_group]["comp"]
-        for criterion, (score_key, metric) in BEST_CRITERIA.items():
-            score = comp[score_key][metric]
-            if self.best[criterion] is None or score > self.best[criterion]["score"]:
-                self.best[criterion] = {
-                    "score": score,
-                    "idx": idx_eval,
-                    "chkpt": f"{idx_eval}/{self.cfg.n_chkpts} ({self.n_samps_seen / 1e6:.1f}M/{self.cfg.sample_volume / 1e6:.1f}M)",
-                }
-                self.modelw.save(ArtifactManager.dpath_model_best[criterion])
-
-    def _best_chkpts(self):
-        # trial_metadata.best_chkpt: per criterion, where cfg.eval_group's best was captured
-        return {criterion: entry["chkpt"] if entry is not None else None for criterion, entry in self.best.items()}
-
     @rank0
     def _print_log_eval(self, header):
         sys.stdout.write('\r')
@@ -343,7 +310,7 @@ class TrainPipeline:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data(ArtifactManager.dpath_model_checkpoint, self.chkpt_thresh // self.cfg.chkpt_interval - 1)
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem, best_chkpt=self._best_chkpts())
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
 
@@ -389,7 +356,7 @@ class TrainPipeline:
 
             if self._resume_state is None:
                 mem = self._snapshot_memory()  # COLLECTIVE -- every rank must enter
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem, best_chkpt=self._best_chkpts(), init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.size_train, self.cfg.n_epochs, self.n_samps_seen, mem, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 
@@ -546,7 +513,6 @@ class TrainPipeline:
                                 self.time_tracker.add("eval", time_eval)
                                 self._record_eval(eval_metrics, time_eval)
                                 self._save_mid_eval(threshold_hit, eval_bundles)
-                                self._update_best(eval_metrics, threshold_hit // self.cfg.chkpt_interval)
                             self._checkpoint(
                                 header=f"{threshold_hit:,}",
                                 idx_batch=idx_batch,
@@ -596,7 +562,6 @@ class TrainPipeline:
                 self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
                 self._save_eval_data(ArtifactManager.dpath_eval_final, self.cfg.n_chkpts)
-                self._update_best(eval_metrics, self.cfg.n_chkpts)
                 if self._viz_manifold:
                     self._viz_eval(eval_bundles, f"eval{self.cfg.n_chkpts}")  # COLLECTIVE compute+cache; rendered post-trial off-process
             self._checkpoint(
@@ -604,9 +569,6 @@ class TrainPipeline:
                 idx_batch=-1,
                 final=True,
             )
-            self.modelw.save(ArtifactManager.dpath_model_final)  # @rank0
-            if self.eval_enabled:
-                ArtifactManager.save_best_evals(self.cfg.n_chkpts)  # @rank0 -> evals/_best/map/; consumed by the stats chain below
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
 
@@ -657,8 +619,15 @@ def run_training(cfg):
     )
     train_pipe.train()
     cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
+    # reselects this setting/dataset's checkpoint over ALL its completed trials (this one included) and
+    # rewrites their evals/_best/, so the per-dataset aggregates below see the current selection
+    update_chkpt_selection(cfg_stats.spread_type)
     update_metric_stats(cfg_stats.spread_type)
-    update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
-    update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
+    # the cross-setting tables/workbooks read every setting's _best/, so they wait for a full pass of
+    # the matrix: only once this seed has completed in every (setting, dataset) is the whole campaign
+    # reselected against the same set of trials
+    if seed_sweep_complete(cfg.seed):
+        update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
+        update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
 
     cleanup_ddp()

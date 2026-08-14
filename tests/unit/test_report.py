@@ -1,28 +1,11 @@
 import json
 
+import pytest
 from openpyxl import load_workbook
 
 from utils import report
 from utils.train import ArtifactManager
-from utils.utils import paths
-
-
-def test_aggregate_metric_stats_keeps_none_leaf_across_trials() -> None:
-    # loss_raw["ood"] is never computed -> None in every trial's metrics files. Aggregating across
-    # >1 completed trial must keep it None, not attempt float(None).
-    trials = [
-        {"scores": {"comp": {"map": {"all": "0.50"}}}, "loss_raw": {"id": "0.7029", "ood": None}, "sim": {"mean": "0.0925"}, "targ": {"mean": "-0.9895"}},
-        {"scores": {"comp": {"map": {"all": "0.60"}}}, "loss_raw": {"id": "0.7005", "ood": None}, "sim": {"mean": "0.0935"}, "targ": {"mean": "-0.9885"}},
-    ]
-
-    out = report._aggregate_metric_stats(trials, "std")
-
-    assert out["loss_raw"]["ood"] is None
-    assert out["loss_raw"]["id"] == "0.7017 ± 0.0017"
-    assert out["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
-    # sim/targ aggregate raw (like loss_raw), not as percentages
-    assert out["sim"]["mean"] == "0.0930 ± 0.0007"
-    assert out["targ"]["mean"] == "-0.9890 ± 0.0007"
+from utils.utils import load_pickle, paths
 
 
 def test_aggregate_metric_stats_ste_spread() -> None:
@@ -38,11 +21,11 @@ def test_aggregate_metric_stats_ste_spread() -> None:
 
 
 def test_aggregate_metric_stats_single_trial_returns_leaves_verbatim() -> None:
-    trials = [{"loss_raw": {"id": "0.7029", "ood": None}}]
+    trials = [{"scores": {"comp": {"map": {"all": "0.5029"}}}}]
 
     out = report._aggregate_metric_stats(trials, "std")
 
-    assert out == {"loss_raw": {"id": "0.7029", "ood": None}}
+    assert out == {"scores": {"comp": {"map": {"all": "0.5029"}}}}
 
 
 def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monkeypatch) -> None:
@@ -69,29 +52,131 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
 
     report.update_metric_stats("std")
 
-    stats = json.loads((dpath_dataset / "stats" / "map" / "native.json").read_text())
+    stats = json.loads((dpath_dataset / "stats" / "map" / "native" / "metrics.json").read_text())
     assert stats["n_trials"] == 2
-    assert stats["loss_raw"]["ood"] is None
     assert stats["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
-    assert "chkpt" not in stats  # dropped from the aggregates
+    # only the scores tree is aggregated; the non-score fields are dropped
+    assert set(stats) == {"n_trials", "scores"}
 
-    listview_text = (dpath_dataset / "stats" / "map" / "listview" / "native.json").read_text()
+    listview_text = (dpath_dataset / "stats" / "map" / "native" / "metrics_listview.json").read_text()
     listview = json.loads(listview_text)
     assert listview["n_trials"] == 2
-    assert listview["loss_raw"]["ood"] is None
-    assert listview["loss_raw"]["id"] == ["0.7000", "0.7000"]
-    assert listview["sim"]["mean"] == ["0.0925", "0.0925"]
+    assert set(listview) == {"n_trials", "scores"}
     assert listview["scores"]["comp"]["map"]["all"] == ["50.00", "60.00"]
     # each leaf list stays on a single line
     assert '"all": ["50.00", "60.00"]' in listview_text
     # the acc tree aggregates the acc-selected _best files, separately from map's
-    stats_acc = json.loads((dpath_dataset / "stats" / "acc" / "native.json").read_text())
+    stats_acc = json.loads((dpath_dataset / "stats" / "acc" / "native" / "metrics.json").read_text())
     assert stats_acc["scores"]["comp"]["map"]["all"] == "35.00 ± 7.07"
     # one aggregate + one listview file per criterion x eval group
     for criterion in ("map", "acc"):
         for group_key in ("native", "native_macro", "joint", "joint_macro"):
-            assert (dpath_dataset / "stats" / criterion / f"{group_key}.json").exists()
-            assert (dpath_dataset / "stats" / criterion / "listview" / f"{group_key}.json").exists()
+            assert (dpath_dataset / "stats" / criterion / group_key / "metrics.json").exists()
+            assert (dpath_dataset / "stats" / criterion / group_key / "metrics_listview.json").exists()
+
+
+_GROUP_KEYS = ("native", "native_macro", "joint", "joint_macro")
+
+
+def _write_trial_evals(dpath_trial, chkpt_scores, n_chkpts=None):
+    """A trial's per-checkpoint eval files: chkpt_scores[i] = (comp.map.all, comp.acc.i2t) at
+    checkpoint i, index 0 being the base eval. n_chkpts defaults to the last written index, i.e. a
+    completed trial; pass a larger one to leave the trial short of its final eval."""
+    n_chkpts = len(chkpt_scores) - 1 if n_chkpts is None else n_chkpts
+    for idx_eval, (map_v, acc_v) in enumerate(chkpt_scores):
+        dpath_chkpt = dpath_trial / "evals" / ("base" if idx_eval == 0 else f"eval{idx_eval}")
+        dpath_chkpt.mkdir(parents=True)
+        for group_key in _GROUP_KEYS:
+            (dpath_chkpt / f"{group_key}.json").write_text(json.dumps({
+                "scores": {"comp": {"map": {"all": map_v}, "acc": {"i2t": acc_v}}},
+                "chkpt": f"{idx_eval}/{n_chkpts} (0.0M/0.0M samples)",
+            }))
+
+
+def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeypatch) -> None:
+    # the setting picks ONE checkpoint index per criterion x group -- argmax over the across-trial
+    # MEAN curve, not each trial's own argmax -- and every trial is scored there. Trial 42 peaks at
+    # chkpt 1 and trial 43 at chkpt 3, but the mean peaks at 2, so BOTH are scored at chkpt 2.
+    dataset = "cub"
+    dpath_dataset = tmp_path / dataset
+    (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
+    _write_trial_evals(dpath_dataset / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
+    _write_trial_evals(dpath_dataset / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", dataset)
+
+    report.update_chkpt_selection("std")
+
+    chkpt_means = load_pickle(dpath_dataset / "stats" / "map" / "native" / "chkpt_means.pkl")
+    assert chkpt_means["n_trials"] == 2
+    assert list(chkpt_means["chkpts"]) == [0, 1, 2, 3]  # the base eval leads the curve
+    assert chkpt_means["means"] == pytest.approx([0.10, 0.50, 0.60, 0.50])
+    assert chkpt_means["idx_best"] == 2  # argmax over 1.., earliest on ties
+
+    # both trials scored at the SAME checkpoint -- neither trial's own argmax
+    for seed, score in (("42", "0.50"), ("43", "0.70")):
+        best = json.loads((dpath_dataset / seed / "evals" / "_best" / "map" / "native.json").read_text())
+        assert best["chkpt"].startswith("2/3")
+        assert best["scores"]["comp"]["map"]["all"] == score  # 42's own best was 0.90, 43's 0.80
+
+    metadata = json.loads((tmp_path / "setting_metadata.json").read_text())
+    assert metadata["best_chkpt"]["cub"]["map"]["native"] == {
+        "idx": 2, "n_chkpts": 3, "n_trials": 2, "mean": "0.6000",
+    }
+    for criterion in ("map", "acc"):
+        for group_key in _GROUP_KEYS:
+            assert (dpath_dataset / "stats" / criterion / group_key / "chkpt_means.pkl").exists()
+            assert (dpath_dataset / "stats" / criterion / group_key / "chkpt_means.png").exists()
+            assert metadata["best_chkpt"]["cub"][criterion][group_key]["idx"] == 2
+
+
+def test_update_chkpt_selection_excludes_base_and_unfinished_trials(tmp_path, monkeypatch) -> None:
+    # the base eval (index 0) is plotted but never selectable, and a trial short of its final eval
+    # doesn't enter the mean at all (nor get a _best/): here 43 stopped at chkpt 1 of 2
+    dataset = "cub"
+    dpath_dataset = tmp_path / dataset
+    (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
+    _write_trial_evals(dpath_dataset / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
+    _write_trial_evals(dpath_dataset / "43", (("0.10", "0.10"), ("0.99", "0.99")), n_chkpts=2)
+
+    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", dataset)
+
+    report.update_chkpt_selection("std")
+
+    chkpt_means = load_pickle(dpath_dataset / "stats" / "map" / "native" / "chkpt_means.pkl")
+    assert chkpt_means["n_trials"] == 1  # only trial 42 counted
+    assert chkpt_means["means"] == pytest.approx([0.90, 0.10, 0.30])  # 42's curve alone
+    assert list(chkpt_means["spreads"]) == [0.0] * 3  # ddof=1 undefined for one trial -> flat band
+    assert chkpt_means["idx_best"] == 2  # 0.90 at base is higher, but base can't win
+    assert not (dpath_dataset / "43" / "evals" / "_best").exists()
+
+
+def test_seed_sweep_complete_needs_every_setting_and_dataset(tmp_path, monkeypatch) -> None:
+    # the campaign-level tables wait for a seed to have finished across the WHOLE matrix, since each
+    # trial completion reselects only its own (setting, dataset)
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["iw", "sw"], "datasets": ["cub", "lepid"]}))
+    scores = (("0.10", "0.10"), ("0.30", "0.30"))
+    for setting in ("iw", "sw"):
+        for dataset in ("cub", "lepid"):
+            _write_trial_evals(tmp_path / "settings" / setting / dataset / "42", scores)
+    # seed 43 has run everywhere but sw/lepid, where it stopped short of its final eval
+    for setting, dataset, n_chkpts in (("iw", "cub", None), ("iw", "lepid", None), ("sw", "cub", None), ("sw", "lepid", 2)):
+        _write_trial_evals(tmp_path / "settings" / setting / dataset / "43", scores, n_chkpts=n_chkpts)
+
+    assert report.seed_sweep_complete(42)
+    assert not report.seed_sweep_complete(43)
+
+    (tmp_path / "settings" / "sw" / "lepid" / "43" / "evals" / "eval2").mkdir()
+    for group_key in _GROUP_KEYS:  # its final eval lands -> the sweep closes
+        (tmp_path / "settings" / "sw" / "lepid" / "43" / "evals" / "eval2" / f"{group_key}.json").write_text(json.dumps({
+            "scores": {"comp": {"map": {"all": "0.30"}, "acc": {"i2t": "0.30"}}},
+            "chkpt": "2/2 (0.0M/0.0M samples)",
+        }))
+
+    assert report.seed_sweep_complete(43)
 
 
 def _comp(base: float) -> dict:
@@ -115,7 +200,7 @@ def _scores_grp(comp: dict) -> dict:
 
 
 def _write_group_metrics(dpath_best, scores_grp: dict, macro: dict | None = None, acc_selected: dict | None = None) -> None:
-    # trial-end materialization (utils/train.py save_best_evals) writes one metrics file per eval
+    # trial-end materialization (report.update_chkpt_selection) writes one metrics file per eval
     # group under each selection criterion; fixtures reuse one subtree per averaging axis across
     # both sets, and the same content for both criteria unless acc_selected supplies the
     # acc-criterion subtree

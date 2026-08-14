@@ -6,6 +6,8 @@ from artifacts already on disk and reads its paths from ArtifactManager; trial/c
 I/O lives in utils/train.py.
 """
 
+import shutil
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -23,6 +25,7 @@ from utils.utils import (
     paths,
     save_json,
     save_json_listview,
+    save_pickle,
     load_json,
     DATASET_ALIAS2NAME,
 )
@@ -42,6 +45,9 @@ _EVAL_GROUPS = {
 # checkpoint-selection criterion (BEST_CRITERIA / evals/_best/ subdir) -> banner display name
 _SELECTION_NAMES = {"map": "mAP-selection", "acc": "Acc-selection"}
 
+# criterion -> display name of the comp score it tracks (chkpt-mean curves)
+_CRITERION_SCORE_NAMES = {"map": "Composite mAP", "acc": "Composite I2T Accuracy"}
+
 # "Hardware Performance" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
 # _HW_CRASH_LABELS the per-setting crash totals it reads from setting_metadata.json
 _HW_LABELS = ("Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM")
@@ -52,40 +58,22 @@ def _spread(nums, spread_type):
     spread = nums.std(ddof=1)
     return spread / np.sqrt(len(nums)) if spread_type == "ste" else spread
 
-def _aggregate_metric_stats(values, spread_type, percent=True):
+def _aggregate_metric_stats(values, spread_type):
     first = values[0]
-    if first is None:  # leaf is None for every trial (e.g. loss_raw["ood"] is never computed)
-        return None
     if isinstance(first, dict):
-        return {
-            k: _aggregate_metric_stats(
-                [v[k] for v in values], spread_type, percent=percent and k not in ("loss_raw", "sim", "targ")
-            )
-            for k in first
-        }
+        return {k: _aggregate_metric_stats([v[k] for v in values], spread_type) for k in first}
     if len(values) == 1:
         return values[0]
     nums = np.array([float(v) for v in values])
     mean = nums.mean()
     spread = _spread(nums, spread_type)
-    if percent:
-        return f"{mean * 100:.2f} ± {spread * 100:.2f}"
-    return f"{mean:.4f} ± {spread:.4f}"
+    return f"{mean * 100:.2f} ± {spread * 100:.2f}"
 
-def _listview_metric_stats(values, percent=True):
+def _listview_metric_stats(values):
     first = values[0]
-    if first is None:  # leaf is None for every trial (mirrors _aggregate_metric_stats)
-        return None
     if isinstance(first, dict):
-        return {
-            k: _listview_metric_stats(
-                [v[k] for v in values], percent=percent and k not in ("loss_raw", "sim", "targ")
-            )
-            for k in first
-        }
-    if percent:
-        return [f"{float(v) * 100:.2f}" for v in values]
-    return [f"{float(v):.4f}" for v in values]
+        return {k: _listview_metric_stats([v[k] for v in values]) for k in first}
+    return [f"{float(v) * 100:.2f}" for v in values]
 
 @rank0
 def update_metric_stats(spread_type):
@@ -95,14 +83,14 @@ def update_metric_stats(spread_type):
         for group_key in _EVAL_GROUPS:
             metric_dicts = []
             for dpath_trial in sorted(dpath_dataset.iterdir()):
-                # a written best-checkpoint (evals/_best/<criterion>/) metrics file -- materialized
-                # after the final eval -- is the signal a trial finished; the `complete` flag is
-                # marked later (campaign_runner, after a clean exit) so it can't gate this aggregation
+                # update_chkpt_selection runs first and (re)writes evals/_best/<criterion>/ for
+                # exactly the completed trials, so their presence still marks the set to aggregate
                 fpath_metrics = dpath_trial / f"evals/_best/{criterion}/{group_key}.json"
                 if not fpath_metrics.exists():
                     continue
                 metrics = load_json(fpath_metrics)
-                metrics.pop("chkpt", None)
+                for key in ("chkpt", "loss_raw", "sim", "targ"):  # non-score fields aren't aggregated
+                    metrics.pop(key)
                 metric_dicts.append(metrics)
 
             if not metric_dicts:
@@ -117,9 +105,132 @@ def update_metric_stats(spread_type):
                 "n_trials": n_trials,
                 **_listview_metric_stats(metric_dicts),
             }
-            (dpath_stats / criterion / "listview").mkdir(parents=True, exist_ok=True)
-            save_json(stats, dpath_stats / criterion / f"{group_key}.json")
-            save_json_listview(listview, dpath_stats / criterion / "listview" / f"{group_key}.json")
+            dpath_group = dpath_stats / criterion / group_key
+            dpath_group.mkdir(parents=True, exist_ok=True)
+            save_json(stats, dpath_group / "metrics.json")
+            save_json_listview(listview, dpath_group / "metrics_listview.json")
+
+def _chkpt_dpaths(dpath_trial):
+    """[evals/base, evals/eval1, .., evals/eval<n_chkpts>] once the trial's FINAL eval is on disk,
+    else None -- the trial-completion signal for every setting-level aggregation here. Each eval
+    file's chkpt field carries 'k/n_chkpts', so the highest-numbered eval dir says whether k has
+    reached n_chkpts without n_chkpts being threaded in from config. (The old signal, a written
+    evals/_best/, can't serve any more: _best/ is now derived from the completed trials rather
+    than written by each trial for itself.)"""
+    dpath_evals = dpath_trial / "evals"
+    dpaths_eval = sorted(dpath_evals.glob("eval*"), key=lambda dpath: int(dpath.name[len("eval"):]))
+    if not dpaths_eval:
+        return None
+    chkpt = load_json(dpaths_eval[-1] / f"{next(iter(_EVAL_GROUPS))}.json")["chkpt"]
+    idx_eval, n_chkpts = chkpt.split()[0].split("/")
+    return [dpath_evals / "base", *dpaths_eval] if idx_eval == n_chkpts else None
+
+def seed_sweep_complete(seed):
+    """True once `seed` has a completed trial in EVERY (setting, dataset) of the campaign -- i.e. one
+    full pass of the matrix. The campaign-level tables/workbooks re-render only at these points:
+    every trial completion reselects its own (setting, dataset)'s checkpoint, so mid-sweep the
+    cross-setting artifacts would mix settings reselected against different trial counts."""
+    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
+    return all(
+        _chkpt_dpaths(ArtifactManager.dpath_campaign / "settings" / setting / dataset / str(seed)) is not None
+        for setting in metadata["settings"]
+        for dataset in metadata["datasets"]
+    )
+
+def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath):
+    chkpts = np.arange(len(means))
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(chkpts, means, color="blue", label=f"mean (n={n_trials})")
+    ax.fill_between(chkpts, means - spreads, means + spreads, color="blue", alpha=0.2, label=f"± {spread_type}")
+    ax.axvline(idx_best, color="red", linestyle="--", linewidth=1, label=f"selected ({idx_best}, {means[idx_best]:.4f})")
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
+    ax.set_xlabel("Checkpoint", fontsize=10, fontweight="bold")
+    ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.legend(loc="lower right", fontsize=8)
+    fig.savefig(fpath, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+@rank0
+def update_chkpt_selection(spread_type):
+    """Checkpoint selection, per criterion x eval group, for this setting/dataset: the ONE checkpoint
+    index every one of its trials is scored at, argmaxed over the across-trial MEAN curve rather than
+    per trial -- argmax(mean(...)), not mean(argmax(...)). Each criterion curves the comp score it
+    selects on (BEST_CRITERIA: map -> comp.map.all, acc -> comp.acc.i2t) at every checkpoint of every
+    completed trial (_chkpt_dpaths); index 0 is the base eval, plotted but never a candidate, so the
+    winner is argmax over 1..n_chkpts with the earliest taking ties.
+
+    The selection MOVES as trials land, so all of this is rewritten from scratch at each trial
+    completion, for every completed trial of the setting/dataset -- not just the one that finished:
+      - evals/_best/<criterion>/<group>.json in each trial: a copy of ITS eval<idx_best> file
+      - stats/<criterion>/<group>/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads',
+        'idx_best'}) + chkpt_means.png (mean curve, mean +- spread band, selection marked)
+      - setting_metadata.json's best_chkpt[<dataset>][<criterion>][<group>]
+    """
+    dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
+    best_chkpt = {criterion: {} for criterion in BEST_CRITERIA}
+    for criterion, (score_key, metric) in BEST_CRITERIA.items():
+        for group_key, group_name in _EVAL_GROUPS.items():
+            trials = []  # (trial dir, its comp score at each checkpoint), completed trials only
+            for dpath_trial in sorted(dpath_dataset.iterdir()):
+                dpaths_chkpt = _chkpt_dpaths(dpath_trial)
+                if dpaths_chkpt is None:
+                    continue
+                trials.append((dpath_trial, [
+                    float(load_json(dpath / f"{group_key}.json")["scores"]["comp"][score_key][metric])
+                    for dpath in dpaths_chkpt
+                ]))
+
+            if not trials:
+                return
+
+            curves = np.array([curve for _, curve in trials])
+            n_trials = len(curves)
+            # a lone trial has no ddof=1 spread -> flat (invisible) band
+            spreads = np.zeros(curves.shape[1]) if n_trials == 1 else np.array([_spread(col, spread_type) for col in curves.T])
+            means = curves.mean(axis=0)
+            idx_best = int(np.argmax(means[1:])) + 1  # base (index 0) is not a candidate; argmax keeps the earliest tie
+
+            for dpath_trial, _ in trials:
+                dpath_best = dpath_trial / "evals" / "_best" / criterion
+                dpath_best.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(
+                    dpath_trial / "evals" / f"eval{idx_best}" / f"{group_key}.json",
+                    dpath_best / f"{group_key}.json",
+                )
+
+            best_chkpt[criterion][group_key] = {
+                "idx": idx_best,
+                "n_chkpts": curves.shape[1] - 1,
+                "n_trials": n_trials,
+                "mean": f"{means[idx_best]:.4f}",
+            }
+
+            dpath_group = dpath_dataset / "stats" / criterion / group_key
+            dpath_group.mkdir(parents=True, exist_ok=True)
+            save_pickle(
+                {
+                    "n_trials": n_trials,
+                    "chkpts": np.arange(curves.shape[1]),
+                    "means": means,
+                    "spreads": spreads,
+                    "idx_best": idx_best,
+                },
+                dpath_group / "chkpt_means.pkl",
+            )
+            score_name = _CRITERION_SCORE_NAMES[criterion]
+            title = (
+                f"{score_name} per Checkpoint -- {ArtifactManager.dpath_setting.name}, "
+                f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
+            )
+            _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title,
+                              dpath_group / "chkpt_means.png")
+
+    fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
+    metadata = load_json(fpath_meta)
+    metadata["best_chkpt"][ArtifactManager.dataset] = best_chkpt
+    save_json(metadata, fpath_meta)
 
 def _stats_table_grid(labels, setting_score_maps, spread_type):
     """Build a composite-score table's cell grid from [(setting, [score dict per completed
@@ -311,8 +422,8 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, prim_scores):
     settings_all = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
     dataset = ArtifactManager.dataset
     comps_all = {criterion: _collect_comps(settings_all, (dataset,), criterion) for criterion in BEST_CRITERIA}
-    # completion is per-trial (every criterion's per-group _best files are materialized together at
-    # trial end), so row presence is criterion- and group-independent: a setting gets a row only
+    # update_chkpt_selection materializes every completed trial's _best files, all criteria and groups
+    # together, so row presence is criterion- and group-independent: a setting gets a row only
     # once it has >= 1 completed trial in THIS dataset (no blank rows)
     comps_ref = next(iter(comps_all["map"].values()))
     settings = [s for s in settings_all if comps_ref[(s, dataset)]]
@@ -416,8 +527,8 @@ def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, prim_scores, b
     settings, datasets = metadata["settings"], metadata["datasets"]
 
     comps_all = {criterion: _collect_comps(settings, datasets, criterion) for criterion in BEST_CRITERIA}
-    # completion is per-trial (every criterion's per-group _best files are materialized together at
-    # trial end), so row presence and seeds are criterion- and group-independent. a setting gets
+    # update_chkpt_selection materializes every completed trial's _best files, all criteria and groups
+    # together, so row presence and seeds are criterion- and group-independent. a setting gets
     # rows only once it has >= 1 completed trial in some dataset; it then appears in every dataset
     # table (blank '-' row where that dataset has no trials for it yet)
     comps_ref = next(iter(comps_all["map"].values()))

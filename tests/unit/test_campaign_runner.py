@@ -369,7 +369,59 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
 
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["complete"] is True
-    assert not (dpath_trial / "chkpts" / "in_progress").exists()
+    assert not (dpath_trial / "chkpts").exists()  # the whole tree goes: it only ever held the resume state
+
+
+def _campaign_table_fpaths(dpath_campaign: Path, dataset: str) -> list[Path]:
+    groups = ("native", "native_macro", "joint", "joint_macro")
+    return [dpath_campaign / "stats" / dataset / criterion / f"{group}.png" for criterion in ("map", "acc") for group in groups] + [
+        dpath_campaign / "stats" / "metrics" / criterion / f"{group}.xlsx" for criterion in ("map", "acc") for group in groups
+    ]
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted: bool) -> None:
+    # trials render the campaign-level tables/workbooks only when a seed completes across the whole
+    # matrix, so the runner renders once on the way out -- covering a campaign that ends mid-sweep,
+    # whether it ran to the end (a trial that never succeeds) or was interrupted
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+
+    baseline = {
+        "campaign": "base_campaign",
+        "setting": "base_setting",
+        "seed": 0,
+        "dataset": "cub",
+        "split": "D10",
+        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
+    }
+    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
+        "train": baseline,
+        "hardware": {"max_retries": 0, "use_img_cache": False},
+        "manifold_viz": {"n_stoch_layers": 1},
+        "model_specific": {},
+    })
+    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        if interrupted:
+            raise KeyboardInterrupt
+        raise RuntimeError("trial died")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    cr.run_campaign(
+        campaign="cmp_render",
+        n_trials=1,
+        datasets=("cub",),
+        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline=False,
+    )
+
+    # no trial ever completed, so the tables are empty -- the point is that they were written at all
+    for fpath in _campaign_table_fpaths(Path(tmp_path) / "cmp_render", "cub"):
+        assert fpath.exists(), fpath
 
 
 def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:

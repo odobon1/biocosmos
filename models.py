@@ -12,13 +12,11 @@ import abc
 import math
 from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Union, Optional
-from pathlib import Path
 
 from utils.utils import paths, load_split
 from utils.loss import Criterion, chunked_bce_loss_backward
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
-from utils.ddp import rank0
 from utils.config import TrainConfig, EvalConfig
 
 import pdb
@@ -366,20 +364,6 @@ class VLMWrapper(abc.ABC):
         """
         imgs = imgs.to(self.device, non_blocking=True)
         return normalize_imgs_u8(imgs, self._norm_mean_t, self._norm_std_t)
-
-    @rank0
-    def save(self, dpath: Path) -> None:
-        dpath.mkdir(parents=True, exist_ok=True)
-        fpath = dpath / "model.pt"
-        state_dict_model = self._unwrapped_model.state_dict()
-        torch.save(
-            {
-                "model": state_dict_model,
-                "norm_mean": self.norm_mean,
-                "norm_std": self.norm_std,
-            }, 
-            fpath
-        )
 
     def embed_images(self, imgs_b: torch.Tensor) -> torch.Tensor:
         """

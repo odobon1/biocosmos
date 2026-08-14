@@ -76,7 +76,6 @@ class TrainConfig:
     n_epochs: int | float
     chain_floor: int | None
     n_chkpts: int
-    eval_group: str  # eval group used for checkpoint selection (weights of its best checkpoint -> chkpts/best/)
     batch_size: int
     dv_batching: bool
 
@@ -109,9 +108,6 @@ class TrainConfig:
 
         if self.train_pt not in ("train", "trainval"):
             raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
-
-        if self.eval_group not in ("native", "native_macro", "joint", "joint_macro"):
-            raise ValueError(f"Unknown eval_group: '{self.eval_group}', must be one of {{native, native_macro, joint, joint_macro}}")
 
         self.eval_type = "val" if self.train_pt == "train" else None
 

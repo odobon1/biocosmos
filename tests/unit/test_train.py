@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from utils.train import ArtifactManager, TrialData, best_evals, format_mem, merge_mem
+from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
 
@@ -53,20 +53,23 @@ class _FakeSettingCfg:
 
 
 def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
-    # setting-level config params go to config.json; setting_metadata.json holds only n_crashes (a mutable
-    # counter the campaign runner bumps on crashes). A later trial of the same setting must re-assert config.json
-    # unchanged and must not reset the crash count.
+    # setting-level config params go to config.json; setting_metadata.json holds the mutable state --
+    # n_crashes (bumped by the campaign runner) and best_chkpt (rewritten at each trial end). A later
+    # trial of the same setting must re-assert config.json unchanged and must not reset either.
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     cfg = _FakeSettingCfg()
 
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
     assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
-    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {"n_crashes": {"ram": 0, "vram": 0, "other": 0}}
+    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {
+        "n_crashes": {"ram": 0, "vram": 0, "other": 0}, "best_chkpt": {},
+    }
 
-    (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 1, "vram": 2, "other": 4}}))  # runner bumps it across crashes
-    ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the counts
-    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {"n_crashes": {"ram": 1, "vram": 2, "other": 4}}
+    metadata = {"n_crashes": {"ram": 1, "vram": 2, "other": 4}, "best_chkpt": {"cub": {"map": {"native": {"idx": 3}}}}}
+    (tmp_path / "setting_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
+    ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the state
+    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == metadata
     assert json.loads((tmp_path / "config.json").read_text()) == config
 
 
@@ -122,60 +125,6 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True
     assert "norm" not in config["loss2"]["wting"]["bce"]  # cls_imb cancelled by unit-scaling -> emptied out
     assert config["loss2"]["wting"]["focal"]["comp_type"] == 1  # bce + phylo: continuous targets keep comp_type live
-
-
-def test_best_evals_argmax_per_group_and_criterion(tmp_path) -> None:
-    # per-group argmax of the criterion's comp score (map -> comp.map.all, acc -> comp.acc.i2t)
-    # over evals/eval1..eval<n_chkpts> -- groups and criteria pick their own checkpoints
-    # independently, strict > keeps the earliest on ties, missing eval dirs are skipped (mid-trial
-    # scan on resume), and the base eval is never a candidate
-    dpath_evals = tmp_path / "evals"
-    per_eval = {  # idx_eval -> {group: (comp.map.all, comp.acc.i2t)}
-        0: {"native": ("0.99", "0.99"), "native_macro": ("0.99", "0.99"), "joint": ("0.99", "0.99"), "joint_macro": ("0.99", "0.99")},  # base: ignored
-        1: {"native": ("0.50", "0.80"), "native_macro": ("0.30", "0.10"), "joint": ("0.20", "0.10"), "joint_macro": ("0.40", "0.10")},
-        2: {"native": ("0.70", "0.10"), "native_macro": ("0.30", "0.20"), "joint": ("0.10", "0.10"), "joint_macro": ("0.60", "0.30")},
-        4: {"native": ("0.60", "0.20"), "native_macro": ("0.80", "0.20"), "joint": ("0.20", "0.40"), "joint_macro": ("0.10", "0.30")},  # eval3 missing
-    }
-    for idx_eval, scores in per_eval.items():
-        dpath_eval = dpath_evals / ("base" if idx_eval == 0 else f"eval{idx_eval}")
-        dpath_eval.mkdir(parents=True)
-        for group_key, (all_v, acc_v) in scores.items():
-            (dpath_eval / f"{group_key}.json").write_text(json.dumps({
-                "scores": {"comp": {"map": {"all": all_v}, "acc": {"i2t": acc_v}}},
-                "chkpt": f"{idx_eval}/4 (0.0M/0.0M samples)",
-            }))
-
-    best_map = best_evals(dpath_evals, 4, "map")
-
-    assert {g: e["idx"] for g, e in best_map.items()} == {
-        "native": 2,        # 0.70
-        "native_macro": 4,  # 0.80
-        "joint": 1,         # 0.20 tie with eval4 -> earliest wins
-        "joint_macro": 2,   # 0.60
-    }
-    assert best_map["native"]["score"] == 0.70
-    assert best_map["native"]["chkpt"] == "2/4 (0.0M/0.0M samples)"
-
-    best_acc = best_evals(dpath_evals, 4, "acc")
-
-    assert {g: e["idx"] for g, e in best_acc.items()} == {
-        "native": 1,        # 0.80 -- differs from the map pick
-        "native_macro": 2,  # 0.20 tie with eval4 -> earliest wins
-        "joint": 4,         # 0.40
-        "joint_macro": 2,   # 0.30 tie with eval4 -> earliest wins
-    }
-    assert best_acc["native"]["score"] == 0.80
-
-
-def test_best_evals_none_before_first_eval(tmp_path) -> None:
-    # fresh trial (or base-only): no trained eval written yet -> every group None
-    dpath_evals = tmp_path / "evals"
-    dpath_evals.mkdir()
-
-    for criterion in ("map", "acc"):
-        assert best_evals(dpath_evals, 4, criterion) == {
-            "native": None, "native_macro": None, "joint": None, "joint_macro": None,
-        }
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

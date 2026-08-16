@@ -4,7 +4,7 @@ Equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss_chu
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
 primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ blended by
 _global_batch_loss), up to floating-point summation order -- across the full BCE config space:
-sw/iw/tax/phylo targets, norm.cls_imb, a BCE+BCE loss2 mix, and mix_unit_scale.
+sw/iw/tax/phylo targets, cls_imb.norm, a BCE+BCE loss2 mix, and mix_unit_scale.
 """
 import importlib
 import math
@@ -45,14 +45,14 @@ L = import_loss_module()
 
 
 def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
-         norm_cls_imb=False, center=None):
+         cls_imb_norm=False, center=None):
     return {
         "crit": "bce", "sim": sim, "targ": targ,
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
-                        "freq_type_2d": freq_type, "wt_mean_type": "per_class"},
-            "focal": {"gamma": focal_gamma, "comp_type": 1},
-            "bce": {"dsmr": dsmr, "norm": {"cls_imb": norm_cls_imb}},
+                        "freq_type_2d": freq_type, "wt_mean_type": "per_class", "norm": cls_imb_norm},
+            **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
+            "bce": {"dsmr": dsmr},
         },
         "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
@@ -139,7 +139,7 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
         sim.retain_grad()
         sims_ref.append(sim)
         logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary=secondary)
-        loss, loss_raw, _ = crit(logits, class_encs_b, targ_data_b, train=True)
+        loss, loss_raw, _ = crit(logits, class_encs_b, targ_data_b, train=True, logit_scale=p["scale2"] if secondary else p["scale"])
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)
@@ -160,8 +160,8 @@ CASES = [
     ("phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None),
     ("sw",    None,  False, 0.0, "naive",     False, 0.0, False, None, None),  # no dsmr, no focal
     ("sw",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None),
-    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None),  # norm.cls_imb
-    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None),  # norm.cls_imb + cmx2
+    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None),  # cls_imb.norm
+    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None),  # cls_imb.norm + cmx2
     ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, False, None, None),  # mix, no unit scale
     ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None),  # mixed target types
     ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  None, None),  # mix + unit scale
@@ -183,12 +183,12 @@ def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, uni
     B, K, D, R = 48, 20, 16, 4
 
     cfg1 = _cfg(targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                norm_cls_imb=norm_ci, center=center1)
+                cls_imb_norm=norm_ci, center=center1)
     crit1 = _make_crit(cfg1, K, B)
     crit2 = None
     if mix != 0.0:
         cfg2 = _cfg(targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                    norm_cls_imb=norm_ci, center=center2)
+                    cls_imb_norm=norm_ci, center=center2)
         crit2 = _make_crit(cfg2, K, B)
 
     g = torch.Generator().manual_seed(0)

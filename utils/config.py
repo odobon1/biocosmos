@@ -151,7 +151,7 @@ class TrainConfig:
 
         for key, val in (
             ("opt.lr.init", self.opt["lr"]["init"]),
-            ("opt.l2reg", self.opt["l2reg"]),
+            ("opt.wd", self.opt["wd"]),
             ("loss.logits.scalar_lr_factor", self.loss["logits"]["scalar_lr_factor"]),
             ("loss2.logits.scalar_lr_factor", self.loss2["logits"]["scalar_lr_factor"]),
         ):
@@ -234,6 +234,11 @@ class TrainConfig:
         if self.aug.get("gblur", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("gblur", None)
 
+        # focal toggle: gamma 0.0 disables -> block dropped from the working config; downstream keys off presence
+        for cfg_loss in (self.loss, self.loss2):
+            if cfg_loss["wting"]["focal"]["gamma"] == 0.0:
+                del cfg_loss["wting"]["focal"]
+
         self.hw = HardwareConfig(**self.hw)
         self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
@@ -288,16 +293,27 @@ def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
+    """Overwrite an existing config field addressed by dot-path.
+
+    Every segment must already be declared: overrides replace declared fields, never create them.
+    A typo'd or stale key (a renamed param still swept in a campaign's `baseline_overrides`) would
+    otherwise land silently in a field nothing reads, and the campaign runs the baseline value
+    under a setting name advertising the override.
+    """
     keys = [key for key in key_path.split(".") if key]
     if not keys:
         raise ValueError(f"Invalid dot-style override key: '{key_path}'")
 
     cursor = cfg_dict
-    for key in keys[:-1]:
-        if key not in cursor or not isinstance(cursor[key], dict):
-            cursor[key] = {}
-        cursor = cursor[key]
-    cursor[keys[-1]] = deepcopy(value)
+    for depth, key in enumerate(keys):
+        if not isinstance(cursor, dict) or key not in cursor:
+            raise ValueError(
+                f"Unknown override key '{key_path}': '{'.'.join(keys[:depth + 1])}' is not a config field."
+            )
+        if depth == len(keys) - 1:
+            cursor[key] = deepcopy(value)
+        else:
+            cursor = cursor[key]
 
 def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
     if not overrides:
@@ -335,9 +351,9 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
     if not isinstance(opt, dict):
         raise ValueError("Config field 'opt' must be a dict.")
 
-    needs_l2reg = opt.get("l2reg") is None
+    needs_wd = opt.get("wd") is None
     needs_beta2 = opt.get("beta2") is None
-    if not (needs_l2reg or needs_beta2):
+    if not (needs_wd or needs_beta2):
         return cfg_out
 
     arch = cfg_out.get("arch", {})
@@ -353,10 +369,10 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
     if not isinstance(family_defaults, dict):
         raise ValueError(f"Missing model hyperparameter defaults for family '{family}'.")
 
-    if needs_l2reg:
-        if "l2reg" not in family_defaults:
-            raise ValueError(f"Missing '{family}/l2reg' in model hyperparameter defaults.")
-        opt["l2reg"] = deepcopy(family_defaults["l2reg"])
+    if needs_wd:
+        if "wd" not in family_defaults:
+            raise ValueError(f"Missing '{family}/wd' in model hyperparameter defaults.")
+        opt["wd"] = deepcopy(family_defaults["wd"])
 
     if needs_beta2:
         if "beta2" not in family_defaults:

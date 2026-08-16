@@ -161,8 +161,8 @@ class TrainPipeline:
 
         lr_init_nom = self.cfg.opt["lr"]["init"]
         param_groups = [
-            {"params": params_decay,    "weight_decay": self.cfg.opt["l2reg"], "lr": lr_init_nom},
-            {"params": params_no_decay, "weight_decay": 0.0,                   "lr": lr_init_nom},
+            {"params": params_decay,    "weight_decay": self.cfg.opt["wd"], "lr": lr_init_nom},
+            {"params": params_no_decay, "weight_decay": 0.0,                "lr": lr_init_nom},
         ]
         param_groups += [
             {"params": params, "weight_decay": 0.0, "lr": lr_init_nom * factor}

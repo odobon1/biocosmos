@@ -403,10 +403,16 @@ class VLMWrapper(abc.ABC):
 
         return embs_txts
 
-    def compute_logits(self, sim: torch.Tensor, clamp_scale: bool, center: Optional[str], secondary: bool = False,
-                       center_global: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def compute_logits(
+        self, 
+        sim: torch.Tensor, 
+        clamp_scale: bool, 
+        center: Optional[str], 
+        secondary: bool = False,
+        center_global: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
-        Scales similarity matrix by learnable logit scale (temperature) and adds logit bias if applicable (e.g. SigLIP).
+        Scales similarity matrix by exp(learnable logit scale) (1 / tau) and adds logit bias if applicable (BCE).
 
         `clamp_scale` caps the logit scale at ln(100) before exp() (scale multiplier <= 100, CLIP's stability
         cap); otherwise exp() is unbounded and can overflow to +inf and amplify the bf16 quantization of sim.
@@ -487,9 +493,11 @@ class VLMWrapper(abc.ABC):
         """
         Computes loss for the full global batch under a given criterion (primary or secondary).
         """
+        model = self._unwrapped_model
+        logit_scale = model.logit_scale2 if secondary else model.logit_scale
         sim = compute_sim(embs_img_all, embs_txt_all, crit.cfg["sim"])
         logits = self.compute_logits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary=secondary)
-        loss, loss_raw, targs = crit(logits, class_encs_all, targ_data_all, train=self.model.training)
+        loss, loss_raw, targs = crit(logits, class_encs_all, targ_data_all, train=self.model.training, logit_scale=logit_scale)
 
         return loss, loss_raw, logits, sim, targs
 

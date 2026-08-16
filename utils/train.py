@@ -278,14 +278,14 @@ class ArtifactManager:
             if not is_siglip and metadata["loss"]["logits"]["bce"]["bias"]["init"] is None:
                 del metadata["loss"]["logits"]["bce"]["bias"]
 
-            # per-loss weighting: drop params the loss type never reads (InfoNCE hardcodes
-            # W_foc * W_ci -- the bce sub-block is BCE-only; freq_type_2d and focal.comp_type only
-            # enter the 2D paths, absent from InfoNCE's 1D weighting), params their own toggle
-            # disables (cls_imb.type null, focal.gamma 0.0), and the scalar cancellations noted
-            # in train.yaml: the unit-scale blend (loss / loss.detach()) cancels any per-batch
-            # scalar factor on a loss, making norm.cls_imb's rescale inert under unit-scaling
-            # (it's a no-op when cls_imb is off); InfoNCE's num / den self-normalization likewise cancels
-            # the wt_mean scalar, making wt_mean_type inert outside BCE. loss2 is already gone
+            # per-loss weighting: drop params the loss type never reads (the bce sub-block, and
+            # freq_type_2d's class-pair counting, are BCE-only -- absent from InfoNCE's 1D weighting),
+            # params their own toggle disables (cls_imb.type null; focal.gamma 0.0 is already
+            # pruned from the working config at load), and the scalar
+            # cancellations noted in train.yaml: the unit-scale blend (loss / loss.detach()) cancels
+            # any per-batch scalar factor on a loss, making cls_imb.norm's rescale inert under
+            # unit-scaling; cls_imb.norm's own batch-mean division likewise cancels the constant
+            # wt_mean scalar, making wt_mean_type inert wherever it is on. loss2 is already gone
             # when mix = 0.0, under which mix_unit_scale never applies.
             unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
             for key in ("loss", "loss2"):
@@ -294,8 +294,13 @@ class ArtifactManager:
                 wting = metadata[key]["wting"]
                 is_bce = metadata[key]["crit"] == "bce"  # wting_dim 2; infonce weights 1D
 
+                # infonce sub-block: BCE never reads it, and the mass corrections are identically
+                # no-ops under iw (row sums already 1 -> targ_mass == 1)
+                if is_bce or metadata[key]["targ"] == "iw":
+                    del metadata[key]["infonce"]
+
                 cls_imb_on = wting["cls_imb"]["type"] is not None
-                focal_on = wting["focal"]["gamma"] > 0.0
+                focal_on = "focal" in wting
                 dsmr_on = is_bce and wting["bce"]["dsmr"]
                 if not (cls_imb_on or focal_on or dsmr_on):
                     del metadata[key]["wting"]  # no active weight factor -> W == ones -> whole block inert
@@ -311,25 +316,13 @@ class ArtifactManager:
                         del cls_imb["inv_freq"]
                     if not is_bce:
                         del cls_imb["freq_type_2d"]
+                    if cls_imb["norm"] or unit_scaled:
                         del cls_imb["wt_mean_type"]
-
-                if not focal_on:
-                    del wting["focal"]
-                else:
-                    targ = metadata[key]["targ"]
-                    # comp_type is unread on the 1D (InfoNCE) path; with config-guaranteed binary targets
-                    # (bce: iw/sw raw 0/1) the two comp forms coincide in values and gradients
-                    if not is_bce or targ in ("iw", "sw"):
-                        del wting["focal"]["comp_type"]
+                    if unit_scaled:
+                        del cls_imb["norm"]
 
                 if not is_bce:
                     del wting["bce"]
-                else:
-                    bce_w = wting["bce"]
-                    if not cls_imb_on or unit_scaled:
-                        del bce_w["norm"]["cls_imb"]
-                    if not bce_w["norm"]:
-                        del bce_w["norm"]
 
         metadata = asdict(cfg_train)
         clean_metadata(metadata)

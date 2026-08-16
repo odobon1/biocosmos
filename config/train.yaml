@@ -1,19 +1,19 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 100  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_epochs: 5  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
 # ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
 # batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
 # (null | train set >= chain_floor) One pass per epoch
-n_chkpts: 25  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
+n_chkpts: 5  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
 # sample_volume / n_chkpts samples
 batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
 # clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # Architecture
-  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   clip:  # CLIP-specific; Inert iff (arch.model_type: siglip_*)
     non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
     # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
@@ -38,12 +38,22 @@ freeze:
 htarg_shuf: false  # {true, false}
 
 loss:  # Primary loss
-  crit: bce  # {infonce, bce}
+  crit: infonce  # {infonce, bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: sw  # {iw, sw, tax, phylo}
+  targ: phylo  # {iw, sw, tax, phylo}
+  infonce:  # Inert iff (loss.crit: bce)
+    tsm:  # Target Simplex Mapping
+      type: softmax  # {linear, softmax}
+      # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
+      # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make tau_Y comparable to logits' tau
+      # i.e. target range --> similarity range
+      sm_temp: pinned  # {pinned, [float]}
+      # (pinned) Use the same learnable logit-scale (log(1 / tau)) as the logits (targs scaled by x2 first)
+      # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss.infonce.tsm.type: linear)
+    targ_mass_preservation: false  # {true, false}
   wting:
     cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
-      type: null  # {inv_freq, class_bal, null}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
+      type: null  # {null, inv_freq, class_bal}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
       # (null) Disable class-imbalance weighting
       inv_freq:  # Inverse-frequency weighting params; Inert iff (cls_imb.type != inv_freq)
         gamma: 0.5  # (0.0, 1.0]; 1 / n_c^gamma; (1.0) Classic inverse-frequency; (0.5) Inverse-sqrt-frequency;
@@ -56,23 +66,24 @@ loss:  # Primary loss
       wt_mean_type: per_class  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
       # (per_class) Each class (1D) / class pair (2D) counts once --> the average class has unit weight; 
       # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
-      # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (loss.crit != bce)
+      # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (cls_imb.norm: true, whose
+      # batch-mean division cancels this constant) OR (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
+      norm: false  # {true, false}; Rescale the batch's class-imbalance weights to mean 1.0 (weighted loss
+      # retains the unweighted scale batch-by-batch rather than in expectation, at the cost of a
+      # batch-composition-dependent normalizer); Inert iff (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
     focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
       gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
-      comp_type: 1  # {1, 2}; Continuous-form focal loss computation type; Identical behavior to discrete form (values 
-      # and gradients) with binary targets; Inert iff (loss.crit: bce AND loss.targ: {iw, sw}) OR (loss.crit: infonce)
     bce:  # BCE-specific weighting params; Inert iff (loss.crit != bce)
       dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
-      norm:
-        cls_imb: false  # {true, false}; Inert if (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
   logits:
     scalar_lr_factor: 10.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
     # opt.lr.init (e.g. 10.0 -> x10 backbone LR); ratio held through warmup + cosine decay; scalars are
     # weight-decay-decoupled; (1.0) Backbone LR
-    temperature:
+    temperature:  # (tau)
       init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
-      # ([float]) Override init; base: (siglip_vitb16: ~8.523e-3), (clip_vitb16: ~1.000e-2)
+      # ([float]) Override init; base: (siglip_vitb16: ~8.523e-3), (clip_vitb16: ~1.000e-2);
+      # Increasing temp/tau --> softer, decreasing --> sharper
       freeze: false  # {true, false}; (true) Non-learnable log-scale
       clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
       # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) Unbounded
@@ -90,31 +101,34 @@ loss:  # Primary loss
         freeze: false  # {true, false}; (true) Non-learnable bias
 
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
-  mix: 0.3  # [0.0, 1.0); (0.0) Disable secondary loss
-  mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending
-  crit: bce  # {infonce, bce}
+  mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
+  mix_unit_scale: true  # {true, false}; (true) Rescale each loss to unit magnitude before blending
+  crit: infonce  # {infonce, bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {iw, sw, tax, phylo}
+  infonce:
+    tsm:
+      type: softmax  # {linear, softmax}
+      sm_temp: pinned  # {pinned, [float]}
+    targ_mass_preservation: false  # {true, false}
   wting:
     cls_imb:
-      type: null  # {inv_freq, class_bal, null}
+      type: inv_freq  # {inv_freq, class_bal, null}
       inv_freq:
         gamma: 0.5  # (0.0, 1.0]
       class_bal:
         beta: 0.9999  # [0.0, 1.0)
       freq_type_2d: naive  # {naive, cmx2, pair_prob}
       wt_mean_type: per_class  # {per_class, per_sample}
+      norm: false  # {true, false}
     focal:
-      gamma: 0.0  # [0.0, inf)
-      comp_type: 1  # {1, 2}
+      gamma: 2.0  # [0.0, inf)
     bce:
       dsmr: false  # {true, false}
-      norm:
-        cls_imb: false  # {true, false}
   logits:
     scalar_lr_factor: 10.0  # (0.0, inf)
     temperature:
-      init: null  # {null, [float]}
+      init: 0.02  # {null, [float]}
       freeze: false  # {true, false}
       clamp: false  # {true, false}
     bce:
@@ -155,7 +169,7 @@ opt:  # Optimization
     init: 1.0e-5
     decay_factor: null  # {null, [float]}; Cosine scheduler eta_min = lr.init * decay_factor; (null) Decay to 0.0
     warmup: 0.05  # [0.0, 1.0]; Linear LR warmup duration as a fraction of sample_volume (e.g. 0.02 -> 2% of sample_volume)
-  l2reg: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
+  wd: null  # {null, [float]}; Weight Decay; (null) Resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends 0.9
   beta2: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
   eps: 1.0e-6  # CLIP paper recommends 1.0e-6 (ViT)

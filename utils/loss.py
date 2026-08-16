@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import abc
 from contextlib import nullcontext
+import math
 
 from utils.rank_encs import compute_rank_dists
 from utils.phylo import PhyloVCV
@@ -95,10 +96,23 @@ class Criterion(abc.ABC):
     def _cls_imb_wts(self, class_encs_b):
         return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.wt_mean, self.batch_size)
 
+    def _focal_2d(self, Z, Y):
+        if "focal" not in self.cfg["wting"]:
+            return torch.ones_like(Y)
+        gamma = self.cfg["wting"]["focal"]["gamma"]
+        return torch.abs(Y - self._preds(Z)).clamp_min(1e-12).pow(gamma)
+
     @abc.abstractmethod
-    def __call__(self, logits, class_encs_b, targ_data_b, train):
+    def _preds(self, Z):
+        """Logits -> prediction probabilities under this criterion's link (for focal weighting)."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
         """
-        Computes loss for a batch given logits and target data.
+        Computes loss for a batch given logits and target data. `logit_scale` is this criterion's
+        learnable log logit scale param (model.logit_scale for loss1, model.logit_scale2 for loss2),
+        raw (pre-clamp).
 
         Returns:
         - loss ------- Weighted scalar loss (== loss_raw when not training)
@@ -116,48 +130,57 @@ class InfoNCECriterion(Criterion):
 
     wting_dim = 1
 
-    def __call__(self, logits, class_encs_b, targ_data_b, train):
-        B = logits.size(0)
-        targs_raw = self._targets(B, class_encs_b, targ_data_b)
-        targs = targs_raw / targs_raw.sum(dim=1, keepdim=True)
+    def _preds(self, Z):
+        return F.softmax(Z, dim=1)
 
-        loss_i2t_raw_b = F.cross_entropy(logits, targs, reduction="none")  # pt[B]
-        loss_t2i_raw_b = F.cross_entropy(logits.T, targs.T, reduction="none")  # pt[B]
-        loss_raw = 0.5 * (loss_i2t_raw_b.mean() + loss_t2i_raw_b.mean())
+    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
+        B = logits.size(0)
+        
+        Y = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+        Y_mass = Y.sum(dim=1)
+
+        if self.cfg["infonce"]["tsm"]["type"] == "linear":
+            Y_scaled = Y / Y_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+        elif self.cfg["infonce"]["tsm"]["type"] == "softmax":
+            tau_Y = self.cfg["infonce"]["tsm"]["sm_temp"]
+            if tau_Y == "pinned":
+                if self.cfg["logits"]["temperature"]["clamp"]:
+                    logit_scale = logit_scale.clamp(max=math.log(100))
+                Y_scaled = F.softmax(2 * Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+            else:
+                Y_scaled = F.softmax(2 * Y / tau_Y, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+
+        loss_i2t_raw = -Y_scaled * F.log_softmax(logits,   dim=1)  # pt[B, B]
+        loss_t2i_raw = -Y_scaled * F.log_softmax(logits.T, dim=1)  # pt[B, B]
+
+        # per-anchor CE (row sum) averaged over anchors -- CLIP's /B, the scale the weighted loss carries;
+        # mass correction is a per-anchor weight, so it stays out of the weighting-free reference
+        loss_raw = 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
 
         if not train:
-            return loss_raw, loss_raw, targs_raw
+            return loss_raw, loss_raw, Y
+
+        if self.cfg["infonce"]["targ_mass_preservation"]:
+            loss_i2t_raw = loss_i2t_raw * Y_mass[:, None]
+            loss_t2i_raw = loss_t2i_raw * Y_mass[:, None]
 
         W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
+        if self.cfg["wting"]["cls_imb"]["norm"]:
+            W_ci = W_ci / W_ci.mean()  # pt[B]
 
-        if self.cfg["wting"]["focal"]["gamma"] > 0.0:
-            """
-            p_t = exp(-CE)
-            focal factor: (1 - p_t)^gamma
-            expm1 has better precision when p_t ~ 1 (CE ~ 0)
-            expm1(x) = e^x - 1
+        # Note: 2D-focal is still used despite 1D class-imbalance weighting (reduces to standard focal loss in the SP setting)
+        W_foc_i2t = self._focal_2d(logits,   Y_scaled)  # pt[B, B]
+        W_foc_t2i = self._focal_2d(logits.T, Y_scaled)  # pt[B, B]
 
-            only supports 0/1 targets
-            """
-            gamma = self.cfg["wting"]["focal"]["gamma"]
-            W_foc_i2t = (-torch.expm1(-loss_i2t_raw_b)).clamp_min(1e-12).pow(gamma)
-            W_foc_t2i = (-torch.expm1(-loss_t2i_raw_b)).clamp_min(1e-12).pow(gamma)
+        W_i2t = W_foc_i2t * W_ci[:, None]  # pt[B, B]
+        W_t2i = W_foc_t2i * W_ci[:, None]  # pt[B, B]
 
-        else:
-            W_foc_i2t = torch.ones_like(targs)
-            W_foc_t2i = torch.ones_like(targs.T)
+        loss_i2t = (W_i2t * loss_i2t_raw).sum(dim=1)
+        loss_t2i = (W_t2i * loss_t2i_raw).sum(dim=1)
 
-        W_i2t = W_foc_i2t * W_ci
-        W_t2i = W_foc_t2i * W_ci
+        loss = 0.5 * (loss_i2t.mean() + loss_t2i.mean())
 
-        num_i2t = (W_i2t * loss_i2t_raw_b).sum()
-        num_t2i = (W_t2i * loss_t2i_raw_b).sum()
-        den_i2t = W_i2t.detach().sum().clamp_min(1e-12)
-        den_t2i = W_t2i.detach().sum().clamp_min(1e-12)
-
-        loss = 0.5 * (num_i2t / den_i2t + num_t2i / den_t2i)
-
-        return loss, loss_raw, targs_raw
+        return loss, loss_raw, Y
 
 class BCECriterion(Criterion):
     """
@@ -166,59 +189,36 @@ class BCECriterion(Criterion):
 
     wting_dim = 2
 
-    def __call__(self, logits, class_encs_b, targ_data_b, train):
+    def _preds(self, Z):
+        return torch.sigmoid(Z)
+
+    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
         B = logits.size(0)
-        targs = self._targets(B, class_encs_b, targ_data_b)
+        
+        Y = self._targets(B, class_encs_b, targ_data_b)
         # fp32: cos-path logits are bf16 under autocast, where sigmoid saturates to exactly 1.0 at
         # |logit| >~ 6 (zeroing focal weights on the easy set, quantizing the rest); upcast once and
         # reuse for both focal preds and the BCE loss. No-op when logits are already fp32 (geo sim).
         logits_f = logits.float()
 
         if train:
-
             W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
-            if self.cfg["wting"]["bce"]["norm"]["cls_imb"]:
-                W_ci = W_ci / W_ci.detach().mean()
-            
-            if self.cfg["wting"]["focal"]["gamma"] > 0.0:
-                preds = torch.sigmoid(logits_f)
-                W_foc = _focal_2d(preds, targs, self.cfg["wting"]["focal"], clamp_base=True)  # pt[B, B]
-            else:
-                W_foc = torch.ones_like(targs)
-
+            if self.cfg["wting"]["cls_imb"]["norm"]:
+                W_ci = W_ci / W_ci.mean()
+            W_foc = self._focal_2d(logits_f, Y)  # pt[B, B]
             W = W_ci * W_foc
             if self.cfg["wting"]["bce"]["dsmr"]:
-                mass_pos = torch.sum(targs)
-                mass_neg = torch.sum(1.0 - targs)
-                W = W * _dsmr_weight(targs, mass_pos, mass_neg, B)
-
+                mass_pos = torch.sum(Y)
+                mass_neg = torch.sum(1.0 - Y)
+                W = W * _dsmr_weight(Y, mass_pos, mass_neg, B)
         else:
+            W = torch.ones_like(Y)
 
-            W = torch.ones_like(targs)
-
-        loss_raw_matrix = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")  # unweighted loss matrix; pt[B, B]
+        loss_raw_matrix = F.binary_cross_entropy_with_logits(logits_f, Y, reduction="none")  # unweighted loss matrix; pt[B, B]
         loss = (W * loss_raw_matrix).sum() / B
         loss_raw = loss_raw_matrix.sum() / B
 
-        return loss, loss_raw, targs
-
-def _focal_2d(preds, targs, cfg_focal, clamp_base=False):
-
-    gamma = cfg_focal["gamma"]
-    comp_type = cfg_focal["comp_type"]
-
-    if comp_type == 1:
-        p_t = (preds * targs) + (1 - preds) * (1 - targs)
-    elif comp_type == 2:
-        p_t = 1 - torch.abs(targs - preds)
-
-    base = 1 - p_t
-    if clamp_base:
-        base = base.clamp_min(1e-12)  # pow backward at base 0 is inf for gamma < 1
-
-    foc = base.pow(gamma)
-
-    return foc
+        return loss, loss_raw, Y
 
 def _dsmr_weight(targs, mass_pos, mass_neg, B):
     """
@@ -253,9 +253,9 @@ def _dsmr_weight(targs, mass_pos, mass_neg, B):
 # all-reduces so every rank returns identical full-batch values; the leaves' band-partial dL/dembs sum
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
-# Supports the full BCE config space (incl. sw/iw/tax/phylo targets, norm.cls_imb, a BCE+BCE
+# Supports the full BCE config space (incl. sw/iw/tax/phylo targets, cls_imb.norm, a BCE+BCE
 # secondary-loss mix, and mix_unit_scale) -- only InfoNCE is excluded (chunking_supported).
-# The reductions that couple across the whole BxB matrix -- the norm.cls_imb weight-mean
+# The reductions that couple across the whole BxB matrix -- the cls_imb.norm weight-mean
 # normalizers, the DSMR mass, and the per-loss mix_unit_scale scalar -- are all DETACHED constants, so
 # they are precomputed (cheap embedding-free closed forms + no_grad band sweeps, all-reduced to
 # rank-identical values) before the single grad-carrying backward sweep applies them as constants.
@@ -404,19 +404,28 @@ def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_co
     (cls_imb_mean, dsmr_mass); a None entry means that normalizer is off. Mirrors the
     train-mode weighting of BCECriterion.__call__ tile-by-tile via the shared _dsmr_weight.
     """
-    cfg_w = crit.cfg["wting"]
-    W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_rows, crit.wting_dim,
-                               crit.wt_mean, crit.batch_size, class_encs_cols=class_encs_cols)
+    cfg_wting = crit.cfg["wting"]
+
+    W_ci = compute_cls_imb_wts(
+        cfg_wting["cls_imb"], 
+        crit.counts, 
+        class_encs_rows, 
+        crit.wting_dim,
+        crit.wt_mean, 
+        crit.batch_size, 
+        class_encs_cols=class_encs_cols
+    )
     if consts["cls_imb_mean"] is not None:
         W_ci = W_ci / consts["cls_imb_mean"]
-    if cfg_w["focal"]["gamma"] > 0.0:
-        W_foc = _focal_2d(torch.sigmoid(logits_f), targs, cfg_w["focal"], clamp_base=True)
-    else:
-        W_foc = torch.ones_like(targs)
+
+    W_foc = crit._focal_2d(logits_f, targs)
+
     W = W_ci * W_foc
-    if cfg_w["bce"]["dsmr"]:
+    if cfg_wting["bce"]["dsmr"]:
         W = W * _dsmr_weight(targs, *consts["dsmr_mass"], B)
+
     bce = F.binary_cross_entropy_with_logits(logits_f, targs, reduction="none")
+
     return W, bce
 
 def _crit_block_logits_f(crit, secondary, img_rows, txt, compute_logits, center, center_global=None):
@@ -448,7 +457,7 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
     targ_type = crit.cfg["targ"]
 
     cls_imb_mean = None
-    if cfg_w["bce"]["norm"]["cls_imb"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
+    if cfg_w["cls_imb"]["norm"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
         s = torch.zeros((), dtype=torch.float64, device=device)
         for rs in range(lo, hi, chunk_size):
             W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b[rs:rs + chunk_size],

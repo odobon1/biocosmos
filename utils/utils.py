@@ -580,16 +580,16 @@ class PrintLog:
             "",
             PrintLog._dash_aligned_lines((
                 ("Campaign", cfg_train.campaign),
-                ("Setting", cfg_train.setting),
-                ("Dataset", cfg_train.dataset),
-                ("Split", cfg_train.split),
-                ("Seed", cfg_train.seed),
+                ("Setting",  cfg_train.setting),
+                ("Dataset",  cfg_train.dataset),
+                ("Split",    cfg_train.split),
+                ("Seed",     cfg_train.seed),
             )),
             "",
             PrintLog._dash_aligned_lines((
-                ("Epochs", f"{cfg_train.n_epochs:g} ({cfg_train.sample_volume:,} samples)"),
+                ("Epochs",      f"{cfg_train.n_epochs:g} ({cfg_train.sample_volume:,} samples)"),
                 ("Checkpoints", f"{cfg_train.n_chkpts} (every {cfg_train.chkpt_interval:,} samples)"),
-                ("Batch Size", f"{cfg_train.batch_size}"),
+                ("Batch Size",  f"{cfg_train.batch_size}"),
                 ("DV Batching", f"{cfg_train.dv_batching}"),
             )),
             "",
@@ -605,7 +605,7 @@ class PrintLog:
             "=== Freeze ===",
             PrintLog._dash_aligned_lines((
                 ("Image", cfg_train.freeze["image"]),
-                ("Text", cfg_train.freeze["text"]),
+                ("Text",  cfg_train.freeze["text"]),
             )),
             "",
         ])
@@ -621,7 +621,7 @@ class PrintLog:
             "=== Text Templates ===",
             PrintLog._dash_aligned_lines((
                 ("Train", cfg_train.text_template["train"]),
-                ("Eval", cfg_train.text_template["eval"]),
+                ("Eval",  cfg_train.text_template["eval"]),
             )),
             "",
         ])
@@ -635,10 +635,10 @@ class PrintLog:
                 ("- Warmup",       f"{cfg_train.opt['lr']['warmup']:,}"),
             ]),
             PrintLog._dash_aligned_lines([
-                ("L2 Reg", cfg_train.opt['l2reg']),
-                ("β1",     cfg_train.opt['beta1']),
-                ("β2",     cfg_train.opt['beta2']),
-                ("ε",      cfg_train.opt['eps']),
+                ("Weight Decay", cfg_train.opt['wd']),
+                ("β1", cfg_train.opt['beta1']),
+                ("β2", cfg_train.opt['beta2']),
+                ("ε",  cfg_train.opt['eps']),
             ]),
             "",
         ])
@@ -655,16 +655,16 @@ class PrintLog:
         lines_hw = [
             "=== Hardware ===",
             PrintLog._dash_aligned_lines((
-                ("Num. GPUs", cfg_train.n_gpus),
-                ("Num. CPUs", cfg_train.n_cpus),
-                ("RAM", f"{cfg_train.ram} GB"),
-                ("Num. Workers", cfg_train.n_workers),
+                ("Num. GPUs",       cfg_train.n_gpus),
+                ("Num. CPUs",       cfg_train.n_cpus),
+                ("RAM",             f"{cfg_train.ram} GB"),
+                ("Num. Workers",    cfg_train.n_workers),
                 ("Prefetch Factor", cfg_train.prefetch_factor),
-                ("Device", cfg_train.device),
+                ("Device",          cfg_train.device),
             )),
             "Chunk Size",
             PrintLog._dash_aligned_lines((
-                ("- img-to-img mAP", f"{map_chunk_size['img2img']:,}"),
+                ("- img-to-img mAP",  f"{map_chunk_size['img2img']:,}"),
                 ("- cross-modal mAP", f"{map_chunk_size['cross_modal']:,}"),
             )),
             "",
@@ -678,8 +678,8 @@ class PrintLog:
             f"Checkpoint: {cfg_eval.rdpath_model}/",
             "",
             PrintLog._dash_aligned_lines((
-                ("Dataset", cfg_eval.dataset),
-                ("Split", cfg_eval.split),
+                ("Dataset",   cfg_eval.dataset),
+                ("Split",     cfg_eval.split),
                 ("Eval Type", cfg_eval.eval_type),
             )),
             "",
@@ -740,7 +740,6 @@ class PrintLog:
                 "Focal",
                 PrintLog._dash_aligned_lines((
                     ("- gamma", cfg_loss["wting"]["focal"]["gamma"]),
-                    ("- comp_type", cfg_loss["wting"]["focal"]["comp_type"]),
                 )),
             ]
             lines.extend(lines_focal)

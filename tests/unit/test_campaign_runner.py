@@ -69,12 +69,12 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     train_a = {"campaign": "dev", "split": "D10"}
     hw_a = {"mixed_prec": True, "prefetch_factor": 4}
     mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
-    ms_a = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
+    ms_a = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
 
     train_b = {"campaign": "changed", "split": "dev"}
     hw_b = {"mixed_prec": False, "prefetch_factor": 2}
     mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
-    ms_b = {"siglip": {"l2reg": 0.1, "beta2": 0.5}, "clip": {"l2reg": 0.3, "beta2": 0.7}}
+    ms_b = {"siglip": {"wd": 0.1, "beta2": 0.5}, "clip": {"wd": 0.3, "beta2": 0.7}}
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
@@ -100,19 +100,19 @@ def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, mon
     train_cfg = {
         "campaign": "dev",
         "arch": {"model_type": "siglip_vitb16"},
-        "opt": {"l2reg": None, "beta2": None},
+        "opt": {"wd": None, "beta2": None},
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
     monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: {})
-    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"l2reg": 0.0, "beta2": 0.95}})
+    monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
     # model-family defaults are NOT resolved into the train snapshot -- they stay null so a per-setting
     # arch.model_type override can pick up the matching family per trial (resolution happens in the
     # trial, from the model_specific snapshot).
-    assert snapshot["train"]["opt"]["l2reg"] is None
+    assert snapshot["train"]["opt"]["wd"] is None
     assert snapshot["train"]["opt"]["beta2"] is None
 
 
@@ -980,7 +980,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
-            "l2reg": None,
+            "wd": None,
             "beta1": 0.9,
             "beta2": None,
             "eps": 1.0e-6,
@@ -1009,13 +1009,13 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"opt.l2reg": 0.33, "opt.beta2": 0.88, "name": "opt_tune"},
+            {"opt.wd": 0.33, "opt.beta2": 0.88, "name": "opt_tune"},
         ]],
         baseline=False,
     )
 
     assert len(scheduled) == 1
-    assert scheduled[0]["opt"]["l2reg"] == 0.33
+    assert scheduled[0]["opt"]["wd"] == 0.33
     assert scheduled[0]["opt"]["beta2"] == 0.88
 
 
@@ -1528,7 +1528,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1555,7 +1555,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
     monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1582,7 +1582,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {},
         "model_specific": {},

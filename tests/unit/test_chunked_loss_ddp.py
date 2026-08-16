@@ -42,15 +42,15 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="sw", norm_cls_imb=False, center=None):
+def cfg_loss(targ="sw", cls_imb_norm=False, center=None):
     return {
         "crit": "bce", "sim": "cos", "targ": targ,
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
                         "class_bal": {"beta": 0.9999}, "freq_type_2d": "naive",
-                        "wt_mean_type": "per_class"},
-            "focal": {"gamma": 2.0, "comp_type": 1},
-            "bce": {"dsmr": True, "norm": {"cls_imb": norm_cls_imb}},
+                        "wt_mean_type": "per_class", "norm": cls_imb_norm},
+            "focal": {"gamma": 2.0},
+            "bce": {"dsmr": True},
         },
         "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
@@ -70,7 +70,7 @@ class _ZSG(torch.autograd.Function):
 # (name, cfg1, cfg2, mix, mix_unit_scale)
 CASES = [
     ("plain", cfg_loss("sw"), None, 0.0, False),
-    ("mix_normci_unitscale", cfg_loss("sw", norm_cls_imb=True), cfg_loss("sw", norm_cls_imb=True), 0.3, True),
+    ("mix_normci_unitscale", cfg_loss("sw", cls_imb_norm=True), cfg_loss("sw", cls_imb_norm=True), 0.3, True),
     ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
     ("center_sim", cfg_loss("sw", center="sim"), None, 0.0, False),
     ("center_gp2_sim_mix", cfg_loss("sw", center="grad_proj2"), cfg_loss("sw", center="sim"), 0.3, False),
@@ -159,7 +159,7 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
         sim.retain_grad()
         sims_ref.append(sim)
         logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary)
-        loss, loss_raw, _ = crit(logits, fc, ftd, train=True)
+        loss, loss_raw, _ = crit(logits, fc, ftd, train=True, logit_scale=toy.logit_scale2 if secondary else toy.logit_scale)
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)

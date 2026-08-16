@@ -11,6 +11,7 @@ from utils.utils import save_pickle, load_pickle
 def _full_loss_cfg(crit="bce", targ="sw"):
     return {
         "crit": crit,
+        "infonce": {"targ_mass_preservation": True},
         "sim": "cos",
         "targ": targ,
         "wting": {
@@ -20,9 +21,10 @@ def _full_loss_cfg(crit="bce", targ="sw"):
                 "class_bal": {"beta": 0.9999},
                 "freq_type_2d": "naive",
                 "wt_mean_type": "per_class",
+                "norm": True,
             },
-            "focal": {"gamma": 2.0, "comp_type": 1},
-            "bce": {"dsmr": True, "norm": {"cls_imb": True}},
+            "focal": {"gamma": 2.0},
+            "bce": {"dsmr": True},
         },
         "logits": {
             "temperature": {"init": None, "freeze": False, "clamp": False},
@@ -86,11 +88,12 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
     assert "stoch_depth" in config["dropout"]["siglip"]
     assert "loss2" not in config  # mix 0.0
+    assert "infonce" not in config["loss"]  # InfoNCE-only sub-block
     cls_imb = config["loss"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
-    assert cls_imb["freq_type_2d"] == "naive" and cls_imb["wt_mean_type"] == "per_class"  # BCE weights 2D, no self-norm
-    assert "comp_type" not in config["loss"]["wting"]["focal"]  # bce + sw: binary targets -> comp forms coincide
-    assert config["loss"]["wting"]["bce"]["norm"] == {"cls_imb": True}  # no unit-scale -> the rescale sticks
+    assert cls_imb["freq_type_2d"] == "naive"  # BCE weights are 2D (class-pair counting)
+    assert cls_imb["norm"] is True  # no unit-scale -> the rescale sticks
+    assert "wt_mean_type" not in cls_imb  # norm's batch-mean division cancels the wt_mean constant
     assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
     # CLIP + InfoNCE + class_bal: the 1D path reads none of the 2D/BCE-only machinery
@@ -100,14 +103,17 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
     cfg.loss = _full_loss_cfg(crit="infonce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
+    cfg.loss["wting"]["cls_imb"]["norm"] = False  # norm off -> the wt_mean constant is live on this path too
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
+    assert config["loss"]["infonce"] == {"targ_mass_preservation": True}  # infonce + sw: corrections live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
-    assert "comp_type" not in wting["focal"] and wting["focal"]["gamma"] == 2.0  # 1D focal path
-    assert wting["cls_imb"] == {"type": "class_bal", "class_bal": {"beta": 0.9999}}  # inv_freq/freq_type_2d/wt_mean_type inert
+    assert wting["cls_imb"] == {  # inv_freq inert (type class_bal), freq_type_2d inert (2D-only)
+        "type": "class_bal", "class_bal": {"beta": 0.9999}, "wt_mean_type": "per_class", "norm": False,
+    }
     assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
 
     # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
@@ -115,7 +121,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s3")
     cfg = _FakeSettingCfg()
     cfg.loss["wting"]["cls_imb"]["type"] = None
-    cfg.loss["wting"]["focal"]["gamma"] = 0.0
+    del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
     cfg.loss["wting"]["bce"]["dsmr"] = False
     cfg.loss2["mix"] = 0.3
     cfg.loss2["mix_unit_scale"] = True
@@ -123,8 +129,8 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss"]
     assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True
-    assert "norm" not in config["loss2"]["wting"]["bce"]  # cls_imb cancelled by unit-scaling -> emptied out
-    assert config["loss2"]["wting"]["focal"]["comp_type"] == 1  # bce + phylo: continuous targets keep comp_type live
+    cls_imb2 = config["loss2"]["wting"]["cls_imb"]
+    assert "norm" not in cls_imb2 and "wt_mean_type" not in cls_imb2  # both scalars cancelled by unit-scaling
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

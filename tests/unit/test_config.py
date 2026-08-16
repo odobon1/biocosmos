@@ -27,7 +27,7 @@ def make_train_config_dummy(**overrides):
         "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
-            "l2reg": 0.0,
+            "wd": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
             "eps": 1.0e-6,
@@ -117,7 +117,7 @@ def test_train_config_rejects_yaml_string_scientific_notation(monkeypatch: pytes
     with pytest.raises(ValueError, match="opt.lr.init must be numeric"):
         TrainConfig(**make_train_config_dummy(opt={
             "lr": {"init": "1e-6", "decay_factor": 1.0e-3, "warmup": 0.02},
-            "l2reg": 0.0,
+            "wd": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
             "eps": 1.0e-6,
@@ -131,7 +131,7 @@ def test_train_config_rejects_warmup_out_of_range(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(ValueError, match="opt.lr.warmup must be a fraction of sample_volume"):
         TrainConfig(**make_train_config_dummy(opt={
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 200_000},
-            "l2reg": 0.0,
+            "wd": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
             "eps": 1.0e-6,
@@ -272,23 +272,53 @@ def test_apply_overrides_dot_path_preserves_sibling_keys() -> None:
     assert out["opt"]["lr"]["decay_factor"] == 1.0e-2
 
 
+def test_apply_overrides_rejects_undeclared_leaf() -> None:
+    base = {"opt": {"wd": 0.2, "lr": {"init": 1.0e-5}}}
+
+    with pytest.raises(ValueError, match=r"opt\.l2_reg"):
+        apply_overrides(base, {"opt.l2_reg": 0.0})
+
+
+def test_apply_overrides_rejects_undeclared_section() -> None:
+    base = {"loss": {"targ": "sw", "crit": "infonce"}}
+
+    with pytest.raises(ValueError, match=r"loss\.infonce"):
+        apply_overrides(base, {"loss.infonce.targ_mass_preservation": True})
+
+
+def test_apply_overrides_rejects_path_through_scalar() -> None:
+    base = {"opt": {"lr": {"init": 1.0e-5}}}
+
+    with pytest.raises(ValueError, match=r"opt\.lr\.init\.foo"):
+        apply_overrides(base, {"opt.lr.init.foo": 1})
+
+
+def test_apply_overrides_allows_declared_null_field() -> None:
+    base = {"opt": {"wd": None, "beta2": None}}
+
+    out = apply_overrides(base, {"opt.wd": 0.1})
+
+    assert out["opt"]["wd"] == 0.1
+    assert out["opt"]["beta2"] is None
+
+
 def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"l2reg": 0.0, "beta2": 0.95},
-            "clip": {"l2reg": 0.2, "beta2": 0.98},
+            "siglip": {"wd": 0.0, "beta2": 0.95},
+            "clip": {"wd": 0.2, "beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
 
-    assert out["opt"]["l2reg"] == 0.0
+    assert out["opt"]["wd"] == 0.0
     assert out["opt"]["beta2"] == 0.95
 
 
@@ -296,19 +326,19 @@ def test_model_specific_opt_defaults_preserve_explicit_values(monkeypatch: pytes
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"l2reg": 0.0, "beta2": 0.95},
-            "clip": {"l2reg": 0.2, "beta2": 0.98},
+            "siglip": {"wd": 0.0, "beta2": 0.95},
+            "clip": {"wd": 0.2, "beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "wd": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
 
-    assert out["opt"]["l2reg"] == 0.11
+    assert out["opt"]["wd"] == 0.11
     assert out["opt"]["beta2"] == 0.77
 
 
@@ -316,19 +346,19 @@ def test_model_specific_opt_defaults_resolve_partial_null(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"l2reg": 0.0, "beta2": 0.95},
-            "clip": {"l2reg": 0.2, "beta2": 0.98},
+            "siglip": {"wd": 0.0, "beta2": 0.95},
+            "clip": {"wd": 0.2, "beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
     )
 
     out = apply_model_specific_opt_defaults(cfg_in)
 
-    assert out["opt"]["l2reg"] == 0.2
+    assert out["opt"]["wd"] == 0.2
     assert out["opt"]["beta2"] == 0.7
 
 
@@ -336,14 +366,14 @@ def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pyte
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"l2reg": 0.0, "beta2": 0.95},
-            "clip": {"l2reg": 0.2, "beta2": 0.98},
+            "siglip": {"wd": 0.0, "beta2": 0.95},
+            "clip": {"wd": 0.2, "beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "mystery_model", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
     with pytest.raises(ValueError, match="Could not resolve model family"):
@@ -358,13 +388,13 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "l2reg": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
-    snapshot = {"siglip": {"l2reg": 0.0, "beta2": 0.95}, "clip": {"l2reg": 0.2, "beta2": 0.98}}
+    snapshot = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
     out = apply_model_specific_opt_defaults(cfg_in, snapshot)
 
-    assert out["opt"]["l2reg"] == 0.2
+    assert out["opt"]["wd"] == 0.2
     assert out["opt"]["beta2"] == 0.98
 
 

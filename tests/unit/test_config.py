@@ -23,8 +23,8 @@ def make_train_config_dummy(**overrides):
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "img_norm": "dataset",
-        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
-        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "wd": 0.0,
@@ -83,7 +83,7 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
         TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "iw", "mix": 1.5,
-                                                     "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
+                                                     "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
 
 
 def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,7 +159,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -172,7 +172,7 @@ def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.Monk
         TrainConfig(**make_train_config_dummy(
             htarg_shuf=True,
             seed=None,
-            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+            loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         ))
 
 
@@ -500,12 +500,24 @@ def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPat
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "infonce", "sim": "cos", "targ": "sw",
-                        "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}
+    cfg_dict["loss"] = {"crit": "infonce", "sim": "cos", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+                        "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 
     cfg = TrainConfig(**cfg_dict)
     assert cfg.hw.loss_chunk_size is None
+
+
+def test_train_config_bif_bce_keeps_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # bif_bce is BCE-family: the tiled loss supports it, so the chunk size survives config
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()  # batch_size 8
+    cfg_dict["loss"]["crit"] = "bif_bce"
+    cfg_dict["hw"]["loss_chunk_size"] = 8
+
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.hw.loss_chunk_size == 8
 
 
 def test_train_config_rejects_unknown_center(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,8 +534,21 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: py
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "bce", "sim": "geo1", "targ": "sw",
-                        "logits": {"scalar_lr_factor": 1.0, "temperature": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
+    cfg_dict["loss"] = {"crit": "bce", "sim": "geo1", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+                        "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
+    cfg_dict["hw"]["loss_chunk_size"] = 8
+
+    with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch: pytest.MonkeyPatch) -> None:
+    # bif_bce configs now reach the chunking validations (chunking no longer nulled for them)
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()  # batch_size 8
+    cfg_dict["loss"] = {"crit": "bif_bce", "sim": "geo1", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+                        "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8
 
     with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):

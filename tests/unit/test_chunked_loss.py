@@ -1,10 +1,12 @@
 """
-Equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss_chunk_size).
+Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.loss_chunk_size).
 
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
-primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ blended by
-_global_batch_loss), up to floating-point summation order -- across the full BCE config space:
-sw/iw/tax/phylo targets, cls_imb.norm, a BCE+BCE loss2 mix, and mix_unit_scale.
+primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ /
+BifurcatedBCECriterion.__call__ blended by _global_batch_loss), up to floating-point summation
+order -- across the full BCE-family config space: sw/iw/tax/phylo targets, cls_imb.norm, a
+BCE-family loss2 mix, mix_unit_scale, and bif_bce's two-branch tiles (half-live logit scalars,
+row-wise DSMR, targ_mass_neut, per-branch centering).
 """
 import importlib
 import math
@@ -44,22 +46,27 @@ def import_loss_module():
 L = import_loss_module()
 
 
-def _cfg(targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
-         cls_imb_norm=False, center=None):
+def _cfg(crit="bce", targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
+         cls_imb_norm=False, center=None, neut=False):
     return {
-        "crit": "bce", "sim": sim, "targ": targ,
+        "crit": crit, "sim": sim, "targ": targ,
+        "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
                         "freq_type_2d": freq_type, "wt_mean_type": "per_class", "norm": cls_imb_norm},
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },
-        "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"temp": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 
+CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}
+
+
 def _make_crit(cfg, K, B):
-    crit = L.BCECriterion.__new__(L.BCECriterion)  # bypass build_wting (no dataset needed)
+    cls = CRIT_CLS[cfg["crit"]]
+    crit = cls.__new__(cls)  # bypass build_wting (no dataset needed)
     crit.cfg = cfg
     crit.device = torch.device("cpu")
     crit.batch_size = B
@@ -103,11 +110,14 @@ class _ZSGC(torch.autograd.Function):
 
 
 def _compute_logits_fn(p):
-    """Stub mirroring VLMWrapper.compute_logits's center semantics (incl. the chunked path's
-    center_global hook) over the toy scale/bias params."""
-    def compute_logits(sim, clamp, center=None, secondary=False, center_global=None):
+    """Stub mirroring VLMWrapper.compute_logits's center/half_live semantics (incl. the chunked
+    path's center_global hook) over the toy scale/bias params."""
+    def compute_logits(sim, clamp, center=None, secondary=False, center_global=None, half_live=False):
         s = p["scale2"] if secondary else p["scale"]
         b = p["bias2"] if secondary else p["bias"]
+        if half_live:
+            s = 0.5 * s + 0.5 * s.detach()
+            b = 0.5 * b + 0.5 * b.detach()
         if clamp:
             s = s.clamp(max=math.log(100))
         if center == "grad_proj":
@@ -129,17 +139,30 @@ def _make_targ_data(B, K, R, class_encs_b):
 
 
 def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, targ_data_b, p):
-    """Returns (loss, loss_raw, sims_ref) -- sims_ref carry retained grads after the caller's backward,
-    the ground truth for the chunked path's tile-accumulated grad_sum_sims."""
+    """Returns (loss, loss_raw, sims_ref) -- sims_ref is a per-criterion list of branch tuples
+    ((sim,) non-bifurcated, (i2t, t2i) bifurcated) whose retained grads after the caller's backward
+    are the ground truth for the chunked path's tile-accumulated (branch-summed) grad_sum_sims.
+    Mirrors _loss_for_crit_full_batch's branch construction and _global_batch_loss's unit-scale
+    blend (a bifurcated loss normalizes by L/2)."""
     clogits = _compute_logits_fn(p)
     sims_ref = []
 
     def crit_loss(crit, secondary):
-        sim = compute_sim(img, txt, crit.cfg["sim"])
-        sim.retain_grad()
-        sims_ref.append(sim)
-        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary=secondary)
-        loss, loss_raw, _ = crit(logits, class_encs_b, targ_data_b, train=True, logit_scale=p["scale2"] if secondary else p["scale"])
+        clamp = crit.cfg["logits"]["temp"]["clamp"]
+        center = crit.cfg["logits"]["bce"]["center"]
+        if crit.bifurcated:
+            sims = (
+                compute_sim(img, txt.detach(), crit.cfg["sim"]),
+                compute_sim(img.detach(), txt, crit.cfg["sim"]),
+            )
+            crit_logits = tuple(clogits(s, clamp, center, secondary=secondary, half_live=True) for s in sims)
+        else:
+            sims = (compute_sim(img, txt, crit.cfg["sim"]),)
+            crit_logits = clogits(sims[0], clamp, center, secondary=secondary)
+        for s in sims:
+            s.retain_grad()
+        sims_ref.append(sims)
+        loss, loss_raw, _ = crit(crit_logits, class_encs_b, targ_data_b, train=True, logit_scale=p["scale2"] if secondary else p["scale"])
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)
@@ -147,48 +170,61 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
         return loss1, loss1_raw, sims_ref
     loss2, loss2_raw = crit_loss(crit2, True)
     if mix_unit_scale:
-        loss1 = loss1 / loss1.detach().clamp_min(1e-12)
-        loss2 = loss2 / loss2.detach().clamp_min(1e-12)
+        loss1 = loss1 / (loss1.detach() / (2.0 if crit1.bifurcated else 1.0)).clamp_min(1e-12)
+        loss2 = loss2 / (loss2.detach() / (2.0 if crit2.bifurcated else 1.0)).clamp_min(1e-12)
     return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, sims_ref
 
 
 CASES = [
-    # (targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2)
-    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None),  # baseline
-    ("iw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None),
-    ("tax",   None,  True,  2.0, "naive",     False, 0.0, False, None, None),
-    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None),
-    ("sw",    None,  False, 0.0, "naive",     False, 0.0, False, None, None),  # no dsmr, no focal
-    ("sw",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None),
-    ("sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None),  # cls_imb.norm
-    ("sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None),  # cls_imb.norm + cmx2
-    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, False, None, None),  # mix, no unit scale
-    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None),  # mixed target types
-    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  None, None),  # mix + unit scale
-    ("tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True,  None, None),   # everything at once
-    ("sw",    "sw",  False, 0.0, "naive",     False, 0.5, True,  None, None),   # unit scale, no weighting
-    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None),  # in-graph global sim mean
-    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None),  # constant grad projection
-    ("sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None),
-    ("phylo", None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None),  # soft targets + projection
-    ("sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim"),  # mixed centers under mix
-    ("sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj"),  # unit-scale coeff folding
+    # (crit1, crit2, targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, neut)
+    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),  # baseline
+    ("bce", None,  "iw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
+    ("bce", None,  "tax",   None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
+    ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
+    ("bce", None,  "sw",    None,  False, 0.0, "naive",     False, 0.0, False, None, None, False),  # no dsmr, no focal
+    ("bce", None,  "sw",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None, False),
+    ("bce", None,  "sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None, False),  # cls_imb.norm
+    ("bce", None,  "sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None, False),  # cls_imb.norm + cmx2
+    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, False, None, None, False),  # mix, no unit scale
+    ("bce", "bce", "sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None, False),  # mixed target types
+    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  None, None, False),  # mix + unit scale
+    ("bce", "bce", "tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True,  None, None, False),   # everything at once
+    ("bce", "bce", "sw",    "sw",  False, 0.0, "naive",     False, 0.5, True,  None, None, False),   # unit scale, no weighting
+    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
+    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
+    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None, False),
+    ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # soft targets + projection
+    ("bce", "bce", "sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
+    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
+    # bif_bce: two-branch tiles, 1D per-anchor weighting, half-live logit scalars
+    ("bif_bce", None,      "sw",    None,  False, 0.0, "naive", False, 0.0, False, None, None, False),  # bif baseline
+    ("bif_bce", None,      "iw",    None,  False, 2.0, "naive", False, 0.0, False, None, None, False),
+    ("bif_bce", None,      "tax",   None,  True,  2.0, "naive", False, 0.0, False, None, None, False),  # row-wise dsmr on soft targets
+    ("bif_bce", None,      "phylo", None,  True,  2.0, "naive", False, 0.0, False, None, None, True),   # + targ_mass_neut
+    ("bif_bce", None,      "sw",    None,  True,  2.0, "naive", True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
+    ("bif_bce", None,      "sw",    None,  False, 2.0, "naive", False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
+    ("bif_bce", None,      "sw",    None,  True,  2.0, "naive", False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
+    ("bif_bce", None,      "sw",    None,  False, 2.0, "naive", False, 0.0, False, "grad_proj2", None, False),
+    ("bif_bce", "bce",     "sw",    "sw",  True,  2.0, "naive", False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
+    ("bif_bce", "bce",     "sw",    "sw",  True,  2.0, "naive", False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
+    ("bce",     "bif_bce", "sw",    "iw",  True,  2.0, "naive", False, 0.3, True,  None, None, True),   # bce+bif mix
+    ("bif_bce", "bif_bce", "sw",    "phylo", True, 2.0, "naive", False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
 ]
 
 
 @pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
-@pytest.mark.parametrize("targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale,center1,center2", CASES)
-def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, C):
+@pytest.mark.parametrize("crit1_name,crit2_name,targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale,center1,center2,neut", CASES)
+def test_chunked_matches_full(crit1_name, crit2_name, targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, neut, C):
     device = torch.device("cpu")
     B, K, D, R = 48, 20, 16, 4
 
-    cfg1 = _cfg(targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                cls_imb_norm=norm_ci, center=center1)
+    cfg1 = _cfg(crit=crit1_name, targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+                cls_imb_norm=norm_ci, center=center1, neut=neut)
     crit1 = _make_crit(cfg1, K, B)
     crit2 = None
     if mix != 0.0:
-        cfg2 = _cfg(targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
-                    cls_imb_norm=norm_ci, center=center2)
+        cfg2 = _cfg(crit=crit2_name, targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+                    cls_imb_norm=norm_ci, center=center2, neut=neut)
         crit2 = _make_crit(cfg2, K, B)
 
     g = torch.Generator().manual_seed(0)
@@ -203,7 +239,7 @@ def test_chunked_matches_full(targ1, targ2, dsmr, focal, freq, norm_ci, mix, uni
     p = _params(1)
     loss_ref, loss_raw_ref, sims_ref = _full_reference(crit1, crit2, mix, unit_scale, img, txt, class_encs_b, targ_data_b, p)
     loss_ref.backward()
-    gsum_ref = [s.grad.double().sum().item() for s in sims_ref]
+    gsum_ref = [sum(s.grad.double().sum().item() for s in branches) for branches in sims_ref]
 
     # chunked
     imgc = img0.clone().requires_grad_(True)
@@ -242,7 +278,7 @@ def test_stats_min_max_mean_exact():
     targs = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
     _, _, stats, _ = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, targ_data_b, crit, None, 0.0, False,
-        lambda s, clamp, center=None, secondary=False, center_global=None: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
+        lambda s, clamp, center=None, secondary=False, center_global=None, half_live=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
     )
     assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
     assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
@@ -262,6 +298,9 @@ def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
     ({"crit": "bce", "targ": "phylo"}, {"mix": 0.0, "crit": "bce"}),            # phylo now supported
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
     ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce"}),           # infonce loss2 inert at mix=0
+    ({"crit": "bif_bce", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),           # bif_bce primary supported
+    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bif_bce"}),           # bif_bce secondary supported
+    ({"crit": "bif_bce", "targ": "sw"}, {"mix": 0.3, "crit": "bif_bce"}),       # bif+bif mix supported
 ])
 def test_chunking_supported(cfg_loss, cfg_loss2):
     assert L.chunking_supported(cfg_loss, cfg_loss2)

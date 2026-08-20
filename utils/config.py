@@ -201,10 +201,10 @@ class TrainConfig:
             if self.seed is None:
                 raise ValueError("htarg_shuf=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss["crit"] not in ("infonce", "bce"):
-            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce, bce}}")
-        if self.loss2["crit"] not in ("infonce", "bce"):
-            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce, bce}}")
+        if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
+            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")
+        if self.loss2["crit"] not in ("infonce", "bce", "bif_bce"):
+            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce, bce, bif_bce}}")
         
         if self.loss["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
@@ -253,7 +253,7 @@ class TrainConfig:
 
         if self.hw.loss_chunk_size is not None:
             from utils.loss import chunking_supported  # local: avoid importing Bio.Phylo at config load
-            if not chunking_supported(self.loss, self.loss2):  # tiled loss supports the full BCE config; inert with InfoNCE
+            if not chunking_supported(self.loss, self.loss2):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
                 self.hw.loss_chunk_size = None
             else:
                 # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it

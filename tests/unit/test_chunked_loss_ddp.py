@@ -18,8 +18,10 @@ asserts three paths agree to fp32 precision on every rank, per config case:
   (CHUNK) batch_step_chunked                              -- no_sync + tiled backward + manual all-reduce
 
 Cases: a plain BCE step, a BCE+BCE mix with norm.agg + mix_unit_scale (exercises the secondary logit
-params and the embedding-dependent precompute sweeps under DDP), and a tax-target case (exercises the
-banded soft-target dsmr-mass all-reduce and the tax target tiles under sharding). The 2-rank test
+params and the embedding-dependent precompute sweeps under DDP), a tax-target case (exercises the
+banded soft-target dsmr-mass all-reduce and the tax target tiles under sharding), and two bif_bce
+cases (the banded two-branch tiles with row-wise dsmr + targ_mass_neut, and a bif+bce unit-scale mix
+with per-branch grad-proj constants -- the branch grad-mean all-reduce under sharding). The 2-rank test
 requires >= 2 CUDA devices; skipped otherwise. An assertion failure in any rank propagates out of
 mp.spawn and fails the test.
 
@@ -42,9 +44,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="sw", cls_imb_norm=False, center=None):
+def cfg_loss(targ="sw", cls_imb_norm=False, center=None, crit="bce", neut=False):
     return {
-        "crit": "bce", "sim": "cos", "targ": targ,
+        "crit": crit, "sim": "cos", "targ": targ,
+        "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
                         "class_bal": {"beta": 0.9999}, "freq_type_2d": "naive",
@@ -52,7 +55,7 @@ def cfg_loss(targ="sw", cls_imb_norm=False, center=None):
             "focal": {"gamma": 2.0},
             "bce": {"dsmr": True},
         },
-        "logits": {"temperature": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"temp": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 
@@ -74,6 +77,10 @@ CASES = [
     ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
     ("center_sim", cfg_loss("sw", center="sim"), None, 0.0, False),
     ("center_gp2_sim_mix", cfg_loss("sw", center="grad_proj2"), cfg_loss("sw", center="sim"), 0.3, False),
+    # bif_bce: banded two-branch tiles (row-wise dsmr + neut), and a bif+bce unit-scale mix with
+    # per-branch grad-proj constants (exercises the branch grad-mean all-reduce under sharding)
+    ("bif_dsmr_neut", cfg_loss("sw", crit="bif_bce", neut=True), None, 0.0, False),
+    ("bif_gp_mix_unitscale", cfg_loss("sw", crit="bif_bce", center="grad_proj"), cfg_loss("sw", center="sim"), 0.3, True),
 ]
 
 
@@ -132,17 +139,21 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
     """Single-process full-batch blended loss on `toy` -- the ground truth. Returns the normalized
     embeddings (grads retained: their post-backward .grad is the full-batch dL/dembs that the
     chunked path's returned leaves must carry for grad-norm logging) and the per-criterion sim
-    matrices (grads retained: their post-backward .grad.sum() is the ground truth for the chunked
-    path's tile-accumulated grad_sum_sims)."""
+    branch tuples ((sim,) non-bifurcated, (i2t, t2i) bifurcated, mirroring
+    _loss_for_crit_full_batch; grads retained: their post-backward branch-summed .grad.sum() is the
+    ground truth for the chunked path's tile-accumulated grad_sum_sims)."""
     img = F.normalize(toy.img_enc(fi), dim=1)
     txt = F.normalize(toy.txt_enc(ft), dim=1)
     img.retain_grad()
     txt.retain_grad()
     sims_ref = []
 
-    def clogits(sim, clamp, center, secondary):
+    def clogits(sim, clamp, center, secondary, half_live=False):
         s = toy.logit_scale2 if secondary else toy.logit_scale
         b = toy.logit_bias2 if secondary else toy.logit_bias
+        if half_live:
+            s = 0.5 * s + 0.5 * s.detach()
+            b = 0.5 * b + 0.5 * b.detach()
         if clamp:
             s = s.clamp(max=math.log(100))
         if center == "grad_proj":
@@ -155,11 +166,21 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
         return sim_scaled + b
 
     def crit_loss(crit, secondary):
-        sim = compute_sim(img, txt, crit.cfg["sim"])
-        sim.retain_grad()
-        sims_ref.append(sim)
-        logits = clogits(sim, crit.cfg["logits"]["temperature"]["clamp"], crit.cfg["logits"]["bce"]["center"], secondary)
-        loss, loss_raw, _ = crit(logits, fc, ftd, train=True, logit_scale=toy.logit_scale2 if secondary else toy.logit_scale)
+        clamp = crit.cfg["logits"]["temp"]["clamp"]
+        center = crit.cfg["logits"]["bce"]["center"]
+        if crit.bifurcated:
+            sims = (
+                compute_sim(img, txt.detach(), crit.cfg["sim"]),
+                compute_sim(img.detach(), txt, crit.cfg["sim"]),
+            )
+            crit_logits = tuple(clogits(s, clamp, center, secondary, half_live=True) for s in sims)
+        else:
+            sims = (compute_sim(img, txt, crit.cfg["sim"]),)
+            crit_logits = clogits(sims[0], clamp, center, secondary)
+        for s in sims:
+            s.retain_grad()
+        sims_ref.append(sims)
+        loss, loss_raw, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=toy.logit_scale2 if secondary else toy.logit_scale)
         return loss, loss_raw
 
     loss1, loss1_raw = crit_loss(crit1, False)
@@ -167,8 +188,8 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, mix_unit_scale, fi, 
         return loss1, loss1_raw, img, txt, sims_ref
     loss2, loss2_raw = crit_loss(crit2, True)
     if mix_unit_scale:
-        loss1 = loss1 / loss1.detach().clamp_min(1e-12)
-        loss2 = loss2 / loss2.detach().clamp_min(1e-12)
+        loss1 = loss1 / (loss1.detach() / (2.0 if crit1.bifurcated else 1.0)).clamp_min(1e-12)
+        loss2 = loss2 / (loss2.detach() / (2.0 if crit2.bifurcated else 1.0)).clamp_min(1e-12)
     return (1.0 - mix) * loss1 + mix * loss2, (1.0 - mix) * loss1_raw + mix * loss2_raw, img, txt, sims_ref
 
 
@@ -180,7 +201,8 @@ def grads(model):
 def run(rank, world_size, port):
     from models import VLMWrapper
     from utils.head import compute_sim
-    from utils.loss import BCECriterion
+    from utils.loss import BCECriterion, BifurcatedBCECriterion
+    crit_cls = {"bce": BCECriterion, "bif_bce": BifurcatedBCECriterion}
 
     Harness._unwrapped_model = VLMWrapper._unwrapped_model
     Harness.compute_logits = VLMWrapper.compute_logits
@@ -211,8 +233,8 @@ def run(rank, world_size, port):
 
     for name, cfg1, cfg2, mix, mix_unit_scale in CASES:
         for chunk_size in (SB // 3, SB):  # multi-tile + single-tile per band; both divide the per-rank band (B/world_size = SB)
-            crit1 = make_crit(BCECriterion, cfg1, K, B, device)
-            crit2 = make_crit(BCECriterion, cfg2, K, B, device) if mix != 0.0 else None
+            crit1 = make_crit(crit_cls[cfg1["crit"]], cfg1, K, B, device)
+            crit2 = make_crit(crit_cls[cfg2["crit"]], cfg2, K, B, device) if mix != 0.0 else None
 
             torch.manual_seed(0)
             base = ToyDualEncoder(d_in, D, with_secondary=(mix != 0.0))
@@ -229,7 +251,7 @@ def run(rank, world_size, port):
             toy_gt.zero_grad(set_to_none=True)
             loss_gt.backward()
             g_gt = grads(toy_gt)
-            gsum_gt = [s.grad.double().sum().item() for s in sims_gt]
+            gsum_gt = [sum(s.grad.double().sum().item() for s in branches) for branches in sims_gt]
 
             # (REF) standard DDP path (chunking off)
             h_ref = build_harness(ddp_ref, crit1, crit2, mix, mix_unit_scale, world_size, device)

@@ -292,16 +292,21 @@ class ArtifactManager:
                 if key not in metadata:
                     continue
                 wting = metadata[key]["wting"]
-                is_bce = metadata[key]["crit"] == "bce"  # wting_dim 2; infonce weights 1D
+                crit = metadata[key]["crit"]
+                is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
+                is_2d = crit == "bce"  # wting_dim 2; infonce/bif_bce weight 1D
 
-                # infonce sub-block: BCE never reads it, and the mass corrections are identically
-                # no-ops under iw (row sums already 1 -> targ_mass == 1)
-                if is_bce or metadata[key]["targ"] == "iw":
+                # infonce sub-block: the BCE losses never read it, and under iw the linear tsm
+                # mapping is an identical no-op (row sums already 1)
+                if is_bce_family or metadata[key]["targ"] == "iw":
                     del metadata[key]["infonce"]
+                # bce sub-block (targ_mass_neut): read only by the bifurcated variant
+                if crit != "bif_bce":
+                    del metadata[key]["bce"]
 
                 cls_imb_on = wting["cls_imb"]["type"] is not None
                 focal_on = "focal" in wting
-                dsmr_on = is_bce and wting["bce"]["dsmr"]
+                dsmr_on = is_bce_family and wting["bce"]["dsmr"]
                 if not (cls_imb_on or focal_on or dsmr_on):
                     del metadata[key]["wting"]  # no active weight factor -> W == ones -> whole block inert
                     continue
@@ -314,14 +319,14 @@ class ArtifactManager:
                         del cls_imb["class_bal"]
                     elif cls_imb["type"] == "class_bal":
                         del cls_imb["inv_freq"]
-                    if not is_bce:
+                    if not is_2d:
                         del cls_imb["freq_type_2d"]
                     if cls_imb["norm"] or unit_scaled:
                         del cls_imb["wt_mean_type"]
                     if unit_scaled:
                         del cls_imb["norm"]
 
-                if not is_bce:
+                if not is_bce_family:
                     del wting["bce"]
 
         metadata = asdict(cfg_train)

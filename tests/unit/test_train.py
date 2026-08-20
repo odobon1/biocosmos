@@ -11,7 +11,8 @@ from utils.utils import save_pickle, load_pickle
 def _full_loss_cfg(crit="bce", targ="sw"):
     return {
         "crit": crit,
-        "infonce": {"targ_mass_preservation": True},
+        "infonce": {"tsm": {"type": "linear", "sm_temp": "pinned"}},
+        "bce": {"targ_mass_neut": False},
         "sim": "cos",
         "targ": targ,
         "wting": {
@@ -27,7 +28,7 @@ def _full_loss_cfg(crit="bce", targ="sw"):
             "bce": {"dsmr": True},
         },
         "logits": {
-            "temperature": {"init": None, "freeze": False, "clamp": False},
+            "temp": {"init": None, "freeze": False, "clamp": False},
             "bce": {"center": None, "bias": {"init": None, "freeze": False}},
         },
     }
@@ -89,6 +90,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "stoch_depth" in config["dropout"]["siglip"]
     assert "loss2" not in config  # mix 0.0
     assert "infonce" not in config["loss"]  # InfoNCE-only sub-block
+    assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
     cls_imb = config["loss"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
     assert cls_imb["freq_type_2d"] == "naive"  # BCE weights are 2D (class-pair counting)
@@ -108,13 +110,25 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
-    assert config["loss"]["infonce"] == {"targ_mass_preservation": True}  # infonce + sw: corrections live
+    assert config["loss"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + sw: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal), freq_type_2d inert (2D-only)
         "type": "class_bal", "class_bal": {"beta": 0.9999}, "wt_mean_type": "per_class", "norm": False,
     }
     assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
+
+    # bif_bce: 1D per-anchor weighting (freq_type_2d inert) but the BCE-family blocks stay live
+    (tmp_path / "s4").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s4")
+    cfg = _FakeSettingCfg()
+    cfg.loss = _full_loss_cfg(crit="bif_bce")
+    ArtifactManager.save_metadata_setting(cfg)
+    config = json.loads((tmp_path / "s4" / "config.json").read_text())
+    assert "infonce" not in config["loss"]
+    assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
+    assert "freq_type_2d" not in config["loss"]["wting"]["cls_imb"]  # 1D weighting
+    assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
     # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
     (tmp_path / "s3").mkdir()

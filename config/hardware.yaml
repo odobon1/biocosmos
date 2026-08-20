@@ -1,11 +1,12 @@
-mixed_prec: true  # {true, false}; mixed precision
+mixed_prec: false  # {true, false}; mixed precision
 
 act_chkpt: true  # {true, false}; activation checkpointing
 
 # row-block height U for the global-batch (BxB) contrastive loss. null -> materialize the
 # full BxB matrices. An int U shards the rows across ranks and sweeps each rank's band in
 # U x B blocks -- exact-equivalent, peak VRAM O(U*B). batch_size must be a multiple of
-# G x U. BCE-only; inert (silently ignored) with InfoNCE.
+# G x U. BCE-family only (bce/bif_bce; bif_bce sweeps two branch tiles per block); inert
+# (silently ignored) with InfoNCE.
 loss_chunk_size: 128  # {null, 64, 128}
 
 # cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape

@@ -421,17 +421,27 @@ class PrintLog:
                 return x.detach().item()
             return float(x)
 
-        logits1 = logits[0]
+        def branch_grad_l2_norm(branches) -> float:
+            # aggregate over a loss's branch tuple ([img-row, txt-col] each): norm of the
+            # elementwise-summed branch grads. One branch non-bifurcated (== its grad norm); for
+            # bif_bce the two un-halved branches each carry the full incoming grad, so the
+            # aggregate reads 2x the non-bifurcated norm -- consistent with the 2x loss reading.
+            grads = [b.grad.float() for b in branches if b.grad is not None]
+            if not grads:
+                return float("nan")
+            return sum(grads).pow(2).sum().sqrt().item()
+
+        logits1 = logits[0]  # per-loss branch tuple | None (chunked path)
         logits2 = logits[1]
         if logits1 is None:
             # chunked path (loss_chunk_size != null): no full logit matrix exists, so the
             # diagnostic is structurally unavailable -- omit the field rather than log nan
             line_logits = ""
         elif logits2 is None:
-            line_logits = f"logit={tensor_grad_l2_norm(logits1):.2e} "
+            line_logits = f"logit={branch_grad_l2_norm(logits1):.2e} "
         else:
-            line_logits = f"logit1={tensor_grad_l2_norm(logits1):.2e} "
-            line_logits += f"logit2={tensor_grad_l2_norm(logits2):.2e} "
+            line_logits = f"logit1={branch_grad_l2_norm(logits1):.2e} "
+            line_logits += f"logit2={branch_grad_l2_norm(logits2):.2e} "
 
         line_grad_norm = (
             f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
@@ -752,9 +762,9 @@ class PrintLog:
             "Logits",
             PrintLog._dash_aligned_lines((
                 ("- Scalar LR Factor", cfg_logits["scalar_lr_factor"]),
-                ("- Temp Init",   cfg_logits["temperature"]["init"]),
-                ("- Temp Freeze", cfg_logits["temperature"]["freeze"]),
-                ("- Temp Clamp",  cfg_logits["temperature"]["clamp"]),
+                ("- Temp Init",   cfg_logits["temp"]["init"]),
+                ("- Temp Freeze", cfg_logits["temp"]["freeze"]),
+                ("- Temp Clamp",  cfg_logits["temp"]["clamp"]),
                 ("- Center",       cfg_logits["bce"]["center"]),
                 ("- Bias Init",    cfg_logits["bce"]["bias"]["init"]),
                 ("- Bias Freeze",  cfg_logits["bce"]["bias"]["freeze"]),

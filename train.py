@@ -342,9 +342,15 @@ class TrainPipeline:
         with torch.no_grad():
             # .float(): the retained grads are bf16 under mixed_prec, and casting the SUM result back
             # to bf16 quantizes it (~3 significant digits)
+            # aggregate over a loss's branch tuple: one branch non-bifurcated; for bif_bce the two
+            # un-halved branches each carry the full incoming grad, so the aggregate reads 2x the
+            # non-bifurcated sum(dL/dsim) -- consistent with the 2x loss reading. A branch with no
+            # retained grad (e.g. the t2i branch under a frozen text tower) contributes nothing.
+            def sim_grad_sum(branches):
+                return sum(s.grad.float().sum().item() for s in branches if s.grad is not None)
             grad_sum_sims = (
-                sims[0].grad.float().sum().item() if sims[0] is not None else None,
-                sims[1].grad.float().sum().item() if sims[1] is not None else None,
+                sim_grad_sum(sims[0]),
+                sim_grad_sum(sims[1]) if sims[1] is not None else None,
             )
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
 

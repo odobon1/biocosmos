@@ -1,19 +1,19 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 5  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_epochs: 10  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
 # ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
 # batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
 # (null | train set >= chain_floor) One pass per epoch
-n_chkpts: 5  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
+n_chkpts: 10  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
 # sample_volume / n_chkpts samples
 batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
 # clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # Architecture
-  model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   clip:  # CLIP-specific; Inert iff (arch.model_type: siglip_*)
     non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
     # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
@@ -38,19 +38,22 @@ freeze:
 htarg_shuf: false  # {true, false}
 
 loss:  # Primary loss
-  crit: infonce  # {infonce, bce}
+  crit: bce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
+  # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
   sim: cos  # {cos, geo1, geo2}
-  targ: phylo  # {iw, sw, tax, phylo}
-  infonce:  # Inert iff (loss.crit: bce)
+  targ: sw  # {iw, sw, tax, phylo}
+  infonce:  # Inert iff (loss.crit != infonce)
     tsm:  # Target Simplex Mapping
-      type: softmax  # {linear, softmax}
+      type: linear  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
       # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make tau_Y comparable to logits' tau
       # i.e. target range --> similarity range
       sm_temp: pinned  # {pinned, [float]}
       # (pinned) Use the same learnable logit-scale (log(1 / tau)) as the logits (targs scaled by x2 first)
       # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss.infonce.tsm.type: linear)
-    targ_mass_preservation: false  # {true, false}
+  bce:  # Inert iff (loss.crit != bif_bce)
+    targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its target
+    # (row) mass; anchor-wise, so bif_bce-only (no-op under iw targets, whose row mass is already 1); Inert iff (loss.crit != bif_bce)
   wting:
     cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
       type: null  # {null, inv_freq, class_bal}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
@@ -60,10 +63,11 @@ loss:  # Primary loss
         # As gamma → 0.0, weights → uniform (no weighting)
       class_bal:  # Class-balanced weighting params; Inert iff (cls_imb.type != class_bal)
         beta: 0.9999  # [0.0, 1.0)
-      freq_type_2d: naive  # {naive, cmx2, pair_prob}; Class-pair frequency/counting type; (naive) Vanilla (i2t, t2i 
-      # for same pair treated as separate "classes"); (cmx2) Non-matching pair-counts multiplied by 2 (i2t, t2i for 
-      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit: infonce)
-      wt_mean_type: per_class  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
+      freq_type_2d: pair_prob  # {naive, cmx2, pair_prob}; Class-pair frequency/counting type; (naive) Vanilla (i2t, t2i
+      # for same pair treated as separate "classes"); (cmx2) Non-matching pair-counts multiplied by 2 (i2t, t2i for
+      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit != bce)
+      # (infonce/bif_bce weight 1D per-anchor)
+      wt_mean_type: per_sample  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
       # (per_class) Each class (1D) / class pair (2D) counts once --> the average class has unit weight; 
       # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
       # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (cls_imb.norm: true, whose
@@ -74,13 +78,13 @@ loss:  # Primary loss
     focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
       gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
-    bce:  # BCE-specific weighting params; Inert iff (loss.crit != bce)
+    bce:  # BCE-specific weighting params; Inert iff (loss.crit: infonce)
       dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
   logits:
-    scalar_lr_factor: 10.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
+    scalar_lr_factor: 100.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
     # opt.lr.init (e.g. 10.0 -> x10 backbone LR); ratio held through warmup + cosine decay; scalars are
     # weight-decay-decoupled; (1.0) Backbone LR
-    temperature:  # (tau)
+    temp:  # temperature (tau)
       init: null  # {null, [float]}; (null) Existing learnable param (or 0.0 non-learnable if non-existent);
       # ([float]) Override init; base: (siglip_vitb16: ~8.523e-3), (clip_vitb16: ~1.000e-2);
       # Increasing temp/tau --> softer, decreasing --> sharper
@@ -102,18 +106,20 @@ loss:  # Primary loss
 
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
   mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
-  mix_unit_scale: true  # {true, false}; (true) Rescale each loss to unit magnitude before blending
-  crit: infonce  # {infonce, bce}
+  mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending (a bif_bce
+  # participant rescales by L/2, its gradient-scale-equivalent value, keeping mix the true gradient ratio)
+  crit: bce  # {infonce, bce, bif_bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {iw, sw, tax, phylo}
   infonce:
     tsm:
       type: softmax  # {linear, softmax}
       sm_temp: pinned  # {pinned, [float]}
-    targ_mass_preservation: false  # {true, false}
+  bce:
+    targ_mass_neut: false  # {true, false}; Target mass neutralization
   wting:
     cls_imb:
-      type: inv_freq  # {inv_freq, class_bal, null}
+      type: null  # {null, inv_freq, class_bal}
       inv_freq:
         gamma: 0.5  # (0.0, 1.0]
       class_bal:
@@ -122,13 +128,13 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
       wt_mean_type: per_class  # {per_class, per_sample}
       norm: false  # {true, false}
     focal:
-      gamma: 2.0  # [0.0, inf)
+      gamma: 0.0  # [0.0, inf)
     bce:
       dsmr: false  # {true, false}
   logits:
-    scalar_lr_factor: 10.0  # (0.0, inf)
-    temperature:
-      init: 0.02  # {null, [float]}
+    scalar_lr_factor: 100.0  # (0.0, inf)
+    temp:
+      init: null  # {null, [float]}
       freeze: false  # {true, false}
       clamp: false  # {true, false}
     bce:
@@ -200,7 +206,7 @@ dev:
   logging: true
   plot_every: chkpt  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
   # (trial) Only at the final checkpoint
-  continue_campaign: false  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
+  continue_campaign: true  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
   # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign
   # runner reads this flag from here (not from cfg_baseline.json)
   del_base_eval_cache:

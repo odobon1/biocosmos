@@ -238,4 +238,5 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
     # every branch's grad was retained for the aggregate (branch-summed) grad logging
     for t in (*logits1, *sims1, *logits2, *sims2):
         assert t.grad is not None
-    assert batch_stats["sim_min"] <= batch_stats["sim_max"]
+    for tag in ("1", "2"):
+        assert batch_stats[f"sim{tag}_min"] <= batch_stats[f"sim{tag}_max"]

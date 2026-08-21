@@ -797,12 +797,12 @@ def plot_metrics(
         fontsize_legend=8,
         subplot_border_width=1,
         figsize=(10, 16),
-        height_ratios=[2, 2, 2, 2, 2, 1, 1, 0.5, 1],
+        height_ratios=[2, 2, 2, 2, 2, 2, 1, 1, 0.5, 0.5, 0.5],
     ):
     data = data_tracker.data
     data_epoch = data["epoch"]
     data_eval = data["eval"]
-    title_suffix = f" -- {ArtifactManager.dpath_setting.name}, {DATASET_ALIAS2NAME[ArtifactManager.dataset]}"
+    title_prefix = f"{ArtifactManager.dpath_setting.name}, {DATASET_ALIAS2NAME[ArtifactManager.dataset]}"
 
     # eval panels (retrieval / n-shot / accuracy) are populated only when eval ran;
     # train panels (loss / grad norm / lr) plot whenever train data is present (e.g. train_pt=trainval).
@@ -827,11 +827,7 @@ def plot_metrics(
         figsize,
         height_ratios,
         group_key="native",
-        retrieval_ylabel="Native Gallery mAP Scores",
-        nshot_ylabel="Native Gallery n-shot mAP (ID)",
-        accuracy_ylabel="Native Gallery I2T Accuracy",
-        nshot_accuracy_ylabel="Native Gallery n-shot Accuracy (ID)",
-        plot_title=f"Train Metrics (Native Gallery){title_suffix}",
+        plot_title=f"{title_prefix}, Native",
         output_filename="native.png",
     )
 
@@ -850,11 +846,7 @@ def plot_metrics(
         figsize,
         height_ratios,
         group_key="native_macro",
-        retrieval_ylabel="Native Gallery Macro mAP Scores",
-        nshot_ylabel="Native Gallery n-shot Macro mAP (ID)",
-        accuracy_ylabel="Native Gallery I2T Macro Accuracy",
-        nshot_accuracy_ylabel="Native Gallery n-shot Macro\nAccuracy (ID)",
-        plot_title=f"Train Metrics (Native Gallery Macro){title_suffix}",
+        plot_title=f"{title_prefix}, Native Macro",
         output_filename="native_macro.png",
     )
 
@@ -873,11 +865,7 @@ def plot_metrics(
         figsize,
         height_ratios,
         group_key="joint",
-        retrieval_ylabel="Joint Gallery mAP Scores",
-        nshot_ylabel="Joint Gallery n-shot mAP (ID)",
-        accuracy_ylabel="Joint Gallery I2T Accuracy",
-        nshot_accuracy_ylabel="Joint Gallery n-shot Accuracy (ID)",
-        plot_title=f"Train Metrics (Joint Gallery){title_suffix}",
+        plot_title=f"{title_prefix}, Joint",
         output_filename="joint.png",
     )
 
@@ -896,11 +884,7 @@ def plot_metrics(
         figsize,
         height_ratios,
         group_key="joint_macro",
-        retrieval_ylabel="Joint Gallery Macro mAP Scores",
-        nshot_ylabel="Joint Gallery n-shot Macro mAP (ID)",
-        accuracy_ylabel="Joint Gallery I2T Macro Accuracy",
-        nshot_accuracy_ylabel="Joint Gallery n-shot Macro\nAccuracy (ID)",
-        plot_title=f"Train Metrics (Joint Gallery Macro){title_suffix}",
+        plot_title=f"{title_prefix}, Joint Macro",
         output_filename="joint_macro.png",
     )
 
@@ -919,18 +903,14 @@ def plot_composite_metrics(
     figsize,
     height_ratios,
     group_key,
-    retrieval_ylabel,
-    nshot_ylabel,
-    accuracy_ylabel,
-    nshot_accuracy_ylabel,
     plot_title,
     output_filename,
 ):
-    # loss2 active (mix != 0) -> its sim-grad sum gets its own strip between the Sim1 strip and LR,
-    # so each series keeps its own y-scale
-    has_gsum2 = len(data_epoch["grad_sum_sim2"]) == len(x_train)
-    if has_gsum2:
-        height_ratios = [*height_ratios[:8], 0.5, *height_ratios[8:]]
+    # loss2 active (mix != 0) -> its stats overlay the Sim/Targ Stats panels and its sim-grad sum
+    # gets its own strip between the Sim1 strip and LR, so each series keeps its own y-scale
+    has_loss2 = len(data_epoch["grad_sum_sim2"]) == len(x_train)
+    if has_loss2:
+        height_ratios = [*height_ratios[:10], 0.5, *height_ratios[10:]]
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -942,19 +922,16 @@ def plot_composite_metrics(
         ("i2i", "I2I", "red"),
         ("t2i", "T2I", "green"),
     )
+    comp_scores = data_eval["scores"][group_key]["comp"] if has_eval else {}
     if has_eval:
-        for partition, partition_label, linestyle in (("id", "ID", "-"), ("ood", "OOD", "--")):
-            partition_map = data_eval["scores"][group_key][partition]["map"]
-            for metric_name, metric_label, color in retrieval_specs:
-                ax0.plot(
-                    x_eval,
-                    partition_map[metric_name],
-                    label=f"{partition_label} {metric_label}",
-                    color=color,
-                    linestyle=linestyle,
-                )
-
-    ax0.set_ylabel(retrieval_ylabel, fontsize=fontsize_axes, fontweight="bold")
+        comp_map = comp_scores["map"]
+        ax0.plot(x_eval, comp_map["all"], label="All", color="maroon")
+        ax0.plot(x_eval, comp_map["id"], label="ID", color="black")
+        ax0.plot(x_eval, comp_map["ood"], label="OOD", color="black", linestyle="--")
+        for metric_name, metric_label, color in retrieval_specs:
+            ax0.plot(x_eval, comp_map[metric_name], label=metric_label, color=color)
+        _mark_best(ax0, x_eval, comp_map["all"], fontsize_legend)
+    ax0.set_ylabel("Composite mAP", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
     if has_eval:
         ax0.legend(loc="lower right", fontsize=fontsize_legend)
@@ -962,128 +939,159 @@ def plot_composite_metrics(
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
-    id_mode_scores = data_eval["scores"][group_key]["id"] if has_eval else {}
-    comp_nshot = id_mode_scores["map"].get("n-shot", {}) if has_eval else {}
-    if bucket_comp_keys:
-        for key in reversed(bucket_comp_keys):
-            maybe_plot(ax1, x_eval, comp_nshot, key, key, linestyle=":")
-        if comp_nshot:
-            ax1.legend(loc="lower right", fontsize=fontsize_legend)
-    ax1.set_ylabel(nshot_ylabel, fontsize=fontsize_axes, fontweight="bold")
+    if has_eval:
+        for partition, partition_label, linestyle in (("id", "ID", "-"), ("ood", "OOD", "--")):
+            partition_map = data_eval["scores"][group_key][partition]["map"]
+            for metric_name, metric_label, color in retrieval_specs:
+                ax1.plot(
+                    x_eval,
+                    partition_map[metric_name],
+                    label=f"{partition_label} {metric_label}",
+                    color=color,
+                    linestyle=linestyle,
+                )
+
+    ax1.set_ylabel("mAP Scores", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
+    if has_eval:
+        ax1.legend(loc="lower right", fontsize=fontsize_legend)
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax0)
-    if has_eval:
-        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
-            ax2.plot(
-                x_eval,
-                data_eval["scores"][group_key][partition]["acc"]["i2t"],
-                label=partition_label,
-            )
-    ax2.set_ylabel(accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
+    id_mode_scores = data_eval["scores"][group_key]["id"] if has_eval else {}
+    comp_nshot = id_mode_scores["map"].get("n-shot", {}) if has_eval else {}
+    if bucket_comp_keys:
+        for key in reversed(bucket_comp_keys):
+            maybe_plot(ax2, x_eval, comp_nshot, key, key, linestyle=":")
+        if comp_nshot:
+            ax2.legend(loc="lower right", fontsize=fontsize_legend)
+    ax2.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
-    if has_eval:
-        ax2.legend(loc="lower right", fontsize=fontsize_legend)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax3 = fig.add_subplot(gs[3, 0], sharex=ax0)
-    comp_nshot_acc = id_mode_scores["acc"].get("n-shot", {}) if has_eval else {}
-    if bucket_comp_keys:
-        for key in reversed(bucket_comp_keys):
-            maybe_plot(ax3, x_eval, comp_nshot_acc, key, key, linestyle=":")
-        if comp_nshot_acc:
-            ax3.legend(loc="lower right", fontsize=fontsize_legend)
-    ax3.set_ylabel(nshot_accuracy_ylabel, fontsize=fontsize_axes, fontweight="bold")
+    if has_eval:
+        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
+            ax3.plot(
+                x_eval,
+                data_eval["scores"][group_key][partition]["acc"]["i2t"],
+                label=partition_label,
+            )
+        comp_acc = comp_scores["acc"]["i2t"]
+        ax3.plot(x_eval, comp_acc, label="Comp", color="maroon")
+        _mark_best(ax3, x_eval, comp_acc, fontsize_legend)
+    ax3.set_ylabel("I2T Acc.", fontsize=fontsize_axes, fontweight="bold")
     ax3.set_ylim(0, 1)
+    if has_eval:
+        ax3.legend(loc="lower right", fontsize=fontsize_legend)
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax4 = fig.add_subplot(gs[4, 0], sharex=ax0)
-    if len(data_epoch["loss_train"]) == len(x_train):
-        ax4.plot(x_train, data_epoch["loss_train"], label="Train Loss")
-    if len(data_epoch["loss_raw_train"]) == len(x_train):
-        ax4.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
-    if has_eval:
-        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
-            ax4.plot(x_eval, data_eval["loss_raw"][partition], label=f"{partition_label} Val Loss")
-    ax4.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
-    ax4.set_yscale("log")
-    ax4.minorticks_on()
-    ax4.grid(which="minor", axis="y")
-    ax4.legend(loc="upper right", fontsize=fontsize_legend)
+    comp_nshot_acc = id_mode_scores["acc"].get("n-shot", {}) if has_eval else {}
+    if bucket_comp_keys:
+        for key in reversed(bucket_comp_keys):
+            maybe_plot(ax4, x_eval, comp_nshot_acc, key, key, linestyle=":")
+        if comp_nshot_acc:
+            ax4.legend(loc="lower right", fontsize=fontsize_legend)
+    ax4.set_ylabel("n-shot Acc. (ID)", fontsize=fontsize_axes, fontweight="bold")
+    ax4.set_ylim(0, 1)
     ax4.grid(True)
     ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax5 = fig.add_subplot(gs[5, 0], sharex=ax0)
-    if len(data_epoch["grad_norm_model"]) == len(x_train):
-        ax5.plot(x_train, data_epoch["grad_norm_model"], color="green")
-    ax5.set_ylabel("Grad Norm", fontsize=fontsize_axes, fontweight="bold")
+    if len(data_epoch["loss_train"]) == len(x_train):
+        ax5.plot(x_train, data_epoch["loss_train"], label="Train Loss")
+    if len(data_epoch["loss_raw_train"]) == len(x_train):
+        ax5.plot(x_train, data_epoch["loss_raw_train"], label="Train Loss (Raw)")
+    if has_eval:
+        for partition, partition_label in (("id", "ID"), ("ood", "OOD")):
+            ax5.plot(x_eval, data_eval["loss_raw"][partition], label=f"{partition_label} Val Loss")
+    ax5.set_ylabel("Loss", fontsize=fontsize_axes, fontweight="bold")
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")
+    ax5.legend(loc="upper right", fontsize=fontsize_legend)
     ax5.grid(True)
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax6 = fig.add_subplot(gs[6, 0], sharex=ax0)
-    color_sim = "tab:blue"
-    color_targ = "tab:orange"
-    # targets first, then similarity; min/max solid, mean dashed, median dotted
-    for stat_prefix, stat_color in (("targ", color_targ), ("sim", color_sim)):
-        for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
-            stat_key = f"{stat_prefix}_{stat_name}"
-            if len(data_epoch[stat_key]) == len(x_train):
-                ax6.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
-    ax6.set_ylabel("S/Y Stats", fontsize=fontsize_axes, fontweight="bold")
-    ax6.set_ylim(-1.0, 1.0)
-    ax6.legend(
-        handles=[
-            Line2D([0], [0], color=color_sim, lw=1.0, label="Similarity"),
-            Line2D([0], [0], color=color_targ, lw=1.0, label="Target"),
-            Line2D([0], [0], color="gray", lw=1.0, linestyle="-", label="Min/Max"),
-            Line2D([0], [0], color="gray", lw=1.0, linestyle="--", label="Mean"),
-            Line2D([0], [0], color="gray", lw=1.0, linestyle=":", label="Median"),
-        ],
-        loc="upper center",
-        ncol=5,
-        fontsize=fontsize_legend,
-    )
+    if len(data_epoch["grad_norm_model"]) == len(x_train):
+        ax6.plot(x_train, data_epoch["grad_norm_model"], color="green")
+    ax6.set_ylabel("Grad Norm", fontsize=fontsize_axes, fontweight="bold")
+    ax6.set_yscale("log")
+    ax6.minorticks_on()
+    ax6.grid(which="minor", axis="y")
     ax6.grid(True)
     ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
     ax7 = fig.add_subplot(gs[7, 0], sharex=ax0)
+    ax8 = fig.add_subplot(gs[8, 0], sharex=ax0)
+    color_l1 = "tab:blue"
+    color_l2 = "tab:orange"
+    legend_styles = [
+        Line2D([0], [0], color="gray", lw=1.0, linestyle="-", label="Min/Max"),
+        Line2D([0], [0], color="gray", lw=1.0, linestyle="--", label="Mean"),
+        Line2D([0], [0], color="gray", lw=1.0, linestyle=":", label="Median"),
+    ]
+    targ_handles = legend_styles
+    if has_loss2:
+        targ_handles = [
+            Line2D([0], [0], color=color_l1, lw=1.0, label="Loss 1"),
+            Line2D([0], [0], color=color_l2, lw=1.0, label="Loss 2"),
+            *legend_styles,
+        ]
+    # sim1/sim2 are always identical in practice, so the sim panel shows loss1's only; the targ panel
+    # draws loss2 first so loss1 sits on top where the two coincide. Min/max solid, mean dashed,
+    # median dotted.
+    for ax, stat_group, stat_ylabel, stat_ylim, crit_series, legend_handles in (
+        (ax7, "sim", "Sim Stats", (-1.0, 1.0), (("1", color_l1),), legend_styles),
+        (ax8, "targ", "Targ\nStats", (0.0, 1.0), (("2", color_l2), ("1", color_l1)), targ_handles),
+    ):
+        for crit_tag, stat_color in crit_series:
+            for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
+                stat_key = f"{stat_group}{crit_tag}_{stat_name}"
+                if len(data_epoch[stat_key]) == len(x_train):
+                    ax.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
+        ax.set_ylabel(stat_ylabel, fontsize=fontsize_axes, fontweight="bold")
+        ax.set_ylim(*stat_ylim)
+        ax.legend(handles=legend_handles, loc="upper center", ncol=len(legend_handles), fontsize=fontsize_legend)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+
+    ax9 = fig.add_subplot(gs[9, 0], sharex=ax0)
     if len(data_epoch["grad_sum_sim1"]) == len(x_train):
-        ax7.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:blue", linewidth=1.0)
-    ax7.axhline(0.0, color="gray", linewidth=0.5)
-    ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_gsum2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes, fontweight="bold")
-    ax7.grid(True)
-    ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        ax9.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:blue", linewidth=1.0)
+    ax9.axhline(0.0, color="gray", linewidth=0.5)
+    ax9.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_loss2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes, fontweight="bold")
+    ax9.grid(True)
+    ax9.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    axes = [ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7]
+    axes = [ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9]
 
-    if has_gsum2:
-        ax7b = fig.add_subplot(gs[8, 0], sharex=ax0)
-        ax7b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
-        ax7b.axhline(0.0, color="gray", linewidth=0.5)
-        ax7b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes, fontweight="bold")
-        ax7b.grid(True)
-        ax7b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax7b)
+    if has_loss2:
+        ax9b = fig.add_subplot(gs[10, 0], sharex=ax0)
+        ax9b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
+        ax9b.axhline(0.0, color="gray", linewidth=0.5)
+        ax9b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes, fontweight="bold")
+        ax9b.grid(True)
+        ax9b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax9b)
 
-    ax8 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+    ax10 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
     if len(data_epoch["lr"]) == len(x_train):
-        ax8.plot(x_train, data_epoch["lr"])
-    ax8.set_ylabel("Learning Rate", fontsize=fontsize_axes, fontweight="bold")
-    ax8.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax8.yaxis.set_offset_position("right")
-    ax8.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax8.yaxis.get_offset_text().set_visible(False)
-    ax8.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
-    ax8.grid(True)
-    ax8.tick_params(labelsize=fontsize_ticks)
-    axes.append(ax8)
+        ax10.plot(x_train, data_epoch["lr"])
+    ax10.set_ylabel("η", fontsize=fontsize_axes + 6, fontweight="bold")
+    ax10.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax10.yaxis.set_offset_position("right")
+    ax10.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax10.yaxis.get_offset_text().set_visible(False)
+    ax10.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    ax10.grid(True)
+    ax10.tick_params(labelsize=fontsize_ticks)
+    axes.append(ax10)
 
     for ax in axes:
         ax.label_outer()
@@ -1110,3 +1118,13 @@ def maybe_plot(ax, x, data, key, label, **kwargs):
     """
     if key in data and len(data[key]) > 0:
         ax.plot(x, data[key], label=label, **kwargs)
+
+def _mark_best(ax, x, ys, fontsize):
+    """
+    Star + score label ('XX.X', percent) at a composite series' max -- the point checkpoint
+    selection picks.
+    """
+    idx = max(range(len(ys)), key=ys.__getitem__)
+    ax.plot(x[idx], ys[idx], marker="*", color="maroon", markersize=12, zorder=5)
+    ax.annotate(f"{ys[idx] * 100:.1f}", (x[idx], ys[idx]), textcoords="offset points",
+                xytext=(0, 7), ha="center", color="maroon", fontsize=fontsize, fontweight="bold")

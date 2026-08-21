@@ -49,7 +49,7 @@ def test_tsne_separates_gaussian_clusters() -> None:
     centers = torch.tensor([[20.0] * 10, [-20.0] * 10, [20.0] * 5 + [-20.0] * 5])
     X = torch.cat([c + torch.randn(60, 10) for c in centers])
     init = (X[:, :2] / X[:, 0].std() * 1e-4).numpy().astype(np.float32)
-    Y = _tsne_torch(X, init, perplexity=30.0, n_iter=300, device="cpu")
+    Y = _tsne_torch(X, init, perplexity=30.0, chunk_elems=1 << 20, n_iter=300, device="cpu")
     assert Y.shape == (180, 2) and np.isfinite(Y).all()
     lab = np.repeat([0, 1, 2], 60)
     cents = np.stack([Y[lab == i].mean(0) for i in range(3)])
@@ -61,6 +61,6 @@ def test_tsne_separates_gaussian_clusters() -> None:
 def test_tsne_is_deterministic() -> None:
     X = _blob(150)
     init = (X[:, :2] / X[:, 0].std() * 1e-4).numpy().astype(np.float32)
-    Y1 = _tsne_torch(X, init, perplexity=15.0, n_iter=60, device="cpu")
-    Y2 = _tsne_torch(X, init, perplexity=15.0, n_iter=60, device="cpu")
+    Y1 = _tsne_torch(X, init, perplexity=15.0, chunk_elems=1 << 20, n_iter=60, device="cpu")
+    Y2 = _tsne_torch(X, init, perplexity=15.0, chunk_elems=1 << 20, n_iter=60, device="cpu")
     assert np.array_equal(Y1, Y2)

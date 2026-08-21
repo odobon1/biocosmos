@@ -280,10 +280,40 @@ def test_stats_min_max_mean_exact():
         img, txt, class_encs_b, targ_data_b, crit, None, 0.0, False,
         lambda s, clamp, center=None, secondary=False, center_global=None, half_live=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
     )
-    assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
-    assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
-    assert stats["sim_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
-    assert stats["targ_mean"] == pytest.approx((2 * targs.mean() - 1).item(), abs=1e-5)
+    assert stats["sim1_min"] == pytest.approx(sim.min().item(), abs=1e-5)
+    assert stats["sim1_max"] == pytest.approx(sim.max().item(), abs=1e-5)
+    assert stats["sim1_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
+    assert stats["targ1_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
+    assert "sim2_min" not in stats
+
+
+def test_stats_split_by_crit():
+    """Under a loss2 mix each branch reports stats over its own sim (per its sim_type) and its own
+    (unblended) targets."""
+    B, C, K, D = 48, 16, 20, 16
+    crit1 = _make_crit(_cfg(targ="sw", sim="cos"), K, B)
+    crit2 = _make_crit(_cfg(targ="iw", sim="geo1"), K, B)
+    g = torch.Generator().manual_seed(3)
+    img = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
+    txt = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
+    class_encs_b = torch.randint(0, K, (B,), generator=g)
+    targ_data_b = [None] * B
+
+    sim1 = compute_sim(img.detach(), txt.detach(), "cos")
+    sim2 = compute_sim(img.detach(), txt.detach(), "geo1")
+    targs1 = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
+    targs2 = torch.eye(B)
+    _, _, stats, _ = L.chunked_bce_loss_backward(
+        img, txt, class_encs_b, targ_data_b, crit1, crit2, 0.3, False,
+        _compute_logits_fn(_params(1)), C, False, torch.device("cpu"), rank=0, world_size=1,
+    )
+    for tag, sim, targs in (("1", sim1, targs1), ("2", sim2, targs2)):
+        assert stats[f"sim{tag}_min"] == pytest.approx(sim.min().item(), abs=1e-5)
+        assert stats[f"sim{tag}_max"] == pytest.approx(sim.max().item(), abs=1e-5)
+        assert stats[f"sim{tag}_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
+        assert stats[f"targ{tag}_min"] == pytest.approx(targs.min().item(), abs=1e-5)
+        assert stats[f"targ{tag}_max"] == pytest.approx(targs.max().item(), abs=1e-5)
+        assert stats[f"targ{tag}_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [

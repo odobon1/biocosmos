@@ -17,8 +17,8 @@ from utils.ddp import rank0
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 dpath_root = Path(os.getcwd())
@@ -479,13 +479,15 @@ class PrintLog:
                 f"{line_logits_param}"
                 f"\n"
             )
+            stat_groups = ["sim1", "targ1"] + (["sim2", "targ2"] if "sim2_min" in batch_stats else [])
             PrintLog.log_batch_similarity.write(
                 f"{batch_str:<10} "
-                f"sim: min={batch_stats['sim_min']: .4f} max={batch_stats['sim_max']: .4f} "
-                f"med={batch_stats['sim_median']: .4f} mean={batch_stats['sim_mean']: .4f} | "
-                f"targ: min={batch_stats['targ_min']: .4f} max={batch_stats['targ_max']: .4f} "
-                f"med={batch_stats['targ_median']: .4f} mean={batch_stats['targ_mean']: .4f}"
-                f"\n"
+                + " | ".join(
+                    f"{group}: min={batch_stats[f'{group}_min']: .4f} max={batch_stats[f'{group}_max']: .4f} "
+                    f"med={batch_stats[f'{group}_median']: .4f} mean={batch_stats[f'{group}_mean']: .4f}"
+                    for group in stat_groups
+                )
+                + "\n"
             )
 
     @staticmethod

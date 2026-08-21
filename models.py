@@ -100,18 +100,19 @@ class _ZeroSumGradConst(torch.autograd.Function):
     def backward(ctx: Any, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         return g - ctx.c, None
 
-def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor) -> Dict[str, float]:
+def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[int] = None) -> Dict[str, float]:
     """
-    Per-batch distribution stats over the full BxB similarity and (mix-blended) target
-    matrices; drives the batch-level learning-curve strip, sim_targ.log, and the eval
-    sim/targ sections (per-chunk, averaged across chunks).
+    Per-batch distribution stats over the full BxB similarity and target matrices; drives
+    the batch-level learning-curve strips, sim_targ.log, and the eval sim/targ sections
+    (per-chunk, averaged across chunks).
 
     - sim ---- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
-    - targs -- target matrix on [0, 1]; rescaled to [-1, 1] so it shares sim's range
+    - targs -- target matrix on [0, 1]
+    - idx ---- loss-branch index; suffixes the key prefixes (sim1_*/targ1_*) so the two
+               branches' stats coexist in one flat dict. None (eval) keeps sim_*/targ_*.
 
     Returns min/max/median/mean for each as flat keys. Reductions are stacked so the
-    device->host transfer is a single .cpu() sync. The [0, 1] -> [-1, 1] rescale is applied
-    to the four target scalars (affine, so it commutes with min/max/median/mean).
+    device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
         s = sim.detach()
@@ -121,17 +122,16 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor) -> Dict[str, fl
             t.min(), t.max(), t.median(), t.mean(),
         ]
         vals = torch.stack([r.float() for r in reductions]).cpu().tolist()
-    sim_vals = vals[:4]
-    targ_vals = [2.0 * v - 1.0 for v in vals[4:]]  # [0, 1] -> [-1, 1]
+    tag = "" if idx is None else str(idx)
     return {
-        "sim_min":     sim_vals[0],
-        "sim_max":     sim_vals[1],
-        "sim_median":  sim_vals[2],
-        "sim_mean":    sim_vals[3],
-        "targ_min":    targ_vals[0],
-        "targ_max":    targ_vals[1],
-        "targ_median": targ_vals[2],
-        "targ_mean":   targ_vals[3],
+        f"sim{tag}_min":     vals[0],
+        f"sim{tag}_max":     vals[1],
+        f"sim{tag}_median":  vals[2],
+        f"sim{tag}_mean":    vals[3],
+        f"targ{tag}_min":    vals[4],
+        f"targ{tag}_max":    vals[5],
+        f"targ{tag}_median": vals[6],
+        f"targ{tag}_mean":   vals[7],
     }
 
 class VLMWrapper(abc.ABC):
@@ -604,15 +604,18 @@ class VLMWrapper(abc.ABC):
             loss = (1.0 - mix) * loss1 + mix * loss2
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
 
-            # similarity is shared across loss configs (same embeddings, same sim_type in practice);
-            # the tracked target matrix is the mix-blend of the two configs' targets
-            targs_stat = (1.0 - mix) * targs1 + mix * targs2
-            batch_stats = sim_targ_batch_stats(sims1[0], targs_stat)
+            # each branch's sim/target matrices are tracked separately (learning-curve strips split
+            # the two losses' stats); sims{1,2}[0]: branch values are identical, so the first
+            # branch carries the sim stats
+            batch_stats = {
+                **sim_targ_batch_stats(sims1[0], targs1, idx=1),
+                **sim_targ_batch_stats(sims2[0], targs2, idx=2),
+            }
 
             return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats, (sims1, sims2)
 
         # sims1[0]: branch values are identical, so the first branch carries the sim stats
-        batch_stats = sim_targ_batch_stats(sims1[0], targs1)
+        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1)
         return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats, (sims1, None)
 
     def _gather_batch(
@@ -886,9 +889,9 @@ class VLMWrapper(abc.ABC):
                     embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit2, secondary=True,
                 )
                 loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
-                # similarity is shared across loss configs (same embeddings, same sim_type in
-                # practice) so stats track the primary config's sim only; the tracked target
-                # matrix is the mix-blend of the two configs' targets (mirrors _global_batch_loss)
+                # the eval sim/targ section stays a single summary: the primary config's sim and
+                # the mix-blend of the two configs' targets (unlike the train learning curves,
+                # which track the two branches' stats separately)
                 targs_stat = (1.0 - mix) * targs1 + mix * targs2
             else:
                 targs_stat = targs1

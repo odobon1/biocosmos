@@ -22,9 +22,8 @@ def make_train_config_dummy(**overrides):
         "dev": {"logging": False, "plot_every": "trial", "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
-        "img_norm": "dataset",
-        "loss": {"crit": "bce", "sim": "cos", "targ": "iw", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
-        "loss2": {"crit": "bce", "sim": "cos", "targ": "iw", "mix": 0.0, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss": {"crit": "bce", "sim": "cos", "targ": "sp", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "sp", "mix": 0.0, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "wd": 0.0,
@@ -82,7 +81,7 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
-        TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "iw", "mix": 1.5,
+        TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "sp", "mix": 1.5,
                                                      "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
 
 
@@ -220,24 +219,24 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
 def test_apply_overrides_dot_path_sets_single_nested_field() -> None:
     base = {
         "loss": {
-            "targ": "iw",
+            "targ": "sp",
             "sim": "cos",
         }
     }
     overrides = {
-        "loss.targ": "sw",
+        "loss.targ": "mp",
     }
 
     out = apply_overrides(base, overrides)
 
-    assert out["loss"]["targ"] == "sw"
+    assert out["loss"]["targ"] == "mp"
     assert out["loss"]["sim"] == "cos"
 
 
 def test_apply_overrides_dot_path_navigates_nested_dict() -> None:
     base = {
         "loss": {
-            "targ": "iw",
+            "targ": "sp",
             "sim": "cos",
         }
     }
@@ -280,7 +279,7 @@ def test_apply_overrides_rejects_undeclared_leaf() -> None:
 
 
 def test_apply_overrides_rejects_undeclared_section() -> None:
-    base = {"loss": {"targ": "sw", "crit": "infonce"}}
+    base = {"loss": {"targ": "mp", "crit": "infonce"}}
 
     with pytest.raises(ValueError, match=r"loss\.infonce"):
         apply_overrides(base, {"loss.infonce.targ_mass_preservation": True})
@@ -500,7 +499,7 @@ def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPat
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "infonce", "sim": "cos", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+    cfg_dict["loss"] = {"crit": "infonce", "sim": "cos", "targ": "mp", "wting": {"focal": {"gamma": 0.0}},
                         "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 
@@ -534,7 +533,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: py
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "bce", "sim": "geo1", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+    cfg_dict["loss"] = {"crit": "bce", "sim": "geo1", "targ": "mp", "wting": {"focal": {"gamma": 0.0}},
                         "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8
 
@@ -547,7 +546,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"] = {"crit": "bif_bce", "sim": "geo1", "targ": "sw", "wting": {"focal": {"gamma": 0.0}},
+    cfg_dict["loss"] = {"crit": "bif_bce", "sim": "geo1", "targ": "mp", "wting": {"focal": {"gamma": 0.0}},
                         "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}}
     cfg_dict["hw"]["loss_chunk_size"] = 8
 

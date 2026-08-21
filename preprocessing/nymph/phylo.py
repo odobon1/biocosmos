@@ -26,9 +26,12 @@ def main():
 
     class_data_aug = augment_class_data(class_data, tree)
     tree_pruned = prune_tree(tree, class_data_aug)
+    # trained-on tree minus the polytomy grafts: real placements only
+    tree_prepoly = prune_tree(tree_pruned, class_data)
     tree_poly = augment_tree_with_polytomies(tree_pruned, class_data_aug)
     tree_poly_pruned = prune_tree(tree_poly, class_data)
 
+    save_pickle(tree_prepoly, paths["metadata"]["nymph"] / "tree_prepoly.pkl")
     save_pickle(tree_poly_pruned, paths["metadata"]["nymph"] / "tree.pkl")
     print("Nymphalidae tree complete")
 

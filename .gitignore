@@ -3,9 +3,6 @@ artifacts/*
 
 base_eval_cache/
 
-metadata/*/splits/*/figures/*.png
-!metadata/*/splits/*/figures/summary_*.png
-
 data/cub/*
 !data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy
 

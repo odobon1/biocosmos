@@ -10,6 +10,9 @@ The pipeline runs in five steps, in dependency order:
 cids2commons  →  class_data  →  phylo  →  rank_encs  →  split_gen
 ```
 
+(Lepidoptera runs an extra [synonyms](#synonyms) step between `class_data` and
+`phylo`.)
+
 Each step is implemented in `preprocessing/common/` and invoked by a thin
 per-dataset entry point under `preprocessing/<dataset>/` that supplies
 dataset-specific parameters and helpers (e.g. `species_ids.py`,
@@ -111,22 +114,65 @@ python -m preprocessing.cub.class_data
 Ranks: `order`, `family`, `genus`, `species`, `common_name`. CUB has no separate
 `cids2commons` step: common names are parsed from the class names in the `.mat`
 file, corrected via a small manual map (`COMMON_NAME_CORRECTIONS`) for names GBIF
-can't resolve, then queried against GBIF (iNaturalist backbone first, general
-backbone as fallback) to resolve `order`/`family`/`genus`/`species`. Bird hits
-(`class == "Aves"`) are preferred.
+can't resolve or resolves to the wrong species (ambiguous vernaculars like
+"Nighthawk"), then queried against GBIF (iNaturalist backbone first, falling back
+to the whole general-backbone result if the backbone hit is unusable — results
+are never merged field-by-field) to resolve `order`/`family`/`genus`/`species`.
+Bird hits (`class == "Aves"`) are preferred and extinct taxa are dropped.
+
+
+# synonyms
+
+**Only `lepid` runs this step.** Builds
+`preprocessing/lepid/intermediaries/synonyms.pkl`: `{"rename": {cid: tip},
+"sister": {cid: host_cid}}` maps consumed by the phylo step.
+
+```
+python -m preprocessing.lepid.synonyms
+```
+- **Requires:** both raw trees (`data/lepid/tree_renamed_full.tre`,
+  `data/nymph/tree_nymphalidae_chazot2021_all.tree`); `metadata/lepid/class_data.pkl`;
+  Lepidoptera taxonomy CSV; internet access (GBIF API)
+- **Produces:** `preprocessing/lepid/intermediaries/synonyms.pkl`
+
+The image directories and the raw trees sometimes use different generic
+combinations for the same species (e.g. class `chilasa_clytia` is on the lepid
+tree as `papilio_clytia`). For each class absent from both raw trees, the class's
+GBIF accepted name and synonyms are searched among the raw tree tips. Hits go into
+two maps consumed by the phylo step: `"rename"` (the tip is not a class — it gets
+renamed to the class id, giving the class its real placement) and `"sister"` (the
+tip is another class, i.e. the dataset holds duplicate classes for one species —
+the class is grafted as a zero-length sister of that host tip). Guards: a hit is
+rejected when the tip name's own GBIF resolution points at a different species
+than the class resolves to (one-way chains toward a separately-accepted species
+are almost always GBIF backbone errors); tips found only on the nymph tree are
+usable only for nymphalid classes (the merge attaches the whole nymph tree at
+the Nymphalidae anchor, so its outgroup tips carry no usable placement for
+other families); mappings that contradict the tax CSV's family for the tip's
+genus are dropped; and when one tip's claimants resolve to different species,
+the tip's own epithet arbitrates. Classes that then share one rename tip are
+conspecifics of one another: the first takes the tip, the rest join it as
+zero-length sisters. `class_data` and the CSV are untouched — ranks keep coming
+from the CSV only.
 
 
 # phylo
 
 Builds `tree.pkl`: a `Bio.Phylo` tree whose terminals are class IDs, used to
 derive phylogenetic learning signal. Classes present in `class_data` but missing
-from the raw tree are grafted on.
+from the raw tree are grafted on. Each pipeline also saves `tree_prepoly.pkl`
+alongside it: the trained-on tree minus the polytomy grafts (real — and for
+Lepid, conspecific-sister — placements only, pruned to `class_data`), kept for
+visualization.
 
 **Shared:** `preprocessing/common/phylo.py`
-- `augment_tree_with_polytomies` — inserts each missing class as a polytomy at the
-  most specific rank where its taxon and a sibling taxon both have a representative
-  already on the tree, grafting at the deepest MRCA between them. A second pass rehomes inserted classes to an
-  interpretable divergence anchor.
+- `augment_tree_with_polytomies` — inserts each missing class as a polytomy, preferring
+  its genus' divergence anchor (the most recent divergence between a represented
+  congener — or same-higher-rank representative — and its nearest represented
+  sibling-taxon tip); classes with no usable anchor fall back to a lineage search that
+  grafts at the deepest MRCA between their most specific represented taxon and a
+  represented sibling taxon. Every inserted tip is extended to the mean pre-graft tip
+  depth of the clade it joins.
 - `prune_tree` — drops tips not in `class_data`.
 - `augment_class_data` — infers taxonomy for tree tips absent from `class_data`
   using a same-genus representative (skipping genera with conflicting ranks).
@@ -138,7 +184,7 @@ python -m preprocessing.nymph.phylo
 ```
 - **Requires:** Nymphalidae raw tree (`data/nymph/tree_nymphalidae_chazot2021_all.tree`);
   `metadata/nymph/class_data.pkl`
-- **Produces:** `metadata/nymph/tree.pkl`
+- **Produces:** `metadata/nymph/tree.pkl`, `metadata/nymph/tree_prepoly.pkl`
 
 The raw newick is read and a few stray tips pruned. `class_data` is augmented from
 the tree, the tree is pruned to that augmented set, missing classes are added as
@@ -149,11 +195,16 @@ polytomies, then the tree is pruned back to the original `class_data`.
 python -m preprocessing.lepid.phylo
 ```
 - **Requires:** Lepidoptera raw tree (`data/lepid/tree_renamed_full.tre`); the
-  Nymphalidae tree (rebuilt from the raw nymph tree); `metadata/lepid/class_data.pkl`
-- **Produces:** `metadata/lepid/tree.pkl`
+  Nymphalidae tree (rebuilt from the raw nymph tree); `metadata/lepid/class_data.pkl`;
+  `preprocessing/lepid/intermediaries/synonyms.pkl`
+- **Produces:** `metadata/lepid/tree.pkl`, `metadata/lepid/tree_prepoly.pkl`
 
 The Lepid tree is the global backbone. Subspecies tips are truncated to species
-level. The intact Nymphalidae tree is merged in (`combine_trees_lepid_nymph`)
+level. Tips in the synonym map's `"rename"` half are renamed to their class ids, so
+those classes take their real tree placements instead of being polytomy-grafted;
+after the merge, classes in its `"sister"` half are grafted as zero-length sisters
+of their conspecific host tips. The intact Nymphalidae tree is merged in
+(`combine_trees_lepid_nymph`)
 without branch-length scaling: the shared Lepid Nymphalidae tips are pruned and
 the Nymph subtree is attached at the lowest ancestor on the Lepid Nymphalidae path
 that keeps terminal depth ultrametric. Lepid-only tips and non-Nymphalidae genera
@@ -165,12 +216,25 @@ The merged tree is augmented with polytomies and pruned, as above.
 python -m preprocessing.cub.phylo
 ```
 - **Requires:** CUB raw tree (`data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy`);
-  `metadata/cub/class_data.pkl`
-- **Produces:** `metadata/cub/tree.pkl`
+  Jetz et al. posterior sample (`data/cub/AllBirdsHackett1.tre`, fetched by
+  `data_setup/cub/dataset.sh`); `metadata/cub/class_data.pkl`; internet access
+  (GBIF API, only when the Jetz cache needs rebuilding)
+- **Produces:** `metadata/cub/tree.pkl`, `metadata/cub/tree_prepoly.pkl`,
+  `preprocessing/cub/intermediaries/jetz_cache.pkl.gz`
 
-Tip names are normalized to class ID formatting (strip the leading prefix, lowercase,
-spaces → underscores), missing classes are added as polytomies, then pruned to
-`class_data`.
+The consensus backbone's tip names are normalized to class ID formatting (strip the
+leading prefix, lowercase, spaces → underscores). The backbone covers 190 of the 200
+classes; the 10 missing species are filled in from the Jetz et al. (birdtree.org)
+Hackett Stage2 posterior sample: each is attached as sister to its majority-rule
+attachment clade across the 1000 posterior trees, at the median attachment age
+(class IDs are bridged to Jetz's 2012-era tip names via GBIF synonyms). Backbone
+placements and branch lengths are untouched. Any class that still can't be placed
+falls back to polytomy grafting, then the tree is pruned to `class_data`.
+
+The GBIF cid→Jetz mapping and the pruned posterior sample are cached together in
+`preprocessing/cub/intermediaries/jetz_cache.pkl.gz` (git-tracked, ~3.5 MB) and
+rebuilt automatically when the class set changes, so re-runs skip both the GBIF
+calls and the 464 MB posterior parse. Delete the file to force a rebuild.
 
 ### Bryozoa (class_data + phylo, combined)
 ```
@@ -178,7 +242,8 @@ python -m preprocessing.bryo.class_data_phylo
 ```
 - **Requires:** Bryozoa image data on HiPerGator (genus-level subdirectories);
   Bryozoa raw tree (`data/bryo/SI_Fig1(BIG).newick`); internet access (GBIF API)
-- **Produces:** `metadata/bryo/class_data.pkl`, `metadata/bryo/tree.pkl`
+- **Produces:** `metadata/bryo/class_data.pkl`, `metadata/bryo/tree.pkl`,
+  `metadata/bryo/tree_prepoly.pkl`
 
 Class data and the tree are generated together because they are mutually
 dependent: image directories provide only genus names, while scientific names
@@ -244,10 +309,8 @@ python -m preprocessing.<dataset>.split_gen
 
 A `split.pkl` bundles the per-partition data indexes (`train`, `val.id`,
 `val.ood`, `trainval`, `test.id`, `test.ood`), the class-ID↔encoding map, n-shot
-tracking buckets, per-class counts (train and trainval), and RGB normalization
-statistics. The `dev` split mirrors the partition keys and takes the first
-`size_dev` samples of each. RGB norm stats are accumulated incrementally over the
-`train` and `trainval` partitions.
+tracking buckets, and per-class counts (train and trainval). The `dev` split
+mirrors the partition keys and takes the first `size_dev` samples of each.
 
 ### Stratified splitting
 

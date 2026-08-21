@@ -3,15 +3,11 @@ import copy
 import os
 import random
 import shutil
-import sys
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from sklearn.model_selection import train_test_split
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from PIL import Image
-from tqdm import tqdm
 from typing import Dict, List, Tuple, Set, Optional, Any
 from pathlib import Path
 import pandas as pd
@@ -49,90 +45,6 @@ class GenSplitDataManager:
     def get_cids():
         return sorted(GenSplitDataManager.class_data.keys())
 
-
-def _process_rfpaths_parallel(rfpaths, desc):
-    imgs_root = paths["imgs"][GenSplitDataManager.dataset]
-    fpaths = [imgs_root / rfpath for rfpath in rfpaths]
-    means = []
-    vars_ = []
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as ex:
-        max_in_flight = max(64, (os.cpu_count() or 1) * 4)
-        fpaths_iter = iter(fpaths)
-        in_flight = set()
-        for _ in range(min(max_in_flight, len(fpaths))):
-            in_flight.add(ex.submit(process_image, next(fpaths_iter)))
-        pbar = tqdm(total=len(fpaths), desc=desc, file=sys.stdout)
-        while in_flight:
-            done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
-            for fut in done:
-                mean_img, var_img = fut.result()
-                means.append(mean_img)
-                vars_.append(var_img)
-                pbar.update(1)
-                try:
-                    in_flight.add(ex.submit(process_image, next(fpaths_iter)))
-                except StopIteration:
-                    pass
-        pbar.close()
-    return means, vars_
-
-def _snapshot_norm_stats(all_means, all_vars):
-    means = np.stack(all_means)
-    vars_ = np.stack(all_vars)
-    mean_agg = means.mean(axis=0)
-    var_agg = vars_.mean(axis=0) + means.var(axis=0)
-    std_agg = np.sqrt(np.clip(var_agg, 0.0, None))
-    return tuple(float(x) for x in mean_agg), tuple(float(x) for x in std_agg)
-
-def get_norm_stats(
-    data_indexes, 
-) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
-    dev_cfg = GenSplitDataManager.cfg.dev
-    if dev_cfg.get("debug_mode", False) and dev_cfg["debug"].get("skip_norm_stats", False):
-        print("***** Skipping norm stats computation in dev mode; returning dummy values *****")
-        return {pt: ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) for pt in ("train", "trainval", "whole")}
-    return compute_rgb_norm_stats_by_partition(data_indexes)
-
-def compute_rgb_norm_stats_by_partition(
-    data_indexes: Dict[str, Any],
-) -> Dict[str, Tuple[Tuple[float], Tuple[float]]]:
-    """
-    Norm stats accumulated incrementally: train → snapshot, +val → snapshot, 
-    +test → snapshot; Each image contributes equally regardless of resolution.
-    """
-    groups = [
-        ("train",    [d["rfpath"] for d in data_indexes["train"]]),
-        ("trainval", [d["rfpath"] for d in data_indexes["val"]["id"]] +
-                     [d["rfpath"] for d in data_indexes["val"]["ood"]]),
-        ("whole",    [d["rfpath"] for d in data_indexes["test"]["id"]] +
-                     [d["rfpath"] for d in data_indexes["test"]["ood"]]),
-    ]
-
-    all_means: List = []
-    all_vars: List = []
-    results = {}
-
-    for pt_name, rfpaths in groups:
-        if rfpaths:
-            new_means, new_vars = _process_rfpaths_parallel(
-                rfpaths, desc=f"Computing norm stats ({pt_name})"
-            )
-            all_means.extend(new_means)
-            all_vars.extend(new_vars)
-
-        results[pt_name] = _snapshot_norm_stats(all_means, all_vars)
-
-    return results
-
-# helper for _process_rfpaths_parallel()
-def process_image(fpath_img):
-    with Image.open(fpath_img) as img:
-        arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-
-    mean_img = arr.mean(axis=(0, 1), dtype=np.float64) / 255.0
-    var_img = arr.var(axis=(0, 1), dtype=np.float64) / 255.0**2
-
-    return mean_img, var_img
 
 def truncate_subspecies(s: str) -> str:
     components = s.split("_", 2)
@@ -494,10 +406,8 @@ def build_dev_skeys_partitions(skeys_pts):
         for pt, skeys_partition in skeys_pts.items()
     }
 
-def save_split(data_indexes, enc2cid, nshot, class_counts, norm_stats, dpath_split) -> None:
-    norm_mean = {pt: norm_stats[pt][0] for pt in norm_stats}
-    norm_std = {pt: norm_stats[pt][1] for pt in norm_stats}
-    split = Split(data_indexes, enc2cid, nshot, class_counts, norm_mean, norm_std)
+def save_split(data_indexes, enc2cid, nshot, class_counts, dpath_split) -> None:
+    split = Split(data_indexes, enc2cid, nshot, class_counts)
     os.makedirs(dpath_split, exist_ok=True)
     dpath_figs = dpath_split / "figures"
     if os.path.exists(dpath_figs):
@@ -934,10 +844,6 @@ def generate_splits(
     class_counts_dev = build_class_counts_by_partition(data_indexes_dev, len(cids))
     print("Class counts complete!")
 
-    # TRAIN PARTITIONS NORMALIZATION STATS
-
-    norm_stats = get_norm_stats(data_indexes)
-
     # SAVE SPLITS
 
     print("Saving splits...")
@@ -946,7 +852,6 @@ def generate_splits(
         enc2cid,
         nshot,
         class_counts,
-        norm_stats,
         GenSplitDataManager.dpath_split,
     )
     save_split(
@@ -954,7 +859,6 @@ def generate_splits(
         enc2cid,
         nshot,
         class_counts_dev,
-        norm_stats,
         GenSplitDataManager.dpath_split_dev,
     )
     print("Splits saved!")

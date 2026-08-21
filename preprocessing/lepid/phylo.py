@@ -496,11 +496,44 @@ def fill_tip_cache(clade: Clade, cache: Dict[int, Set[str]]) -> Set[str]:
     cache[id(clade)] = names
     return names
 
+# main() helper
+def rename_synonym_tips(tree: Tree, rename: Dict[str, str]) -> None:
+    """
+    Rename tree tips recorded in the synonym map (cid -> tip name) to their class
+    ids, so those classes take their real tree placements instead of being
+    polytomy-grafted.
+    """
+    tip_to_cid = {tip: cid for cid, tip in rename.items()}
+    for tip in tree.get_terminals():
+        if tip.name in tip_to_cid:
+            tip.name = tip_to_cid[tip.name]
+
+# main() helper
+def graft_conspecific_sisters(tree: Tree, sister: Dict[str, str]) -> None:
+    """
+    Graft each cid as a zero-length sister of its conspecific host tip (the same
+    species, present as a class under another name), sharing the host's placement.
+    """
+    for cid, host in sorted(sister.items()):
+        host_tip = tree.find_any(name=host)
+        if host_tip is None:
+            print(f"WARNING: conspecific host {host} for {cid} not on tree; leaving to polytomy grafting")
+            continue
+        parent = find_parent(tree.root, host_tip)
+        wrapper = Clade(name=None, branch_length=host_tip.branch_length)
+        wrapper.clades = [host_tip, Clade(name=cid, branch_length=0.0)]
+        host_tip.branch_length = 0.0
+        replace_child(parent, host_tip, wrapper)
+
 def main():
     print("Building Lepidoptera tree...")
 
     tree_lepid = build_tree_lepid()
     tree_nymph = build_tree_nymph()
+
+    synonyms = load_pickle(paths["preproc"]["lepid"] / "intermediaries/synonyms.pkl")
+    rename_synonym_tips(tree_lepid, synonyms["rename"])
+    rename_synonym_tips(tree_nymph, synonyms["rename"])
 
     class_data = load_pickle(paths["metadata"]["lepid"] / "class_data.pkl")
 
@@ -510,9 +543,13 @@ def main():
     tree_merge = combine_trees_lepid_nymph(tree_lepid, tree_nymph, class_data_aug)
 
     tree_merge_pruned = prune_tree(tree_merge, class_data_aug)
+    graft_conspecific_sisters(tree_merge_pruned, synonyms["sister"])
+    # trained-on tree minus the polytomy grafts: real + conspecific-sister placements only
+    tree_prepoly = prune_tree(tree_merge_pruned, class_data)
     tree_poly = augment_tree_with_polytomies(tree_merge_pruned, class_data_aug)
     tree_poly_pruned = prune_tree(tree_poly, class_data)
 
+    save_pickle(tree_prepoly, paths["metadata"]["lepid"] / "tree_prepoly.pkl")
     save_pickle(tree_poly_pruned, paths["metadata"]["lepid"] / "tree.pkl")
     print("Lepidoptera tree complete")
 

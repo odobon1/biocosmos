@@ -4,7 +4,7 @@ Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.l
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
 primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ /
 BifurcatedBCECriterion.__call__ blended by _global_batch_loss), up to floating-point summation
-order -- across the full BCE-family config space: sw/iw/tax/phylo targets, cls_imb.norm, a
+order -- across the full BCE-family config space: mp/sp/tax/phylo targets, cls_imb.norm, a
 BCE-family loss2 mix, mix_unit_scale, and bif_bce's two-branch tiles (half-live logit scalars,
 row-wise DSMR, targ_mass_neut, per-branch centering).
 """
@@ -46,7 +46,7 @@ def import_loss_module():
 L = import_loss_module()
 
 
-def _cfg(crit="bce", targ="sw", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
+def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
          cls_imb_norm=False, center=None, neut=False):
     return {
         "crit": crit, "sim": sim, "targ": targ,
@@ -177,38 +177,38 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
 
 CASES = [
     # (crit1, crit2, targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, neut)
-    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),  # baseline
-    ("bce", None,  "iw",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
+    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),  # baseline
+    ("bce", None,  "sp",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
     ("bce", None,  "tax",   None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
     ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
-    ("bce", None,  "sw",    None,  False, 0.0, "naive",     False, 0.0, False, None, None, False),  # no dsmr, no focal
-    ("bce", None,  "sw",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None, False),
-    ("bce", None,  "sw",    None,  True,  2.0, "naive",     True,  0.0, False, None, None, False),  # cls_imb.norm
-    ("bce", None,  "sw",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None, False),  # cls_imb.norm + cmx2
-    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, False, None, None, False),  # mix, no unit scale
-    ("bce", "bce", "sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None, False),  # mixed target types
-    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  None, None, False),  # mix + unit scale
-    ("bce", "bce", "tax",   "sw",  True,  2.0, "cmx2",      True,  0.3, True,  None, None, False),   # everything at once
-    ("bce", "bce", "sw",    "sw",  False, 0.0, "naive",     False, 0.5, True,  None, None, False),   # unit scale, no weighting
-    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
-    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
-    ("bce", None,  "sw",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None, False),
+    ("bce", None,  "mp",    None,  False, 0.0, "naive",     False, 0.0, False, None, None, False),  # no dsmr, no focal
+    ("bce", None,  "mp",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None, False),
+    ("bce", None,  "mp",    None,  True,  2.0, "naive",     True,  0.0, False, None, None, False),  # cls_imb.norm
+    ("bce", None,  "mp",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None, False),  # cls_imb.norm + cmx2
+    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, False, None, None, False),  # mix, no unit scale
+    ("bce", "bce", "mp",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None, False),  # mixed target types
+    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, True,  None, None, False),  # mix + unit scale
+    ("bce", "bce", "tax",   "mp",  True,  2.0, "cmx2",      True,  0.3, True,  None, None, False),   # everything at once
+    ("bce", "bce", "mp",    "mp",  False, 0.0, "naive",     False, 0.5, True,  None, None, False),   # unit scale, no weighting
+    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
+    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
+    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None, False),
     ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # soft targets + projection
-    ("bce", "bce", "sw",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
-    ("bce", "bce", "sw",    "sw",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
+    ("bce", "bce", "mp",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
+    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
     # bif_bce: two-branch tiles, 1D per-anchor weighting, half-live logit scalars
-    ("bif_bce", None,      "sw",    None,  False, 0.0, "naive", False, 0.0, False, None, None, False),  # bif baseline
-    ("bif_bce", None,      "iw",    None,  False, 2.0, "naive", False, 0.0, False, None, None, False),
+    ("bif_bce", None,      "mp",    None,  False, 0.0, "naive", False, 0.0, False, None, None, False),  # bif baseline
+    ("bif_bce", None,      "sp",    None,  False, 2.0, "naive", False, 0.0, False, None, None, False),
     ("bif_bce", None,      "tax",   None,  True,  2.0, "naive", False, 0.0, False, None, None, False),  # row-wise dsmr on soft targets
     ("bif_bce", None,      "phylo", None,  True,  2.0, "naive", False, 0.0, False, None, None, True),   # + targ_mass_neut
-    ("bif_bce", None,      "sw",    None,  True,  2.0, "naive", True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
-    ("bif_bce", None,      "sw",    None,  False, 2.0, "naive", False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
-    ("bif_bce", None,      "sw",    None,  True,  2.0, "naive", False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
-    ("bif_bce", None,      "sw",    None,  False, 2.0, "naive", False, 0.0, False, "grad_proj2", None, False),
-    ("bif_bce", "bce",     "sw",    "sw",  True,  2.0, "naive", False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
-    ("bif_bce", "bce",     "sw",    "sw",  True,  2.0, "naive", False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
-    ("bce",     "bif_bce", "sw",    "iw",  True,  2.0, "naive", False, 0.3, True,  None, None, True),   # bce+bif mix
-    ("bif_bce", "bif_bce", "sw",    "phylo", True, 2.0, "naive", False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
+    ("bif_bce", None,      "mp",    None,  True,  2.0, "naive", True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
+    ("bif_bce", None,      "mp",    None,  False, 2.0, "naive", False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
+    ("bif_bce", None,      "mp",    None,  True,  2.0, "naive", False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
+    ("bif_bce", None,      "mp",    None,  False, 2.0, "naive", False, 0.0, False, "grad_proj2", None, False),
+    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, "naive", False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
+    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, "naive", False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
+    ("bce",     "bif_bce", "mp",    "sp",  True,  2.0, "naive", False, 0.3, True,  None, None, True),   # bce+bif mix
+    ("bif_bce", "bif_bce", "mp",    "phylo", True, 2.0, "naive", False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
 ]
 
 
@@ -291,8 +291,8 @@ def test_stats_split_by_crit():
     """Under a loss2 mix each branch reports stats over its own sim (per its sim_type) and its own
     (unblended) targets."""
     B, C, K, D = 48, 16, 20, 16
-    crit1 = _make_crit(_cfg(targ="sw", sim="cos"), K, B)
-    crit2 = _make_crit(_cfg(targ="iw", sim="geo1"), K, B)
+    crit1 = _make_crit(_cfg(targ="mp", sim="cos"), K, B)
+    crit2 = _make_crit(_cfg(targ="sp", sim="geo1"), K, B)
     g = torch.Generator().manual_seed(3)
     img = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
     txt = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
@@ -317,8 +317,8 @@ def test_stats_split_by_crit():
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
-    ({"crit": "infonce", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),          # infonce primary
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "infonce"}),           # infonce secondary (mixed)
+    ({"crit": "infonce", "targ": "mp"}, {"mix": 0.0, "crit": "bce"}),          # infonce primary
+    ({"crit": "bce", "targ": "mp"}, {"mix": 0.3, "crit": "infonce"}),           # infonce secondary (mixed)
 ])
 def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
     assert not L.chunking_supported(cfg_loss, cfg_loss2)
@@ -326,11 +326,11 @@ def test_chunking_unsupported_with_infonce(cfg_loss, cfg_loss2):
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
     ({"crit": "bce", "targ": "phylo"}, {"mix": 0.0, "crit": "bce"}),            # phylo now supported
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.0, "crit": "infonce"}),           # infonce loss2 inert at mix=0
-    ({"crit": "bif_bce", "targ": "sw"}, {"mix": 0.0, "crit": "bce"}),           # bif_bce primary supported
-    ({"crit": "bce", "targ": "sw"}, {"mix": 0.3, "crit": "bif_bce"}),           # bif_bce secondary supported
-    ({"crit": "bif_bce", "targ": "sw"}, {"mix": 0.3, "crit": "bif_bce"}),       # bif+bif mix supported
+    ({"crit": "bce", "targ": "mp"}, {"mix": 0.3, "crit": "bce"}),               # bce+bce mix supported
+    ({"crit": "bce", "targ": "mp"}, {"mix": 0.0, "crit": "infonce"}),           # infonce loss2 inert at mix=0
+    ({"crit": "bif_bce", "targ": "mp"}, {"mix": 0.0, "crit": "bce"}),           # bif_bce primary supported
+    ({"crit": "bce", "targ": "mp"}, {"mix": 0.3, "crit": "bif_bce"}),           # bif_bce secondary supported
+    ({"crit": "bif_bce", "targ": "mp"}, {"mix": 0.3, "crit": "bif_bce"}),       # bif+bif mix supported
 ])
 def test_chunking_supported(cfg_loss, cfg_loss2):
     assert L.chunking_supported(cfg_loss, cfg_loss2)
@@ -357,10 +357,10 @@ def _synthetic_vcv():
     rng = np.random.default_rng(0)
     A = rng.random((K, K))
     corr = (A + A.T) / 2.0
-    # NON-ultrametric regime (cub/bryo): corr = vcv / max(diag) leaves shallower tips with a diagonal
-    # < 1.0, so the same-cid overwrite is load-bearing (only the lepid merge tree is ultrametric).
+    # Deliberately non-1.0 diagonal (the real per-pair-normalized corr has a unit diagonal) so the
+    # same-cid overwrite is observable rather than a no-op in this test.
     np.fill_diagonal(corr, rng.uniform(0.3, 0.9, size=K))
-    corr[0, 0] = 1.0  # one tip at max depth
+    corr[0, 0] = 1.0
     vcv.corr = corr
     vcv._cid_to_idx = {f"c{i}": i for i in range(K)}
     return vcv
@@ -381,10 +381,10 @@ def test_phylo_block_matches_full():
 
 
 def test_phylo_same_cid_pinned_to_one():
-    """Same-cid pairs are forced to 1.0 even when corr's own diagonal is < 1.0 (non-ultrametric tree),
-    i.e. the same-cid overwrite is not a no-op for cub/bryo."""
+    """Same-cid pairs are forced to 1.0 even when corr's diagonal disagrees (the real per-pair
+    normalization makes it 1.0; the synthetic matrix keeps it below so the overwrite is observable)."""
     vcv = _synthetic_vcv()
-    assert vcv.corr[1, 1] < 1.0  # c1 sits below max depth
+    assert vcv.corr[1, 1] < 1.0
     targ_data_b = [{"cid": "c1"}, {"cid": "c1"}, {"cid": "c2"}]  # samples 0 and 1 share c1
     full = vcv.get_targs_batch(targ_data_b)
     assert full[0, 0] == 1.0 and full[0, 1] == 1.0 and full[1, 0] == 1.0  # same-cid -> 1.0

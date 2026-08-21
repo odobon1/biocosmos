@@ -44,7 +44,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="sw", cls_imb_norm=False, center=None, crit="bce", neut=False):
+def cfg_loss(targ="mp", cls_imb_norm=False, center=None, crit="bce", neut=False):
     return {
         "crit": crit, "sim": "cos", "targ": targ,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
@@ -72,15 +72,15 @@ class _ZSG(torch.autograd.Function):
 
 # (name, cfg1, cfg2, mix, mix_unit_scale)
 CASES = [
-    ("plain", cfg_loss("sw"), None, 0.0, False),
-    ("mix_normci_unitscale", cfg_loss("sw", cls_imb_norm=True), cfg_loss("sw", cls_imb_norm=True), 0.3, True),
+    ("plain", cfg_loss("mp"), None, 0.0, False),
+    ("mix_normci_unitscale", cfg_loss("mp", cls_imb_norm=True), cfg_loss("mp", cls_imb_norm=True), 0.3, True),
     ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
-    ("center_sim", cfg_loss("sw", center="sim"), None, 0.0, False),
-    ("center_gp2_sim_mix", cfg_loss("sw", center="grad_proj2"), cfg_loss("sw", center="sim"), 0.3, False),
+    ("center_sim", cfg_loss("mp", center="sim"), None, 0.0, False),
+    ("center_gp2_sim_mix", cfg_loss("mp", center="grad_proj2"), cfg_loss("mp", center="sim"), 0.3, False),
     # bif_bce: banded two-branch tiles (row-wise dsmr + neut), and a bif+bce unit-scale mix with
     # per-branch grad-proj constants (exercises the branch grad-mean all-reduce under sharding)
-    ("bif_dsmr_neut", cfg_loss("sw", crit="bif_bce", neut=True), None, 0.0, False),
-    ("bif_gp_mix_unitscale", cfg_loss("sw", crit="bif_bce", center="grad_proj"), cfg_loss("sw", center="sim"), 0.3, True),
+    ("bif_dsmr_neut", cfg_loss("mp", crit="bif_bce", neut=True), None, 0.0, False),
+    ("bif_gp_mix_unitscale", cfg_loss("mp", crit="bif_bce", center="grad_proj"), cfg_loss("mp", center="sim"), 0.3, True),
 ]
 
 

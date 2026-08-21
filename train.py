@@ -609,9 +609,6 @@ def run_training(cfg):
     if ArtifactManager.resuming:
         resume_state = ArtifactManager.load_train_state()
         modelw._unwrapped_model.load_state_dict(resume_state["model"])
-        modelw.norm_mean = resume_state["norm_mean"]
-        modelw.norm_std = resume_state["norm_std"]
-        modelw.set_image_preprocessors()
         trial_state = ArtifactManager.load_trial_state()
 
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)

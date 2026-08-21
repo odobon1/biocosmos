@@ -18,6 +18,7 @@ python -m preprocessing.cub.split_gen
 echo "===================== Lepidoptera metadata generation ====================="
 python -m preprocessing.lepid.cids2commons
 python -m preprocessing.lepid.class_data
+python -m preprocessing.lepid.synonyms
 python -m preprocessing.lepid.phylo
 python -m preprocessing.lepid.rank_encs
 python -m preprocessing.lepid.split_gen

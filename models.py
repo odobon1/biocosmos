@@ -13,7 +13,7 @@ import math
 from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Union, Optional
 
-from utils.utils import paths, load_split
+from utils.utils import paths
 from utils.loss import Criterion, chunked_bce_loss_backward
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
@@ -218,6 +218,9 @@ class VLMWrapper(abc.ABC):
         self.model = model.to(self.device).eval()
         self.img_pp_train = img_pp_train
         self.img_pp_inf = img_pp_inf
+        # base-model default normalization stats, from the released inference pipeline's trailing Normalize
+        self.norm_mean = img_pp_inf.transforms[-1].mean
+        self.norm_std = img_pp_inf.transforms[-1].std
 
         tokenizer = open_clip.get_tokenizer(model_name)
         self.txt_pp = lambda txts: tokenizer(txts).to(self.device)
@@ -300,10 +303,6 @@ class VLMWrapper(abc.ABC):
             for key in ("logit_scale2", "logit_bias2"):
                 if key in checkpoint["model"]:
                     modelw._unwrapped_model.register_parameter(key, nn.Parameter(checkpoint["model"][key]))
-            modelw.norm_mean = checkpoint["norm_mean"]
-            modelw.norm_std = checkpoint["norm_std"]
-        else:
-            modelw.set_image_norms(config)
 
         modelw.set_image_preprocessors()
 
@@ -330,18 +329,6 @@ class VLMWrapper(abc.ABC):
         if isinstance(self, SigLIPWrapper):
             return model.text.text_projection.weight.shape[0]
         raise TypeError(f"Unsupported wrapper type: {type(self).__name__}")
-
-    def set_image_norms(self, config: Union[TrainConfig, EvalConfig]) -> None:
-        """
-        Sets normalization mean and std for image preprocessors based on config (dataset-specific or default).
-        """
-        if config.img_norm == "default":
-            self.norm_mean = self.img_pp_inf.transforms[-1].mean
-            self.norm_std = self.img_pp_inf.transforms[-1].std
-        elif config.img_norm == "dataset":
-            split = load_split(config.dataset, config.split)
-            self.norm_mean = split.norm_mean[config.train_pt]
-            self.norm_std = split.norm_std[config.train_pt]
 
     def set_image_preprocessors(self) -> None:
         self.img_pp_inf = make_image_preprocessor_inference(self.img_res)

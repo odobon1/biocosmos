@@ -7,7 +7,7 @@ across branches so it may stay on), bifurcated BCE reads 2x the non-bifurcated l
 branch sum) while every gradient -- towers, logit scale/bias (half-live) -- matches non-bifurcated
 BCE 1x. The tests bind the REAL VLMWrapper methods to a lightweight harness `self` (single
 process, world_size 1, so _gather_batch is a no-op) and also cover the branch tuples' shapes, the
-per-branch tower routing, eval mode, the iw no-op of targ_mass_neut, and a bif/non-bif
+per-branch tower routing, eval mode, the sp no-op of targ_mass_neut, and a bif/non-bif
 loss2 mix through _global_batch_loss.
 """
 from types import SimpleNamespace
@@ -21,7 +21,7 @@ import utils.loss as L
 from models import VLMWrapper
 
 
-def _cfg(crit, targ="sw", cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False, center=None):
+def _cfg(crit, targ="mp", cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False, center=None):
     return {
         "crit": crit, "sim": "cos", "targ": targ,
         "bce": {"targ_mass_neut": neut},
@@ -176,16 +176,16 @@ def test_bif_eval_loss_equals_raw_2x():
 def test_targ_mass_neut_noop_under_iw_active_under_sw():
     B, K, D = 16, 5, 8
     losses = {}
-    for targ in ("iw", "sw"):
+    for targ in ("sp", "mp"):
         for neut in (False, True):
             img, txt, class_encs_b = _data(B, K, D)
             crit = _make_crit(_cfg("bif_bce", targ=targ, neut=neut), K, B)
             _, loss, _, _, _, _ = _run_full(crit, img, txt, class_encs_b)
             losses[(targ, neut)] = loss.item()
-    # iw rows carry unit target mass -> neutralization divides by 1 (no-op)
-    assert losses[("iw", True)] == pytest.approx(losses[("iw", False)], rel=1e-6)
-    # sw with class repeats (K < B) has rows with mass > 1 -> neutralization changes the loss
-    assert abs(losses[("sw", True)] - losses[("sw", False)]) > 1e-6
+    # sp rows carry unit target mass -> neutralization divides by 1 (no-op)
+    assert losses[("sp", True)] == pytest.approx(losses[("sp", False)], rel=1e-6)
+    # mp with class repeats (K < B) has rows with mass > 1 -> neutralization changes the loss
+    assert abs(losses[("mp", True)] - losses[("mp", False)]) > 1e-6
 
 
 def test_mix_unit_scale_bif_grads_match_non_bif():
@@ -199,7 +199,7 @@ def test_mix_unit_scale_bif_grads_match_non_bif():
     for crit1_name in ("bce", "bif_bce"):
         img, txt, class_encs_b = _data(B, K, D)
         crit1 = _make_crit(_cfg(crit1_name), K, B)
-        crit2 = _make_crit(_cfg("bce", targ="iw"), K, B)
+        crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
         toy = Toy(with_secondary=True).train()
         h = _make_harness(toy, crit1, crit2, mix=mix, mix_unit_scale=True)
         loss, *_ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
@@ -221,7 +221,7 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
     B, K, D = 16, 5, 8
     img, txt, class_encs_b = _data(B, K, D)
     crit1 = _make_crit(_cfg(crit1_name), K, B)
-    crit2 = _make_crit(_cfg(crit2_name, targ="iw"), K, B)
+    crit2 = _make_crit(_cfg(crit2_name, targ="sp"), K, B)
     toy = Toy(with_secondary=True).train()
     h = _make_harness(toy, crit1, crit2, mix=0.3, mix_unit_scale=True)
     loss, loss_raw, _, _, (logits1, logits2), _, batch_stats, (sims1, sims2) = h._global_batch_loss(

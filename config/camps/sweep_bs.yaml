@@ -12,9 +12,7 @@ baseline_overrides:
     - {batch_size: 16_384, opt.lr.init: 8.0e-5, name: bs16k}
     - {batch_size: 32_768, opt.lr.init: 1.131e-4, name: bs32k}
   - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
-    - {loss.targ: sw, name: sw}
-    - {loss.targ: iw, name: iw}
-  - - {n_epochs: 140, name: 140ep}
-    - {n_epochs: 70, name: 70ep}
+    - {loss.targ: mp, name: mp}
+    - {loss.targ: sp, name: sp}
 
 suffix: null  # {null, [str]}; no suffix if set to null

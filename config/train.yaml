@@ -1,19 +1,19 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 10  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_epochs: 5  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
 # ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
 # batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
 # (null | train set >= chain_floor) One pass per epoch
-n_chkpts: 10  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
+n_chkpts: 5  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
 # sample_volume / n_chkpts samples
 batch_size: 1_024  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
 # clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # Architecture
-  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   clip:  # CLIP-specific; Inert iff (arch.model_type: siglip_*)
     non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
     # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
@@ -38,13 +38,13 @@ freeze:
 htarg_shuf: false  # {true, false}
 
 loss:  # Primary loss
-  crit: bce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
+  crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
   # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
   sim: cos  # {cos, geo1, geo2}
-  targ: sw  # {iw, sw, tax, phylo}
+  targ: mp  # {sp, mp, tax, phylo}
   infonce:  # Inert iff (loss.crit != infonce)
     tsm:  # Target Simplex Mapping
-      type: linear  # {linear, softmax}
+      type: softmax  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
       # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make tau_Y comparable to logits' tau
       # i.e. target range --> similarity range
@@ -53,7 +53,7 @@ loss:  # Primary loss
       # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss.infonce.tsm.type: linear)
   bce:  # Inert iff (loss.crit != bif_bce)
     targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its target
-    # (row) mass; anchor-wise, so bif_bce-only (no-op under iw targets, whose row mass is already 1); Inert iff (loss.crit != bif_bce)
+    # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1); Inert iff (loss.crit != bif_bce)
   wting:
     cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
       type: null  # {null, inv_freq, class_bal}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
@@ -110,7 +110,7 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
   # participant rescales by L/2, its gradient-scale-equivalent value, keeping mix the true gradient ratio)
   crit: bce  # {infonce, bce, bif_bce}
   sim: cos  # {cos, geo1, geo2}
-  targ: phylo  # {iw, sw, tax, phylo}
+  targ: phylo  # {sp, mp, tax, phylo}
   infonce:
     tsm:
       type: softmax  # {linear, softmax}
@@ -164,8 +164,6 @@ aug:  # Image augmentation
       max: 1.0
     prob: 0.00
 
-img_norm: default  # {default, dataset}
-
 text_template:
   train: train
   eval: sci  # Following BioCLIP eval protocol
@@ -206,7 +204,7 @@ dev:
   logging: true
   plot_every: chkpt  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
   # (trial) Only at the final checkpoint
-  continue_campaign: true  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
+  continue_campaign: false  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
   # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign
   # runner reads this flag from here (not from cfg_baseline.json)
   del_base_eval_cache:

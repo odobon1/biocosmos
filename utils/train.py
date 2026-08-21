@@ -304,9 +304,9 @@ class ArtifactManager:
                 is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
                 is_2d = crit == "bce"  # wting_dim 2; infonce/bif_bce weight 1D
 
-                # infonce sub-block: the BCE losses never read it, and under iw the linear tsm
+                # infonce sub-block: the BCE losses never read it, and under sp the linear tsm
                 # mapping is an identical no-op (row sums already 1)
-                if is_bce_family or metadata[key]["targ"] == "iw":
+                if is_bce_family or metadata[key]["targ"] == "sp":
                     del metadata[key]["infonce"]
                 # bce sub-block (targ_mass_neut): read only by the bifurcated variant
                 if crit != "bif_bce":
@@ -451,7 +451,6 @@ class ArtifactManager:
         seed = cfg_train.seed if vis_proj_head is not None else None
         return (
             model_type,
-            cfg_train.img_norm,
             cfg_train.dataset,
             cfg_train.split,
             non_causal,
@@ -510,8 +509,6 @@ class ArtifactManager:
     def save_train_state(train_pipe, idx_batch):
         state = {
             "model": train_pipe.modelw._unwrapped_model.state_dict(),
-            "norm_mean": train_pipe.modelw.norm_mean,
-            "norm_std": train_pipe.modelw.norm_std,
             "optimizer": train_pipe.opt.state_dict(),
             "lr_sched": train_pipe.lr_sched.state_dict(),
             "n_samps_seen": train_pipe.n_samps_seen,

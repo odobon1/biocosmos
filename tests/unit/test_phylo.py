@@ -242,25 +242,6 @@ def test_merge_tree_depth(tree_bundle) -> None:
         f"lepid={depth_lepid}, merged={depth_merge}"
     )
 
-def test_merge_preserves_dists_lepid_non_nymph_backbone(tree_bundle) -> None:
-    """
-    All non-Nymphalidae Lepid-only taxa lie entirely outside the replaced Nymphalidae subtree,
-    so their backbone distances must be identical between the Lepid source tree and the merged
-    tree. Samples SAMPLE_SIZE taxa from that partition and checks every pair.
-    """
-    tree_lepid = tree_bundle["tree"]["lepid"]
-    tree_merge = tree_bundle["tree"]["merge"]
-    cids_lepid_only_non_cdnymph_sample = _sample(tree_bundle["cids"]["lepid_only_non_cdnymph"], SAMPLE_SIZE)
-
-    for cid_a, cid_b in combinations(cids_lepid_only_non_cdnymph_sample, 2):
-        dist_lepid = tree_lepid.distance(cid_a, cid_b)
-        dist_merge = tree_merge.distance(cid_a, cid_b)
-
-        assert dist_merge == pytest.approx(dist_lepid), (
-            f"Pairwise distance changed for {cid_a} vs {cid_b}: "
-            f"lepid={dist_lepid}, merged={dist_merge}"
-        )
-
 def test_merge_preserves_dists_nymph(tree_bundle) -> None:
     """
     The Nymph subtree is inserted without any branch-length scaling: the Nymph root is
@@ -299,10 +280,9 @@ def test_merge_polytomy(tree_bundle) -> None:
 
 def test_merge_preserves_dists_lepid_only_non_nymph(tree_bundle) -> None:
     """
-    Pairwise distances between non-Nymphalidae Lepid-only taxa must be identical in the
-    Lepid source tree and the merged tree. Unlike test_merge_preserves_dists_lepid_non_nymph_backbone
-    this test samples from the full lepid_only_non_nymph partition rather than the backbone
-    subset, providing broader coverage.
+    All non-Nymphalidae Lepid-only taxa lie entirely outside the replaced Nymphalidae
+    subtree, so their pairwise distances must be identical between the Lepid source tree
+    and the merged tree. Samples SAMPLE_SIZE taxa from that partition and checks every pair.
     """
     tree_lepid = tree_bundle["tree"]["lepid"]
     tree_merge = tree_bundle["tree"]["merge"]
@@ -395,6 +375,47 @@ def test_poly_tree_depth(tree_bundle) -> None:
         "Poly-pruned tree depth changed relative to Lepid tree: "
         f"lepid={depth_lepid}, poly_pruned={depth_poly}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: augment_tree_with_polytomies (synthetic non-ultrametric tree)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def class_data_nonultra():
+    return {
+        # on the tree
+        "alpha_1": {"family": "F1", "subfamily": "S1", "genus": "alpha"},
+        "alpha_2": {"family": "F1", "subfamily": "S1", "genus": "alpha"},
+        "beta_1":  {"family": "F1", "subfamily": "S1", "genus": "beta"},
+        "zeta_1":  {"family": "F2", "subfamily": "SZ", "genus": "zeta"},
+        # missing
+        "alpha_3": {"family": "F1", "subfamily": "S1", "genus": "alpha"},  # anchored via represented congener
+        "gamma_1": {"family": "F1", "subfamily": "S2", "genus": "gamma"},  # S2 unrepresented -> lineage fallback
+    }
+
+
+def test_poly_grafts_extend_to_local_mean_tip_depth(class_data_nonultra) -> None:
+    """
+    Non-ultrametric tree (tip depths 10/10/4/4; F1 non-monophyletic: zeta_1 nests beside
+    alpha_1 under a node at depth 9). alpha_3 anchors at MRCA(alpha_1, beta_1) = the root
+    and extends to the global mean tip depth 7. gamma_1 has no divergence anchor
+    (subfamily S2 unrepresented), so the lineage fallback grafts it at the deep
+    family-level MRCA (depth 9) and extends it to that clade's mean tip depth 10 --
+    branch +1, where a global-average rule would give 7 - 9 = -2 (regression: grafted
+    branch lengths must never go negative).
+    """
+    newick = "((alpha_1:1, zeta_1:1):9, alpha_2:4, beta_1:4);"
+    tree = augment_tree_with_polytomies(_build_tree(newick), class_data_nonultra, n_workers=1)
+
+    depths = {tip.name: tree.distance(tree.root, tip) for tip in tree.get_terminals()}
+    assert depths["alpha_3"] == pytest.approx(7.0)
+    assert depths["gamma_1"] == pytest.approx(10.0)
+
+    for cid in ("alpha_3", "gamma_1"):
+        assert tree.find_any(name=cid).branch_length >= 0.0
+    # gamma_1 hangs off the deep node joining alpha_1/zeta_1, one unit above its clade's tips
+    assert tree.find_any(name="gamma_1").branch_length == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

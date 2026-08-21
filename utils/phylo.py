@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from Bio import Phylo
 from Bio.Phylo.BaseTree import Tree, Clade
 from itertools import combinations
 from typing import Dict, List
@@ -41,7 +40,11 @@ class PhyloVCV:
 
         vcv = self.build_vcv_matrix()
 
-        self.corr = vcv / max(np.diag(vcv))
+        # Brownian-motion correlation: shared depth normalized per-pair by each tip's own
+        # root-to-tip depth. Valid for non-ultrametric trees (bryo/cub), where a global
+        # max-depth normalization would conflate evolutionary rate with relatedness.
+        tip_sds = np.sqrt(np.diag(vcv))
+        self.corr = vcv / np.outer(tip_sds, tip_sds)
 
         if htarg_shuf:
             # Scramble which species maps to which position in the (already-built) correlation
@@ -101,8 +104,8 @@ class PhyloVCV:
         idxs = [self._cid_to_idx[cid] for cid in cids_b]
         targs = self.corr[np.ix_(idxs, idxs)]  # pt[B, B]; advanced indexing returns a writeable copy
 
-        # same-cid pairs are fully positive (1.0). On an ultrametric tree corr's diagonal is already
-        # 1.0; same-species samples are pinned to it explicitly rather than relying on that.
+        # same-cid pairs are fully positive (1.0). corr's diagonal is 1.0 by construction;
+        # same-species samples are pinned to it explicitly rather than relying on that.
         cids_arr = np.asarray(cids_b, dtype=object)
         targs[cids_arr[:, None] == cids_arr[None, :]] = 1.0
 

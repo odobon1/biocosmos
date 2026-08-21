@@ -43,8 +43,13 @@ COMMON_NAME_CORRECTIONS = {
     "Brewer Blackbird": "Brewer's Blackbird",
     "Brandt Cormorant": "Brandt's Cormorant",
     "Scott Oriole": "Scott's Oriole",
-    "Sayornis": "Eastern phoebe", # --> issue child
+    "Sayornis": "Eastern phoebe",
     "Wilson Warbler": "Wilson's Warbler",
+    # disambiguate vernaculars whose first GBIF hit is the wrong species
+    "Nighthawk": "Common Nighthawk",
+    "Frigatebird": "Magnificent Frigatebird",
+    "Tree Sparrow": "American Tree Sparrow",
+    "Mockingbird": "Northern Mockingbird",
 }
 
 INAT_GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
@@ -75,12 +80,12 @@ def build_df_class_data(df_common_names: pd.DataFrame) -> tuple[pd.DataFrame, li
     for i in tqdm(range(len(common_names)), desc="Querying GBIF"):
         cname, clname = common_names[i], class_names[i]
         queried_name = COMMON_NAME_CORRECTIONS.get(cname, cname)
+        # Each query result is atomic: if the backbone hit is unusable, fall back to the
+        # whole general result. Never merge field-by-field -- that can stitch together
+        # fields from two different species.
         result = query_gbif(queried_name, INAT_GBIF_BACKBONE)
-        result2 = query_gbif(queried_name)
-        result = {
-            k: result[k] if result[k] is not None else result2[k]
-            for k in result.keys()
-        }
+        if result["species"] is None:
+            result = query_gbif(queried_name)
         rows.append({"common_name": cname, "class_name": clname, **result})
 
         if result["species"] is None:
@@ -104,6 +109,8 @@ def query_gbif(common_name: str,  dataset_key: str|None = None) -> dict:
     r.raise_for_status()
     results = r.json().get("results", [])
 
+    # drop extinct taxa (e.g. "Tree Swallow" first matches a fossil swallow)
+    results = [r for r in results if not r.get("extinct", False)]
     birds = [r for r in results if r.get("class") == "Aves"]
     candidates = birds if birds else results
 

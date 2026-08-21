@@ -31,9 +31,9 @@ def get_phylo_vcv(dataset: str) -> PhyloVCV:
     return _phylo_vcv_cache[key]
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):
-    if targ_type == "iw":
+    if targ_type == "sp":
         targs = compute_targs_iw(batch_size)
-    elif targ_type == "sw":
+    elif targ_type == "mp":
         targs = compute_targs_sw(class_encs_b)
     elif targ_type == "tax":
         targs = compute_targs_tax(targ_data_b)
@@ -344,7 +344,7 @@ def _dsmr_weight_rows(targs, B):
 # all-reduces so every rank returns identical full-batch values; the leaves' band-partial dL/dembs sum
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
-# Supports the full BCE-family config space (bce and bif_bce, incl. sw/iw/tax/phylo targets,
+# Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets,
 # cls_imb.norm, a BCE-family secondary-loss mix, and mix_unit_scale) -- only InfoNCE is excluded
 # (chunking_supported). The reductions that couple across the whole BxB matrix -- the cls_imb.norm
 # weight-mean normalizers (a 2D band sweep for bce; bif_bce's 1D per-anchor vector is O(B) and built
@@ -388,9 +388,9 @@ def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     full-batch compute_targets for the given targ_type. Reusable per-tile inputs (tax rank vectors,
     phylo correlation lookups) are precomputed once here so the sweeps only slice per block.
     """
-    if targ_type == "sw":
+    if targ_type == "mp":
         return lambda rs, re: (class_encs_b[rs:re].unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
-    if targ_type == "iw":
+    if targ_type == "sp":
         cols = torch.arange(B, device=device)
         return lambda rs, re: (torch.arange(rs, re, device=device).unsqueeze(1) == cols.unsqueeze(0)).float()
     if targ_type == "tax":
@@ -409,16 +409,16 @@ def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
 def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size):
     """
     Global DSMR mass over the full BxB target matrix: mass_pos = sum(targs), mass_neg = B^2 - sum(targs)
-    (== sum(1 - targs) for targets in [0, 1]). For sw/iw (0/1 targets) mass_pos is the O(B) closed form
+    (== sum(1 - targs) for targets in [0, 1]). For mp/sp (0/1 targets) mass_pos is the O(B) closed form
     sum_k count_k^2 / B (rank-identical, no collective); for soft tax/phylo targets it is summed over
     this rank's band [lo, hi) of target tiles (embedding-free) and all-reduced across bands.
     Matches torch.sum(targs) / torch.sum(1 - targs) in BCECriterion.__call__.
     """
     device = class_encs_b.device
-    if targ_type == "sw":
+    if targ_type == "mp":
         counts = torch.bincount(class_encs_b).to(torch.float64)
         mass_pos = (counts * counts).sum()
-    elif targ_type == "iw":
+    elif targ_type == "sp":
         mass_pos = torch.tensor(float(B), dtype=torch.float64, device=device)
     else:  # tax, phylo -- soft targets: sum over this rank's band of tiles, fold across bands
         mass_pos = torch.zeros((), dtype=torch.float64, device=device)

@@ -8,7 +8,7 @@ from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
 
-def _full_loss_cfg(crit="bce", targ="sw"):
+def _full_loss_cfg(crit="bce", targ="mp"):
     return {
         "crit": crit,
         "infonce": {"tsm": {"type": "linear", "sm_temp": "pinned"}},
@@ -37,7 +37,7 @@ def _full_loss_cfg(crit="bce", targ="sw"):
 @dataclass
 class _FakeSettingCfg:
     campaign: str = "c"
-    setting: str = "iw"
+    setting: str = "sp"
     seed: int = 42
     idx_seed: int = 0
     idx_trial: int = 1
@@ -110,7 +110,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
-    assert config["loss"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + sw: block live
+    assert config["loss"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + mp: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal), freq_type_2d inert (2D-only)
@@ -232,23 +232,23 @@ def test_base_eval_key_normalizes_family_inert_components() -> None:
     def cfg(model_type, non_causal=False, vis_proj_head=None):
         return SimpleNamespace(
             arch={"model_type": model_type, "clip": {"non_causal": non_causal}, "siglip": {"vis_proj_head": vis_proj_head}},
-            img_norm="default", dataset="cub", split="dev",
+            dataset="cub", split="dev",
             text_template={"train": "train", "eval": "sci"}, seed=42,
         )
 
     assert ArtifactManager.base_eval_key(cfg("siglip_vitb16")) == \
-        ("siglip_vitb16", "default", "cub", "dev", None, "sci", None, None)  # headless: seed shared
+        ("siglip_vitb16", "cub", "dev", None, "sci", None, None)  # headless: seed shared
     assert ArtifactManager.base_eval_key(cfg("siglip_vitb16", vis_proj_head="mlp")) == \
-        ("siglip_vitb16", "default", "cub", "dev", None, "sci", "mlp", 42)  # random head: seed kept
+        ("siglip_vitb16", "cub", "dev", None, "sci", "mlp", 42)  # random head: seed kept
     assert ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=True)) == \
-        ("clip_vitb16", "default", "cub", "dev", True, "sci", None, None)
+        ("clip_vitb16", "cub", "dev", True, "sci", None, None)
     # non_causal true vs false are two separate cached readings
     assert ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=True)) != \
         ArtifactManager.base_eval_key(cfg("clip_vitb16", non_causal=False))
     # the combo key serializes to the flat per-combo cache filename
     fpath = ArtifactManager.base_eval_cache_fpath(cfg("siglip_vitb16", vis_proj_head="mlp"))
     assert fpath.parent.name == "base_eval_cache"
-    assert fpath.name == "siglip_vitb16__default__cub__dev__None__sci__mlp__42.pkl"
+    assert fpath.name == "siglip_vitb16__cub__dev__None__sci__mlp__42.pkl"
 
 
 def test_format_and_merge_mem_running_max() -> None:

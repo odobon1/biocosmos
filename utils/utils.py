@@ -17,8 +17,8 @@ from utils.ddp import rank0
 import pdb
 
 
-# CLUSTER = "pace"  # PACE
-CLUSTER = "hpg"  # HiPerGator
+CLUSTER = "pace"  # PACE
+# CLUSTER = "hpg"  # HiPerGator
 
 
 dpath_root = Path(os.getcwd())
@@ -54,6 +54,7 @@ if CLUSTER == "pace":
         "raw_tree": {
             "bryo": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
             "cub": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
+            "cub_jetz": dpath_root / "data/cub/AllBirdsHackett1.tre",
             "lepid": dpath_root / "data/lepid/tree_renamed_full.tre",
             "nymph": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
         },
@@ -101,6 +102,7 @@ elif CLUSTER == "hpg":
         "raw_tree": {
             "bryo": dpath_root / "data/bryo/SI_Fig1(BIG).newick",
             "cub": dpath_root / "data/cub/1_tree-consensus-Hacket-AllSpecies-modified_cub-names_v1.phy",
+            "cub_jetz": dpath_root / "data/cub/AllBirdsHackett1.tre",
             "lepid": dpath_root / "data/lepid/tree_renamed_full.tre",
             "nymph": dpath_root / "data/nymph/tree_nymphalidae_chazot2021_all.tree",
         },
@@ -702,8 +704,6 @@ class PrintLog:
                 ("Model Type", cfg_eval.arch['model_type']),
                 ("Non-Causal", cfg_eval.arch['clip']['non_causal']),
             )),
-            "",
-            f"Image Norm --- {cfg_eval.img_norm}",
             "",
             f"Text Template --- {cfg_eval.text_template}",
             "",

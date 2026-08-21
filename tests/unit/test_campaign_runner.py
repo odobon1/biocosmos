@@ -39,7 +39,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -126,7 +126,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -151,7 +151,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         n_trials=2,
         datasets=("cub", "lepid"),
         baseline_overrides=[[
-            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
         baseline=False,
@@ -163,7 +163,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         (seed, dataset, setting, targ)
         for seed in (42, 43)
         for dataset in ("cub", "lepid")
-        for setting, targ in (("iw", "iw"), ("hp", "phylo"))
+        for setting, targ in (("sp", "sp"), ("hp", "phylo"))
     }
 
 
@@ -178,7 +178,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -207,7 +207,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
 
     # the baseline setting runs first, with no overrides applied
     assert scheduled == [
-        ("baseline", "iw", {}),
+        ("baseline", "sp", {}),
         ("hp", "phylo", {"loss.targ": "phylo"}),
     ]
 
@@ -227,7 +227,7 @@ def test_run_campaign_baseline_raises_on_reserved_name_collision(tmp_path, monke
             campaign="cmp_baseline_dup",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "baseline"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "baseline"}]],
             baseline=True,
         )
 
@@ -244,7 +244,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -265,18 +265,18 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "sp", "name": "sp"},
         ]],
         baseline=False,
     )
 
-    fpath = Path(tmp_path) / "cmp_c" / "settings" / "iw" / "overrides.json"
+    fpath = Path(tmp_path) / "cmp_c" / "settings" / "sp" / "overrides.json"
     assert fpath.exists()
 
     with open(fpath) as f:
         data = json.load(f)
 
-    assert data["loss.targ"] == "iw"
+    assert data["loss.targ"] == "sp"
 
 
 def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
@@ -291,7 +291,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -304,7 +304,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
 
     dpath_settings = Path(tmp_path) / "cmp_defer" / "settings"
 
-    # abort the campaign during the first trial (setting 'iw'): its overrides.json must already be
+    # abort the campaign during the first trial (setting 'sp'): its overrides.json must already be
     # in place at launch, while 'hp' -- planned but never launched -- must have no dir at all
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
         assert (dpath_settings / cfg_dict["setting"] / "overrides.json").exists()
@@ -317,13 +317,13 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
         baseline=False,
     )
 
-    assert (dpath_settings / "iw" / "overrides.json").exists()
+    assert (dpath_settings / "sp" / "overrides.json").exists()
     assert not (dpath_settings / "hp").exists()
 
 
@@ -337,7 +337,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -348,7 +348,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_complete" / "settings" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_complete" / "settings" / "sp" / "cub" / "42"
 
     # a real trial writes its metadata (complete still False) + leaves a chkpts/in_progress dir behind;
     # the campaign runner is what cleans up and flips complete=True on a clean exit
@@ -363,7 +363,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         campaign="cmp_complete",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -393,7 +393,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -415,7 +415,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         campaign="cmp_render",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -434,7 +434,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": True, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -457,7 +457,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
-    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]], baseline=False)
+    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]], baseline=False)
     cr.run_campaign(**kwargs)
     assert seen_at_launch == [False]  # first launch: cache deleted before the trial ran
 
@@ -478,7 +478,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": True}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -509,7 +509,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         campaign="cmp_delt",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -527,7 +527,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -537,7 +537,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "model_specific": {},
     })
 
-    dpath_trial = Path(tmp_path) / "cmp_fail" / "settings" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_fail" / "settings" / "sp" / "cub" / "42"
 
     # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
     # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
@@ -561,7 +561,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         campaign="cmp_fail",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -602,7 +602,7 @@ def test_run_campaign_invalid_setting_config_fails_at_kickoff(tmp_path, monkeypa
             campaign="cmp_badcfg",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}, {"loss.targ": "sw", "name": "bad"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "mp", "name": "bad"}]],
             baseline=False,
         )
     assert scheduled == []
@@ -633,7 +633,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -644,7 +644,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_flaky" / "settings" / "iw" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_flaky" / "settings" / "sp" / "cub" / "42"
     fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
 
     # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
@@ -667,7 +667,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         campaign="cmp_flaky",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -685,7 +685,7 @@ def test_expand_settings_raises_on_duplicate_names() -> None:
         cr._expand_settings(
             [
                 [
-                    {"loss.targ": "iw", "name": "dup"},
+                    {"loss.targ": "sp", "name": "dup"},
                     {"loss.targ": "phylo", "name": "dup"},
                 ]
             ]
@@ -698,13 +698,13 @@ def test_expand_settings_single_combo_group_unchanged() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "iw", "name": "iw"},
+                {"loss.targ": "sp", "name": "sp"},
             ]
         ]
     )
     assert settings == [
         ("hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("iw", {"loss.targ": "iw"}),
+        ("sp", {"loss.targ": "sp"}),
     ]
 
 
@@ -716,15 +716,15 @@ def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo"},
-                {"loss.targ": "sw"},
-                {"loss.targ": "iw", "name": "iw"},
+                {"loss.targ": "mp"},
+                {"loss.targ": "sp", "name": "sp"},
             ]
         ]
     )
     assert settings == [
         ("loss2.mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("L1T-sw", {"loss.targ": "sw"}),
-        ("iw", {"loss.targ": "iw"}),
+        ("L1T-mp", {"loss.targ": "mp"}),
+        ("sp", {"loss.targ": "sp"}),
     ]
 
 
@@ -735,15 +735,15 @@ def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
-                {"loss.targ": "sw", "batch_size": [1024, 2048], "name": "sw"},
+                {"loss.targ": "mp", "batch_size": [1024, 2048], "name": "mp"},
             ]
         ]
     )
     assert settings == [
         ("hp_bs-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
         ("hp_bs-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
-        ("sw_bs-1k", {"loss.targ": "sw", "batch_size": 1024}),
-        ("sw_bs-2k", {"loss.targ": "sw", "batch_size": 2048}),
+        ("sw_bs-1k", {"loss.targ": "mp", "batch_size": 1024}),
+        ("sw_bs-2k", {"loss.targ": "mp", "batch_size": 2048}),
     ]
 
 
@@ -768,10 +768,10 @@ def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
 
 def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
     # in an unnamed item the expanded value is named like any other override, in declared position
-    settings = cr._expand_settings([[{"loss.targ": "sw", "batch_size": [1024, 2048]}]])
+    settings = cr._expand_settings([[{"loss.targ": "mp", "batch_size": [1024, 2048]}]])
     assert settings == [
-        ("L1T-sw_bs-1k", {"loss.targ": "sw", "batch_size": 1024}),
-        ("L1T-sw_bs-2k", {"loss.targ": "sw", "batch_size": 2048}),
+        ("L1T-sw_bs-1k", {"loss.targ": "mp", "batch_size": 1024}),
+        ("L1T-sw_bs-2k", {"loss.targ": "mp", "batch_size": 2048}),
     ]
 
 
@@ -781,7 +781,7 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "sw"},
+                {"loss.targ": "mp"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -794,8 +794,8 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_bs-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "L1T-sw_2k": {"loss.targ": "sw", "batch_size": 2048},
-        "L1T-sw_bs-1k": {"loss.targ": "sw", "batch_size": 1024},
+        "L1T-sw_2k": {"loss.targ": "mp", "batch_size": 2048},
+        "L1T-sw_bs-1k": {"loss.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -805,7 +805,7 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "sw", "name": "sw"},
+                {"loss.targ": "mp", "name": "mp"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -818,8 +818,8 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "sw_2k": {"loss.targ": "sw", "batch_size": 2048},
-        "sw_1k": {"loss.targ": "sw", "batch_size": 1024},
+        "sw_2k": {"loss.targ": "mp", "batch_size": 2048},
+        "sw_1k": {"loss.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -847,11 +847,11 @@ def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
             [
                 [
                     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                    {"loss.targ": "sw", "name": "sw"},
+                    {"loss.targ": "mp", "name": "mp"},
                 ],
                 [
                     {"loss2.mix": 0.4, "loss2.targ": "phylo", "name": "hp4"},
-                    {"loss.targ": "sw", "name": "sw2"},
+                    {"loss.targ": "mp", "name": "sw2"},
                 ],
             ]
         )
@@ -864,7 +864,7 @@ def test_expand_settings_null_name_skips_component() -> None:
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss.targ": "sw", "name": "sw"},
+                {"loss.targ": "mp", "name": "mp"},
             ],
             [
                 {"loss.wting.cls_imb.type": "inv_freq", "name": "if"},
@@ -875,8 +875,8 @@ def test_expand_settings_null_name_skips_component() -> None:
     assert dict(settings) == {
         "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
         "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
-        "sw_if": {"loss.targ": "sw", "loss.wting.cls_imb.type": "inv_freq"},
-        "sw": {"loss.targ": "sw", "loss.wting.cls_imb.type": "class_bal"},
+        "sw_if": {"loss.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
+        "mp": {"loss.targ": "mp", "loss.wting.cls_imb.type": "class_bal"},
     }
 
 
@@ -886,8 +886,8 @@ def test_expand_settings_raises_on_multiple_null_names_in_group() -> None:
         cr._expand_settings(
             [
                 [
-                    {"loss.targ": "sw", "name": "sw"},
-                    {"loss.targ": "iw", "name": None},
+                    {"loss.targ": "mp", "name": "mp"},
+                    {"loss.targ": "sp", "name": None},
                     {"loss.targ": "phylo", "name": None},
                 ]
             ]
@@ -900,8 +900,8 @@ def test_expand_settings_raises_when_every_combo_group_has_null_name() -> None:
         cr._expand_settings(
             [
                 [
-                    {"loss.targ": "sw", "name": "sw"},
-                    {"loss.targ": "iw", "name": None},
+                    {"loss.targ": "mp", "name": "mp"},
+                    {"loss.targ": "sp", "name": None},
                 ],
                 [
                     {"batch_size": 2048, "name": "2k"},
@@ -923,7 +923,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -948,15 +948,15 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[
-            [{"loss.targ": "iw", "name": "iw"}, {"loss.targ": "phylo", "name": "hp"}],
+            [{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "phylo", "name": "hp"}],
             [{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}],
         ],
         baseline=False,
     )
 
     assert set(scheduled) == {
-        ("iw_cos", "iw", "cos"),
-        ("iw_l2", "iw", "l2"),
+        ("iw_cos", "sp", "cos"),
+        ("iw_l2", "sp", "l2"),
         ("hp_cos", "phylo", "cos"),
         ("hp_l2", "phylo", "l2"),
     }
@@ -976,7 +976,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
@@ -1022,7 +1022,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
 def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_d") / "iw" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "cub" / "42"
     err = subprocess.CalledProcessError(
         returncode=1,
         cmd=["torchrun", "..."],
@@ -1035,7 +1035,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
         n_trials=10,
         seed=42,
         dataset="cub",
-        setting="iw",
+        setting="sp",
         exc=err,
         failure="VRAM",
     )
@@ -1054,7 +1054,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
 def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_d") / "iw" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "cub" / "42"
     stderr = (
         "W0626 21:53:01 site-packages/torch/distributed/run.py:766] warning spam\n"
         "Eval (val):  50%|#####     | 5/10 [00:01<00:01,  4.5it/s]\n"
@@ -1070,7 +1070,7 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
         n_trials=1,
         seed=42,
         dataset="cub",
-        setting="iw",
+        setting="sp",
         exc=err,
         failure="Other",
     )
@@ -1085,7 +1085,7 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
 def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_c") / "iw" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_c") / "sp" / "cub" / "42"
     dpath_trial.mkdir(parents=True, exist_ok=True)
 
     # errors/ is created only once a crash occurs; before the first checkpoint there's no metadata, so
@@ -1219,7 +1219,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -1260,24 +1260,24 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         campaign="cmp_manifest_run",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
     # each trial showed under In Progress while it was running (lepid appears once per retry; collapse them)
     order = [cur for cur, _ in in_progress_snapshots]
     distinct_order = [cur for i, cur in enumerate(order) if i == 0 or cur != order[i - 1]]
-    assert distinct_order == ["iw/cub/42", "iw/lepid/42"]
+    assert distinct_order == ["sp/cub/42", "sp/lepid/42"]
     for cur, snapshot in in_progress_snapshots:
         assert f"🏃 In Progress:\n{cur}\n" in snapshot
 
     text = (dpath_campaign / "manifest.log").read_text()
     assert text == (
         "❌ Failed:\n"
-        "iw/lepid/42 --- 0-01:01:01 --- 1/35 --- Other\n"
+        "sp/lepid/42 --- 0-01:01:01 --- 1/35 --- Other\n"
         "\n"
         "✅ Completed:\n"
-        "iw/cub/42 --- 0-01:01:01\n"
+        "sp/cub/42 --- 0-01:01:01\n"
         "\n"
         "🏃 In Progress:\n"
         "\n"
@@ -1296,7 +1296,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"targ": "iw", "crit": "bce", "sim": "cos"},
+        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
         "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -1322,7 +1322,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         campaign="cmp_manifest_interrupt",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1335,8 +1335,8 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "🏃 In Progress:\n"
         "\n"
         "⏳ Queued:\n"
-        "iw/cub/42\n"
-        "iw/lepid/42\n"
+        "sp/cub/42\n"
+        "sp/lepid/42\n"
     )
 
 
@@ -1347,16 +1347,16 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_grow",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
         meta = json.load(f)
-    assert meta["settings"] == ["iw"]
+    assert meta["settings"] == ["sp"]
     assert meta["datasets"] == ["cub"]
     assert meta["seeds"] == [42]
-    assert scheduled == [("iw", "cub", 42)]
+    assert scheduled == [("sp", "cub", 42)]
 
     # relaunch with added settings, datasets, and seeds -> matrix grows, no error
     n_before = len(scheduled)
@@ -1365,7 +1365,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         n_trials=2,
         datasets=("cub", "lepid"),
         baseline_overrides=[[
-            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
         baseline=False,
@@ -1373,13 +1373,13 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
         meta = json.load(f)
-    assert meta["settings"] == ["iw", "hp"]
+    assert meta["settings"] == ["sp", "hp"]
     assert meta["datasets"] == ["cub", "lepid"]
     assert meta["seeds"] == [42, 43]
 
-    # the already-completed iw/cub/42 trial is skipped; only the 7 newly-added trials run
+    # the already-completed sp/cub/42 trial is skipped; only the 7 newly-added trials run
     relaunch_calls = scheduled[n_before:]
-    assert ("iw", "cub", 42) not in relaunch_calls
+    assert ("sp", "cub", 42) not in relaunch_calls
     assert len(relaunch_calls) == 7
 
 
@@ -1390,7 +1390,7 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
         campaign="cmp_commit",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1416,7 +1416,7 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
             n_trials=1,
             datasets=("cub",),
             baseline_overrides=[[
-                {"loss.targ": "iw", "name": "dup"},
+                {"loss.targ": "sp", "name": "dup"},
                 {"loss.targ": "phylo", "name": "dup"},
             ]],
             baseline=False,
@@ -1435,7 +1435,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1449,7 +1449,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1466,7 +1466,7 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
         n_trials=1,
         datasets=("cub",),
         baseline_overrides=[[
-            {"loss.targ": "iw", "name": "iw"},
+            {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
         baseline=False,
@@ -1477,7 +1477,7 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_setting",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
             baseline=False,
         )
 
@@ -1489,7 +1489,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_dataset",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1498,7 +1498,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_dataset",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
             baseline=False,
         )
 
@@ -1510,7 +1510,7 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_seed",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1519,7 +1519,7 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_seed",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
             baseline=False,
         )
 
@@ -1528,7 +1528,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1542,7 +1542,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
             campaign="cmp_ic_missing",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
             baseline=False,
         )
     assert launched == []
@@ -1555,7 +1555,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
     monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manifold_viz": {},
         "model_specific": {},
@@ -1567,7 +1567,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
         campaign="cmp_ic_rt",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "iw", "name": "iw"}]],
+        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
         baseline=False,
     )
 
@@ -1582,7 +1582,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "iw", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manifold_viz": {},
         "model_specific": {},

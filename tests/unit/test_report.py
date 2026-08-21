@@ -157,21 +157,21 @@ def test_seed_sweep_complete_needs_every_setting_and_dataset(tmp_path, monkeypat
     # the campaign-level tables wait for a seed to have finished across the WHOLE matrix, since each
     # trial completion reselects only its own (setting, dataset)
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
-    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["iw", "sw"], "datasets": ["cub", "lepid"]}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["sp", "mp"], "datasets": ["cub", "lepid"]}))
     scores = (("0.10", "0.10"), ("0.30", "0.30"))
-    for setting in ("iw", "sw"):
+    for setting in ("sp", "mp"):
         for dataset in ("cub", "lepid"):
             _write_trial_evals(tmp_path / "settings" / setting / dataset / "42", scores)
-    # seed 43 has run everywhere but sw/lepid, where it stopped short of its final eval
-    for setting, dataset, n_chkpts in (("iw", "cub", None), ("iw", "lepid", None), ("sw", "cub", None), ("sw", "lepid", 2)):
+    # seed 43 has run everywhere but mp/lepid, where it stopped short of its final eval
+    for setting, dataset, n_chkpts in (("sp", "cub", None), ("sp", "lepid", None), ("mp", "cub", None), ("mp", "lepid", 2)):
         _write_trial_evals(tmp_path / "settings" / setting / dataset / "43", scores, n_chkpts=n_chkpts)
 
     assert report.seed_sweep_complete(42)
     assert not report.seed_sweep_complete(43)
 
-    (tmp_path / "settings" / "sw" / "lepid" / "43" / "evals" / "eval2").mkdir()
+    (tmp_path / "settings" / "mp" / "lepid" / "43" / "evals" / "eval2").mkdir()
     for group_key in _GROUP_KEYS:  # its final eval lands -> the sweep closes
-        (tmp_path / "settings" / "sw" / "lepid" / "43" / "evals" / "eval2" / f"{group_key}.json").write_text(json.dumps({
+        (tmp_path / "settings" / "mp" / "lepid" / "43" / "evals" / "eval2" / f"{group_key}.json").write_text(json.dumps({
             "scores": {"comp": {"map": {"all": "0.30"}, "acc": {"i2t": "0.30"}}},
             "chkpt": "2/2 (0.0M/0.0M samples)",
         }))
@@ -217,14 +217,14 @@ def test_stats_table_grid_formats_by_trial_count() -> None:
         ("All", "ID", "OOD", "I2T", "I2I", "T2I"),
         [
             ("hp", [_comp(0.50)["map"], _comp(0.60)["map"]]),
-            ("sw", [_comp(0.50)["map"]]),
-            ("iw", []),
+            ("mp", [_comp(0.50)["map"]]),
+            ("sp", []),
         ],
         "std",
     )
 
     assert grid[0] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert [row[0] for row in grid[1:]] == ["hp (2)", "sw (1)", "iw (0)"]
+    assert [row[0] for row in grid[1:]] == ["hp (2)", "mp (1)", "sp (0)"]
     assert grid[1][1] == "55.00 ± 7.07"  # 2 trials: mean ± std
     assert grid[2][1] == "50.00"  # 1 trial: mean only
     assert grid[3][1] == "-"  # 0 trials
@@ -252,7 +252,7 @@ def test_stats_table_grid_single_acc_column() -> None:
 
 
 def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
-    # "sw" is planned in campaign_metadata.json but has no completed trials in this dataset, so it
+    # "mp" is planned in campaign_metadata.json but has no completed trials in this dataset, so it
     # gets no row (exclusion asserted in test_update_stats_tables_ordered_localized_per_metric);
     # trials are counted by their written best-checkpoint metrics, same as update_metric_stats.
     # bold_high=True + heatmap='fixed' exercise the real matplotlib styling paths (winner bold +
@@ -261,7 +261,7 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     dpath_best = tmp_path / "settings" / "hp" / dataset / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _scores_grp(_comp(0.50)))
-    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": [dataset]}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": [dataset]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
@@ -317,8 +317,8 @@ def test_update_stats_tables_ordered_localized_per_metric(tmp_path, monkeypatch)
 def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> None:
     # two datasets -> two stacked tables sharing the same setting rows (in campaign_metadata order).
     # "hp" has 2 cub trials (mean ± spread) and none in bryo -> a blank "-" row in the Bryozoa table;
-    # "sw" has no completed trials anywhere -> no rows at all until its first trial completes.
-    settings = ["hp", "sw"]
+    # "mp" has no completed trials anywhere -> no rows at all until its first trial completes.
+    settings = ["hp", "mp"]
     for seed, base in (("42", 0.50), ("43", 0.60)):
         dpath_best = tmp_path / "settings" / "hp" / "cub" / seed / "evals" / "_best"
         dpath_best.mkdir(parents=True)
@@ -341,7 +341,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
     grid = rows_as_lists()
     # campaign banner ("<parent-dir> - <campaign> (<eval group name>)") + blank row, then the dataset tables, then the
-    # always-on cross-dataset mean table (one row per setting) at the bottom. "sw" (no completed
+    # always-on cross-dataset mean table (one row per setting) at the bottom. "mp" (no completed
     # trials anywhere) gets no rows; "hp" completed only in cub, so the Bryozoa table still gets its
     # blank "-" row. mean cells are point values (no spread), unlike the per-dataset "± spread".
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
@@ -349,14 +349,14 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     assert grid[2][0] == "CUB"
     assert grid[3][:7] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
     assert grid[4][:2] == ["hp (2)", "55.00 ± 7.07"]  # hp: 2 trials
-    assert grid[5][:7] == [None] * 7  # spacer row -- no "sw" row
+    assert grid[5][:7] == [None] * 7  # spacer row -- no "mp" row
     assert grid[6][0] == "Bryozoa"
     assert grid[7][:7] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
     assert grid[8][:2] == ["hp (0)", "-"]  # hp's blank entries still added for the trial-less dataset
     assert grid[10][0] == "Mean"  # cross-dataset mean table sits at the bottom
     assert grid[11][0] == "Setting"
     assert grid[12][:7] == ["hp", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]
-    assert not any(v in ("sw", "sw (0)") for r in grid for v in r)
+    assert not any(v in ("mp", "mp (0)") for r in grid for v in r)
     # per-seed blocks to the right, one blank separator column apart; "seed <seed>" labels sit in the
     # campaign-banner row; seed blocks have no Mean table and their dataset tables sit in the same
     # rows as the aggregate block's (dataset tables lead everywhere), with plain setting labels (no
@@ -411,10 +411,10 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
 def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
     # bold_high=True: the highest-mean setting cell in each score column is bolded. "hp" (base 0.60)
-    # outranks "sw" (base 0.50) in every column, so hp's cells bold and sw's do not; "iw" completed
+    # outranks "mp" (base 0.50) in every column, so hp's cells bold and mp's do not; "sp" completed
     # only in bryo, so its CUB row is blank "-" -- ignored and never bolded.
-    settings = ["hp", "sw", "iw"]
-    for setting, dataset, base in (("hp", "cub", 0.60), ("sw", "cub", 0.50), ("iw", "bryo", 0.10)):
+    settings = ["hp", "mp", "sp"]
+    for setting, dataset, base in (("hp", "cub", 0.60), ("mp", "cub", 0.50), ("sp", "bryo", 0.10)):
         dpath_best = tmp_path / "settings" / setting / dataset / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
@@ -428,13 +428,13 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
     ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, setting rows
-    # 5/6/7 = hp/sw/iw; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
+    # 5/6/7 = hp/mp/sp; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
     assert ws.cell(row=3, column=1).value == "CUB"
     assert ws.cell(row=4, column=1).value == "Setting"
     for score_col in range(2, 8):
         assert ws.cell(row=5, column=score_col).font.bold is True       # hp wins -> bold
-        assert ws.cell(row=6, column=score_col).font.bold is not True   # sw loses -> not bold
-        assert ws.cell(row=7, column=score_col).value == "-"            # iw: no cub trials
+        assert ws.cell(row=6, column=score_col).font.bold is not True   # mp loses -> not bold
+        assert ws.cell(row=7, column=score_col).value == "-"            # sp: no cub trials
         assert ws.cell(row=7, column=score_col).font.bold is not True   # "-" never bolds
 
 
@@ -699,15 +699,15 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     # the score blocks shift right past, aligned with the aggregate block's bottom Mean table (whose
     # Setting column labels its rows): one column per overridden param (union of the settings'
     # overrides.json keys, first-seen order), values resolved from each setting's
-    # config.json -- "-" when the param is absent there (inert under that config: sw has
-    # loss2.mix 0.0, so clean_metadata dropped its loss2 subtree). loss.targ resolves to "sw" for
+    # config.json -- "-" when the param is absent there (inert under that config: mp has
+    # loss2.mix 0.0, so clean_metadata dropped its loss2 subtree). loss.targ resolves to "mp" for
     # BOTH settings, so its column is omitted (uniform columns differentiate nothing). Config cells
     # get no winner-bold/heatmap styling despite bold_high/heatmap on.
     for setting, base, overrides, meta in (
         ("hp", 0.50, {"loss2.mix": 0.3, "loss2.targ": "phylo"},
-         {"loss": {"targ": "sw"}, "loss2": {"mix": 0.3, "targ": "phylo"}}),
-        ("sw", 0.40, {"loss.targ": "sw"},
-         {"loss": {"targ": "sw"}}),
+         {"loss": {"targ": "mp"}, "loss2": {"mix": 0.3, "targ": "phylo"}}),
+        ("mp", 0.40, {"loss.targ": "mp"},
+         {"loss": {"targ": "mp"}}),
     ):
         dpath_setting = tmp_path / "settings" / setting
         dpath_best = dpath_setting / "cub" / "42" / "evals" / "_best"
@@ -715,7 +715,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
         (dpath_setting / "overrides.json").write_text(json.dumps(overrides))
         (dpath_setting / "config.json").write_text(json.dumps({**meta}))
-    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub"]}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": ["cub"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
@@ -729,7 +729,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     assert grid[2][3] == "CUB"
     assert grid[7][3] == "Mean"
     # overrides table in the left band, aligned with the Mean table; param cols in first-seen order
-    # (hp's overrides, then sw's); no Setting column of its own; uniform loss.targ column omitted
+    # (hp's overrides, then mp's); no Setting column of its own; uniform loss.targ column omitted
     assert grid[7][0] == "Baseline Overrides"
     assert "A8:B8" in {str(m) for m in ws.merged_cells.ranges}
     assert grid[8][:2] == ["loss2.mix", "loss2.targ"]
@@ -737,8 +737,8 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
     assert grid[8][3:5] == ["Setting", "All"]  # Mean header shares the row
     assert grid[9][:2] == ["0.3", "phylo"]
     assert grid[9][3] == "hp"  # labeled by the Mean's Setting column
-    assert grid[10][:2] == ["-", "-"]  # loss2.* inert for sw -> "-"
-    assert grid[10][3] == "sw"
+    assert grid[10][:2] == ["-", "-"]  # loss2.* inert for mp -> "-"
+    assert grid[10][3] == "mp"
     # param-name header styled like other headers; config cells skip score styling entirely
     assert ws.cell(row=9, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
     assert ws.cell(row=9, column=1).font.bold is True
@@ -764,14 +764,14 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
 def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path, monkeypatch) -> None:
     # every overridden param resolves to the same value for every setting -> no column survives, so
     # the Baseline Overrides band is omitted entirely and the score blocks sit leftmost
-    for setting, base in (("hp", 0.50), ("sw", 0.40)):
+    for setting, base in (("hp", 0.50), ("mp", 0.40)):
         dpath_setting = tmp_path / "settings" / setting
         dpath_best = dpath_setting / "cub" / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
-        (dpath_setting / "overrides.json").write_text(json.dumps({"loss.targ": "sw"}))
-        (dpath_setting / "config.json").write_text(json.dumps({"loss": {"targ": "sw"}}))
-    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub"]}))
+        (dpath_setting / "overrides.json").write_text(json.dumps({"loss.targ": "mp"}))
+        (dpath_setting / "config.json").write_text(json.dumps({"loss": {"targ": "mp"}}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": ["cub"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
@@ -800,7 +800,7 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
         ("hp", "cub", "42"): ("100.40", "10.10", "5.10", "100.2/128.0 GB", "20.2/178.4 GB"),
         ("hp", "cub", "43"): ("200.40", "20.10", "7.10", "110.2/128.0 GB", "24.2/178.4 GB"),
         ("hp", "bryo", "42"): ("350.00", "30.10", "9.10", "120.2/128.0 GB", "30.2/178.4 GB"),
-        ("sw", "cub", "42"): ("63.49", "7.70", "6.49", "117.2/128.0 GB", "26.3/178.4 GB"),
+        ("mp", "cub", "42"): ("63.49", "7.70", "6.49", "117.2/128.0 GB", "26.3/178.4 GB"),
     }
     for (setting, dataset, seed), (trial_t, train_t, eval_t, ram, vram) in hw_vals.items():
         dpath_trial = tmp_path / "settings" / setting / dataset / seed
@@ -813,12 +813,12 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
         }))
     for setting, overrides, meta, crashes in (
         ("hp", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 2, "vram": 1, "other": 0}),
-        ("sw", {"loss.targ": "sw"}, {"loss": {"targ": "sw"}}, {"ram": 0, "vram": 0, "other": 3}),
+        ("mp", {"loss.targ": "mp"}, {"loss": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
         (tmp_path / "settings" / setting / "overrides.json").write_text(json.dumps(overrides))
         (tmp_path / "settings" / setting / "config.json").write_text(json.dumps({**meta}))
         (tmp_path / "settings" / setting / "setting_metadata.json").write_text(json.dumps({"n_crashes": crashes}))
-    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "sw"], "datasets": ["cub", "bryo"]}))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": ["cub", "bryo"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
@@ -837,16 +837,16 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     assert "A13:B13" in merged
     assert grid[13][:2] == ["loss2.mix", "loss.targ"]
     assert grid[14][:2] == ["0.3", "-"]
-    assert grid[15][:2] == ["-", "sw"]
+    assert grid[15][:2] == ["-", "mp"]
     # CUB companion: banner in the scores banner row, stat header aligned with the scores header,
-    # value rows labeled by the scores Setting column; hp means its 2 cub trials, sw its 1
+    # value rows labeled by the scores Setting column; hp means its 2 cub trials, mp its 1
     assert grid[2][11] == "Hardware Performance"
     assert "L3:P3" in merged
     assert grid[3][11:16] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
     assert grid[4][3] == "hp (2)"
     assert grid[4][11:16] == ["150", "15", "6", "105", "22"]
     assert grid[5][11:16] == ["63", "8", "6", "117", "26"]
-    # Bryozoa companion: hp's single trial passes through; sw has no bryo trials -> "-" row
+    # Bryozoa companion: hp's single trial passes through; mp has no bryo trials -> "-" row
     assert grid[7][3] == "Bryozoa"
     assert grid[7][11] == "Hardware Performance"
     assert grid[9][11:16] == ["350", "30", "9", "120", "30"]
@@ -857,7 +857,7 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     assert grid[13][11:19] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
                                "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
     assert grid[14][11:19] == ["250", "23", "8", "113", "26", "2", "1", "0"]
-    # sw: single cub trial, values pass straight through the two-level mean before rounding
+    # mp: single cub trial, values pass straight through the two-level mean before rounding
     assert grid[15][11:19] == ["63", "8", "6", "117", "26", "0", "0", "3"]
     # seed blocks keep their companions too: seed 42 scores at U..AA + separator AB, companion at
     # AC..AG; seed 43 one 13-wide block + separator later, companion at AQ..AU
@@ -865,11 +865,11 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
     assert grid[0][34] == "seed 43"
     assert grid[2][28] == "Hardware Performance"
     assert grid[4][28:33] == ["100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
-    assert grid[5][28:33] == ["63", "8", "6", "117", "26"]     # sw's only trial
+    assert grid[5][28:33] == ["63", "8", "6", "117", "26"]     # mp's only trial
     assert grid[9][28:33] == ["350", "30", "9", "120", "30"]   # seed 42 Bryozoa
-    assert grid[10][28:33] == ["-", "-", "-", "-", "-"]        # sw: no bryo trial
+    assert grid[10][28:33] == ["-", "-", "-", "-", "-"]        # mp: no bryo trial
     assert grid[4][42:47] == ["200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
-    assert grid[5][42:47] == ["-", "-", "-", "-", "-"]         # sw has no 43 trial
+    assert grid[5][42:47] == ["-", "-", "-", "-", "-"]         # mp has no 43 trial
     # separator columns between scores tables and companions / between blocks stay empty
     assert all(r[2] is None and r[10] is None and r[19] is None and r[27] is None for r in grid)
     # hw header styled like other headers; value cells get no winner-bold/heatmap styling

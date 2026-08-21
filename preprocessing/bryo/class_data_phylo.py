@@ -177,10 +177,11 @@ def main():
     genera_imgs = get_subdirectory_names(paths["imgs"]["bryo"])
     class_data = build_class_data(genera_imgs, g2s)
 
-    tree = prune_rename_tree(tree, class_data)
-    tree = augment_tree_with_polytomies(tree, class_data)
+    tree_prepoly = prune_rename_tree(tree, class_data)
+    tree = augment_tree_with_polytomies(tree_prepoly, class_data)
 
     save_pickle(class_data, paths["metadata"]["bryo"] / "class_data.pkl")
+    save_pickle(tree_prepoly, paths["metadata"]["bryo"] / "tree_prepoly.pkl")
     save_pickle(tree, paths["metadata"]["bryo"] / "tree.pkl")
 
     print("Class data and tree complete!")

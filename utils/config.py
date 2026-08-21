@@ -19,7 +19,6 @@ CFG_PARAM_ALIASES = {
     "loss.targ": "L1T",
     "loss2.targ": "L2T",
     "opt.lr.init": "LR0",
-    "img_norm": "norm",
 }
 
 CFG_PARAM_VALUE_ALIASES = {
@@ -33,10 +32,6 @@ CFG_PARAM_VALUE_ALIASES = {
     },
     "loss2.targ": {
         "phylo": "hp",
-    },
-    "img_norm": {
-        "default": "def",
-        "dataset": "ds",
     },
 }
 
@@ -86,7 +81,6 @@ class TrainConfig:
     loss: dict
     loss2: dict
     text_template: dict
-    img_norm: str
     opt: dict
 
     dev: dict
@@ -211,10 +205,10 @@ class TrainConfig:
         if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
         
-        if self.loss["targ"] not in ("iw", "sw", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{iw, sw, tax, phylo}}")
-        if self.loss2["targ"] not in ("iw", "sw", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{iw, sw, tax, phylo}}")
+        if self.loss["targ"] not in ("sp", "mp", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{sp, mp, tax, phylo}}")
+        if self.loss2["targ"] not in ("sp", "mp", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{sp, mp, tax, phylo}}")
 
         if self.loss["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
             raise ValueError(f"Unknown Loss 1 logits.bce.center: '{self.loss['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
@@ -223,9 +217,6 @@ class TrainConfig:
 
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
-
-        if self.img_norm not in ("default", "dataset"):
-            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
 
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
@@ -438,7 +429,6 @@ class EvalConfig:
     batch_size: int
 
     arch: dict
-    img_norm: str
 
     text_template: str
 
@@ -451,12 +441,6 @@ class EvalConfig:
 
         if self.eval_type not in ("val", "test"):
             raise ValueError(f"Unknown eval partition: '{self.eval_type}', must be one of {{val, test}}")
-
-        if self.img_norm not in ("default", "dataset"):
-            raise ValueError(f"Unknown img_norm option: '{self.img_norm}', must be one of {{default, dataset}}")
-
-        if self.rdpath_model is None and self.img_norm == "dataset":
-            raise ValueError("img_norm='dataset' requires a model checkpoint (rdpath_model) to infer which partition's norm stats were used during training")
 
         # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
         # exposes no non_causal/vis_proj_head knobs; checkpoint eval overrides from the setting's config.json below
@@ -481,7 +465,6 @@ class EvalConfig:
                 self.arch["clip"]["non_causal"] = config_setting["arch"]["clip"]["non_causal"]  # override non_causal
             if "siglip" in config_setting["arch"]:
                 self.arch["siglip"]["vis_proj_head"] = config_setting["arch"]["siglip"]["vis_proj_head"]  # override vis_proj_head (projection head must match checkpoint)
-            self.img_norm = config_setting["img_norm"]  # override img_norm
             self.dataset = metadata_trial["dataset"]  # override dataset
             self.split = metadata_trial["split"]  # override split
 

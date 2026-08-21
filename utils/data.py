@@ -219,15 +219,11 @@ class Split:
         enc2cid: Dict[int, str],
         nshot: Dict[str, Any],
         class_counts: Dict[str, np.ndarray],
-        norm_mean: Dict[str, Tuple[float]],
-        norm_std: Dict[str, Tuple[float]],
     ) -> None:
         self._data_indexes = data_indexes
         self.enc2cid = enc2cid
         self.nshot = nshot
         self.class_counts = class_counts
-        self.norm_mean = norm_mean
-        self.norm_std = norm_std
 
     def get_data(self, partition: str) -> List[Dict[str, Any]]:
         return assemble_data_index(self._data_indexes, partition)

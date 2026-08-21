@@ -69,12 +69,12 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
 ## Evaluate a trained model
 **Note:** trials no longer save model weights, so campaigns produce no checkpoint directory to point this at — `rdpath_model` needs an externally supplied one laid out as `<seed>/chkpts/<name>/model.pt` (the loader reads the trial's `trial_metadata.json` and the setting's `config.json` from that dir's ancestors).
-1. In `config/eval.yaml`, set `rdpath_model` to a checkpointed model directory (e.g. `artifacts/dev/settings/iw/lepid/42/chkpts/final`).
+1. In `config/eval.yaml`, set `rdpath_model` to a checkpointed model directory (e.g. `artifacts/dev/settings/sp/lepid/42/chkpts/final`).
 2. Run:
     ```
     torchrun --standalone --nproc-per-node=auto -m eval
     ```
-    When `rdpath_model` is set, eval overrides `dataset`, `split`, `model_type`, `img_norm` from setting + trial saved metadata.
+    When `rdpath_model` is set, eval overrides `dataset`, `split`, `model_type` from setting + trial saved metadata.
 
     Note: n-shot performance is reported for the ID partition only; the bucket set follows `eval_type` — `val` → `train/val` buckets, `test` → `trainval/test` buckets.
 
@@ -97,7 +97,7 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     ```yaml
     baseline_overrides:
       - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
-        - {loss.targ: sw, name: sw}
+        - {loss.targ: mp, name: mp}
       - - {batch_size: 2_048, name: 2k}
         - {batch_size: 1_024, name: 1k}
     ```
@@ -106,16 +106,16 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     baseline_overrides:
       - - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 2_048, name: hp_2k}
         - {loss2.mix: 0.3, loss2.targ: phylo, batch_size: 1_024, name: hp_1k}
-        - {loss.targ: sw, batch_size: 2_048, name: sw_2k}
-        - {loss.targ: sw, batch_size: 1_024, name: sw_1k}
+        - {loss.targ: mp, batch_size: 2_048, name: sw_2k}
+        - {loss.targ: mp, batch_size: 1_024, name: sw_1k}
     ```
    A single combo group expands to its members unchanged:
     ```yaml
     baseline_overrides:
-      - - {loss.targ: iw, name: iw}
-        - {loss.targ: sw, name: sw}
+      - - {loss.targ: sp, name: sp}
+        - {loss.targ: mp, name: mp}
     ```
-   produces `iw` and `sw`.
+   produces `sp` and `mp`.
 
    Each resulting **setting** — a member of this Cartesian product, not a single `baseline_overrides` item (they coincide only for a single combo group) — is trained for `n_trials` seeds on every dataset, so the campaign runs *settings × datasets × `n_trials`* trials in total.
 
@@ -128,13 +128,13 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
     baseline: false
     baseline_overrides:
-      - - {loss.targ: iw,  name: iw}
-        - {loss.targ: sw, name: sw}
+      - - {loss.targ: sp,  name: sp}
+        - {loss.targ: mp, name: mp}
         - {loss.targ: phylo,    name: hp}
 
     suffix: null
     ```
-   Launched with `python -m campaign_runner --foobar`, this runs **30 trials**: 3 settings (`iw`, `sw`, `hp`) × 2 datasets (`cub`, `lepid`) × 5 seeds (`42`–`46` — trial seeds are `SEED0 .. SEED0 + n_trials - 1`, and `SEED0 = 42`). Each trial's artifacts land under `artifacts/foobar/settings/<setting>/<dataset>/<seed>/`.
+   Launched with `python -m campaign_runner --foobar`, this runs **30 trials**: 3 settings (`sp`, `mp`, `hp`) × 2 datasets (`cub`, `lepid`) × 5 seeds (`42`–`46` — trial seeds are `SEED0 .. SEED0 + n_trials - 1`, and `SEED0 = 42`). Each trial's artifacts land under `artifacts/foobar/settings/<setting>/<dataset>/<seed>/`.
 2. Launch the campaign, selecting the config by name:
     ```
     python -m campaign_runner --<campaign>   # e.g. python -m campaign_runner --dev_basic
@@ -147,7 +147,7 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
 **Note:** A campaign's config is **frozen at first launch**, bundled into a single snapshot. `config/train.yaml` (with `debug_mode` overrides folded in) and its three sibling config files are snapshotted together to `artifacts/<campaign>/cfg_baseline.json`, under the keys `train`, `hardware`, `manifold_viz`, `model_specific` (`config/hardware.yaml` → `hardware`, `config/model_specific.yaml` → `model_specific`, `config/manifold_viz.yaml` → `manifold_viz`). Every trial starts from the `train` snapshot, has the sibling snapshots injected (as `hw`, `model_specific`, `manifold_viz`), and layers its setting's `baseline_overrides` on top. Model-family `opt` defaults (`opt.wd`/`opt.beta2`) are left `null` in the baseline and resolved per trial from the cached `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching family's defaults. On any relaunch — resuming, or extending the matrix with added settings/datasets/seeds — the snapshot is read back from disk rather than re-read from the YAML, so edits to any of these config files after a campaign's first launch don't affect it: every trial (original or added later) uses the same frozen config. The one part still computed live per trial is the dataloader/GPU scaling (`n_workers`/`n_gpus`/`n_cpus`/`ram`), derived from the SLURM allocation so a resume adapts to the node; the static `hw` knobs (`mixed_prec`, `act_chkpt`, `loss_chunk_size`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers`, `use_img_cache`, `eval`) are frozen and overridable per setting via `hw.*` in `baseline_overrides`. `config/stats.yaml` (stats-table/metrics-workbook rendering settings) is deliberately **not** part of the snapshot: it is read live at each stats render (trial completion, and `python -m tools.regen_stats <campaign>`), so edits to it apply to the next re-render of any campaign, frozen or not.
 
-**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/settings/<setting>/overrides.json` when the setting's first trial launches — a setting's directory is not created until a trial of it actually starts, so a planned-but-never-run setting leaves no `settings/` entry. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: iw` is listed even if `config/train.yaml` already sets it).
+**Note:** Each setting's declared overrides are written to `artifacts/<campaign>/settings/<setting>/overrides.json` when the setting's first trial launches — a setting's directory is not created until a trial of it actually starts, so a planned-but-never-run setting leaves no `settings/` entry. This records the overrides **as declared** in `baseline_overrides` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: sp` is listed even if `config/train.yaml` already sets it).
 
 **Note:** Combo groups are independent dimensions, so the same override key may not appear in more than one combo group — a shared key would have two values fighting to define it when settings merge, and raises an error at kickoff.
 
@@ -247,7 +247,7 @@ For train-time eval loss, the gathered eval embeddings are deterministically shu
 **Chain-shuffled passes for small train sets** — `chain_floor` in `config/train.yaml` (`null` disables): when the train set is smaller than `chain_floor`, each dataloader pass chains `ceil(chain_floor / train_set_size)` independently shuffled full permutations of the train set instead of a single one. Every aligned block of `train_set_size` consecutive samples covers the dataset exactly once, so coverage stays balanced while pass length — and the maximum usable `batch_size` — is decoupled from dataset size. This avoids the per-pass dataloader-restart stall that dominates wall-clock when a tiny dataset runs thousands of one-pass epochs. Epoch accounting credits each pass with the number of permutations its batch-truncated sample stream touches (`ceil(consumed_samples / train_set_size)` — `drop_last` can trim past a permutation boundary when `batch_size > train_set_size`).
 
 ## Base Model Performance Cache
-The base-model evaluation at the start of each trial (the model's performance before any training steps) is cached under `base_eval_cache/` — a flat directory holding one pickle per combo, named by the serialized combo key (`<model_type>__<img_norm>__<dataset>__<split>__<non_causal>__<text_template.eval>__<vis_proj_head>__<seed>.pkl`). The key (`ArtifactManager.base_eval_key`) covers the config settings that determine the base model's eval output (numerics-level knobs — `hw` `mixed_prec`, t-SNE perplexity — are deliberately not keyed). The base eval evaluates the model **as configured for the trial** — a SigLIP `arch.siglip.vis_proj_head` head and CLIP `arch.clip.non_causal` both apply — so configs differing in any key component get separate entries. Family-inert components are normalized to `None` so equivalent configs share one entry: `non_causal` is CLIP-only, `vis_proj_head` is SigLIP-only, and `seed` only enters through the random init of a `linear`/`mlp` `vis_proj_head` head (`seed=None` otherwise, so all seeds of a headless setting share one base). On the first trial for a given combo the base eval runs and its entry is written to the combo's file: `metrics` (the formatted `scores` trees for every eval group — what the per-group metrics files carry, minus the `loss_raw`, `sim`, `targ`, and `chkpt` fields), `projections` (the raw t-SNE/PCA arrays; viz trials only, else `None`), and `embs` (the raw eval embeddings; pooled-viz trials only, else `None`). The write is a temp-file + atomic replace of just that combo's file, so readers never see a torn file and concurrent campaigns only ever touch the same file when computing the same combo (in which case they overwrite each other with equivalent entries). Subsequent trials with the same combo reuse the entry instead of re-running the base eval, materializing it to `evals/base/`. A manifold-viz trial's cache hit additionally requires the entry's `projections`, and a pooled-viz trial's its `embs` — an entry lacking a piece the trial needs (e.g. metrics-only, written by a non-viz trial) reads as a miss: the base eval recomputes and overwrites the entry with the richer version, while trials that don't need the missing pieces can still reuse it. To force base evals to recompute, delete `base_eval_cache/` (or just the affected combo files). The `dev.del_base_eval_cache` flags (train.yaml) automate this: `campaign: true` deletes `base_eval_cache/` once, when a campaign is first created (a relaunch of an existing campaign is not a new beginning, so the cache its own trials built survives), and `trial: true` deletes it before every trial launch so each trial re-runs its base eval — useful for apples-to-apples wall-clock comparisons across trials.
+The base-model evaluation at the start of each trial (the model's performance before any training steps) is cached under `base_eval_cache/` — a flat directory holding one pickle per combo, named by the serialized combo key (`<model_type>__<dataset>__<split>__<non_causal>__<text_template.eval>__<vis_proj_head>__<seed>.pkl`). The key (`ArtifactManager.base_eval_key`) covers the config settings that determine the base model's eval output (numerics-level knobs — `hw` `mixed_prec`, t-SNE perplexity — are deliberately not keyed). The base eval evaluates the model **as configured for the trial** — a SigLIP `arch.siglip.vis_proj_head` head and CLIP `arch.clip.non_causal` both apply — so configs differing in any key component get separate entries. Family-inert components are normalized to `None` so equivalent configs share one entry: `non_causal` is CLIP-only, `vis_proj_head` is SigLIP-only, and `seed` only enters through the random init of a `linear`/`mlp` `vis_proj_head` head (`seed=None` otherwise, so all seeds of a headless setting share one base). On the first trial for a given combo the base eval runs and its entry is written to the combo's file: `metrics` (the formatted `scores` trees for every eval group — what the per-group metrics files carry, minus the `loss_raw`, `sim`, `targ`, and `chkpt` fields), `projections` (the raw t-SNE/PCA arrays; viz trials only, else `None`), and `embs` (the raw eval embeddings; pooled-viz trials only, else `None`). The write is a temp-file + atomic replace of just that combo's file, so readers never see a torn file and concurrent campaigns only ever touch the same file when computing the same combo (in which case they overwrite each other with equivalent entries). Subsequent trials with the same combo reuse the entry instead of re-running the base eval, materializing it to `evals/base/`. A manifold-viz trial's cache hit additionally requires the entry's `projections`, and a pooled-viz trial's its `embs` — an entry lacking a piece the trial needs (e.g. metrics-only, written by a non-viz trial) reads as a miss: the base eval recomputes and overwrites the entry with the richer version, while trials that don't need the missing pieces can still reuse it. To force base evals to recompute, delete `base_eval_cache/` (or just the affected combo files). The `dev.del_base_eval_cache` flags (train.yaml) automate this: `campaign: true` deletes `base_eval_cache/` once, when a campaign is first created (a relaunch of an existing campaign is not a new beginning, so the cache its own trials built survives), and `trial: true` deletes it before every trial launch so each trial re-runs its base eval — useful for apples-to-apples wall-clock comparisons across trials.
 
 The cached scores are reproducible across single-GPU and multi-GPU runs: performance metrics are computed on the full set of embeddings gathered from all ranks, so the complete evaluation set, and thus the resulting scores, are identical regardless of `world_size`. A cache written on one GPU count is therefore safe to reuse on another.
 

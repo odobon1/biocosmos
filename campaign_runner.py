@@ -205,7 +205,7 @@ def _alias_pair(k: str, v) -> str:
 
 def _derive_item_name(item: dict) -> str:
     """Name an unnamed `baseline_overrides` item by its overrides: _alias_pair components joined
-    by '_', e.g. {'loss.targ': 'sw', 'batch_size': 2048} -> 'L1T-sw_bs-2k'."""
+    by '_', e.g. {'loss.targ': 'mp', 'batch_size': 2048} -> 'L1T-sw_bs-2k'."""
     return "_".join(_alias_pair(k, v) for k, v in item.items())
 
 def _item_name(item: dict) -> str | None:
@@ -237,7 +237,7 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
 
     `baseline_overrides` is a list of combo groups; each combo group is a list of partial settings
     (a dict of dotted-key overrides plus an optional 'name'; an item without one is named from its
-    overrides via _derive_item_name, e.g. {'loss.targ': 'sw'} -> 'L1T-sw'). An override
+    overrides via _derive_item_name, e.g. {'loss.targ': 'mp'} -> 'L1T-mp'). An override
     value given as a list is a combo list: the item is first expanded into one partial setting per
     combination of its list values, named per _expand_combo_lists. The campaign's settings are the
     Cartesian product across combo groups: one partial setting is drawn from each combo group and

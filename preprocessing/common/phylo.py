@@ -269,6 +269,38 @@ def add_child_as_polytomy(
 ) -> None:
     node.clades.append(Clade(name=cid, branch_length=branch_length))
 
+# augment_tree_with_polytomies() / rehome_missing_classes_in_represented_higher_rank() helper
+def build_mean_tip_depth_map(
+    tree: Tree,
+    depths: Dict,
+    exclude: Set[str] = frozenset(),
+) -> Dict[Clade, float]:
+    """
+    node -> mean depth of its descendant tips, skipping tips named in `exclude` (grafted
+    tips, so the means always reflect the post-prune, pre-graft tree). Grafted tips attach
+    with branch length mean - depth(node), extending them to the mean tip depth of the
+    clade they join -- never negative, since every descendant tip is at least as deep as
+    the node. Nodes whose descendant tips are all excluded get no entry.
+    """
+    means: Dict[Clade, float] = {}
+
+    def walk(node: Clade) -> Tuple[float, int]:
+        if not node.clades:
+            if node.name in exclude:
+                return 0.0, 0
+            return depths[node], 1
+        total, count = 0.0, 0
+        for child in node.clades:
+            child_total, child_count = walk(child)
+            total += child_total
+            count += child_count
+        if count:
+            means[node] = total / count
+        return total, count
+
+    walk(tree.root)
+    return means
+
 # augment_tree_with_polytomies() helper
 def rehome_missing_classes_in_represented_higher_rank(
     tree: Tree,
@@ -276,10 +308,11 @@ def rehome_missing_classes_in_represented_higher_rank(
     cids_cd_on_tree: Set[str],
     class_data: Dict[str, Dict[str, Optional[str]]],
     rank_order: Optional[List[str]] = None,
-) -> None:
+) -> Set[str]:
     """
-    Rehome newly inserted missing classes so each higher-rank class is attached at an
-    interpretable divergence anchor.
+    Place missing classes at an interpretable divergence anchor (attaching them as new
+    polytomy tips, or relocating them if already on the tree), with branch length
+    (mean pre-graft tip depth of the anchor's clade) - (anchor depth).
 
     Case A (higher-rank class represented in original tree):
         anchor at the most recent inter-class divergence available for that class.
@@ -287,6 +320,9 @@ def rehome_missing_classes_in_represented_higher_rank(
     Case B (higher-rank class not represented in original tree):
         fallback to the most recent inter-family (or next higher-rank class) divergence
         available for the class' family.
+
+    Returns the set of classes placed; classes with no usable anchor are left to the
+    caller's fallback (augment_tree_with_polytomies' lineage graft).
 
     Parameters
     ----------
@@ -297,7 +333,7 @@ def rehome_missing_classes_in_represented_higher_rank(
         rank_order = RANK_ORDER
 
     if not cids_missing:
-        return
+        return set()
 
     def _build_adj_map(tree_obj: Tree) -> Dict[Clade, List[Tuple[Clade, float]]]:
         adj: Dict[Clade, List[Tuple[Clade, float]]] = defaultdict(list)
@@ -334,6 +370,9 @@ def rehome_missing_classes_in_represented_higher_rank(
                 node.name is not None
                 and node.name != ref_name
                 and node.name in eligible_tips
+                # a tip at distance 0 (a conspecific zero-length sister graft) is
+                # not a witnessed divergence and cannot anchor one
+                and dist > 0.0
             ):
                 return node.name
 
@@ -360,6 +399,11 @@ def rehome_missing_classes_in_represented_higher_rank(
         tip.name: tip for tip in tree.get_terminals() if tip.name is not None
     }
     adj_map = _build_adj_map(tree)
+
+    # anchor-clade mean tip depths; excluding the missing tips themselves makes the means
+    # identical to the post-prune, pre-graft tree's whether or not those tips are attached yet
+    depths = tree.depths()
+    mean_tip_depth = build_mean_tip_depth_map(tree, depths, exclude=cids_missing)
 
     # Filter represented_original to only classes actually on this tree
     represented_original_present = {
@@ -440,7 +484,7 @@ def rehome_missing_classes_in_represented_higher_rank(
                 continue
 
             anchor = tree.common_ancestor([ref_tip, closest_tip])
-            attach_length = tree.distance(anchor, closest_tip)
+            attach_length = mean_tip_depth[anchor] - depths[anchor]
             planned_rehomes.append((sorted(missing_by_genus[genus]), anchor, attach_length))
             continue
 
@@ -487,13 +531,14 @@ def rehome_missing_classes_in_represented_higher_rank(
             continue
 
         anchor = tree.common_ancestor([ref_tip, closest_tip])
-        attach_length = tree.distance(anchor, closest_tip)
+        attach_length = mean_tip_depth[anchor] - depths[anchor]
         planned_rehomes.append((sorted(missing_by_genus[genus]), anchor, attach_length))
 
     if not planned_rehomes:
-        return
+        return set()
 
-    # Detach all targets first in one pass; this is much faster than repeated prune().
+    # Detach all targets already on the tree in one pass; this is much faster than
+    # repeated prune(). No-ops for tips not attached yet.
     parent_by_clade = _build_parent_map(tree)
     target_cids = {cid for cids, _, _ in planned_rehomes for cid in cids}
     for cid in target_cids:
@@ -505,7 +550,7 @@ def rehome_missing_classes_in_represented_higher_rank(
             continue
         parent.clades = [child for child in parent.clades if child is not clade]
 
-    # Reattach grouped by genus-specific anchor and branch length.
+    # Attach grouped by genus-specific anchor and branch length.
     for cids, anchor, attach_length in planned_rehomes:
         for cid in cids:
             add_child_as_polytomy(
@@ -513,6 +558,8 @@ def rehome_missing_classes_in_represented_higher_rank(
                 cid=cid,
                 branch_length=attach_length,
             )
+
+    return target_cids
 
 # augment_tree_with_polytomies() helper
 def _build_clade_path_map(tree: Tree) -> Dict[Clade, Tuple[int, ...]]:
@@ -599,14 +646,17 @@ def augment_tree_with_polytomies(
     """
     Add missing classes to a phylogenetic tree using class_data-guided polytomy insertion.
 
-    Rules:
-    - Search upward through each class' compressed lineage (skip None ranks).
-    - Use the most specific rank where:
-        * the class' taxon has at least one original-tree representative
-        * at least one sibling taxon at that rank also has an original-tree representative
-    - Graft at the deepest MRCA between represented members of the target taxon
-      and represented members of represented sibling taxa.
-    - Extend each grafted tip to the tree's max tip depth.
+    Placement, per missing class:
+    - Preferred: the per-genus divergence anchor from
+      rehome_missing_classes_in_represented_higher_rank -- the most recent divergence
+      between a represented congener (or, for unrepresented genera, a same-higher-rank
+      representative) and its nearest represented sibling-taxon tip.
+    - Fallback (no usable anchor): search upward through the class' compressed lineage
+      (skip None ranks) for the most specific rank where its taxon and a sibling taxon
+      both have original-tree representatives, and graft at the deepest MRCA between
+      represented members of the two; the root when even that fails.
+    - Branch length: mean pre-graft tip depth of the attachment node's clade minus the
+      node's depth, extending each tip to the average depth of the clade it joins.
 
     Parameters
     ----------
@@ -637,14 +687,36 @@ def augment_tree_with_polytomies(
 
     rank_order = get_available_ranks(class_data)
 
-    parent_map = get_parent_map_for_classes(class_data, rank_order)
-
     cids_cd = set(class_data.keys())
     cids_cd_on_tree = set(get_leaf_names(tree)) & cids_cd
     cids_missing = sorted(cids_cd - cids_cd_on_tree)
 
     if not cids_missing:
         return tree
+
+    # Pre-graft depth structures. Node objects persist through grafting (children are only
+    # appended), so both maps stay valid for every attachment below; the root's mean is the
+    # global mean tip depth, so root-fallback grafts degenerate to a global-average rule.
+    depths = tree.depths()
+    mean_tip_depth = build_mean_tip_depth_map(tree, depths)
+
+    # Preferred placement: per-genus divergence anchors, attached directly by the rehome
+    # pass (which recomputes the same pre-graft means internally).
+    cids_rehomed = rehome_missing_classes_in_represented_higher_rank(
+        tree=tree,
+        cids_missing=set(cids_missing),
+        cids_cd_on_tree=cids_cd_on_tree,
+        class_data=class_data,
+        rank_order=rank_order,
+    )
+
+    cids_rest = [cid for cid in cids_missing if cid not in cids_rehomed]
+    if not cids_rest:
+        return tree
+
+    # Fallback placement for classes with no usable divergence anchor: lineage search for
+    # the deepest represented-taxon-vs-sibling MRCA (find_graft_node_for_class).
+    parent_map = get_parent_map_for_classes(class_data, rank_order)
 
     # Precompute once: for each (rank, taxon) -> set of represented classes
     rep_by_rank_taxon: Dict[str, Dict[str, Set[str]]] = {
@@ -662,35 +734,19 @@ def augment_tree_with_polytomies(
             parent: Optional[Tuple[str, str]] = lineage[i - 1] if i > 0 else None
             taxa_by_parent[rank][parent].add(taxon)
 
-    # Extend each grafted tip to the tree's max tip depth so it sits at the present day
-    # rather than at its graft node, which may be an ancient divergence (or the root,
-    # when find_graft_node_for_class found no usable anchor at all). rehome_missing_-
-    # classes_in_represented_higher_rank relocates most grafted tips afterward; this is
-    # the branch length the ones it skips keep.
-    depths = tree.depths()
-    depth_max = max(depths[tip] for tip in tree.get_terminals())
-
-    chunksize = max(1, len(cids_missing) // max(1, n_workers * 8))
+    chunksize = max(1, len(cids_rest) // max(1, n_workers * 8))
     with ProcessPoolExecutor(
         max_workers=n_workers,
         initializer=_worker_init,
         initargs=(tree, class_data, rep_by_rank_taxon, taxa_by_parent, parent_map, rank_order),
     ) as executor:
-        for cid, graft_path in executor.map(_find_graft_node_path_for_class_worker, cids_missing, chunksize=chunksize):
+        for cid, graft_path in executor.map(_find_graft_node_path_for_class_worker, cids_rest, chunksize=chunksize):
             graft_node = _get_clade_by_path(tree, graft_path)
             add_child_as_polytomy(
                 node=graft_node,
                 cid=cid,
-                branch_length=depth_max - depths[graft_node],
+                branch_length=mean_tip_depth[graft_node] - depths[graft_node],
             )
-
-    rehome_missing_classes_in_represented_higher_rank(
-        tree=tree,
-        cids_missing=set(cids_missing),
-        cids_cd_on_tree=cids_cd_on_tree,
-        class_data=class_data,
-        rank_order=rank_order,
-    )
 
     return tree
 

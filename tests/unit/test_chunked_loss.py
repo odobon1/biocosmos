@@ -46,14 +46,14 @@ def import_loss_module():
 L = import_loss_module()
 
 
-def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, freq_type="naive", sim="cos",
+def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",
          cls_imb_norm=False, center=None, neut=False):
     return {
         "crit": crit, "sim": sim, "targ": targ,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
-                        "freq_type_2d": freq_type, "wt_mean_type": "per_class", "norm": cls_imb_norm},
+                        "norm": cls_imb_norm},
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },
@@ -176,54 +176,52 @@ def _full_reference(crit1, crit2, mix, mix_unit_scale, img, txt, class_encs_b, t
 
 
 CASES = [
-    # (crit1, crit2, targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, neut)
-    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),  # baseline
-    ("bce", None,  "sp",    None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
-    ("bce", None,  "tax",   None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
-    ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, None, None, False),
-    ("bce", None,  "mp",    None,  False, 0.0, "naive",     False, 0.0, False, None, None, False),  # no dsmr, no focal
-    ("bce", None,  "mp",    None,  True,  2.0, "pair_prob", False, 0.0, False, None, None, False),
-    ("bce", None,  "mp",    None,  True,  2.0, "naive",     True,  0.0, False, None, None, False),  # cls_imb.norm
-    ("bce", None,  "mp",    None,  True,  2.0, "cmx2",      True,  0.0, False, None, None, False),  # cls_imb.norm + cmx2
-    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, False, None, None, False),  # mix, no unit scale
-    ("bce", "bce", "mp",    "phylo", True, 2.0, "naive",    False, 0.3, False, None, None, False),  # mixed target types
-    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, True,  None, None, False),  # mix + unit scale
-    ("bce", "bce", "tax",   "mp",  True,  2.0, "cmx2",      True,  0.3, True,  None, None, False),   # everything at once
-    ("bce", "bce", "mp",    "mp",  False, 0.0, "naive",     False, 0.5, True,  None, None, False),   # unit scale, no weighting
-    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
-    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
-    ("bce", None,  "mp",    None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj2", None, False),
-    ("bce", None,  "phylo", None,  True,  2.0, "naive",     False, 0.0, False, "grad_proj",  None, False),  # soft targets + projection
-    ("bce", "bce", "mp",    "phylo", True, 2.0, "naive",    False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
-    ("bce", "bce", "mp",    "mp",  True,  2.0, "naive",     False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
+    # (crit1, crit2, targ1, targ2, dsmr, focal, norm_ci, mix, unit_scale, center1, center2, neut)
+    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, None, None, False),  # baseline
+    ("bce", None,  "sp",    None,  True,  2.0, False, 0.0, False, None, None, False),
+    ("bce", None,  "tax",   None,  True,  2.0, False, 0.0, False, None, None, False),
+    ("bce", None,  "phylo", None,  True,  2.0, False, 0.0, False, None, None, False),
+    ("bce", None,  "mp",    None,  False, 0.0, False, 0.0, False, None, None, False),  # no dsmr, no focal
+    ("bce", None,  "mp",    None,  True,  2.0, True,  0.0, False, None, None, False),  # cls_imb.norm
+    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, False, None, None, False),  # mix, no unit scale
+    ("bce", "bce", "mp",    "phylo", True, 2.0, False, 0.3, False, None, None, False),  # mixed target types
+    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, True,  None, None, False),  # mix + unit scale
+    ("bce", "bce", "tax",   "mp",  True,  2.0, True,  0.3, True,  None, None, False),   # everything at once
+    ("bce", "bce", "mp",    "mp",  False, 0.0, False, 0.5, True,  None, None, False),   # unit scale, no weighting
+    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
+    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
+    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj2", None, False),
+    ("bce", None,  "phylo", None,  True,  2.0, False, 0.0, False, "grad_proj",  None, False),  # soft targets + projection
+    ("bce", "bce", "mp",    "phylo", True, 2.0, False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
+    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
     # bif_bce: two-branch tiles, 1D per-anchor weighting, half-live logit scalars
-    ("bif_bce", None,      "mp",    None,  False, 0.0, "naive", False, 0.0, False, None, None, False),  # bif baseline
-    ("bif_bce", None,      "sp",    None,  False, 2.0, "naive", False, 0.0, False, None, None, False),
-    ("bif_bce", None,      "tax",   None,  True,  2.0, "naive", False, 0.0, False, None, None, False),  # row-wise dsmr on soft targets
-    ("bif_bce", None,      "phylo", None,  True,  2.0, "naive", False, 0.0, False, None, None, True),   # + targ_mass_neut
-    ("bif_bce", None,      "mp",    None,  True,  2.0, "naive", True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
-    ("bif_bce", None,      "mp",    None,  False, 2.0, "naive", False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
-    ("bif_bce", None,      "mp",    None,  True,  2.0, "naive", False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
-    ("bif_bce", None,      "mp",    None,  False, 2.0, "naive", False, 0.0, False, "grad_proj2", None, False),
-    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, "naive", False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
-    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, "naive", False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
-    ("bce",     "bif_bce", "mp",    "sp",  True,  2.0, "naive", False, 0.3, True,  None, None, True),   # bce+bif mix
-    ("bif_bce", "bif_bce", "mp",    "phylo", True, 2.0, "naive", False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
+    ("bif_bce", None,      "mp",    None,  False, 0.0, False, 0.0, False, None, None, False),  # bif baseline
+    ("bif_bce", None,      "sp",    None,  False, 2.0, False, 0.0, False, None, None, False),
+    ("bif_bce", None,      "tax",   None,  True,  2.0, False, 0.0, False, None, None, False),  # row-wise dsmr on soft targets
+    ("bif_bce", None,      "phylo", None,  True,  2.0, False, 0.0, False, None, None, True),   # + targ_mass_neut
+    ("bif_bce", None,      "mp",    None,  True,  2.0, True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
+    ("bif_bce", None,      "mp",    None,  False, 2.0, False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
+    ("bif_bce", None,      "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
+    ("bif_bce", None,      "mp",    None,  False, 2.0, False, 0.0, False, "grad_proj2", None, False),
+    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
+    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
+    ("bce",     "bif_bce", "mp",    "sp",  True,  2.0, False, 0.3, True,  None, None, True),   # bce+bif mix
+    ("bif_bce", "bif_bce", "mp",    "phylo", True, 2.0, False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
 ]
 
 
 @pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
-@pytest.mark.parametrize("crit1_name,crit2_name,targ1,targ2,dsmr,focal,freq,norm_ci,mix,unit_scale,center1,center2,neut", CASES)
-def test_chunked_matches_full(crit1_name, crit2_name, targ1, targ2, dsmr, focal, freq, norm_ci, mix, unit_scale, center1, center2, neut, C):
+@pytest.mark.parametrize("crit1_name,crit2_name,targ1,targ2,dsmr,focal,norm_ci,mix,unit_scale,center1,center2,neut", CASES)
+def test_chunked_matches_full(crit1_name, crit2_name, targ1, targ2, dsmr, focal, norm_ci, mix, unit_scale, center1, center2, neut, C):
     device = torch.device("cpu")
     B, K, D, R = 48, 20, 16, 4
 
-    cfg1 = _cfg(crit=crit1_name, targ=targ1, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+    cfg1 = _cfg(crit=crit1_name, targ=targ1, dsmr=dsmr, focal_gamma=focal,
                 cls_imb_norm=norm_ci, center=center1, neut=neut)
     crit1 = _make_crit(cfg1, K, B)
     crit2 = None
     if mix != 0.0:
-        cfg2 = _cfg(crit=crit2_name, targ=targ2, dsmr=dsmr, focal_gamma=focal, freq_type=freq,
+        cfg2 = _cfg(crit=crit2_name, targ=targ2, dsmr=dsmr, focal_gamma=focal,
                     cls_imb_norm=norm_ci, center=center2, neut=neut)
         crit2 = _make_crit(cfg2, K, B)
 

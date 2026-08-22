@@ -50,8 +50,7 @@ def cfg_loss(targ="mp", cls_imb_norm=False, center=None, crit="bce", neut=False)
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
-                        "class_bal": {"beta": 0.9999}, "freq_type_2d": "naive",
-                        "wt_mean_type": "per_class", "norm": cls_imb_norm},
+                        "class_bal": {"beta": 0.9999}, "norm": cls_imb_norm},
             "focal": {"gamma": 2.0},
             "bce": {"dsmr": True},
         },

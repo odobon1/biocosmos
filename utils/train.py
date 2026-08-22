@@ -286,15 +286,14 @@ class ArtifactManager:
             if not is_siglip and metadata["loss"]["logits"]["bce"]["bias"]["init"] is None:
                 del metadata["loss"]["logits"]["bce"]["bias"]
 
-            # per-loss weighting: drop params the loss type never reads (the bce sub-block, and
-            # freq_type_2d's class-pair counting, are BCE-only -- absent from InfoNCE's 1D weighting),
+            # per-loss weighting: drop params the loss type never reads (the bce sub-block is
+            # BCE-only -- absent from InfoNCE's 1D weighting),
             # params their own toggle disables (cls_imb.type null; focal.gamma 0.0 is already
             # pruned from the working config at load), and the scalar
-            # cancellations noted in train.yaml: the unit-scale blend (loss / loss.detach()) cancels
+            # cancellation noted in train.yaml: the unit-scale blend (loss / loss.detach()) cancels
             # any per-batch scalar factor on a loss, making cls_imb.norm's rescale inert under
-            # unit-scaling; cls_imb.norm's own batch-mean division likewise cancels the constant
-            # wt_mean scalar, making wt_mean_type inert wherever it is on. loss2 is already gone
-            # when mix = 0.0, under which mix_unit_scale never applies.
+            # unit-scaling. loss2 is already gone when mix = 0.0, under which mix_unit_scale never
+            # applies.
             unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
             for key in ("loss", "loss2"):
                 if key not in metadata:
@@ -302,7 +301,6 @@ class ArtifactManager:
                 wting = metadata[key]["wting"]
                 crit = metadata[key]["crit"]
                 is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
-                is_2d = crit == "bce"  # wting_dim 2; infonce/bif_bce weight 1D
 
                 # infonce sub-block: the BCE losses never read it, and under sp the linear tsm
                 # mapping is an identical no-op (row sums already 1)
@@ -327,10 +325,6 @@ class ArtifactManager:
                         del cls_imb["class_bal"]
                     elif cls_imb["type"] == "class_bal":
                         del cls_imb["inv_freq"]
-                    if not is_2d:
-                        del cls_imb["freq_type_2d"]
-                    if cls_imb["norm"] or unit_scaled:
-                        del cls_imb["wt_mean_type"]
                     if unit_scaled:
                         del cls_imb["norm"]
 

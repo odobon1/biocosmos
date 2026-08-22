@@ -63,15 +63,6 @@ loss:  # Primary loss
         # As gamma → 0.0, weights → uniform (no weighting)
       class_bal:  # Class-balanced weighting params; Inert iff (cls_imb.type != class_bal)
         beta: 0.9999  # [0.0, 1.0)
-      freq_type_2d: pair_prob  # {naive, cmx2, pair_prob}; Class-pair frequency/counting type; (naive) Vanilla (i2t, t2i
-      # for same pair treated as separate "classes"); (cmx2) Non-matching pair-counts multiplied by 2 (i2t, t2i for
-      # same pair treated as same "classes"); (pair_prob) Pair-probability weighting; Inert iff (loss.crit != bce)
-      # (infonce/bif_bce weight 1D per-anchor)
-      wt_mean_type: per_sample  # {per_class, per_sample}; Population the mean-1.0 normalizer averages over; 
-      # (per_class) Each class (1D) / class pair (2D) counts once --> the average class has unit weight; 
-      # (per_sample) Frequency-weighted --> the average drawn sample (pair) has unit weight, keeping expected batch 
-      # weight mass ~B (weighted loss retains the unweighted scale); Inert iff (cls_imb.norm: true, whose
-      # batch-mean division cancels this constant) OR (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
       norm: false  # {true, false}; Rescale the batch's class-imbalance weights to mean 1.0 (weighted loss
       # retains the unweighted scale batch-by-batch rather than in expectation, at the cost of a
       # batch-composition-dependent normalizer); Inert iff (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
@@ -124,8 +115,6 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
         gamma: 0.5  # (0.0, 1.0]
       class_bal:
         beta: 0.9999  # [0.0, 1.0)
-      freq_type_2d: naive  # {naive, cmx2, pair_prob}
-      wt_mean_type: per_class  # {per_class, per_sample}
       norm: false  # {true, false}
     focal:
       gamma: 0.0  # [0.0, inf)

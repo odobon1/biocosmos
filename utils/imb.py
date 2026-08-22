@@ -6,7 +6,7 @@ from utils.utils import load_split
 def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
     """
     Startup half of a weighting scheme: per-class counts, and the scalar that normalizes its
-    weights to mean 1.0.
+    weights to frequency-weighted mean 1.0.
 
     The full weight vector (1D) / matrix (2D) is built here once, reduced to that scalar, and
     discarded.
@@ -14,36 +14,24 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
     Args:
     - cfg_wting ---- `wting.cls_imb` block of a loss config
     - dim ---------- 1 for per-class weights, 2 for per-class-pair weights
-    - batch_size --- Global train batch size; only consumed by `freq_type_2d = pair_prob`
+    - batch_size --- Global train batch size; only consumed by the 2D (pair-probability) path
 
     Returns:
     - counts ---- Per-class sample counts for the train partition, NaN for absent classes; pt[n_classes]
-    - wt_mean --- Mean weight over all classes (1D) / class pairs (2D); dataset-level constant, computed once at startup
+    - wt_mean --- Frequency-weighted mean weight (the average drawn sample (pair) has unit weight after
+      normalization, keeping expected batch weight mass ~B); dataset-level constant, computed once at startup
     """
     counts = torch.tensor(load_split(dataset, split).class_counts[train_pt], dtype=torch.float64)
     class_encs = torch.arange(counts.numel())
-    wt_mean_type = cfg_wting["wt_mean_type"]
 
     if dim == 1:
         wts = _compute_wts(cfg_wting, counts)
-        if wt_mean_type == "per_class":
-            wt_mean = wts.nanmean()
-        elif wt_mean_type == "per_sample":
-            wt_mean = (counts * wts).nansum() / counts.nansum()
+        wt_mean = (counts * wts).nansum() / counts.nansum()
     elif dim == 2:
-        pair_freqs = _pair_freqs(counts, class_encs, cfg_wting["freq_type_2d"], batch_size)
+        pair_freqs = _pair_prob_freqs(counts, class_encs, batch_size)
         wts = _compute_wts(cfg_wting, pair_freqs)
-        if cfg_wting["freq_type_2d"] == "naive":
-            if wt_mean_type == "per_class":
-                wt_mean = wts.nanmean()
-            elif wt_mean_type == "per_sample":
-                wt_mean = (pair_freqs * wts).nansum() / pair_freqs.nansum()
-        elif cfg_wting["freq_type_2d"] == "cmx2" or cfg_wting["freq_type_2d"] == "pair_prob":
-            triu_mask = torch.triu(torch.ones_like(wts, dtype=torch.bool))
-            if wt_mean_type == "per_class":
-                wt_mean = wts[triu_mask].nanmean()  # mean over upper triangle
-            elif wt_mean_type == "per_sample":
-                wt_mean = (pair_freqs[triu_mask] * wts[triu_mask]).nansum() / pair_freqs[triu_mask].nansum()
+        triu_mask = torch.triu(torch.ones_like(wts, dtype=torch.bool))
+        wt_mean = (pair_freqs[triu_mask] * wts[triu_mask]).nansum() / pair_freqs[triu_mask].nansum()
 
     return counts, wt_mean.item()
 
@@ -62,13 +50,13 @@ def compute_cls_imb_wts(cfg_wting, counts, class_encs_b, dim, wt_mean, batch_siz
     if dim == 1:
         freqs_b = counts[class_encs_b]
     elif dim == 2:
-        freqs_b = _pair_freqs(counts, class_encs_b, cfg_wting["freq_type_2d"], batch_size, class_encs_cols=class_encs_cols)
+        freqs_b = _pair_prob_freqs(counts, class_encs_b, batch_size, class_encs_cols=class_encs_cols)
 
     return (_compute_wts(cfg_wting, freqs_b) / wt_mean).float()
 
-def _pair_freqs(counts, class_encs, freq_type_2d, batch_size, class_encs_cols=None):
+def _pair_prob_freqs(counts, class_encs, batch_size, class_encs_cols=None):
     """
-    Class-pair counts for the given class encodings; pt[K, K] for pt[K] encodings. `class_encs_cols`
+    Class-pair probabilities for the given class encodings; pt[K, K] for pt[K] encodings. `class_encs_cols`
     gives a rectangular pt[K_rows, K_cols] tile (rows = `class_encs`, cols = `class_encs_cols`); None ->
     square (cols == rows).
     """
@@ -77,26 +65,21 @@ def _pair_freqs(counts, class_encs, freq_type_2d, batch_size, class_encs_cols=No
         class_encs_cols = class_encs_rows
     counts_r = counts[class_encs_rows]
     counts_c = counts[class_encs_cols]
-    pair_freqs = torch.outer(counts_r, counts_c)
 
-    if freq_type_2d == "cmx2":  # counts non-matching pairs double
-        matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
-        pair_freqs = torch.where(matches, pair_freqs, pair_freqs * 2)
-    elif freq_type_2d == "pair_prob":
-        total_count = counts.nansum()
-        c1 = counts_r.unsqueeze(1)
-        c2 = counts_c.unsqueeze(0)
-        homog = (c1 / total_count) * (1 + (batch_size - 1) * (c2 - 1) / (total_count - 1))
-        heterog = (c1 / total_count) * (batch_size - 1) * (c2 / (total_count - 1))
-        matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
-        pair_freqs = torch.where(matches, homog, heterog)  # pair-probability matrix
+    total_count = counts.nansum()
+    c1 = counts_r.unsqueeze(1)
+    c2 = counts_c.unsqueeze(0)
+    homog = (c1 / total_count) * (1 + (batch_size - 1) * (c2 - 1) / (total_count - 1))
+    heterog = (c1 / total_count) * (batch_size - 1) * (c2 / (total_count - 1))
+    matches = class_encs_rows.unsqueeze(1) == class_encs_cols.unsqueeze(0)
+    pair_freqs = torch.where(matches, homog, heterog)  # pair-probability matrix
 
     return pair_freqs
 
 def _compute_wts(cfg_wting, freqs):
     """
     Weighting formula, unnormalized; dimension-agnostic -- applied to per-class counts (1D) or
-    class-pair counts (2D) alike.
+    class-pair probabilities (2D) alike.
     """
     if cfg_wting["type"] is None:
         wts = torch.ones_like(freqs)
@@ -106,6 +89,6 @@ def _compute_wts(cfg_wting, freqs):
     elif cfg_wting["type"] == "class_bal":
         beta = cfg_wting["class_bal"]["beta"]
         log_beta = torch.log(torch.tensor(beta, dtype=freqs.dtype))
-        wts = (1.0 - beta) / (-torch.expm1(freqs * log_beta))  # (1 - β) / (1 - β^n_c); expm1 form stays exact for freqs << 1 (pair_prob)
+        wts = (1.0 - beta) / (-torch.expm1(freqs * log_beta))  # (1 - β) / (1 - β^n_c); expm1 form stays exact for freqs << 1 (2D pair probabilities)
 
     return wts

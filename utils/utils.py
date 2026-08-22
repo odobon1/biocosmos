@@ -741,7 +741,6 @@ class PrintLog:
                     ("- Type", cw_type),
                     *((("- gamma", cfg_loss["wting"]["cls_imb"]["inv_freq"]["gamma"]),) if cw_type == "inv_freq" else ()),
                     *((("- beta", cfg_loss["wting"]["cls_imb"]["class_bal"]["beta"]),) if cw_type == "class_bal" else ()),
-                    ("- freq_type_2d", cfg_loss["wting"]["cls_imb"]["freq_type_2d"]),
                 )),
             ]
             lines.extend(lines_cw)

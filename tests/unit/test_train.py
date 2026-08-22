@@ -20,8 +20,6 @@ def _full_loss_cfg(crit="bce", targ="mp"):
                 "type": "inv_freq",
                 "inv_freq": {"gamma": 0.5},
                 "class_bal": {"beta": 0.9999},
-                "freq_type_2d": "naive",
-                "wt_mean_type": "per_class",
                 "norm": True,
             },
             "focal": {"gamma": 2.0},
@@ -93,19 +91,17 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
     cls_imb = config["loss"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
-    assert cls_imb["freq_type_2d"] == "naive"  # BCE weights are 2D (class-pair counting)
     assert cls_imb["norm"] is True  # no unit-scale -> the rescale sticks
-    assert "wt_mean_type" not in cls_imb  # norm's batch-mean division cancels the wt_mean constant
     assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
-    # CLIP + InfoNCE + class_bal: the 1D path reads none of the 2D/BCE-only machinery
+    # CLIP + InfoNCE + class_bal: the 1D path reads none of the BCE-only machinery
     (tmp_path / "s2").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s2")
     cfg = _FakeSettingCfg()
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
     cfg.loss = _full_loss_cfg(crit="infonce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
-    cfg.loss["wting"]["cls_imb"]["norm"] = False  # norm off -> the wt_mean constant is live on this path too
+    cfg.loss["wting"]["cls_imb"]["norm"] = False
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
@@ -113,12 +109,12 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert config["loss"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + mp: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
-    assert wting["cls_imb"] == {  # inv_freq inert (type class_bal), freq_type_2d inert (2D-only)
-        "type": "class_bal", "class_bal": {"beta": 0.9999}, "wt_mean_type": "per_class", "norm": False,
+    assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
+        "type": "class_bal", "class_bal": {"beta": 0.9999}, "norm": False,
     }
     assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
 
-    # bif_bce: 1D per-anchor weighting (freq_type_2d inert) but the BCE-family blocks stay live
+    # bif_bce: 1D per-anchor weighting, and the BCE-family blocks stay live
     (tmp_path / "s4").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s4")
     cfg = _FakeSettingCfg()
@@ -127,7 +123,6 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
     assert "infonce" not in config["loss"]
     assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
-    assert "freq_type_2d" not in config["loss"]["wting"]["cls_imb"]  # 1D weighting
     assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
     # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
@@ -144,7 +139,7 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
     assert "wting" not in config["loss"]
     assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True
     cls_imb2 = config["loss2"]["wting"]["cls_imb"]
-    assert "norm" not in cls_imb2 and "wt_mean_type" not in cls_imb2  # both scalars cancelled by unit-scaling
+    assert "norm" not in cls_imb2  # its rescale is cancelled by unit-scaling
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

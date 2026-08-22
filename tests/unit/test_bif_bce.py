@@ -27,7 +27,7 @@ def _cfg(crit, targ="mp", cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False,
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
-                        "freq_type_2d": "naive", "wt_mean_type": "per_class", "norm": False},
+                        "norm": False},
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },

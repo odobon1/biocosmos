@@ -107,12 +107,9 @@ class TrainConfig:
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
-        self.size_train = size_train
 
         if self.n_epochs <= 0:
             raise ValueError(f"n_epochs must be greater than 0, got {self.n_epochs}")
-        # epochs specify duration; everything downstream still drives on samples
-        self.sample_volume = round(self.n_epochs * size_train)
 
         if self.chain_floor is not None and self.chain_floor <= 0:
             raise ValueError(f"chain_floor must be greater than 0 or null, got {self.chain_floor}")
@@ -132,6 +129,12 @@ class TrainConfig:
         self.samps_per_pass = samps_pass_nom - samps_pass_nom % self.batch_size
         # epochs credited per pass -- the number of permutations the batched pass touches: E_chain
         self.epochs_per_pass = math.ceil(self.samps_per_pass / size_train)
+        # samples per credited epoch: without chain-shuffle an epoch is one batch-truncated pass
+        # (dropped samples don't count toward duration, so n_epochs never bleeds into an extra pass);
+        # with chain-shuffle epochs stay nominal train-set permutations
+        self.samps_per_epoch = self.samps_per_pass if self.chain_perms is None else size_train
+        # epochs specify duration; everything downstream still drives on samples
+        self.sample_volume = round(self.n_epochs * self.samps_per_epoch)
         self.n_passes = math.ceil(self.sample_volume / self.samps_per_pass)
 
         if self.n_chkpts <= 0:

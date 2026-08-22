@@ -397,17 +397,31 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
     assert out["opt"]["beta2"] == 0.98
 
 
-# cub D10 train split has 4_944 samples (the dummy's dataset/split)
+# cub D10 train split has 4_935 samples (the dummy's dataset/split)
 def test_train_config_chain_floor_null_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy())
 
     assert cfg.chain_perms is None
-    assert cfg.sample_volume == 4_944  # n_epochs 1 x train set size
-    assert cfg.samps_per_pass == 4_944  # divisible by batch_size 8, no truncation
+    assert cfg.samps_per_pass == 4_928  # 616 batches of 8 (drop_last trims the 7-sample remainder)
+    assert cfg.samps_per_epoch == 4_928  # no chaining: an epoch is one batch-truncated pass
+    assert cfg.sample_volume == 4_928  # n_epochs 1 x samps_per_epoch
     assert cfg.epochs_per_pass == 1
     assert cfg.n_passes == 1
+
+
+def test_train_config_truncated_volume_prevents_extra_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # batch_size 32 doesn't divide the 4_935-sample train set: drop_last trims each pass to 4_928,
+    # and dropped samples don't count toward sample_volume, so 5 epochs = exactly 5 passes
+    patch_hw(monkeypatch)
+
+    cfg = TrainConfig(**make_train_config_dummy(n_epochs=5, batch_size=32))
+
+    assert cfg.samps_per_pass == 4_928  # 154 batches of 32
+    assert cfg.samps_per_epoch == 4_928
+    assert cfg.sample_volume == 24_640  # 5 x 4_928
+    assert cfg.n_passes == 5  # no bleed into a 6th pass
 
 
 def test_train_config_chain_floor_below_train_set_disables_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -423,17 +437,18 @@ def test_train_config_chain_floor_chains_permutations(monkeypatch: pytest.Monkey
 
     cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, n_epochs=202))
 
-    assert cfg.chain_perms == 21  # E_chain_nom = ceil(100_000 / 4_944)
-    assert cfg.samps_per_pass == 103_824  # X_chain = 21 x 4_944 (divisible by batch_size 8)
-    assert cfg.epochs_per_pass == 21  # E_chain: no truncation, all 21 permutations fully covered
-    assert cfg.sample_volume == 998_688  # 202 x 4_944
-    assert cfg.n_passes == 10  # ceil(998_688 / 103_824)
+    assert cfg.chain_perms == 21  # E_chain_nom = ceil(100_000 / 4_935)
+    assert cfg.samps_per_pass == 103_632  # X_chain = 21 x 4_935 minus the 3-sample drop_last remainder
+    assert cfg.epochs_per_pass == 21  # E_chain: the trim (3 < 4_935) doesn't drop a permutation
+    assert cfg.samps_per_epoch == 4_935  # chained: epochs stay nominal train-set permutations
+    assert cfg.sample_volume == 996_870  # 202 x 4_935
+    assert cfg.n_passes == 10  # ceil(996_870 / 103_632)
 
 
 def test_train_config_chaining_credits_epochs_touched_by_truncated_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     # batch_size > train set size: drop_last trims more than a full permutation off the nominal
-    # chain (103_824 -> 98_304 consumed, 5_520 trimmed > 4_944), so the pass credits only the
-    # permutations it actually touches: ceil(98_304 / 4_944) = 20 < chain_perms 21
+    # chain (103_635 -> 98_304 consumed, 5_331 trimmed > 4_935), so the pass credits only the
+    # permutations it actually touches: ceil(98_304 / 4_935) = 20 < chain_perms 21
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, batch_size=8_192))
@@ -450,7 +465,7 @@ def test_train_config_rejects_batch_size_above_epoch(monkeypatch: pytest.MonkeyP
         TrainConfig(**make_train_config_dummy(batch_size=8_192))
 
     with pytest.raises(ValueError, match="exceeds epoch size"):
-        TrainConfig(**make_train_config_dummy(chain_floor=5_000, batch_size=16_384))  # 2 perms = 9_888
+        TrainConfig(**make_train_config_dummy(chain_floor=5_000, batch_size=16_384))  # 2 perms = 9_870
 
 
 def test_train_config_rejects_nonpositive_chain_floor(monkeypatch: pytest.MonkeyPatch) -> None:

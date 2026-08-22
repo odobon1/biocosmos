@@ -1,7 +1,8 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 5  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * train set size)
+n_epochs: 5  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
+# epoch size is the batch-truncated train set floor(train_set_size / batch_size) * batch_size
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass chains
 # ceil(chain_floor / train_set_size) full shuffled permutations of the train set, decoupling pass length (and max
 # batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);

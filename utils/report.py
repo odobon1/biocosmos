@@ -1,7 +1,7 @@
 """
 Campaign reporting/presentation: metric-stats aggregation, per-eval-group composite-score
-summary tables (stats/<dataset>/map/*.png, acc/*.png) and metrics workbooks
-(stats/metrics/*.xlsx), and per-trial learning-curve plots. Everything here renders
+summary tables + cross-setting convergence plots (stats/<dataset>/{map,acc}/<group>/{metrics,
+convergence}.png) and metrics workbooks (stats/metrics/*.xlsx), and per-trial learning-curve plots. Everything here renders
 from artifacts already on disk and reads its paths from ArtifactManager; trial/checkpoint state
 I/O lives in utils/train.py.
 """
@@ -30,6 +30,7 @@ from utils.utils import (
     save_json,
     save_json_listview,
     save_pickle,
+    load_pickle,
     load_json,
     DATASET_ALIAS2NAME,
 )
@@ -37,7 +38,7 @@ from utils.utils import (
 import pdb
 
 
-# eval group key (the scores group key, also the stats artifact filename) -> display name;
+# eval group key (the scores group key, also the stats artifact file/dir name) -> display name;
 # every stats table/xlsx artifact is rendered once per group
 _EVAL_GROUPS = {
     "native": "Native",
@@ -195,13 +196,17 @@ def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_nam
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(chkpts, means, color="blue", label=f"mean (n={n_trials})")
     ax.fill_between(chkpts, means - spreads, means + spreads, color="blue", alpha=0.2, label=f"± {spread_type}")
-    ax.axvline(idx_best, color="red", linestyle="--", linewidth=1, label=f"selected ({idx_best}, {means[idx_best]:.4f})")
+    # star + value on the selected point itself, matching how the learning curves mark theirs
+    ax.plot(idx_best, means[idx_best], marker="*", color="blue", markersize=14, linestyle="none",
+            zorder=5, label=f"selected ({idx_best})")
+    ax.annotate(f"{means[idx_best]:.4f}", (idx_best, means[idx_best]), textcoords="offset points",
+                xytext=(0, 9), ha="center", color="blue", fontsize=9, fontweight="bold")
     ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
     ax.set_xlabel("Checkpoint", fontsize=10, fontweight="bold")
     ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
     ax.set_ylim(0, 1)
     ax.grid(True)
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curve and the selected-point star
     fig.savefig(fpath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
@@ -482,11 +487,11 @@ def _render_stats_table(grid, title, fpath, bold_high, heatmap):
 @rank0
 def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render the campaign-level composite-score summary tables for this trial's dataset, one pair
-    per eval group: artifacts/<campaign>/stats/<dataset>/map/<group>.png (comp mAP: All/ID/OOD/
-    I2T/I2I/T2I score columns) and acc/<group>.png (comp I2T accuracy: single I2T column) -- each
-    png sources its own selection criterion's best checkpoints (map pngs from evals/_best/map/,
-    acc pngs from evals/_best/acc/). supp_scores ({'primitive', 'n_shot'} -> bool) appends the
-    enabled supplemental score columns (_score_labels) to the right of both: one
+    per eval group: artifacts/<campaign>/stats/<dataset>/map/<group>/metrics.png (comp mAP:
+    All/ID/OOD/I2T/I2I/T2I score columns) and acc/<group>/metrics.png (comp I2T accuracy: single
+    I2T column) -- each png sources its own selection criterion's best checkpoints (map pngs from
+    evals/_best/map/, acc pngs from evals/_best/acc/). supp_scores ({'primitive', 'n_shot'} -> bool)
+    appends the enabled supplemental score columns (_score_labels) to the right of both: one
     row per setting with >= 1 completed trial in this dataset (settings without local trials are
     omitted -- no blank rows in the pngs), stats aggregated across each setting's completed
     trials. bold_high/ordered/heatmap style the tables the same way as the metrics workbooks:
@@ -507,12 +512,12 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
     map_labels, acc_labels = _score_labels(supp_scores, _nshot_names(comps_all))
 
     dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
-    (dpath_stats / "map").mkdir(parents=True, exist_ok=True)
-    (dpath_stats / "acc").mkdir(parents=True, exist_ok=True)
 
     for group_key, group_name in _EVAL_GROUPS.items():
         comps_map = comps_all["map"][group_key]
         comps_acc = comps_all["acc"][group_key]
+        (dpath_stats / "map" / group_key).mkdir(parents=True, exist_ok=True)
+        (dpath_stats / "acc" / group_key).mkdir(parents=True, exist_ok=True)
 
         def ordered_settings(comps_by, score_key, label):
             # localized order: this dataset's per-setting trial means (single-dataset degenerate
@@ -529,14 +534,81 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
             [(setting, [comp["map"] for comp in comps_map[(setting, dataset)].values()]) for setting in settings_map],
             spread_type,
         )
-        _render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map" / f"{group_key}.png", bold_high, heatmap)
+        _render_stats_table(grid_map, f"Composite mAP{title_suffix}", dpath_stats / "map" / group_key / "metrics.png", bold_high, heatmap)
 
         grid_acc = _stats_table_grid(
             acc_labels,
             [(setting, [comp["acc"] for comp in comps_acc[(setting, dataset)].values()]) for setting in settings_acc],
             spread_type,
         )
-        _render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc" / f"{group_key}.png", bold_high, heatmap)
+        _render_stats_table(grid_acc, f"Composite I2T Accuracy{title_suffix}", dpath_stats / "acc" / group_key / "metrics.png", bold_high, heatmap)
+
+def _plot_convergence(curves, idx_win, score_name, title, fpath):
+    """[(setting, mean curve, its selected index), ...] overlaid on one log-x axes: every setting
+    grey, curves[idx_win] redrawn in black on top with its selection starred and a red dashed line
+    across the plot at its score. Checkpoint 0 (the base eval) has no place on a log axis and is dropped -- it
+    is not a selection candidate either way, so every curve starts at checkpoint 1."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_xscale("log")
+    # plain checkpoint numbers on the log axis, not the default 10^k scientific labels; the minor
+    # ticks carry most of them at these ranges (a campaign's n_chkpts is a couple of decades at most)
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
+    ax.xaxis.set_minor_formatter(FormatStrFormatter("%g"))
+    ax.set_xlim(1, max(len(means) - 1 for _, means, _ in curves))  # no margin below chkpt 1 (log axis)
+    for i, (_, means, _) in enumerate(curves):  # every setting grey, one legend entry for the pack
+        ax.plot(np.arange(1, len(means)), means[1:], color="grey", alpha=0.6, linewidth=1,
+                label=f"all settings ({len(curves)})" if i == 0 else None)
+
+    setting, means, idx_best = curves[idx_win]
+    ax.axhline(means[idx_best], color="red", linestyle="--", linewidth=1)
+    ax.plot(np.arange(1, len(means)), means[1:], color="black", linewidth=2, zorder=4, label=setting)
+    # star + value on the selected point itself, matching the per-setting chkpt-mean curves
+    ax.plot(idx_best, means[idx_best], marker="*", color="black", markersize=14, linestyle="none",
+            zorder=5, label=f"selected ({idx_best})")
+    ax.annotate(f"{means[idx_best]:.4f}", (idx_best, means[idx_best]), textcoords="offset points",
+                xytext=(0, 9), ha="center", color="black", fontsize=9, fontweight="bold")
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
+    ax.set_xlabel("Checkpoint", fontsize=10, fontweight="bold")
+    ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curves and the selected-point star
+    fig.savefig(fpath, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+@rank0
+def update_convergence_plots():
+    """Render the campaign-level convergence plots for this trial's dataset, one per criterion x eval
+    group: artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>/convergence.png overlays every
+    setting's across-trial mean curve -- the same curves update_chkpt_selection plots per setting,
+    read back from its stats/<criterion>/<group>/chkpt_means.pkl, on a log-scaled checkpoint axis.
+    All settings grey; the winner (the highest mean at its OWN selected checkpoint) black on top, its
+    selection starred and marked with a red dashed line across the plot (ties go to the first
+    setting in campaign order). Settings with no completed trial in this dataset have no pkl and are
+    skipped. Re-rendered at each trial completion, alongside update_stats_tables."""
+    settings_all = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
+    dataset = ArtifactManager.dataset
+    dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
+    for criterion in BEST_CRITERIA:
+        for group_key, group_name in _EVAL_GROUPS.items():
+            curves = []
+            for setting in settings_all:
+                fpath_means = (ArtifactManager.dpath_campaign / "settings" / setting / dataset /
+                               "stats" / criterion / group_key / "chkpt_means.pkl")
+                if not fpath_means.exists():
+                    continue
+                chkpt_means = load_pickle(fpath_means)
+                curves.append((setting, chkpt_means["means"], chkpt_means["idx_best"]))
+
+            if not curves:
+                continue
+
+            idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
+            score_name = _CRITERION_SCORE_NAMES[criterion]
+            title = f"{score_name} Convergence -- {DATASET_ALIAS2NAME[dataset]} ({group_name})"
+            dpath_group = dpath_stats / criterion / group_key
+            dpath_group.mkdir(parents=True, exist_ok=True)
+            _plot_convergence(curves, idx_win, score_name, title, dpath_group / "convergence.png")
 
 @rank0
 def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, supp_scores, baseline_overrides):

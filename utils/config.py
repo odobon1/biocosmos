@@ -15,10 +15,11 @@ import pdb
 # values through CFG_PARAM_VALUE_ALIASES (per original key); anything without an alias passes
 # through verbatim.
 CFG_PARAM_ALIASES = {
-    "batch_size": "bs",
+    "batch_size": "BS",
     "loss.targ": "L1T",
     "loss2.targ": "L2T",
-    "opt.lr.init": "LR0",
+    "opt.lr.init": "LR",
+    "loss2.mix": "Mix",
 }
 
 CFG_PARAM_VALUE_ALIASES = {
@@ -26,8 +27,13 @@ CFG_PARAM_VALUE_ALIASES = {
         1_024: "1k",
         2_048: "2k",
         4_096: "4k",
+        8_192: "8k",
+        16_384: "16k",
+        32_768: "32k",
     },
     "loss.targ": {
+        "sp": "SP",
+        "mp": "MP",
         "phylo": "hp",
     },
     "loss2.targ": {

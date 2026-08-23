@@ -1,11 +1,12 @@
 import json
 
+import numpy as np
 import pytest
 from openpyxl import load_workbook
 
 from utils import report
 from utils.train import ArtifactManager
-from utils.utils import load_pickle, paths
+from utils.utils import load_pickle, save_pickle, paths
 
 
 def test_aggregate_metric_stats_ste_spread() -> None:
@@ -282,8 +283,64 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     report.update_stats_tables("std", True, False, True, _SUPP_OFF)
 
     for group_key in ("native", "native_macro", "joint", "joint_macro"):
-        assert (tmp_path / "stats" / dataset / "map" / f"{group_key}.png").exists()
-        assert (tmp_path / "stats" / dataset / "acc" / f"{group_key}.png").exists()
+        assert (tmp_path / "stats" / dataset / "map" / group_key / "metrics.png").exists()
+        assert (tmp_path / "stats" / dataset / "acc" / group_key / "metrics.png").exists()
+
+
+def _write_chkpt_means(dpath_campaign, setting, dataset, means, idx_best) -> None:
+    """`setting`'s across-trial mean curve, the same artifact update_chkpt_selection writes, for
+    every criterion x group."""
+    for criterion in ("map", "acc"):
+        for group_key in _GROUP_KEYS:
+            dpath_group = dpath_campaign / "settings" / setting / dataset / "stats" / criterion / group_key
+            dpath_group.mkdir(parents=True)
+            save_pickle(
+                {
+                    "n_trials": 1,
+                    "chkpts": np.arange(len(means)),
+                    "means": np.array(means),
+                    "spreads": np.zeros(len(means)),
+                    "idx_best": idx_best,
+                },
+                dpath_group / "chkpt_means.pkl",
+            )
+
+
+def test_update_convergence_plots_writes_pngs(tmp_path, monkeypatch) -> None:
+    dataset = "cub"
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["a", "b"], "datasets": [dataset]}))
+    _write_chkpt_means(tmp_path, "a", dataset, [0.10, 0.40, 0.30], 1)
+    _write_chkpt_means(tmp_path, "b", dataset, [0.10, 0.20, 0.60], 2)
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", dataset)
+
+    report.update_convergence_plots()
+
+    for criterion in ("map", "acc"):
+        for group_key in _GROUP_KEYS:
+            assert (tmp_path / "stats" / dataset / criterion / group_key / "convergence.png").exists()
+
+
+def test_update_convergence_plots_winner_is_highest_selected_mean(tmp_path, monkeypatch) -> None:
+    # the winner is the setting with the highest mean at its OWN selected checkpoint ("b", 0.60 at
+    # chkpt 2 -- "a" peaks earlier but lower); "c" never completed a trial here, so it has no
+    # chkpt_means.pkl and doesn't make the plot at all
+    dataset = "cub"
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["a", "b", "c"], "datasets": [dataset]}))
+    _write_chkpt_means(tmp_path, "a", dataset, [0.10, 0.40, 0.30], 1)
+    _write_chkpt_means(tmp_path, "b", dataset, [0.10, 0.20, 0.60], 2)
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", dataset)
+    plotted = []
+    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, *a: plotted.append((curves, idx_win)))
+
+    report.update_convergence_plots()
+
+    curves, idx_win = plotted[0]
+    assert [setting for setting, _, _ in curves] == ["a", "b"]
+    assert curves[idx_win][0] == "b"
 
 
 def test_update_stats_tables_ordered_localized_per_metric(tmp_path, monkeypatch) -> None:

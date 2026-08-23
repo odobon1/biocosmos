@@ -25,7 +25,7 @@ import yaml
 from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, get_config_stats, get_config_train, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
-from utils.report import update_stats_tables, update_metrics_xlsx
+from utils.report import update_stats_tables, update_convergence_plots, update_metrics_xlsx
 from utils.train import ArtifactManager
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
@@ -121,6 +121,7 @@ def _render_campaign_tables(campaign: str, datasets: list[str]) -> None:
         ArtifactManager.dataset = dataset
         update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                             cfg_stats.supp_scores)
+        update_convergence_plots()
     update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                         cfg_stats.supp_scores, cfg_stats.baseline_overrides)
 

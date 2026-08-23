@@ -6,19 +6,20 @@ Regenerate a campaign's stats artifacts from its completed trials -- no train/ev
 every completed trial's evals/_best/{map,acc}/<group>.json to that checkpoint, plus
 settings/<setting>/<dataset>/stats/{map,acc}/<group>/{metrics.json, metrics_listview.json, chkpt_means.pkl,
 chkpt_means.png} and setting_metadata.json's best_chkpt,
-and re-renders artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>.png and
+and re-renders artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>/{metrics.png, convergence.png} and
 artifacts/<campaign>/stats/metrics/{map,acc}/<group>.xlsx (one per selection criterion x eval group), all using the
 CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
 edits to any of them take effect for an already-run campaign. Each trial's cached per-checkpoint
 evals/{base,eval*}/ metrics files are reused and re-aggregated exactly as on the trial-completion path in
-train.py (update_chkpt_selection -> update_metric_stats -> update_stats_tables -> update_metrics_xlsx) -- except
+train.py (update_chkpt_selection -> update_metric_stats -> update_stats_tables -> update_convergence_plots ->
+update_metrics_xlsx) -- except
 that the workbooks render unconditionally here, rather than only at a seed's full sweep of the matrix.
 """
 
 import sys
 
 from utils.config import get_config_stats
-from utils.report import update_metric_stats, update_chkpt_selection, update_stats_tables, update_metrics_xlsx
+from utils.report import update_metric_stats, update_chkpt_selection, update_stats_tables, update_convergence_plots, update_metrics_xlsx
 from utils.train import ArtifactManager
 from utils.utils import load_json, paths
 
@@ -46,6 +47,7 @@ def regen_campaign(campaign, cfg_stats):
             cfg_stats.heatmap,
             cfg_stats.supp_scores,
         )
+        update_convergence_plots()
     update_metrics_xlsx(
         cfg_stats.spread_type,
         cfg_stats.bold_high,

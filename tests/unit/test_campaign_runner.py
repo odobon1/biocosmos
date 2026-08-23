@@ -374,7 +374,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
 
 def _campaign_table_fpaths(dpath_campaign: Path, dataset: str) -> list[Path]:
     groups = ("native", "native_macro", "joint", "joint_macro")
-    return [dpath_campaign / "stats" / dataset / criterion / f"{group}.png" for criterion in ("map", "acc") for group in groups] + [
+    return [dpath_campaign / "stats" / dataset / criterion / group / "metrics.png" for criterion in ("map", "acc") for group in groups] + [
         dpath_campaign / "stats" / "metrics" / criterion / f"{group}.xlsx" for criterion in ("map", "acc") for group in groups
     ]
 

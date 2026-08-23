@@ -29,7 +29,7 @@ from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
-from utils.report import plot_metrics, update_metric_stats, update_chkpt_selection, seed_sweep_complete, update_stats_tables, update_metrics_xlsx
+from utils.report import plot_metrics, update_metric_stats, update_chkpt_selection, seed_sweep_complete, update_stats_tables, update_convergence_plots, update_metrics_xlsx
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -712,8 +712,9 @@ def run_training(cfg):
     # rewrites their evals/_best/, so the per-dataset aggregates below see the current selection
     update_chkpt_selection(cfg_stats.spread_type)
     update_metric_stats(cfg_stats.spread_type)
-    # this dataset's cross-setting png tables refresh trial by trial
+    # this dataset's cross-setting png tables/plots refresh trial by trial
     update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
+    update_convergence_plots()
     # the cross-dataset workbooks read every (setting, dataset)'s _best/, so they wait for a full pass
     # of the matrix: only once this seed has completed in every (setting, dataset) is the whole
     # campaign reselected against the same set of trials

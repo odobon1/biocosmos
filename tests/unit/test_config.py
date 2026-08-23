@@ -438,17 +438,18 @@ def test_train_config_chain_floor_chains_permutations(monkeypatch: pytest.Monkey
     cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, n_epochs=202))
 
     assert cfg.chain_perms == 21  # E_chain_nom = ceil(100_000 / 4_935)
-    assert cfg.samps_per_pass == 103_632  # X_chain = 21 x 4_935 minus the 3-sample drop_last remainder
-    assert cfg.epochs_per_pass == 21  # E_chain: the trim (3 < 4_935) doesn't drop a permutation
+    assert cfg.samps_per_pass == 103_632  # X_chain = 21 x 4_935 batch-aligned (the 3-sample tail carries into the next pass)
+    assert cfg.epochs_per_pass == 21  # E_chain: the 3-sample carry (< 4_935) doesn't shift a permutation out of the window
     assert cfg.samps_per_epoch == 4_935  # chained: epochs stay nominal train-set permutations
     assert cfg.sample_volume == 996_870  # 202 x 4_935
     assert cfg.n_passes == 10  # ceil(996_870 / 103_632)
 
 
 def test_train_config_chaining_credits_epochs_touched_by_truncated_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    # batch_size > train set size: drop_last trims more than a full permutation off the nominal
-    # chain (103_635 -> 98_304 consumed, 5_331 trimmed > 4_935), so the pass credits only the
-    # permutations it actually touches: ceil(98_304 / 4_935) = 20 < chain_perms 21
+    # batch_size > train set size: batch alignment cuts more than a full permutation off the
+    # nominal window (103_635 -> 98_304 consumed; the 5_331-sample tail > 4_935 leads the next
+    # pass), so the pass credits only the permutations' worth it actually consumes:
+    # ceil(98_304 / 4_935) = 20 < chain_perms 21
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, batch_size=8_192))
@@ -574,10 +575,9 @@ def _make_stats_config_dummy(**overrides):
         "spread_type": "std",
         "bold_high": True,
         "ordered": True,
-        "heatmap": None,
-        "prim_scores": False,
+        "heatmap": False,
+        "supp_scores": {"primitive": False, "n_shot": False},
         "baseline_overrides": False,
-        "hw_perf": False,
     }
     config.update(overrides)
     return config
@@ -586,3 +586,8 @@ def _make_stats_config_dummy(**overrides):
 def test_stats_config_rejects_invalid_spread_type() -> None:
     with pytest.raises(ValueError, match="spread_type"):
         StatsConfig(**_make_stats_config_dummy(spread_type="var"))
+
+
+def test_stats_config_rejects_unknown_supp_scores_keys() -> None:
+    with pytest.raises(ValueError, match="supp_scores"):
+        StatsConfig(**_make_stats_config_dummy(supp_scores={"primitive": False, "nshot": False}))

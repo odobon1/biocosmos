@@ -58,6 +58,17 @@ def _timed_next(loader, wait_acc):
         wait_acc[0] += time.perf_counter() - t0
         yield batch
 
+def pass_epoch_span(cfg, idx_pass):
+    """(first epoch, last epoch), 1-based inclusive, that dataloader pass `idx_pass` (1-based) draws
+    from -- the epochs its window of the sample stream touches, where a pass consumes samps_per_pass
+    samples and the last one stops at sample_volume. Under chain-shuffle a pass's partial-batch
+    permutation tail carries into the next pass (ChainShuffleDistributedSampler), so passes do NOT
+    tile epochs: consecutive passes share the epoch straddling their boundary. Without chaining an
+    epoch IS a pass, so both ends land on idx_pass."""
+    samps_start = (idx_pass - 1) * cfg.samps_per_pass
+    samps_end = min(idx_pass * cfg.samps_per_pass, cfg.sample_volume)
+    return samps_start // cfg.samps_per_epoch + 1, math.ceil(samps_end / cfg.samps_per_epoch)
+
 
 class TrainPipeline:
     """DDP rank discipline: every undecorated method is entered by ALL ranks and may run
@@ -121,6 +132,9 @@ class TrainPipeline:
         self.time_tracker = TimeTracker()
 
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
+        self._logit_scalars_tracked = self._tracked_logit_scalars()
+        self._targ_stats_tracked = self._tracked_targ_stats()
+        self._params_prev = None  # pre-step parameter snapshot, allocated on the first step
 
         if resume_state is not None:
             self.n_samps_seen = resume_state["n_samps_seen"]
@@ -205,16 +219,65 @@ class TrainPipeline:
         self.data.time_eval = time_eval
 
     @rank0
-    def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, batch_stats, grad_sum_sim1, grad_sum_sim2):
+    def _tracked_logit_scalars(self):
+        """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
+        a loss's temp whenever it's learnable, its bias only when the loss is BCE-family (inert under
+        InfoNCE) and learnable; loss2's only when loss2 is active. Frozen scalars (and non-parameter
+        buffers) are left out -- a flat line says nothing."""
+        model = self.modelw._unwrapped_model
+        tracked = {}
+        for tag, cfg_loss, attr_scale, attr_bias in (
+            ("1", self.cfg.loss, "logit_scale", "logit_bias"),
+            ("2", self.cfg.loss2, "logit_scale2", "logit_bias2"),
+        ):
+            if tag == "2" and self.cfg.loss2["mix"] == 0.0:
+                continue
+            if getattr(model, attr_scale).requires_grad:
+                tracked[f"temp{tag}"] = attr_scale
+            if cfg_loss["crit"] in ("bce", "bif_bce") and getattr(model, attr_bias).requires_grad:
+                tracked[f"bias{tag}"] = attr_bias
+        return tracked
+
+    def _logit_scalar_values(self):
+        # temp series carry tau = exp(-logit_scale) (the quantity temp.init specifies), bias series the raw bias
+        model = self.modelw._unwrapped_model
+        return {
+            key: (-getattr(model, attr)).exp().item() if key.startswith("temp") else getattr(model, attr).item()
+            for key, attr in self._logit_scalars_tracked.items()
+        }
+
+    def _tracked_targ_stats(self):
+        """Batch-stat key prefixes ('targ1'/'targ2') for the target distributions worth curving: phylo
+        and tax targets are graded, so their min/max/mean/median carry signal, while sp/mp targets are
+        0/1 indicators whose spread says nothing. loss2's only when loss2 is mixed in. Untracked
+        branches are dropped before TrialData records them, so they get no learning-curve panel."""
+        tracked = set()
+        for tag, cfg_loss in (("1", self.cfg.loss), ("2", self.cfg.loss2)):
+            if tag == "2" and self.cfg.loss2["mix"] == 0.0:
+                continue
+            if cfg_loss["targ"] in ("phylo", "tax"):
+                tracked.add(f"targ{tag}")
+        return tracked
+
+    def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
+                            grad_sum_sim1, grad_sum_sim2):
+        # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the
+        # curve series keep only the histogram, and only for branches whose targets are worth curving
+        batch_stats = {
+            key: val for key, val in batch_stats.items()
+            if not key.startswith("targ") or (key.endswith("_hist") and key[:-len("_hist")] in self._targ_stats_tracked)
+        }
         self.data.update_train_batch(
             self.n_samps_seen,
             lr=lr,
             loss_train=loss,
             loss_raw_train=loss_raw,
             grad_norm_model=grad_norm_model,
+            delta_norm_model=delta_norm_model,
             batch_stats=batch_stats,
             grad_sum_sim1=grad_sum_sim1,
             grad_sum_sim2=grad_sum_sim2,
+            logit_scalars=self._logit_scalar_values(),
         )
 
     @rank0
@@ -355,7 +418,24 @@ class TrainPipeline:
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
 
     def _step_optimizer(self):
+        """Take the optimizer step and return ||delta theta||, the L2 norm of the resulting parameter
+        update. Distinct from ||grad theta||: Adam rescales per parameter, so the step length is set
+        by the LR and the moment ratio rather than by the raw gradient magnitude -- the two can move
+        in opposite directions. Measured against a pre-step snapshot, which is optimizer-agnostic
+        (no reliance on AdamW's internals) at the cost of one extra copy of the trainable params;
+        the buffers are allocated once and reused, so there's no per-step allocation churn."""
+        params = [p for p in self.modelw.model.parameters() if p.requires_grad]
+        if self._params_prev is None:
+            self._params_prev = [torch.empty_like(p) for p in params]
+        with torch.no_grad():
+            for buf, p in zip(self._params_prev, params):
+                buf.copy_(p.detach())
         self.opt.step()
+        with torch.no_grad():
+            total = torch.zeros((), device=params[0].device)
+            for buf, p in zip(self._params_prev, params):
+                total += (p.detach() - buf).pow(2).sum()  # accumulate on-device; single host sync at the end
+        return total.sqrt().item()
 
     def train(self):
         try:
@@ -420,9 +500,9 @@ class TrainPipeline:
                 self.timer_train.start()
                 self.idx_epoch += 1
 
-                epoch_first = (self.idx_epoch - 1) * self.cfg.epochs_per_pass + 1
-                epoch_last = min(self.idx_epoch * self.cfg.epochs_per_pass, math.ceil(self.cfg.n_epochs))
+                epoch_first, epoch_last = pass_epoch_span(self.cfg, self.idx_epoch)
                 PrintLog.batch_logs_epoch_header(epoch_first, epoch_last, self.cfg.n_epochs)
+                epoch_label = f"{epoch_last}" if epoch_first == epoch_last else f"{epoch_first}-{epoch_last}"
 
                 # Let samplers know current epoch (crucial for shuffling)
                 sampler = getattr(self.dataloader, "sampler", None)
@@ -441,7 +521,7 @@ class TrainPipeline:
                 for idx_batch, data_sb in enumerate(pbar := tqdm(
                     _timed_next(self.dataloader, data_wait),
                     total=len(self.dataloader),
-                    desc=f"Train ({self.idx_epoch}/{self.cfg.n_epochs})",
+                    desc=f"Train ({epoch_label}/{self.cfg.n_epochs:g})",
                     leave=False,
                     disable=(dist.get_rank() != 0),
                     file=sys.stdout,
@@ -483,8 +563,11 @@ class TrainPipeline:
                     )
                     with torch.no_grad():
                         grad_norm_model = model_grad_l2_norm(self.modelw.model)
-                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model, grad_norm_model, batch_stats)
-                    self._step_optimizer()
+                    # the step is taken before logging so the line can carry the update norm too;
+                    # grads survive it (zero_grad only runs at the top of the next iteration)
+                    delta_norm_model = self._step_optimizer()
+                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model,
+                                   grad_norm_model, delta_norm_model, batch_stats)
 
                     if self.n_samps_seen >= self.lr_warmup:
                         self.lr_sched.step()
@@ -496,7 +579,8 @@ class TrainPipeline:
                         loss_raw_mean.update(loss_raw)
                         self.n_batches_seen += 1
 
-                    self._record_train_batch(lr, loss, loss_raw, grad_norm_model, batch_stats, grad_sum_sims[0], grad_sum_sims[1])
+                    self._record_train_batch(lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
+                                             grad_sum_sims[0], grad_sum_sims[1])
 
                     if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()
@@ -581,6 +665,8 @@ class TrainPipeline:
             if self._pooled_manifold:
                 self._pooled_eval()  # COLLECTIVE: pooled shared-frame projection over all cached embeddings
 
+            PrintLog.trial_time(self.data)
+
         finally:
             PrintLog.close_logs()
 
@@ -626,11 +712,12 @@ def run_training(cfg):
     # rewrites their evals/_best/, so the per-dataset aggregates below see the current selection
     update_chkpt_selection(cfg_stats.spread_type)
     update_metric_stats(cfg_stats.spread_type)
-    # the cross-setting tables/workbooks read every setting's _best/, so they wait for a full pass of
-    # the matrix: only once this seed has completed in every (setting, dataset) is the whole campaign
-    # reselected against the same set of trials
+    # this dataset's cross-setting png tables refresh trial by trial
+    update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
+    # the cross-dataset workbooks read every (setting, dataset)'s _best/, so they wait for a full pass
+    # of the matrix: only once this seed has completed in every (setting, dataset) is the whole
+    # campaign reselected against the same set of trials
     if seed_sweep_complete(cfg.seed):
-        update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores)
-        update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
+        update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.baseline_overrides)
 
     cleanup_ddp()

@@ -431,71 +431,82 @@ def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi,
     return mass_pos, mass_neg
 
 
+HIST_BINS = 20  # bins spanning [0, 1] for the target / predicted-probability histogram strips
+
+
 class _SimTargStatsAccum:
     """
-    Streams one loss branch's per-batch sim/target distribution stats over the loss tiles so the
-    chunked path can report the same batch_stats keys as sim_targ_batch_stats without holding the
-    full BxB matrices. min/max/mean are exact; the median is over a strided subsample of each tile
-    (an exact BxB median would need the whole matrix).
+    Streams one loss branch's per-batch sim/target/probability distribution stats over the loss tiles
+    so the chunked path can report the same batch_stats keys as sim_targ_batch_stats without holding
+    the full BxB matrices. sim/targ min/max/mean are exact; their median is over a strided subsample
+    of each tile (an exact BxB median would need the whole matrix). Targets and probabilities are
+    also summarized as HIST_BINS histograms, which stream exactly -- counts just add across tiles
+    and ranks. The chunked path is BCE-family only, so p{idx}_hist is always reported here.
     """
-    def __init__(self, device):
-        self.sim_min = torch.tensor(float("inf"), device=device)
-        self.sim_max = torch.tensor(float("-inf"), device=device)
-        self.sim_sum = torch.zeros((), dtype=torch.float64, device=device)
-        self.targ_min = torch.tensor(float("inf"), device=device)
-        self.targ_max = torch.tensor(float("-inf"), device=device)
-        self.targ_sum = torch.zeros((), dtype=torch.float64, device=device)
-        self.count = 0
-        self.sim_samp = []
-        self.targ_samp = []
+    _FIELDS = ("sim", "targ")
+    _HIST_FIELDS = ("targ", "p")
 
-    def update(self, sim_tile, targs_tile):
-        s = sim_tile.reshape(-1).float()
-        t = targs_tile.reshape(-1).float()
-        self.sim_min = torch.minimum(self.sim_min, s.min())
-        self.sim_max = torch.maximum(self.sim_max, s.max())
-        self.sim_sum += s.double().sum()
-        self.targ_min = torch.minimum(self.targ_min, t.min())
-        self.targ_max = torch.maximum(self.targ_max, t.max())
-        self.targ_sum += t.double().sum()
-        self.count += s.numel()
-        stride = max(1, s.numel() // 4096)  # bound the median subsample per tile
-        self.sim_samp.append(s[::stride])
-        self.targ_samp.append(t[::stride])
+    def __init__(self, device):
+        self.mins = {f: torch.tensor(float("inf"), device=device) for f in self._FIELDS}
+        self.maxs = {f: torch.tensor(float("-inf"), device=device) for f in self._FIELDS}
+        self.sums = {f: torch.zeros((), dtype=torch.float64, device=device) for f in self._FIELDS}
+        self.samps = {f: [] for f in self._FIELDS}
+        self.hists = {f: torch.zeros(HIST_BINS, dtype=torch.float64, device=device) for f in self._HIST_FIELDS}
+        self.count = 0
+
+    def update(self, sim_tile, targs_tile, logits_tile):
+        tiles = {
+            "sim": sim_tile.reshape(-1).float(),
+            "targ": targs_tile.reshape(-1).float(),
+            "p": logits_tile.reshape(-1).float().sigmoid(),
+        }
+        for field in self._FIELDS:
+            vals = tiles[field]
+            self.mins[field] = torch.minimum(self.mins[field], vals.min())
+            self.maxs[field] = torch.maximum(self.maxs[field], vals.max())
+            self.sums[field] += vals.double().sum()
+            stride = max(1, vals.numel() // 4096)  # bound the median subsample per tile
+            self.samps[field].append(vals[::stride])
+        for field in self._HIST_FIELDS:
+            self.hists[field] += torch.histc(tiles[field], bins=HIST_BINS, min=0.0, max=1.0).double()
+        self.count += tiles["sim"].numel()
 
     def finalize(self, world_size, idx):
-        sim_samp = torch.cat(self.sim_samp)
-        targ_samp = torch.cat(self.targ_samp)
-        sim_min, sim_max, sim_sum = self.sim_min, self.sim_max, self.sim_sum
-        targ_min, targ_max, targ_sum = self.targ_min, self.targ_max, self.targ_sum
+        mins = dict(self.mins)
+        maxs = dict(self.maxs)
+        sums = dict(self.sums)
+        samps = {f: torch.cat(self.samps[f]) for f in self._FIELDS}
+        hists = dict(self.hists)
         count = self.count
         if world_size > 1:  # fold per-band partials; the bands partition the BxB rows exactly
-            ext = torch.stack([-sim_min, -targ_min, sim_max, targ_max])
+            ext = torch.stack([*(-mins[f] for f in self._FIELDS), *(maxs[f] for f in self._FIELDS)])
             dist.all_reduce(ext, op=dist.ReduceOp.MAX)
-            sim_min, targ_min, sim_max, targ_max = -ext[0], -ext[1], ext[2], ext[3]
-            sums = torch.stack([sim_sum, targ_sum])
-            dist.all_reduce(sums)
-            sim_sum, targ_sum = sums[0], sums[1]
+            mins = {f: -ext[i] for i, f in enumerate(self._FIELDS)}
+            maxs = {f: ext[len(self._FIELDS) + i] for i, f in enumerate(self._FIELDS)}
+            # the scalar sums ride along with every histogram's bins in one collective
+            packed = torch.cat([torch.stack([sums[f] for f in self._FIELDS]),
+                                *(hists[f] for f in self._HIST_FIELDS)])
+            dist.all_reduce(packed)
+            sums = {f: packed[i] for i, f in enumerate(self._FIELDS)}
+            base = len(self._FIELDS)
+            hists = {f: packed[base + i * HIST_BINS:base + (i + 1) * HIST_BINS]
+                     for i, f in enumerate(self._HIST_FIELDS)}
             count *= world_size  # equal bands -> equal per-rank counts
             # median subsamples: equal bands + equal tile sizes -> equal lengths on every rank, so a
             # plain all_gather reassembles the exact same subsample pool a single full sweep produces
-            samp = torch.stack([sim_samp, targ_samp])
+            samp = torch.stack([samps[f] for f in self._FIELDS])
             parts = [torch.empty_like(samp) for _ in range(world_size)]
             dist.all_gather(parts, samp)
-            sim_samp = torch.cat([p[0] for p in parts])
-            targ_samp = torch.cat([p[1] for p in parts])
-        sim_median = sim_samp.median()
-        targ_median = targ_samp.median()
-        return {
-            f"sim{idx}_min":     sim_min.item(),
-            f"sim{idx}_max":     sim_max.item(),
-            f"sim{idx}_median":  sim_median.item(),
-            f"sim{idx}_mean":    (sim_sum / count).item(),
-            f"targ{idx}_min":    targ_min.item(),
-            f"targ{idx}_max":    targ_max.item(),
-            f"targ{idx}_median": targ_median.item(),
-            f"targ{idx}_mean":   (targ_sum / count).item(),
-        }
+            samps = {f: torch.cat([p[i] for p in parts]) for i, f in enumerate(self._FIELDS)}
+        stats = {}
+        for field in self._FIELDS:
+            stats[f"{field}{idx}_min"] = mins[field].item()
+            stats[f"{field}{idx}_max"] = maxs[field].item()
+            stats[f"{field}{idx}_median"] = samps[field].median().item()
+            stats[f"{field}{idx}_mean"] = (sums[field] / count).item()
+        for field in self._HIST_FIELDS:
+            stats[f"{field}{idx}_hist"] = (hists[field] / hists[field].sum()).tolist()
+        return stats
 
 
 def _crit_block_weight_bce(crit, logits_f, targs, class_encs_rows, class_encs_cols, B, consts):
@@ -805,6 +816,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
         re = rs + chunk_size  # the band is an exact multiple of chunk_size (checked above)
         targ_blocks = []
         sim_blocks = []
+        logits_blocks = []
         with autocast_ctx():
             block_loss = 0.0
             for k, (crit, secondary) in enumerate(crits):
@@ -828,6 +840,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                         raw_tot[k] += bce.sum().detach().double()
                         if j == 0:
                             sim_block_k = sim_block.detach()  # i2t frame -- values match the non-bif sim
+                            logits_block_k = logits_f.detach()
                 else:
                     cg = center_consts[k]
                     if centers[k] == "sim":
@@ -843,13 +856,15 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                     num = (W * bce).sum()
                     raw_tot[k] += bce.sum().detach().double()
                     sim_block_k = sim_block.detach()
+                    logits_block_k = logits_f.detach()
                 block_loss = block_loss + coeffs[k] * num / B
                 wbce_tot[k] += num.detach().double()
                 targ_blocks.append(targs_block.detach())
                 sim_blocks.append(sim_block_k)
+                logits_blocks.append(logits_block_k)
         block_loss.backward()
         for k in range(len(crits)):
-            stats[k].update(sim_blocks[k], targ_blocks[k])
+            stats[k].update(sim_blocks[k], targ_blocks[k], logits_blocks[k])
 
     if world_size > 1:  # fold the band-partial loss totals; the leaves' .grad stay band-partial
         packed = torch.stack(wbce_tot + raw_tot + grad_sums)

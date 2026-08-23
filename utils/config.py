@@ -125,9 +125,11 @@ class TrainConfig:
                 f"batch_size {self.batch_size} exceeds epoch size {samps_pass_nom} "
                 f"(train set size {size_train} x {self.chain_perms or 1} chained permutations)"
             )
-        # samples a pass actually consumes (drop_last batch truncation): X_chain
+        # samples a pass actually consumes, batch-aligned (X_chain): without chain-shuffle drop_last
+        # discards the remainder; with chain-shuffle a pass is a window of one continuous permutation
+        # stream, so the remainder isn't dropped -- it leads the next pass (ChainShuffleDistributedSampler)
         self.samps_per_pass = samps_pass_nom - samps_pass_nom % self.batch_size
-        # epochs credited per pass -- the number of permutations the batched pass touches: E_chain
+        # epochs' worth of samples credited per pass: E_chain
         self.epochs_per_pass = math.ceil(self.samps_per_pass / size_train)
         # samples per credited epoch: without chain-shuffle an epoch is one batch-truncated pass
         # (dropped samples don't count toward duration, so n_epochs never bleeds into an extra pass);
@@ -543,15 +545,17 @@ class StatsConfig:
     spread_type: str  # {std, ste}
     bold_high: bool
     ordered: bool
-    heatmap: str | None  # {None, scaled, fixed}
-    prim_scores: bool  # (True) append per-partition primitive score columns to the tables
+    heatmap: bool  # (True) shade score cells by value over a fixed 0 -> 100 range
+    supp_scores: dict  # {primitive: bool, n_shot: bool}; supplemental score columns appended right of the composite columns
     baseline_overrides: bool  # (True) append a "Baseline Overrides" config table to each xlsx sheet
-    hw_perf: bool  # (True) put a "Hardware Performance" companion table right of every xlsx mAP-sheet scores table
 
     def __post_init__(self):
 
         if self.spread_type not in ("std", "ste"):
             raise ValueError(f"Unknown stats spread_type: '{self.spread_type}', must be one of {{std, ste}}")
+
+        if set(self.supp_scores) != {"primitive", "n_shot"}:
+            raise ValueError(f"stats supp_scores must have exactly the keys {{primitive, n_shot}}, got {sorted(self.supp_scores)}")
 
 
 def load_stats_config_dict() -> dict:

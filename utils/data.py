@@ -239,31 +239,36 @@ class EpochEncodingDistributedSampler(DistributedSampler):
         return (idx + epoch_offset for idx in super().__iter__())
 
 class ChainShuffleDistributedSampler(DistributedSampler):
-    """DistributedSampler for train sets smaller than cfg.chain_floor: each epoch chains n_perms
-    independently shuffled permutations of the dataset, decoupling epoch length (and max batch
-    size) from dataset size. Every aligned block of len(dataset) consecutive samples in the
-    chained stream covers the dataset exactly once. Yields pass-encoded indexes
-    ((epoch * n_perms + p) * len(dataset) + raw_idx) so ImageTextDataset derives a distinct
-    augmentation seed for each copy of an item."""
+    """DistributedSampler for train sets smaller than cfg.chain_floor: batches are cut from ONE
+    continuous stream of independently shuffled permutations of the dataset, decoupling epoch
+    length (and max batch size) from dataset size. Epoch e yields the stream window
+    [e * samps_per_pass, (e + 1) * samps_per_pass), so the permutation tail that doesn't fit one
+    epoch's batch-aligned window isn't dropped -- it leads the next epoch's window (when
+    batch_size > len(dataset), whole permutations' worth can wrap). Every aligned block of
+    len(dataset) consecutive stream samples covers the dataset exactly once. Yields
+    stream-encoded indexes (idx_perm * len(dataset) + raw_idx) so ImageTextDataset derives a
+    distinct augmentation seed for each copy of an item."""
 
-    def __init__(self, dataset, n_perms, num_replicas=None, rank=None):
+    def __init__(self, dataset, samps_per_pass, num_replicas=None, rank=None):
         super().__init__(dataset, num_replicas=num_replicas, rank=rank, shuffle=True, drop_last=True)
-        self.n_perms = n_perms
+        # strided rank slicing needs equal per-rank counts; holds since samps_per_pass is a
+        # multiple of batch_size, itself a multiple of world_size
+        assert samps_per_pass % self.num_replicas == 0
+        self.samps_per_pass = samps_per_pass
 
     def __iter__(self):
         n = len(self.dataset)
-        chained = []
-        for p in range(self.n_perms):
-            idx_pass = self.epoch * self.n_perms + p
+        start = self.epoch * self.samps_per_pass
+        perms = []
+        for idx_perm in range(start // n, (start + self.samps_per_pass - 1) // n + 1):
             g = torch.Generator()
-            g.manual_seed(self.seed + idx_pass)
-            chained.append(torch.randperm(n, generator=g) + idx_pass * n)
-        chained = torch.cat(chained)
-        n_total = (len(chained) // self.num_replicas) * self.num_replicas
-        return iter(chained[self.rank:n_total:self.num_replicas].tolist())
+            g.manual_seed(self.seed + idx_perm)
+            perms.append(torch.randperm(n, generator=g) + idx_perm * n)
+        window = torch.cat(perms)[start % n:start % n + self.samps_per_pass]
+        return iter(window[self.rank::self.num_replicas].tolist())
 
     def __len__(self) -> int:
-        return (self.n_perms * len(self.dataset)) // self.num_replicas
+        return self.samps_per_pass // self.num_replicas
 
 class ExactDistributedSampler(Sampler[int]):
     """
@@ -710,7 +715,7 @@ def spawn_dataloader(
         elif shuffle and config.chain_perms:
             sampler = ChainShuffleDistributedSampler(
                 dataset,
-                n_perms=config.chain_perms,
+                samps_per_pass=config.samps_per_pass,
             )
         else:
             sampler = EpochEncodingDistributedSampler(

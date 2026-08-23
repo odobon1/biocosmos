@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Union, Optional
 
 from utils.utils import paths
-from utils.loss import Criterion, chunked_bce_loss_backward
+from utils.loss import Criterion, chunked_bce_loss_backward, HIST_BINS
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
 from utils.config import TrainConfig, EvalConfig
@@ -100,19 +100,27 @@ class _ZeroSumGradConst(torch.autograd.Function):
     def backward(ctx: Any, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         return g - ctx.c, None
 
-def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[int] = None) -> Dict[str, float]:
+def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[int] = None,
+                         logits: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """
     Per-batch distribution stats over the full BxB similarity and target matrices; drives
     the batch-level learning-curve strips, sim_targ.log, and the eval sim/targ sections
     (per-chunk, averaged across chunks).
 
-    - sim ---- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
-    - targs -- target matrix on [0, 1]
-    - idx ---- loss-branch index; suffixes the key prefixes (sim1_*/targ1_*) so the two
-               branches' stats coexist in one flat dict. None (eval) keeps sim_*/targ_*.
+    - sim ----- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
+    - targs --- target matrix on [0, 1]
+    - idx ----- loss-branch index; suffixes the key prefixes (sim1_*/targ1_*) so the two
+                branches' stats coexist in one flat dict. None (eval) keeps sim_*/targ_*.
+    - logits -- the branch's logits (temp/bias applied to sim), or None to skip the p{tag}_hist
+                entry. Pass them only for BCE-family branches, where sigmoid(logits) is the
+                predicted pair probability -- on [0, 1] like the targets, so the P and Y strips
+                are directly comparable. Under InfoNCE the row-softmax carries no such reading.
 
-    Returns min/max/median/mean for each as flat keys. Reductions are stacked so the
-    device->host transfer is a single .cpu() sync.
+    Returns min/max/median/mean for sim/targ as flat keys (the batch logs read those), plus
+    targ{tag}_hist and -- when logits are given -- p{tag}_hist: the targets and predicted
+    probabilities as HIST_BINS fractions over [0, 1] (distributions, not point stats; the curve
+    strips render them as heatmap columns). Reductions are stacked so the device->host transfer is
+    a single .cpu() sync.
     """
     with torch.no_grad():
         s = sim.detach()
@@ -121,9 +129,14 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[i
             s.min(), s.max(), s.median(), s.mean(),
             t.min(), t.max(), t.median(), t.mean(),
         ]
-        vals = torch.stack([r.float() for r in reductions]).cpu().tolist()
+        packed = torch.stack([r.float() for r in reductions])
+        packed = torch.cat([packed, torch.histc(t.float(), bins=HIST_BINS, min=0.0, max=1.0) / t.numel()])
+        if logits is not None:
+            p = logits.detach().float().sigmoid()
+            packed = torch.cat([packed, torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()])
+        vals = packed.cpu().tolist()
     tag = "" if idx is None else str(idx)
-    return {
+    stats = {
         f"sim{tag}_min":     vals[0],
         f"sim{tag}_max":     vals[1],
         f"sim{tag}_median":  vals[2],
@@ -132,7 +145,17 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[i
         f"targ{tag}_max":    vals[5],
         f"targ{tag}_median": vals[6],
         f"targ{tag}_mean":   vals[7],
+        f"targ{tag}_hist":   vals[8:8 + HIST_BINS],
     }
+    if logits is not None:
+        stats[f"p{tag}_hist"] = vals[8 + HIST_BINS:]
+    return stats
+
+def stat_logits(logits, cfg_loss):
+    """The logits sim_targ_batch_stats should derive p{tag}_* from: the branch tuple's first entry
+    (identical values across branches) for a BCE-family loss, else None -- sigmoid is only the
+    model's pair probability under the sigmoid-BCE path."""
+    return logits[0] if cfg_loss["crit"] in ("bce", "bif_bce") else None
 
 class VLMWrapper(abc.ABC):
     """
@@ -592,17 +615,17 @@ class VLMWrapper(abc.ABC):
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
 
             # each branch's sim/target matrices are tracked separately (learning-curve strips split
-            # the two losses' stats); sims{1,2}[0]: branch values are identical, so the first
-            # branch carries the sim stats
+            # the two losses' stats); sims{1,2}[0]/logits{1,2}[0]: branch values are identical, so
+            # the first branch carries the stats
             batch_stats = {
-                **sim_targ_batch_stats(sims1[0], targs1, idx=1),
-                **sim_targ_batch_stats(sims2[0], targs2, idx=2),
+                **sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss)),
+                **sim_targ_batch_stats(sims2[0], targs2, idx=2, logits=stat_logits(logits2, self.cfg.loss2)),
             }
 
             return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats, (sims1, sims2)
 
         # sims1[0]: branch values are identical, so the first branch carries the sim stats
-        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1)
+        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss))
         return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats, (sims1, None)
 
     def _gather_batch(

@@ -75,7 +75,12 @@ def _make_harness(model, crit1, crit2=None, mix=0.0, mix_unit_scale=False):
     h.crit1 = crit1
     h.crit2 = crit2
     h.world_size = 1
-    h.cfg = SimpleNamespace(loss2={"mix": mix, "mix_unit_scale": mix_unit_scale})
+    # _global_batch_loss reads each branch's crit to decide whether p{tag}_* (sigmoid) stats apply
+    h.cfg = SimpleNamespace(
+        loss={"crit": crit1.cfg["crit"]},
+        loss2={"mix": mix, "mix_unit_scale": mix_unit_scale,
+               "crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
+    )
     return h
 
 
@@ -238,5 +243,31 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
     # every branch's grad was retained for the aggregate (branch-summed) grad logging
     for t in (*logits1, *sims1, *logits2, *sims2):
         assert t.grad is not None
-    for tag in ("1", "2"):
+    for tag, logits in (("1", logits1), ("2", logits2)):
         assert batch_stats[f"sim{tag}_min"] <= batch_stats[f"sim{tag}_max"]
+        # both branches are BCE-family here, so each reports a probability histogram over
+        # sigmoid(its own logits): 10 bin fractions summing to 1
+        p = logits[0].detach().sigmoid()
+        hist = batch_stats[f"p{tag}_hist"]
+        assert len(hist) == L.HIST_BINS
+        assert sum(hist) == pytest.approx(1.0, abs=1e-5)
+        expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
+        assert hist == pytest.approx(expected.tolist(), abs=1e-5)
+
+
+def test_infonce_branch_reports_no_probability_stats():
+    # p* is the sigmoid-BCE pair probability; an InfoNCE branch gets none (its row-softmax mean is a
+    # fixed 1/B), while a BCE branch mixed in alongside it still does
+    B, K, D = 16, 5, 8
+    img, txt, class_encs_b = _data(B, K, D)
+    crit1 = _make_crit(_cfg("bce"), K, B)
+    crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
+    toy = Toy(with_secondary=True).train()
+    h = _make_harness(toy, crit1, crit2, mix=0.3)
+    h.cfg.loss["crit"] = "infonce"  # branch 1 only; the criterion object stays BCE for the math
+
+    *_, batch_stats, _ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
+
+    assert not any(key.startswith("p1_") for key in batch_stats)
+    assert "sim1_min" in batch_stats and "targ1_min" in batch_stats  # sim/targ still reported
+    assert "p2_hist" in batch_stats

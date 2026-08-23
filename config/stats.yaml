@@ -1,7 +1,8 @@
 spread_type: std  # {std, ste}
 bold_high: true  # {true, false}; (true) bold item with highest mean per score column
 ordered: false  # {true, false}; (true) order each table's setting rows by its own metric ("All" column for mAP tables, "I2T" for accuracy) -- xlsx sheets by the cross-dataset mean, per-dataset pngs by their own dataset's means; orders may differ between metrics and between tables
-heatmap: fixed  # {null, scaled, fixed}; null -> no heatmap, scaled -> heatmap scaled to column mins/maxs (per score label), fixed -> heatmap scaled to a fixed range
-prim_scores: true  # {true, false}; (true) append per-partition primitive score columns -- mAP tables: "ID I2T"/"ID I2I"/"ID T2I"/"OOD I2T"/"OOD I2I"/"OOD T2I"; accuracy tables: "ID I2T"/"OOD I2T"
+heatmap: true  # {true, false}; (true) shade score cells white -> #ff5533 by value over the fixed 0.00 -> 100.00 range
+supp_scores:  # supplemental score columns appended right of the composite columns in every score table (pngs + xlsx), in this order
+  primitive: true  # {true, false}; (true) per-partition primitive scores -- mAP tables: "ID I2T"/"ID I2I"/"ID T2I"/"OOD I2T"/"OOD I2I"/"OOD T2I"; accuracy tables: "ID I2T"/"OOD I2T"
+  n_shot: true  # {true, false}; (true) ID-partition n-shot bucket scores, one column per bucket (split_gen.yaml nst_names, e.g. "few-shot"/"med-shot"/"many-shot") -- mAP tables: the bucket's composite mAP; accuracy tables: its I2T accuracy; "-" where a dataset's eval partition has no classes in the bucket
 baseline_overrides: true  # {true, false}; (true) append a "Baseline Overrides" config table to each xlsx sheet: one column per param overridden in the campaign's baseline_overrides, values from each setting's setting_metadata.json; params absent there (inert under that config) show "-"
-hw_perf: true  # {true, false}; (true) put a "Hardware Performance" companion table right of every xlsx mAP-sheet scores table: per-setting trial wall-clock/peak-memory means from trial_metadata.json over the same trials as the scores table beside it, rounded to whole seconds/GB

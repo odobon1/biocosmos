@@ -109,19 +109,20 @@ def _classify_crash(exc: Exception) -> str:
     return "other"
 
 def _render_campaign_tables(campaign: str, datasets: list[str]) -> None:
-    """Re-render the campaign-level tables/workbooks from whatever is on disk. Trials render these only
-    when a seed completes across the whole matrix (train.py), so a campaign that ends mid-sweep -- one
-    interrupted, or with a (setting, dataset) that never succeeds -- would otherwise leave them a sweep
-    behind. Checkpoint selection is NOT redone: every completed trial already reselected its own
-    (setting, dataset) at its own trial end."""
+    """Re-render the campaign-level tables/workbooks from whatever is on disk. Trials render the
+    workbooks only when a seed completes across the whole matrix (train.py; the per-dataset png tables
+    refresh trial by trial), so a campaign that ends mid-sweep -- one interrupted, or with a (setting,
+    dataset) that never succeeds -- would otherwise leave the workbooks a sweep behind. Checkpoint
+    selection is NOT redone: every completed trial already reselected its own (setting, dataset) at its
+    own trial end."""
     cfg_stats = get_config_stats()
     ArtifactManager.dpath_campaign = _dpath_campaign(campaign)
     for dataset in datasets:
         ArtifactManager.dataset = dataset
         update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                            cfg_stats.prim_scores)
+                            cfg_stats.supp_scores)
     update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                        cfg_stats.prim_scores, cfg_stats.baseline_overrides, cfg_stats.hw_perf)
+                        cfg_stats.supp_scores, cfg_stats.baseline_overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,

@@ -12,7 +12,7 @@ CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
 edits to any of them take effect for an already-run campaign. Each trial's cached per-checkpoint
 evals/{base,eval*}/ metrics files are reused and re-aggregated exactly as on the trial-completion path in
 train.py (update_chkpt_selection -> update_metric_stats -> update_stats_tables -> update_metrics_xlsx) -- except
-that the tables/workbooks render unconditionally here, rather than only at a seed's full sweep of the matrix.
+that the workbooks render unconditionally here, rather than only at a seed's full sweep of the matrix.
 """
 
 import sys
@@ -44,16 +44,15 @@ def regen_campaign(campaign, cfg_stats):
             cfg_stats.bold_high,
             cfg_stats.ordered,
             cfg_stats.heatmap,
-            cfg_stats.prim_scores,
+            cfg_stats.supp_scores,
         )
     update_metrics_xlsx(
         cfg_stats.spread_type,
         cfg_stats.bold_high,
         cfg_stats.ordered,
         cfg_stats.heatmap,
-        cfg_stats.prim_scores,
+        cfg_stats.supp_scores,
         cfg_stats.baseline_overrides,
-        cfg_stats.hw_perf,
     )
 
 

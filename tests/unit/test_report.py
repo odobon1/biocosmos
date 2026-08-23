@@ -76,6 +76,8 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
 
 
 _GROUP_KEYS = ("native", "native_macro", "joint", "joint_macro")
+_SUPP_OFF = {"primitive": False, "n_shot": False}
+_SUPP_PRIM = {"primitive": True, "n_shot": False}
 
 
 def _write_trial_evals(dpath_trial, chkpt_scores, n_chkpts=None):
@@ -122,7 +124,7 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
 
     metadata = json.loads((tmp_path / "setting_metadata.json").read_text())
     assert metadata["best_chkpt"]["cub"]["map"]["native"] == {
-        "idx": 2, "n_chkpts": 3, "n_trials": 2, "mean": "0.6000",
+        "idx": 2, "n_trials": 2, "mean": "0.6000",
     }
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
@@ -203,13 +205,24 @@ def _write_group_metrics(dpath_best, scores_grp: dict, macro: dict | None = None
     # trial-end materialization (report.update_chkpt_selection) writes one metrics file per eval
     # group under each selection criterion; fixtures reuse one subtree per averaging axis across
     # both sets, and the same content for both criteria unless acc_selected supplies the
-    # acc-criterion subtree
+    # acc-criterion subtree. A completed trial also always has its trial_metadata.json (hardware
+    # readings) and its setting's setting_metadata.json (crash counters), which the always-on
+    # 'Hardware Performance' sheet reads: placeholder ones are written here (the setting's only
+    # if absent), for tests to overwrite when they assert on them.
     macro = scores_grp if macro is None else macro
     for criterion, (grp_std, grp_macro) in (("map", (scores_grp, macro)),
                                             ("acc", (acc_selected or scores_grp, acc_selected or macro))):
         (dpath_best / criterion).mkdir(parents=True, exist_ok=True)
         for group_key, grp in (("native", grp_std), ("native_macro", grp_macro), ("joint", grp_std), ("joint_macro", grp_macro)):
             (dpath_best / criterion / f"{group_key}.json").write_text(json.dumps({"scores": grp}))
+    dpath_trial = dpath_best.parent.parent  # <setting>/<dataset>/<seed>/evals/_best
+    (dpath_trial / "trial_metadata.json").write_text(json.dumps({
+        "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": "1.00"},
+        "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
+    }))
+    fpath_meta_setting = dpath_trial.parent.parent / "setting_metadata.json"
+    if not fpath_meta_setting.exists():
+        fpath_meta_setting.write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
 
 
 def test_stats_table_grid_formats_by_trial_count() -> None:
@@ -255,7 +268,7 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     # "mp" is planned in campaign_metadata.json but has no completed trials in this dataset, so it
     # gets no row (exclusion asserted in test_update_stats_tables_ordered_localized_per_metric);
     # trials are counted by their written best-checkpoint metrics, same as update_metric_stats.
-    # bold_high=True + heatmap='fixed' exercise the real matplotlib styling paths (winner bold +
+    # bold_high=True + heatmap=True exercise the real matplotlib styling paths (winner bold +
     # heatmap shading) end-to-end.
     dataset = "cub"
     dpath_best = tmp_path / "settings" / "hp" / dataset / "42" / "evals" / "_best"
@@ -266,7 +279,7 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_stats_tables("std", True, False, "fixed", False)
+    report.update_stats_tables("std", True, False, True, _SUPP_OFF)
 
     for group_key in ("native", "native_macro", "joint", "joint_macro"):
         assert (tmp_path / "stats" / dataset / "map" / f"{group_key}.png").exists()
@@ -300,7 +313,7 @@ def test_update_stats_tables_ordered_localized_per_metric(tmp_path, monkeypatch)
         lambda grid, title, fpath, bold_high, heatmap: grids.append(grid),
     )
 
-    report.update_stats_tables("std", False, True, None, False)
+    report.update_stats_tables("std", False, True, False, _SUPP_OFF)
 
     assert len(grids) == 8  # map + acc per eval group
     grid_map, grid_acc = grids[0], grids[1]  # native pair (fixture repeats one subtree per group)
@@ -329,7 +342,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, False, False, False)
+    report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
     fpath_xlsx = tmp_path / "stats" / "metrics" / "map" / "native.xlsx"
     assert fpath_xlsx.exists()
@@ -378,7 +391,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     assert ws.column_dimensions["H"].width == 3
     # bold_high=False: data cells stay unbolded (only header row + setting column bold)
     assert ws.cell(row=5, column=2).font.bold is not True
-    # heatmap=None: data cells are left unshaded
+    # heatmap=False: data cells are left unshaded
     assert ws.cell(row=5, column=2).fill.patternType is None
     # "All Borders": thin black gridlines on every table cell, incl. all cells of the merged title banner
     assert ws.cell(row=3, column=1).border.top.style == "thin"
@@ -388,9 +401,14 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     # campaign + table titles are left-aligned in their cells
     assert ws.cell(row=1, column=1).alignment.horizontal == "left"
     assert ws.cell(row=3, column=1).alignment.horizontal == "left"
+    # setting names are left-aligned; the Setting header and score cells stay centered
+    assert ws.cell(row=5, column=1).alignment.horizontal == "left"  # "hp (2)" (dataset table)
+    assert ws.cell(row=13, column=1).alignment.horizontal == "left"  # "hp" (Mean table)
+    assert ws.cell(row=4, column=1).alignment.horizontal == "center"  # "Setting" header
+    assert ws.cell(row=5, column=2).alignment.horizontal == "center"  # score cell
     # 2nd sheet: the accuracy analog (single I2T column per table), same layout/row order.
     # hp's cub trials have acc i2t 56.00/66.00 -> mean 61.00 (± 7.07 in the per-dataset table).
-    assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy"]
+    assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
     agrid = [[c.value for c in row] for row in wb["Composite I2T Accuracy"].iter_rows()]
     assert agrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
     assert agrid[2][0] == "CUB"
@@ -407,6 +425,21 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     assert agrid[4][3:5] == ["hp", "56.00"]   # seed 42 CUB, aligned with aggregate CUB
     assert agrid[4][6:8] == ["hp", "66.00"]   # seed 43 CUB
     assert agrid[8][3:5] == ["hp", "-"]       # seed 42 Bryozoa
+    # 3rd sheet: the hardware analog, same layout/row order with the hw readings as columns (the
+    # Mean table appends the crash totals); values asserted in test_update_metrics_xlsx_hw_sheet
+    hgrid = [[c.value for c in row] for row in wb["Hardware Performance"].iter_rows()]
+    assert hgrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    assert hgrid[2][0] == "CUB"
+    assert hgrid[3][:6] == ["Setting", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert hgrid[4][0] == "hp (2)"
+    assert hgrid[6][0] == "Bryozoa"
+    assert hgrid[8][:2] == ["hp (0)", "-"]
+    assert hgrid[10][0] == "Mean"
+    assert hgrid[11][:9] == ["Setting", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+                             "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
+    assert hgrid[12][0] == "hp"
+    assert hgrid[0][10] == "seed 42"  # one separator past the 9-wide Mean table (the block's widest)
+    assert hgrid[4][10] == "hp"
 
 
 def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
@@ -424,7 +457,7 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", True, False, None, False, False, False)
+    report.update_metrics_xlsx("std", True, False, False, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, setting rows
@@ -454,7 +487,7 @@ def test_update_metrics_xlsx_per_group_files(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, False, False, False)
+    report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
     dpath_metrics = tmp_path / "stats" / "metrics"
     for criterion in ("map", "acc"):
@@ -484,7 +517,7 @@ def test_update_metrics_xlsx_criterion_sourcing(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, False, False, False)
+    report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
     wb_map = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
@@ -525,7 +558,7 @@ def test_update_metrics_xlsx_ordered_per_sheet_metric(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, True, None, False, False, False)
+    report.update_metrics_xlsx("std", False, True, False, _SUPP_OFF, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
@@ -561,10 +594,10 @@ def _fill_rgb(ws, row, col):
     return None if fill.patternType is None else fill.fgColor.rgb[-6:]
 
 
-def test_update_metrics_xlsx_heatmap_scaled(tmp_path, monkeypatch) -> None:
-    # heatmap='scaled': each column's min -> white (#ffffff), max -> #ff5533, rest linearly
-    # interpolated. One dataset, so the mean "All" column mirrors the values 20/50/80; "d" (no
-    # completed trials anywhere) gets no row at all.
+def test_update_metrics_xlsx_heatmap(tmp_path, monkeypatch) -> None:
+    # heatmap=True: value/100 maps to white->#ff5533 over a fixed range, regardless of the column's
+    # other cells; 20/50/80 -> #ffddd6 / #ffaa99 / #ff775c. One dataset, so the Mean "All" column
+    # mirrors the values and is shaded too; "d" (no completed trials anywhere) gets no row at all.
     for setting, all_v in (("a", 0.20), ("b", 0.50), ("c", 0.80)):
         dpath_best = tmp_path / "settings" / setting / "cub" / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
@@ -575,41 +608,18 @@ def test_update_metrics_xlsx_heatmap_scaled(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, "scaled", False, False, False)
-
-    ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
-    # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
-    # setting rows 5/6/7 = a/b/c (values 20/50/80)
-    assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
-    assert _fill_rgb(ws, 5, 2) == "FFFFFF"  # column min -> white
-    assert _fill_rgb(ws, 6, 2) == "FFAA99"  # midpoint (t=0.5) -> interpolated
-    assert _fill_rgb(ws, 7, 2) == "FF5533"  # column max -> #ff5533
-    # the trailing Mean table is shaded too (setting rows 11/12/13)
-    assert _fill_rgb(ws, 11, 2) == "FFFFFF"
-    assert _fill_rgb(ws, 13, 2) == "FF5533"
-
-
-def test_update_metrics_xlsx_heatmap_fixed(tmp_path, monkeypatch) -> None:
-    # heatmap='fixed': value/100 maps to white->#ff5533 regardless of the column's other cells;
-    # 20/50/80 -> #ffddd6 / #ffaa99 / #ff775c.
-    for setting, all_v in (("a", 0.20), ("b", 0.50), ("c", 0.80)):
-        dpath_best = tmp_path / "settings" / setting / "cub" / "42" / "evals" / "_best"
-        dpath_best.mkdir(parents=True)
-        _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v)))
-    (tmp_path / "campaign_metadata.json").write_text(
-        json.dumps({"settings": ["a", "b", "c"], "datasets": ["cub"]})
-    )
-
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
-
-    report.update_metrics_xlsx("std", False, False, "fixed", False, False, False)
+    report.update_metrics_xlsx("std", False, False, True, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
     # setting rows 5/6/7 = a/b/c
+    assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
     assert _fill_rgb(ws, 5, 2) == "FFDDD6"  # 20 -> t=0.20
     assert _fill_rgb(ws, 6, 2) == "FFAA99"  # 50 -> t=0.50
     assert _fill_rgb(ws, 7, 2) == "FF775C"  # 80 -> t=0.80
+    # the trailing Mean table is shaded too (setting rows 11/12/13)
+    assert _fill_rgb(ws, 11, 2) == "FFDDD6"
+    assert _fill_rgb(ws, 13, 2) == "FF775C"
 
 
 def _prim_scores_grp() -> dict:
@@ -624,9 +634,9 @@ _PRIM_MAP_HEADER = ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I",
                     "ID I2T", "ID I2I", "ID T2I", "OOD I2T", "OOD I2I", "OOD T2I"]
 
 
-def test_update_metrics_xlsx_prim_scores(tmp_path, monkeypatch) -> None:
-    # prim_scores=True appends the per-partition primitive score columns: ID/OOD x I2T/I2I/T2I on the
-    # mAP sheet, ID I2T / OOD I2T on the accuracy sheet -- in every table, incl. the seed blocks
+def test_update_metrics_xlsx_supp_primitive(tmp_path, monkeypatch) -> None:
+    # supp_scores.primitive appends the per-partition primitive score columns: ID/OOD x I2T/I2I/T2I
+    # on the mAP sheet, ID I2T / OOD I2T on the accuracy sheet -- in every table, incl. the seed blocks
     dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _prim_scores_grp())
@@ -634,7 +644,7 @@ def test_update_metrics_xlsx_prim_scores(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, True, False, False)
+    report.update_metrics_xlsx("std", False, False, False, _SUPP_PRIM, False)
 
     wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
     ws = wb.active
@@ -668,8 +678,8 @@ def test_update_metrics_xlsx_prim_scores(tmp_path, monkeypatch) -> None:
     assert agrid[0][5] == "seed 42"
 
 
-def test_update_stats_tables_prim_scores(tmp_path, monkeypatch) -> None:
-    # prim_scores=True appends the per-partition primitive score columns to the png grids too
+def test_update_stats_tables_supp_primitive(tmp_path, monkeypatch) -> None:
+    # supp_scores.primitive appends the per-partition primitive score columns to the png grids too
     dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _prim_scores_grp())
@@ -683,7 +693,7 @@ def test_update_stats_tables_prim_scores(tmp_path, monkeypatch) -> None:
         lambda grid, title, fpath, bold_high, heatmap: grids.append(grid),
     )
 
-    report.update_stats_tables("std", False, False, None, True)
+    report.update_stats_tables("std", False, False, False, _SUPP_PRIM)
 
     assert len(grids) == 8  # map + acc per eval group
     grid_map, grid_acc = grids[0], grids[1]  # native pair (fixture repeats one subtree per group)
@@ -692,6 +702,103 @@ def test_update_stats_tables_prim_scores(tmp_path, monkeypatch) -> None:
                            "61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
     assert grid_acc[0] == ["Setting", "I2T", "ID I2T", "OOD I2T"]
     assert grid_acc[1] == ["hp (1)", "56.00", "64.00", "74.00"]
+
+
+def _nshot_scores_grp(nshot_map: dict, nshot_acc: dict) -> dict:
+    # _prim_scores_grp + the ID partition's n-shot bucket scores, as the eval writes them: only
+    # buckets with classes in the eval partition are present
+    grp = _prim_scores_grp()
+    grp["id"]["map"]["n-shot"] = nshot_map
+    grp["id"]["acc"]["n-shot"] = nshot_acc
+    return grp
+
+
+_NSHOT_FULL = ({"few-shot": "0.31", "med-shot": "0.32", "many-shot": "0.33"},
+               {"few-shot": "0.41", "med-shot": "0.42", "many-shot": "0.43"})
+_NSHOT_NO_FEW = ({"med-shot": "0.52", "many-shot": "0.53"}, {"med-shot": "0.62", "many-shot": "0.63"})
+
+
+def test_update_metrics_xlsx_supp_n_shot(tmp_path, monkeypatch) -> None:
+    # supp_scores.n_shot appends one column per ID-partition n-shot bucket to the right of every
+    # table (after the primitive columns when both are on): the bucket's composite mAP on the mAP
+    # sheet (under an 'N-Shot Scores' group header), its I2T accuracy on the accuracy sheet. Bucket
+    # names come from the eval files, merged in their order: bryo (first in campaign order) lacks
+    # few-shot (no classes there, as on the dev split), cub has all three -> [few, med, many]; the
+    # absent bucket renders "-" in bryo's rows and is left out of the Mean (cub's value alone).
+    for dataset, nshot in (("bryo", _NSHOT_NO_FEW), ("cub", _NSHOT_FULL)):
+        dpath_best = tmp_path / "settings" / "hp" / dataset / "42" / "evals" / "_best"
+        dpath_best.mkdir(parents=True)
+        _write_group_metrics(dpath_best, _nshot_scores_grp(*nshot))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["bryo", "cub"]}))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+
+    report.update_metrics_xlsx("std", False, False, False, {"primitive": True, "n_shot": True}, False)
+
+    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    ws = wb.active
+    grid = [[c.value for c in r] for r in ws.iter_rows()]
+    merged = {str(m) for m in ws.merged_cells.ranges}
+    # 16-wide tables: Setting + 6 comp + 6 prim + 3 n-shot; three group headers over the banner
+    assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
+    assert grid[2][7] == "Primitive Scores"
+    assert grid[2][13] == "N-Shot Scores"
+    assert "B3:G3" in merged and "H3:M3" in merged and "N3:P3" in merged
+    assert grid[3][:16] == _PRIM_MAP_HEADER + ["few-shot", "med-shot", "many-shot"]
+    assert grid[4][13:16] == ["-", "52.00", "53.00"]  # Bryozoa: no few-shot bucket
+    assert grid[6][0] == "CUB"
+    assert grid[8][13:16] == ["31.00", "32.00", "33.00"]
+    assert grid[10][0] == "Mean"
+    assert grid[11][13:16] == ["few-shot", "med-shot", "many-shot"]
+    assert grid[12][13:16] == ["31.00", "42.00", "43.00"]  # few-shot: cub alone; others mean bryo/cub
+    # seed block (one separator past the 16-wide aggregate) carries the columns too
+    assert grid[0][17] == "seed 42"
+    assert grid[3][30:33] == ["few-shot", "med-shot", "many-shot"]
+    assert grid[4][30:33] == ["-", "52.00", "53.00"]
+    assert grid[8][30:33] == ["31.00", "32.00", "33.00"]
+    # accuracy sheet: the buckets' I2T accuracies, full-width banner as before
+    ws_acc = wb["Composite I2T Accuracy"]
+    agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
+    assert "A3:G3" in {str(m) for m in ws_acc.merged_cells.ranges}
+    assert agrid[3][:7] == ["Setting", "I2T", "ID I2T", "OOD I2T", "few-shot", "med-shot", "many-shot"]
+    assert agrid[4][4:7] == ["-", "62.00", "63.00"]
+    assert agrid[8][4:7] == ["41.00", "42.00", "43.00"]
+    assert agrid[12][4:7] == ["41.00", "52.00", "53.00"]
+
+    # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
+    report.update_metrics_xlsx("std", False, False, False, {"primitive": False, "n_shot": True}, False)
+
+    ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
+    grid = [[c.value for c in r] for r in ws.iter_rows()]
+    assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
+    assert grid[2][7] == "N-Shot Scores"
+    assert "H3:J3" in {str(m) for m in ws.merged_cells.ranges}
+    assert grid[3][:10] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I", "few-shot", "med-shot", "many-shot"]
+    assert grid[8][7:10] == ["31.00", "32.00", "33.00"]
+
+
+def test_update_stats_tables_supp_n_shot(tmp_path, monkeypatch) -> None:
+    # supp_scores.n_shot appends the bucket columns to the png grids too
+    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best.mkdir(parents=True)
+    _write_group_metrics(dpath_best, _nshot_scores_grp(*_NSHOT_FULL))
+    (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["cub"]}))
+
+    grids = []
+    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", "cub")
+    monkeypatch.setattr(
+        report, "_render_stats_table",
+        lambda grid, title, fpath, bold_high, heatmap: grids.append(grid),
+    )
+
+    report.update_stats_tables("std", False, False, False, {"primitive": False, "n_shot": True})
+
+    grid_map, grid_acc = grids[0], grids[1]
+    assert grid_map[0] == ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I", "few-shot", "med-shot", "many-shot"]
+    assert grid_map[1][7:] == ["31.00", "32.00", "33.00"]
+    assert grid_acc[0] == ["Setting", "I2T", "few-shot", "med-shot", "many-shot"]
+    assert grid_acc[1][2:] == ["41.00", "42.00", "43.00"]
 
 
 def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
@@ -719,7 +826,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", True, False, "fixed", False, True, False)
+    report.update_metrics_xlsx("std", True, False, True, _SUPP_OFF, True)
 
     wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
     ws = wb.active
@@ -775,7 +882,7 @@ def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, False, True, False)
+    report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, True)
 
     wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
@@ -783,19 +890,19 @@ def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path
     assert grid[2][0] == "CUB"  # score blocks leftmost: no band, no separator column
 
 
-def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
-    # hw_perf=True renders a "Hardware Performance" companion table to the right of every scores
-    # table on the mAP sheet (one separator column between the two), row-aligned so the scores
-    # Setting column labels its rows: per-trial readings from trial_metadata.json, meaned over the
-    # same trials as the scores table beside it, rounded to the nearest int. Dataset companions
-    # mean that dataset's completed trials ("-" row where a setting has none), seed-block
-    # companions carry that seed's single trial, and the Mean companion means the per-dataset
-    # trial means across datasets -- hp's cub trial times (100.4, 200.4) mean to 150.4, then with
-    # bryo's 350.0 -> 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level
-    # aggregation matters) -- plus the Total Crashes RAM/VRAM/Other columns (Mean companion only,
-    # crash totals don't decompose per dataset/seed) straight from setting_metadata.json's
-    # n_crashes (per-setting totals across seeds + datasets). The Baseline Overrides band is the
-    # only left band remaining.
+def test_update_metrics_xlsx_hw_sheet(tmp_path, monkeypatch) -> None:
+    # the always-on 3rd sheet, "Hardware Performance", mirrors the score sheets' layout (campaign
+    # banner, per-dataset tables + Mean table, per-seed blocks, Baseline Overrides band, mAP-sheet
+    # row order) with per-trial readings from trial_metadata.json as columns, meaned over the same
+    # trials as the score tables, rounded to the nearest int. Dataset tables mean that dataset's
+    # completed trials ("<setting> (n)" labels, "-" row where a setting has none), seed-block
+    # tables carry that seed's single trial, and the Mean table means the per-dataset trial means
+    # across datasets -- hp's cub trial times (100.4, 200.4) mean to 150.4, then with bryo's 350.0
+    # -> 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level aggregation
+    # matters) -- plus the Total Crashes RAM/VRAM/Other columns (Mean table only, crash totals
+    # don't decompose per dataset/seed) straight from setting_metadata.json's n_crashes
+    # (per-setting totals across seeds + datasets). Hardware cells get no winner-bold/heatmap
+    # styling despite bold_high/heatmap on; the score sheets carry no hardware tables.
     hw_vals = {  # (setting, dataset, seed) -> (trial, train mean, eval mean, ram, vram)
         ("hp", "cub", "42"): ("100.40", "10.10", "5.10", "100.2/128.0 GB", "20.2/178.4 GB"),
         ("hp", "cub", "43"): ("200.40", "20.10", "7.10", "110.2/128.0 GB", "24.2/178.4 GB"),
@@ -822,64 +929,98 @@ def test_update_metrics_xlsx_hw_perf(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
-    report.update_metrics_xlsx("std", False, False, None, False, True, True)
+    report.update_metrics_xlsx("std", True, False, True, _SUPP_OFF, True)
 
     wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
-    ws = wb.active
+    assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
+    ws = wb["Hardware Performance"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
-    # overrides band at A..B + separator C (the only left band now); aggregate scores at D..J +
-    # separator K; companions at L -- dataset companions 5 stat columns (L..P), the Mean companion
-    # 8 (L..S, crash columns appended), so the aggregate block spans D..S and seed 42 starts at U
-    assert grid[2][3] == "CUB"
-    assert grid[12][3] == "Mean"
+    # overrides band at A..B + separator C; aggregate block at D -- dataset tables 6 wide (D..I),
+    # the Mean table 9 (D..L, crash columns appended), so the block spans D..L and seed 42 starts
+    # one separator later at N
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
     assert grid[12][0] == "Baseline Overrides"
     assert "A13:B13" in merged
     assert grid[13][:2] == ["loss2.mix", "loss.targ"]
     assert grid[14][:2] == ["0.3", "-"]
     assert grid[15][:2] == ["-", "mp"]
-    # CUB companion: banner in the scores banner row, stat header aligned with the scores header,
-    # value rows labeled by the scores Setting column; hp means its 2 cub trials, mp its 1
-    assert grid[2][11] == "Hardware Performance"
-    assert "L3:P3" in merged
-    assert grid[3][11:16] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
-    assert grid[4][3] == "hp (2)"
-    assert grid[4][11:16] == ["150", "15", "6", "105", "22"]
-    assert grid[5][11:16] == ["63", "8", "6", "117", "26"]
-    # Bryozoa companion: hp's single trial passes through; mp has no bryo trials -> "-" row
+    # CUB table: merged title banner, Setting + hw header, '<setting> (n)' labels; hp means its 2
+    # cub trials, mp its 1
+    assert grid[2][3] == "CUB"
+    assert "D3:I3" in merged
+    assert grid[3][3:9] == ["Setting", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert grid[4][3:9] == ["hp (2)", "150", "15", "6", "105", "22"]
+    assert grid[5][3:9] == ["mp (1)", "63", "8", "6", "117", "26"]
+    # Bryozoa table: hp's single trial passes through; mp has no bryo trials -> "-" row
     assert grid[7][3] == "Bryozoa"
-    assert grid[7][11] == "Hardware Performance"
-    assert grid[9][11:16] == ["350", "30", "9", "120", "30"]
-    assert grid[10][11:16] == ["-", "-", "-", "-", "-"]
-    # Mean companion: cross-dataset means of the per-dataset trial means + the crash-total columns
-    assert grid[12][11] == "Hardware Performance"
-    assert "L13:S13" in merged
-    assert grid[13][11:19] == ["Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
-                               "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
-    assert grid[14][11:19] == ["250", "23", "8", "113", "26", "2", "1", "0"]
+    assert grid[9][3:9] == ["hp (1)", "350", "30", "9", "120", "30"]
+    assert grid[10][3:9] == ["mp (0)", "-", "-", "-", "-", "-"]
+    # Mean table: cross-dataset means of the per-dataset trial means + the crash-total columns
+    assert grid[12][3] == "Mean"
+    assert "D13:L13" in merged
+    assert grid[13][3:12] == ["Setting", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+                              "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
+    assert grid[14][3:12] == ["hp", "250", "23", "8", "113", "26", "2", "1", "0"]
     # mp: single cub trial, values pass straight through the two-level mean before rounding
-    assert grid[15][11:19] == ["63", "8", "6", "117", "26", "0", "0", "3"]
-    # seed blocks keep their companions too: seed 42 scores at U..AA + separator AB, companion at
-    # AC..AG; seed 43 one 13-wide block + separator later, companion at AQ..AU
-    assert grid[0][20] == "seed 42"
-    assert grid[0][34] == "seed 43"
-    assert grid[2][28] == "Hardware Performance"
-    assert grid[4][28:33] == ["100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
-    assert grid[5][28:33] == ["63", "8", "6", "117", "26"]     # mp's only trial
-    assert grid[9][28:33] == ["350", "30", "9", "120", "30"]   # seed 42 Bryozoa
-    assert grid[10][28:33] == ["-", "-", "-", "-", "-"]        # mp: no bryo trial
-    assert grid[4][42:47] == ["200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
-    assert grid[5][42:47] == ["-", "-", "-", "-", "-"]         # mp has no 43 trial
-    # separator columns between scores tables and companions / between blocks stay empty
-    assert all(r[2] is None and r[10] is None and r[19] is None and r[27] is None for r in grid)
-    # hw header styled like other headers; value cells get no winner-bold/heatmap styling
-    assert ws.cell(row=4, column=12).font.bold is True
-    assert ws.cell(row=4, column=12).fill.fgColor.rgb[-6:] == "EAEAEA"
-    assert ws.cell(row=5, column=12).font.bold is not True
-    assert ws.cell(row=5, column=12).fill.patternType is None
-    # accuracy sheet: no hw companions -- the overrides band stays leftmost
-    agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
-    assert agrid[12][0] == "Baseline Overrides"
-    assert agrid[12][3] == "Mean"
-    assert not any(v == "Hardware Performance" for r in agrid for v in r)
-    assert not any(v == "Total Crashes RAM" for r in agrid for v in r)
+    assert grid[15][3:12] == ["mp", "63", "8", "6", "117", "26", "0", "0", "3"]
+    # seed blocks: per-dataset tables only (no Mean), plain labels; seed 42 at N..S, seed 43 at U..Z
+    assert grid[0][13] == "seed 42"
+    assert grid[0][20] == "seed 43"
+    assert grid[2][13] == "CUB"
+    assert grid[4][13:19] == ["hp", "100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
+    assert grid[5][13:19] == ["mp", "63", "8", "6", "117", "26"]     # mp's only trial
+    assert grid[9][13:19] == ["hp", "350", "30", "9", "120", "30"]   # seed 42 Bryozoa
+    assert grid[10][13:19] == ["mp", "-", "-", "-", "-", "-"]        # mp: no bryo trial
+    assert grid[12][13] is None  # no Mean table in seed blocks
+    assert grid[4][20:26] == ["hp", "200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
+    assert grid[5][20:26] == ["mp", "-", "-", "-", "-", "-"]         # mp has no 43 trial
+    # separator columns between the band and blocks stay empty
+    assert all(r[2] is None and r[12] is None and r[19] is None for r in grid)
+    # header + setting cells styled like the score sheets' (setting names left-aligned); value
+    # cells get no winner-bold/heatmap styling despite bold_high/heatmap on
+    assert ws.cell(row=4, column=5).font.bold is True
+    assert ws.cell(row=4, column=5).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=5, column=4).font.bold is True
+    assert ws.cell(row=5, column=4).alignment.horizontal == "left"
+    assert ws.cell(row=6, column=5).font.bold is not True  # hp's 150 would be the Time Trial "winner"
+    assert ws.cell(row=5, column=5).font.bold is not True
+    assert ws.cell(row=5, column=5).fill.patternType is None
+    # the score sheets carry no hardware tables; their overrides bands stay leftmost
+    for sheet in ("Composite mAP", "Composite I2T Accuracy"):
+        sgrid = [[c.value for c in r] for r in wb[sheet].iter_rows()]
+        assert sgrid[12][0] == "Baseline Overrides"
+        assert sgrid[12][3] == "Mean"
+        assert not any(v in ("Hardware Performance", "Time Trial") for r in sgrid for v in r)
+
+
+def test_fold_hist_columns_halves_on_overflow() -> None:
+    # one histogram per batch, folded to at most `threshold` columns: the group size is the smallest
+    # power of two that fits, so the strip halves (1 -> 2 -> 4 batches per column) as batches pile up
+    cols = [[float(i), float(i) + 1] for i in range(10)]  # 2 "bins" per column, values track the index
+
+    grid, stride = report._fold_hist_columns(cols, 16)  # under budget -> untouched
+    assert stride == 1
+    assert grid.tolist() == cols
+
+    grid, stride = report._fold_hist_columns(cols, 5)  # 10 > 5 -> pairs averaged, 5 columns
+    assert stride == 2
+    assert grid.tolist() == [[0.5, 1.5], [2.5, 3.5], [4.5, 5.5], [6.5, 7.5], [8.5, 9.5]]
+
+    grid, stride = report._fold_hist_columns(cols, 4)  # 10//2=5 still over -> groups of 4
+    assert stride == 4
+    # only FULL groups: batches 0-3 and 4-7; the trailing 8, 9 are dropped, not drawn as a
+    # 2-batch column sitting next to 4-batch ones
+    assert grid.tolist() == [[1.5, 2.5], [5.5, 6.5]]
+
+
+def test_fold_hist_columns_stride_is_smallest_power_of_two_that_fits() -> None:
+    import math as _math
+    for n_batches in (129, 200, 512, 1000):
+        cols = [[1.0] * 10 for _ in range(n_batches)]
+        grid, stride = report._fold_hist_columns(cols, 128)
+        assert stride & (stride - 1) == 0  # power of two
+        assert len(grid) == n_batches // stride <= 128
+        assert n_batches // (stride // 2) > 128  # one step smaller would overflow
+        assert n_batches - len(grid) * stride < stride  # at most one partial group dropped
+        assert grid.shape[1] == 10  # bins preserved

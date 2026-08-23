@@ -407,7 +407,19 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, grad_norm_model, batch_stats):
+    def trial_time(data):
+        # data is the trial's TrialData (None off-rank0; the @rank0 body never runs there); the timer
+        # accumulates across resumes, so this is the trial's total wall-clock
+        seconds = int(data.timer_trial.get_elapsed_time())
+        days, seconds = divmod(seconds, 86400)
+        hours, seconds = divmod(seconds, 3600)
+        minutes, seconds = divmod(seconds, 60)
+        print(f"Total Trial Time: {days}-{hours:02}:{minutes:02}:{seconds:02}")
+
+    @staticmethod
+    @rank0
+    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, grad_norm_model,
+              delta_norm_model, batch_stats):
 
         def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
             if x is None:
@@ -449,7 +461,8 @@ class PrintLog:
             f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
             f"txt={tensor_grad_l2_norm(embs_txt_b):.2e} "
             f"{line_logits}"
-            f"model={grad_norm_model:.2e}"
+            f"model={grad_norm_model:.2e} "
+            f"step={delta_norm_model:.2e}"  # ||delta theta||: the update the optimizer actually applied
         )
 
         line_logits_param = ""

@@ -1,5 +1,6 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
+import math
 import os
 import time
 import random
@@ -68,24 +69,32 @@ class TrialData:
             "loss_train": [],
             "loss_raw_train": [],
             "grad_norm_model": [],
+            "delta_norm_model": [],  # ||delta theta||: the L2 norm of each step's parameter update
             "grad_sum_sim1": [],
             "grad_sum_sim2": [],
+            # learnable logit scalars, temp as tau = exp(-logit_scale); a series stays empty when its
+            # scalar is untracked (TrainPipeline._tracked_logit_scalars) and then gets no curve panel
+            "temp1": [],
+            "bias1": [],
+            "temp2": [],
+            "bias2": [],
             "sim1_min": [],
             "sim1_max": [],
             "sim1_median": [],
             "sim1_mean": [],
-            "targ1_min": [],
-            "targ1_max": [],
-            "targ1_median": [],
-            "targ1_mean": [],
             "sim2_min": [],
             "sim2_max": [],
             "sim2_median": [],
             "sim2_mean": [],
-            "targ2_min": [],
-            "targ2_max": [],
-            "targ2_median": [],
-            "targ2_mean": [],
+            # targ*_hist / p*_hist: per batch, the targets and predicted pair probabilities binned
+            # over [0, 1] (a list of bin fractions, not a scalar) -- the curve strips render them as
+            # heatmap columns. targ* is recorded only for branches with graded targets
+            # (TrainPipeline._tracked_targ_stats) and p* only for BCE-family ones
+            # (sim_targ_batch_stats), so an excluded branch's series stays empty.
+            "targ1_hist": [],
+            "targ2_hist": [],
+            "p1_hist": [],
+            "p2_hist": [],
         }
         self.data_eval = {
             "n_samps_seen": [],
@@ -103,8 +112,9 @@ class TrialData:
         self.timer_trial = Timer()
         self.timer_trial.start()
 
-    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None, batch_stats=None,
-                           grad_sum_sim1=None, grad_sum_sim2=None):
+    def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None,
+                           delta_norm_model=None, batch_stats=None,
+                           grad_sum_sim1=None, grad_sum_sim2=None, logit_scalars=None):
 
         self.data_epoch["n_samps_seen"].append(n_samps_seen)
 
@@ -116,6 +126,8 @@ class TrialData:
             self.data_epoch["loss_raw_train"].append(loss_raw_train)
         if grad_norm_model is not None:
             self.data_epoch["grad_norm_model"].append(grad_norm_model)
+        if delta_norm_model is not None:
+            self.data_epoch["delta_norm_model"].append(delta_norm_model)
         if grad_sum_sim1 is not None:
             self.data_epoch["grad_sum_sim1"].append(grad_sum_sim1)
         if grad_sum_sim2 is not None:
@@ -123,6 +135,9 @@ class TrialData:
         if batch_stats is not None:
             for stat_key, stat_value in batch_stats.items():
                 self.data_epoch[stat_key].append(stat_value)
+        if logit_scalars is not None:
+            for key, value in logit_scalars.items():
+                self.data_epoch[key].append(value)
 
     def update_eval(self, n_samps_seen):
 
@@ -347,7 +362,31 @@ class ArtifactManager:
         if not fpath_meta.exists():
             # best_chkpt: per dataset x criterion x eval group, the checkpoint every trial of this
             # setting is scored at -- filled in at each trial end by report.update_chkpt_selection
-            save_json({"n_crashes": {"ram": 0, "vram": 0, "other": 0}, "best_chkpt": {}}, fpath_meta)
+            save_json(
+                {
+                    "n_crashes": {"ram": 0, "vram": 0, "other": 0},
+                    "horizon": {},
+                    "best_chkpt": {},
+                },
+                fpath_meta,
+            )
+        # horizon.<dataset>: the trial duration in samples and optimizer steps, with the LR warmup's
+        # share OF each total (not additional to it). Sample volume is data-derived (train-set size),
+        # so the horizon varies per dataset within the setting; identical across trials of a
+        # setting/dataset, so overwriting is idempotent. Every batch is a full batch_size (drop_last)
+        # and training breaks the moment n_samps_seen >= sample_volume, hence ceil; the warmup
+        # converts the way the trainer does (warmup fraction -> samples -> steps, train.py's
+        # scheduler warmup-step count).
+        metadata_setting = load_json(fpath_meta)
+        warmup_samps = round(cfg_train.opt["lr"]["warmup"] * cfg_train.sample_volume)
+        metadata_setting["horizon"][cfg_train.dataset] = {
+            "n_samps": {"total": cfg_train.sample_volume, "warmup": warmup_samps},
+            "n_steps": {
+                "total": math.ceil(cfg_train.sample_volume / cfg_train.batch_size),
+                "warmup": math.ceil(warmup_samps / cfg_train.batch_size),
+            },
+        }
+        save_json(metadata_setting, fpath_meta)
 
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):

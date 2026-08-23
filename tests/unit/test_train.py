@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from train import TrainPipeline, pass_epoch_span
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
@@ -42,6 +43,7 @@ class _FakeSettingCfg:
     n_trials_total: int = 8
     dataset: str = "cub"
     split: str = "D10"
+    batch_size: int = 1_024
     dev: dict = field(default_factory=dict)
     arch: dict = field(default_factory=lambda: {
         "model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None},
@@ -51,12 +53,17 @@ class _FakeSettingCfg:
     })
     loss: dict = field(default_factory=_full_loss_cfg)
     loss2: dict = field(default_factory=lambda: {"mix": 0.0, "mix_unit_scale": False, **_full_loss_cfg(targ="phylo")})
+    opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
+
+    def __post_init__(self):
+        self.sample_volume = 102_500  # derived in TrainConfig.__post_init__, not a config field
 
 
 def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
     # setting-level config params go to config.json; setting_metadata.json holds the mutable state --
-    # n_crashes (bumped by the campaign runner) and best_chkpt (rewritten at each trial end). A later
-    # trial of the same setting must re-assert config.json unchanged and must not reset either.
+    # n_crashes (bumped by the campaign runner), best_chkpt (rewritten at each trial end), and the
+    # per-dataset precomputed horizon (sample/step totals with their LR-warmup shares). A later
+    # trial of the same setting must re-assert config.json unchanged and must not reset the state.
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     cfg = _FakeSettingCfg()
 
@@ -64,10 +71,24 @@ def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypat
     config = json.loads((tmp_path / "config.json").read_text())
     assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {
-        "n_crashes": {"ram": 0, "vram": 0, "other": 0}, "best_chkpt": {},
+        "n_crashes": {"ram": 0, "vram": 0, "other": 0},
+        "horizon": {"cub": {
+            # warmup is the share OF each total: round(0.04 x 102_500) samples, ceil'd to steps
+            "n_samps": {"total": 102_500, "warmup": 4_100},
+            # ceil(102_500 / 1_024): the partial final batch still steps
+            "n_steps": {"total": 101, "warmup": 5},
+        }},
+        "best_chkpt": {},
     }
 
-    metadata = {"n_crashes": {"ram": 1, "vram": 2, "other": 4}, "best_chkpt": {"cub": {"map": {"native": {"idx": 3}}}}}
+    metadata = {
+        "n_crashes": {"ram": 1, "vram": 2, "other": 4},
+        "horizon": {"cub": {
+            "n_samps": {"total": 102_500, "warmup": 4_100},
+            "n_steps": {"total": 101, "warmup": 5},
+        }},
+        "best_chkpt": {"cub": {"map": {"native": {"idx": 3}}}},
+    }
     (tmp_path / "setting_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
     ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the state
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == metadata
@@ -256,3 +277,81 @@ def test_format_and_merge_mem_running_max() -> None:
 
     later = {"ram": "6.0/128.0 GB", "vram": "12.0/79.3 GB"}
     assert merge_mem(snap, later) == {"ram": "6.0/128.0 GB", "vram": "37.5/79.3 GB"}
+
+
+def _fake_pipe(loss_crit, loss2_crit, mix, requires_grad):
+    """A stand-in TrainPipeline carrying just what _tracked_logit_scalars reads: the loss configs and
+    an unwrapped model whose logit scalars have the given requires_grad flags."""
+    model = SimpleNamespace(**{
+        attr: SimpleNamespace(requires_grad=requires_grad[attr])
+        for attr in ("logit_scale", "logit_bias", "logit_scale2", "logit_bias2")
+    })
+    return SimpleNamespace(
+        cfg=SimpleNamespace(loss={"crit": loss_crit}, loss2={"crit": loss2_crit, "mix": mix}),
+        modelw=SimpleNamespace(_unwrapped_model=model),
+    )
+
+
+def test_tracked_logit_scalars_skips_frozen_inert_and_inactive() -> None:
+    # a scalar gets a learning-curve series only when it's learnable AND meaningful: bias is
+    # BCE-family-only (inert under InfoNCE), loss2's pair only when loss2 is mixed in
+    all_learnable = dict.fromkeys(("logit_scale", "logit_bias", "logit_scale2", "logit_bias2"), True)
+    tracked = TrainPipeline._tracked_logit_scalars
+
+    # loss2 off: only loss1's pair, and its bias only because crit is BCE-family
+    assert tracked(_fake_pipe("bce", "bce", 0.0, all_learnable)) == {
+        "temp1": "logit_scale", "bias1": "logit_bias",
+    }
+    assert tracked(_fake_pipe("infonce", "bce", 0.0, all_learnable)) == {"temp1": "logit_scale"}
+
+    # loss2 mixed in: both pairs, each loss's bias gated by its OWN crit
+    assert tracked(_fake_pipe("infonce", "bce", 0.3, all_learnable)) == {
+        "temp1": "logit_scale", "temp2": "logit_scale2", "bias2": "logit_bias2",
+    }
+
+    # frozen scalars are dropped -- a flat line says nothing
+    frozen_t1_b2 = {**all_learnable, "logit_scale": False, "logit_bias2": False}
+    assert tracked(_fake_pipe("bce", "bce", 0.3, frozen_t1_b2)) == {
+        "bias1": "logit_bias", "temp2": "logit_scale2",
+    }
+
+
+def test_pass_epoch_span_shares_the_straddled_epoch_between_passes() -> None:
+    # chain_floor 16_000, batch_size 512, train set 4_935, n_epochs 5 -> chain_perms 4, so a pass is
+    # 4 x 4_935 = 19_740 nominal, batch-aligned down to 19_456 (38 batches); the 284-sample tail of
+    # permutation 4 carries into pass 2. Pass 1 therefore covers epochs 1-4 (ending 284 samples shy
+    # of epoch 4's end) and pass 2 picks epoch 4 back up and runs to 5 -- the boundary epoch counted
+    # in BOTH passes, not skipped.
+    cfg = SimpleNamespace(samps_per_pass=19_456, samps_per_epoch=4_935, sample_volume=24_675)
+
+    assert pass_epoch_span(cfg, 1) == (1, 4)
+    assert pass_epoch_span(cfg, 2) == (4, 5)
+
+
+def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
+    # no chain-shuffle: an epoch IS a batch-truncated pass, so every pass spans exactly its own epoch
+    cfg = SimpleNamespace(samps_per_pass=4_928, samps_per_epoch=4_928, sample_volume=24_640)
+
+    assert [pass_epoch_span(cfg, p) for p in range(1, 6)] == [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
+
+    # fractional n_epochs: the final pass stops at sample_volume, still inside its own epoch
+    cfg_frac = SimpleNamespace(samps_per_pass=4_928, samps_per_epoch=4_928, sample_volume=12_320)
+    assert pass_epoch_span(cfg_frac, 3) == (3, 3)
+
+
+def _fake_targ_pipe(targ1, targ2, mix):
+    return SimpleNamespace(cfg=SimpleNamespace(loss={"targ": targ1}, loss2={"targ": targ2, "mix": mix}))
+
+
+def test_tracked_targ_stats_only_graded_targets_of_active_branches() -> None:
+    # target stats are curved only for graded targets (phylo/tax); sp/mp are 0/1 indicators whose
+    # spread says nothing, and loss2 counts only when it's mixed in
+    tracked = TrainPipeline._tracked_targ_stats
+
+    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.3)) == {"targ1", "targ2"}
+    assert tracked(_fake_targ_pipe("mp", "phylo", 0.3)) == {"targ2"}  # only loss2 qualifies
+    assert tracked(_fake_targ_pipe("tax", "sp", 0.3)) == {"targ1"}
+    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) == set()  # neither -> no Y panel at all
+    # loss2 off: its targ is irrelevant however it's configured
+    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) == {"targ1"}
+    assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) == set()

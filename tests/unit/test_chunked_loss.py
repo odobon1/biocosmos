@@ -283,6 +283,11 @@ def test_stats_min_max_mean_exact():
     assert stats["sim1_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
     assert stats["targ1_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
     assert "sim2_min" not in stats
+    # the streamed probability histogram matches a full-batch one over the stub's logits
+    # (sim * 10 - 0.5): counts just add across tiles, so it is exact, not subsampled
+    p = (sim * 10.0 - 0.5).sigmoid()
+    expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
+    assert stats["p1_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
 
 
 def test_stats_split_by_crit():

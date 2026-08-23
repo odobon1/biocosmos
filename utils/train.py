@@ -498,7 +498,7 @@ class ArtifactManager:
         # @rank0: a concurrent same-combo campaign can create/replace this combo's file at any
         # moment, so independent per-rank reads could disagree on hit/miss; rank 0 alone reads and
         # the caller broadcasts the decision. Entries carry only what the caching trial computed
-        # (metrics always; projections for viz trials; embs for pooled trials): a trial must read
+        # (metrics always; projections + embs for viz trials): a trial must read
         # an entry missing a piece it needs as a miss (recompute, overwriting the entry with the
         # richer version) rather than trip _write_base_eval on the missing piece downstream.
         # Leaner entries stay valid hits for trials that don't need the missing pieces.
@@ -517,7 +517,7 @@ class ArtifactManager:
     def save_base_eval_cache(cfg_train, eval_metrics):
         """Write this combo's entry to its own cache file and return the entry. The npz arrays are
         ingested from this trial's evals/base/, where compute_projections just wrote them
-        (projections absent for non-viz trials, embs for non-pooled trials). Written via temp file +
+        (both absent for non-viz trials; UMAP is fit post-trial, so entries never carry it). Written via temp file +
         atomic replace: concurrent same-combo campaigns overwrite each other with equivalent entries,
         and readers never see a torn file; other combos' files are untouched."""
         entry = {

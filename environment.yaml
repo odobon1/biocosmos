@@ -23,6 +23,7 @@ dependencies:
   - tensorboard
   - torchvision=0.20.1
   - tqdm
+  - umap-learn
   - requests
   - pip
   - pip:

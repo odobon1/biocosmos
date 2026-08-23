@@ -27,7 +27,7 @@ from utils.config import get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_htarg_shuf, Criterion
 from utils.eval import EvaluationPipeline
-from utils.manifold_viz import compute_projections, compute_pooled_projections
+from utils.manif_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
 from utils.report import plot_metrics, update_metric_stats, update_chkpt_selection, seed_sweep_complete, update_stats_tables, update_convergence_plots, update_metrics_xlsx
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
@@ -109,11 +109,15 @@ class TrainPipeline:
         )
 
         self.eval_enabled = self.cfg.train_pt != "trainval"
-        # manifold viz runs for the first dev.manifold_viz.n_trials seeds of each setting/dataset group
-        self._viz_manifold = self.cfg.idx_seed < self.cfg.dev["manifold_viz"]["n_trials"]
-        # pooled shared-frame viz (dev.manifold_viz.pooled.enabled): cache each eval's embeddings and fit
-        # one pooled projection over all thresholds at end-of-trial (compute_pooled_projections)
-        self._pooled_manifold = self._viz_manifold and self.cfg.dev["manifold_viz"]["pooled"]["enabled"]
+        # manifold viz runs for a window of each setting/dataset group's seed sweep: the manif_viz.n_seeds
+        # seeds starting at manif_viz.n_seeds_offset. A window the sweep hasn't reached selects nothing (no
+        # error, no warning) -- raising the campaign's seed count later pulls those trials into it.
+        seed_off = self.cfg.manif_viz["n_seeds_offset"]
+        self._manif_viz = seed_off <= self.cfg.idx_seed < seed_off + self.cfg.manif_viz["n_seeds"]
+        # pooled shared-frame viz (manif_viz.pooled.enabled): fit one pooled projection over all
+        # thresholds at end-of-trial (compute_pooled_projections). Every viz trial caches its per-eval
+        # embeddings regardless -- the post-trial UMAP fits read them too.
+        self._pooled_manif_viz = self._manif_viz and self.cfg.manif_viz["pooled"]["enabled"]
         if self.eval_enabled:
             text_template_eval = get_text_template(self.cfg.text_template["eval"], dataset=self.cfg.dataset)
             self.eval_pipe = EvaluationPipeline(self.cfg, text_template_eval, self.modelw.img_pp_inf)
@@ -289,16 +293,16 @@ class TrainPipeline:
         # materialize the base-eval cache entry into evals/base/ so base is a uniform member of the
         # eval sequence the render pass sweeps. The per-group metrics files always (every trial records
         # its base eval, written from eval_metrics as eval 0 so base carries the shared fields too);
-        # projections only for viz trials -- a non-viz trial computes none of its own projections, so it
-        # mustn't inherit the cache's base projections either; embs only for pooled trials, whose cache
-        # hit is gated on the entry carrying them (require_embs). On a fresh base eval the npz files were
+        # projections + embs only for viz trials -- a non-viz trial computes none of its own projections,
+        # so it mustn't inherit the cache's base projections either, and its cache hit is gated on the
+        # entry carrying them (require_projections/require_embs). On a fresh base eval the npz files were
         # computed straight into base/ (already on disk, skipped here); only a cache hit writes them.
         dst = ArtifactManager.dpath_trial / "evals" / "base"
         dst.mkdir(parents=True, exist_ok=True)
         ArtifactManager.save_eval_data(dst, eval_metrics, 0, self.cfg.n_chkpts, self.n_samps_seen, self.cfg.sample_volume)
-        if self._viz_manifold and not (dst / "projections.npz").exists():
+        if self._manif_viz and not (dst / "projections.npz").exists():
             np.savez(dst / "projections.npz", **entry["projections"])
-        if self._pooled_manifold and not (dst / "embs.npz").exists():
+        if self._manif_viz and not (dst / "embs.npz").exists():
             np.savez(dst / "embs.npz", **entry["embs"])
 
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
@@ -309,13 +313,13 @@ class TrainPipeline:
         # collective) so it can't desync.
         torch.cuda.empty_cache()
         with self.time_tracker.measure("viz_compute"):
-            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz,
-                                1 << self.cfg.hw.eval["tsne_chunk_log2"], cache_embs=self._pooled_manifold)
+            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manif_viz,
+                                1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
     def _viz_eval(self, eval_bundles, eval_name):
         """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
         evals/<eval_name>/. Rendering from the cache is done off-process post-trial by the campaign render
-        worker (tools/manifold_viz.py), so no rank blocks in a collective while rank 0 renders."""
+        worker (tools/regen_manif_viz.py), so no rank blocks in a collective while rank 0 renders."""
         dpath_eval = ArtifactManager.dpath_trial / "evals" / eval_name
         self._compute_projections_timed(eval_bundles, dpath_eval)
 
@@ -324,9 +328,9 @@ class TrainPipeline:
         sharded t-SNE, every rank must enter) and cache the per-threshold masked blocks under evals/*/,
         rendered post-trial off-process. Runs once at end-of-trial, after every per-eval cache is written."""
         torch.cuda.empty_cache()  # release the training step's reserved pool before the pooled t-SNE buffers
-        budget = self.cfg.dev["manifold_viz"]["pooled"]["budget"]
+        budget = self.cfg.manif_viz["pooled"]["budget"]
         with self.time_tracker.measure("viz_compute"):
-            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget,
+            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manif_viz, budget,
                                        1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
     def _save_mid_eval(self, threshold_hit, eval_bundles):
@@ -335,7 +339,7 @@ class TrainPipeline:
         idx_eval = threshold_hit // self.cfg.chkpt_interval
         eval_name = f"eval{idx_eval}"
         self._save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name, idx_eval)
-        if self._viz_manifold:
+        if self._manif_viz:
             self._viz_eval(eval_bundles, eval_name)
 
     @rank0
@@ -449,7 +453,7 @@ class TrainPipeline:
             # BASE EVAL
 
             if self._resume_state is None and self.eval_enabled:
-                cached = ArtifactManager.load_base_eval_cache(self.cfg, require_projections=self._viz_manifold, require_embs=self._pooled_manifold)  # @rank0; None elsewhere
+                cached = ArtifactManager.load_base_eval_cache(self.cfg, require_projections=self._manif_viz, require_embs=self._manif_viz)  # @rank0; None elsewhere
                 # single-source the hit/miss decision: a concurrent campaign's cache write landing between
                 # independent per-rank reads would split the branch, and the miss branch enters collective
                 # ops (evaluate / sharded t-SNE) that every rank must join. Only the small metrics dict is
@@ -471,9 +475,9 @@ class TrainPipeline:
                     eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                         self.modelw,
                         loss_flag=False,
-                        collect_eval_bundles=self._viz_manifold,
+                        collect_eval_bundles=self._manif_viz,
                     )
-                    if self._viz_manifold:
+                    if self._manif_viz:
                         self._viz_eval(eval_bundles, "base")  # projections (+ embs if pooled) straight into evals/base
                     entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics)  # rank0 gets the entry back; None elsewhere
                 self._write_base_eval(entry, eval_metrics)  # base -> evals/base (uniform member of the eval sequence)
@@ -598,7 +602,7 @@ class TrainPipeline:
                                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                                     self.modelw,
                                     loss_flag=True,
-                                    collect_eval_bundles=self._viz_manifold,
+                                    collect_eval_bundles=self._manif_viz,
                                 )
                                 self.time_tracker.add("eval", time_eval)
                                 self._record_eval(eval_metrics, time_eval)
@@ -647,12 +651,12 @@ class TrainPipeline:
                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
-                    collect_eval_bundles=self._viz_manifold,
+                    collect_eval_bundles=self._manif_viz,
                 )
                 self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
                 self._save_eval_data(ArtifactManager.dpath_eval_final, self.cfg.n_chkpts)
-                if self._viz_manifold:
+                if self._manif_viz:
                     self._viz_eval(eval_bundles, f"eval{self.cfg.n_chkpts}")  # COLLECTIVE compute+cache; rendered post-trial off-process
             self._checkpoint(
                 header="Final",
@@ -662,7 +666,7 @@ class TrainPipeline:
             ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
 
-            if self._pooled_manifold:
+            if self._pooled_manif_viz:
                 self._pooled_eval()  # COLLECTIVE: pooled shared-frame projection over all cached embeddings
 
             PrintLog.trial_time(self.data)

@@ -42,7 +42,7 @@ def regen_learning_curves(campaign):
                 cfg_dict["setting"] = setting
                 cfg_dict["seed"] = seed
                 cfg_dict["dataset"] = dataset
-                cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
+                cfg_dict["manif_viz"] = cfg_snapshot["manif_viz"]
                 cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
                 cfg_dict["hw"] = cfg_snapshot["hardware"]
                 cfg_dict["_setting_overrides"] = overrides

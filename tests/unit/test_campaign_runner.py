@@ -45,7 +45,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -78,18 +78,18 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
-    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: mviz_a)
+    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_a)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_a)
     out_first = cr._load_or_create_campaign_config("cmp_a")
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_b)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_b)
-    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: mviz_b)
+    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_b)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_b)
     out_second = cr._load_or_create_campaign_config("cmp_a")
 
     # the four sources are bundled into one snapshot and frozen on first launch
-    expected = {"train": train_a, "hardware": hw_a, "manifold_viz": mviz_a, "model_specific": ms_a}
+    expected = {"train": train_a, "hardware": hw_a, "manif_viz": mviz_a, "model_specific": ms_a}
     assert out_first == expected
     assert out_second == expected
 
@@ -104,7 +104,7 @@ def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, mon
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
-    monkeypatch.setattr(cr, "load_manifold_viz_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
@@ -132,7 +132,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
 
@@ -184,7 +184,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline_cfg,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -250,7 +250,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -297,7 +297,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -343,7 +343,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -399,7 +399,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 0, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -440,7 +440,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -484,7 +484,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -533,7 +533,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
 
@@ -639,7 +639,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -929,7 +929,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
 
@@ -990,7 +990,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
     })
 
@@ -1225,7 +1225,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
 
@@ -1302,7 +1302,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {"n_stoch_layers": 1},
+        "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
     })
 
@@ -1530,7 +1530,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
-        "manifold_viz": {},
+        "manif_viz": {},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -1557,7 +1557,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": True},
-        "manifold_viz": {},
+        "manif_viz": {},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -1584,7 +1584,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manifold_viz": {},
+        "manif_viz": {},
         "model_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)

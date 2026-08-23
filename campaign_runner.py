@@ -22,7 +22,18 @@ import psutil
 import torch
 import yaml
 
-from utils.config import CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, apply_overrides, apply_train_debug_overrides, get_config_stats, get_config_train, load_train_config_dict, load_manifold_viz_config_dict, load_model_specific_config_dict, load_hardware_config_dict
+from utils.config import (
+    CFG_PARAM_ALIASES, 
+    CFG_PARAM_VALUE_ALIASES, 
+    apply_overrides, 
+    apply_train_debug_overrides, 
+    get_config_stats, 
+    get_config_train, 
+    load_train_config_dict, 
+    load_manif_viz_config_dict, 
+    load_model_specific_config_dict, 
+    load_hardware_config_dict
+)
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
 from utils.report import update_stats_tables, update_convergence_plots, update_metrics_xlsx
@@ -161,10 +172,10 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
     On first launch four config sources are bundled into a single `artifacts/<campaign>/cfg_baseline.json`
-    under the keys `train`, `hardware`, `manifold_viz`, `model_specific`. The `train` snapshot is derived
+    under the keys `train`, `hardware`, `manif_viz`, `model_specific`. The `train` snapshot is derived
     from `config/train.yaml` (with `debug_mode` overrides folded in); the other three are `config/hardware.yaml`,
-    `config/manifold_viz.yaml`, and `config/model_specific.yaml` verbatim. Every trial starts from the
-    `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manifold_viz`,
+    `config/manif_viz.yaml`, and `config/model_specific.yaml` verbatim. Every trial starts from the
+    `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manif_viz`,
     `model_specific`). Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled
     per trial from the `model_specific` snapshot, so a per-setting `arch.model_type` override still picks
     up the matching family's defaults. Every later relaunch (resume or matrix extension) reloads that
@@ -179,7 +190,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     cfg_snapshot = {
         "train": cfg_train,
         "hardware": load_hardware_config_dict(),
-        "manifold_viz": load_manifold_viz_config_dict(),
+        "manif_viz": load_manif_viz_config_dict(),
         "model_specific": load_model_specific_config_dict(),
     }
     fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -406,7 +417,7 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setti
     cfg_dict["idx_seed"] = idx_seed
     cfg_dict["idx_trial"] = idx_trial
     cfg_dict["n_trials_total"] = n_trials_total
-    cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
+    cfg_dict["manif_viz"] = cfg_snapshot["manif_viz"]
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
     cfg_dict["hw"] = cfg_snapshot["hardware"]
     cfg_dict["_setting_overrides"] = setting_payload
@@ -510,7 +521,7 @@ def _spawn_render(trial_rel: str) -> subprocess.Popen:
     campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs,
     and RENDER_MAX_WORKERS caps its CPU fan-out to a quarter of the cores so it doesn't oversubscribe the
     next trial's dataloaders -- the render has the whole next trial to finish, so it can afford to go slow."""
-    cmd = [sys.executable, "-m", "tools.manifold_viz", trial_rel, "snapshot"]
+    cmd = [sys.executable, "-m", "tools.regen_manif_viz", trial_rel, "snapshot"]
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
     env.setdefault("RENDER_MAX_WORKERS", str(max(1, len(os.sched_getaffinity(0)) // 4)))
     return subprocess.Popen(cmd, env=env, start_new_session=True)

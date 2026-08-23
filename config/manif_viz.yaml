@@ -1,0 +1,73 @@
+# Manifold-viz subsystem settings -- whether it runs at all (n_seeds) and how it behaves.
+
+# Which seeds get manifold viz, as a window over each setting/dataset group's seed sweep: a trial is selected iff
+# n_seeds_offset <= idx_seed < n_seeds_offset + n_seeds (the sweep's length is the camp config's n_trials). A window
+# the sweep doesn't reach yet is not an error and draws no warning -- those trials simply get no viz, and raising the
+# campaign's seed count later brings them into the window as they run.
+n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whole subsystem -- nothing computed,
+# cached, or rendered, and the eval embeddings aren't even gathered for viz
+n_seeds_offset: 0  # [int] >= 0; Where the window starts; (0) The first seed of every setting/dataset group;
+# (1) Skip the first, viz the second; etc.
+
+plot_2panel: true   # {true, false}; (true) Plot the per-method leaf/penult pairs
+plot_7panel: true   # {true, false}; (true) Plot the per-method 2x4 composites
+plot_8panel: true  # {true, false}; (true) Plot the cross-method grids (methods across, colorings down)
+
+pooled:  # Shared-frame manifold viz: one fit per method on all eval thresholds' embeddings pooled, then each
+# threshold plotted as a masked subset of the shared layout (the plot_* flags select the same groups, rendered
+# under viz_pooled/); Note: (all 3 plot_* flags: false) --> projections still computed + saved
+  enabled: true  # {true, false}; (true) Compute the pooled PCA/t-SNE at end-of-trial + the pooled UMAP post-trial,
+  # and render the pooled plots; per-eval embeddings are cached either way (the per-eval UMAP fits read them too)
+  budget: 100_000  # Pooled point budget as a total sample volume across all thresholds;
+  # ((N_id + N_ood) * n_evals <= budget) --> all samples used, otherwise the pool is class-stratified subsampled to
+  # ~budget points total; a larger budget costs proportionally more compute -- most sharply for the pooled UMAP,
+  # which is a single CPU fit over the whole pool in the render worker
+  pca_bounds: final  # {null, final}
+
+tsne:
+  perplexity: 30
+  n_iter: 1000
+
+umap:  # Shared by BOTH UMAP variants -- the flat one (umap) and the spherical one (umap_sphere), which differ
+# only in output space. Both are fit off the GPU/collective path, in the post-trial render worker, from each eval's
+# cached embs.npz, and each eval's fit is initialized from the PREVIOUS eval's layout (which keeps the sequence
+# continuous at the source rather than only correcting it afterward with orientation). Sharing these params is also
+# what lets the two variants share ONE cosine nearest-neighbor search per subject instead of doing it twice.
+# Cost note: the spherical fit's layout optimization is ~30x the flat one's (haversine gradients), and it dominates
+# everything else -- n_iter below is the lever if the post-trial render gets too slow.
+  n_neighbors: 15  # [int] >= 2; Local neighborhood size; smaller --> more local structure, larger --> more global
+  min_dist: 0.1  # [0.0, 1.0); Minimum spacing of points in the layout; smaller --> tighter clumps; (umap_sphere)
+  # Inert -- the spherical output space has no min_dist analogue
+  n_iter: null  # {null, [int]}; Layout optimization epochs; (null) UMAP's own default (200 for large N, 500 for small)
+
+orient:  # Cross-eval orientation: every method's layout is aligned to a running reference of per-class CoMs so the
+# evolving GIFs don't spin or mirror-flip between evals. t-SNE + UMAP get the full rigid alignment (orthogonal
+# Procrustes, rotation + reflection); umap_sphere gets the same alignment solved in SO(3) -- the one rigid motion of
+# the whole ball that moves the cluster constellation (seen and unseen clusters alike) the least, so the ball and its
+# gridlines stay fixed for the viewer while the clusters glide across them; its first eval starts the largest class
+# at the north pole and the second on the central meridian, landmarks later evals are free to drift off; PCA keeps
+# its principal axes and only has its per-axis SIGN aligned (the component signs sklearn picks are data-dependent,
+# so they flip between evals)
+  ema_tau: 0.5  # (0.0, 1.0]; This fraction of the eval's oriented CoMs is mixed into the running reference
+  # (=1.0 --> align to the previous eval only, <1.0 --> damps drift across evals)
+
+eval_duration: 1500  # ms each eval is shown in the evolving GIFs (one frame per eval)
+bg_color: "#F5F5DC"  # Panel background color in hex format; (null) White. Doubles as the ball color for the
+# umap_sphere panels, whose background behind the ball is always white
+
+color:
+  seed: 42  # Rotates the whole palette (phase offset); Changes the colors, keeps the count-ordering;
+  # Colors are assigned to classes in order of sample count (golden-ratio hue + low-discrepancy
+  # vibrancy), so similar-count classes get maximally different colors and near-identical colors
+  # only land on classes with very different counts; Each band fixes a "vibrancy" via saturation
+  # (0-1, color intensity) and lightness (0-1, darkness->brightness); `weight` is each band's
+  # relative share of classes (need not sum to 1); Add/remove/retune bands freely, more bands =
+  # more variety
+  bands:
+    - {weight: 2.0, saturation: 1.00, lightness: 0.50}
+    - {weight: 0.7, saturation: 1.00, lightness: 0.30}
+    - {weight: 0.7, saturation: 1.00, lightness: 0.70}
+    - {weight: 0.5, saturation: 0.55, lightness: 0.50}
+    - {weight: 0.2, saturation: 0.45, lightness: 0.60}
+    - {weight: 0.3, saturation: 0.45, lightness: 0.40}
+    - {weight: 0.5, saturation: 0.50, lightness: 0.80}

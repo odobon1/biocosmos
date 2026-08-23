@@ -1,6 +1,6 @@
 import pytest
 
-from utils.config import GenSplitConfig, StatsConfig, TrainConfig
+from utils.config import GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import apply_model_specific_opt_defaults
 
@@ -19,7 +19,7 @@ def make_train_config_dummy(**overrides):
         "chain_floor": None,
         "dv_batching": False,
         "htarg_shuf": False,
-        "dev": {"logging": False, "plot_every": "trial", "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None}}},
+        "dev": {"logging": False, "plot_every": "trial"},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "loss": {"crit": "bce", "sim": "cos", "targ": "sp", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
@@ -85,27 +85,58 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
                                                      "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
 
 
-def test_train_config_rejects_negative_viz_n_trials(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
+def make_manif_viz_config_dummy(**overrides):
+    config = {
+        "n_seeds": 1,
+        "n_seeds_offset": 0,
+        "eval_duration": 1500,
+        "bg_color": None,
+        "plot_2panel": True,
+        "plot_7panel": True,
+        "plot_8panel": True,
+        "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None},
+        "umap": {"n_neighbors": 15, "min_dist": 0.1, "n_iter": None},
+        "orient": {"ema_tau": 0.5},
+    }
+    config.update(overrides)
+    return config
 
-    with pytest.raises(ValueError, match="dev.manifold_viz.n_trials must be >= 0"):
-        TrainConfig(**make_train_config_dummy(dev={"logging": False, "manifold_viz": {"n_trials": -1}}))
+
+def test_manif_viz_config_rejects_negative_n_seeds() -> None:
+    with pytest.raises(ValueError, match="n_seeds must be >= 0"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(n_seeds=-1))
 
 
-def test_train_config_rejects_nonpositive_pooled_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
-
-    with pytest.raises(ValueError, match="dev.manifold_viz.pooled.budget must be > 0"):
-        TrainConfig(**make_train_config_dummy(
-            dev={"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 0.0}}}))
+def test_manif_viz_config_rejects_negative_n_seeds_offset() -> None:
+    with pytest.raises(ValueError, match="n_seeds_offset must be >= 0"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(n_seeds_offset=-1))
 
 
-def test_train_config_rejects_invalid_pca_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
+def test_manif_viz_config_rejects_nonpositive_pooled_budget() -> None:
+    with pytest.raises(ValueError, match="pooled.budget must be > 0"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(
+            pooled={"enabled": True, "budget": 0.0, "pca_bounds": None}))
 
-    with pytest.raises(ValueError, match="dev.manifold_viz.pooled.pca_bounds must be null or 'final'"):
-        TrainConfig(**make_train_config_dummy(
-            dev={"logging": False, "manifold_viz": {"n_trials": 1, "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": "first"}}}))
+
+def test_manif_viz_config_rejects_invalid_pca_bounds() -> None:
+    with pytest.raises(ValueError, match="pooled.pca_bounds must be null or 'final'"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(
+            pooled={"enabled": True, "budget": 1.0, "pca_bounds": "first"}))
+
+
+def test_manif_viz_config_rejects_too_few_umap_neighbors() -> None:
+    with pytest.raises(ValueError, match="umap.n_neighbors must be >= 2"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 1, "min_dist": 0.1, "n_iter": None}))
+
+
+def test_manif_viz_config_rejects_out_of_range_umap_min_dist() -> None:
+    with pytest.raises(ValueError, match=r"umap.min_dist must be in \[0.0, 1.0\)"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 15, "min_dist": 1.0, "n_iter": None}))
+
+
+def test_manif_viz_config_rejects_out_of_range_ema_tau() -> None:
+    with pytest.raises(ValueError, match=r"orient.ema_tau must be in \(0.0, 1.0\]"):
+        ManifoldVizConfig(**make_manif_viz_config_dummy(orient={"ema_tau": 0.0}))
 
 
 def test_train_config_rejects_yaml_string_scientific_notation(monkeypatch: pytest.MonkeyPatch) -> None:

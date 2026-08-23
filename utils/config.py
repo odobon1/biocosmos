@@ -92,7 +92,7 @@ class TrainConfig:
     dev: dict
 
     aug: dict = field(default_factory=_default_train_aug_cfg)
-    manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
+    manif_viz: dict | None = None  # manif_viz.yaml contents; resolved from the yaml when not supplied
     idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
@@ -171,18 +171,6 @@ class TrainConfig:
             raise ValueError(
                 f"opt.lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
             )
-
-        n_trials_viz = self.dev["manifold_viz"]["n_trials"]
-        if n_trials_viz < 0:
-            raise ValueError(f"dev.manifold_viz.n_trials must be >= 0, got {n_trials_viz}")
-
-        pooled_budget = self.dev["manifold_viz"]["pooled"]["budget"]
-        if pooled_budget <= 0:
-            raise ValueError(f"dev.manifold_viz.pooled.budget must be > 0, got {pooled_budget}")
-
-        pca_bounds = self.dev["manifold_viz"]["pooled"]["pca_bounds"]
-        if pca_bounds not in (None, "final"):
-            raise ValueError(f"dev.manifold_viz.pooled.pca_bounds must be null or 'final', got {pca_bounds!r}")
 
         if self.dev["plot_every"] not in ("trial", "chkpt"):
             raise ValueError(f"dev.plot_every must be 'trial' or 'chkpt', got {self.dev['plot_every']!r}")
@@ -393,8 +381,10 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live
     cfg = TrainConfig(**cfg_dict)
-    if cfg.manifold_viz is None:  # load live when campaign trials haven't injected the snapshot
-        cfg.manifold_viz = asdict(get_config_manifold_viz())
+    # campaign trials inject the frozen snapshot; otherwise load live. Either way it goes through
+    # ManifoldVizConfig so the injected dict is validated too (not just the live yaml).
+    cfg_manif_viz = cfg.manif_viz if cfg.manif_viz is not None else load_manif_viz_config_dict()
+    cfg.manif_viz = asdict(ManifoldVizConfig(**cfg_manif_viz))
     return cfg
 
 
@@ -520,27 +510,53 @@ DATASET2MARKER_SIZE = {
 
 @dataclass
 class ManifoldVizConfig:
+    """manif_viz.yaml contents -- the whole manifold-viz subsystem: which trials run it (the
+    n_seeds/n_seeds_offset seed window), which panel groups are emitted, the pooled shared-frame fit, the
+    per-method params, and colors."""
 
-    n_stoch_layers: int
+    n_seeds: int
+    n_seeds_offset: int
     eval_duration: int
     bg_color: str | None
+    plot_2panel: bool
+    plot_7panel: bool
+    plot_8panel: bool
+    pooled: dict
     
     tsne: dict = field(default_factory=dict)
+    umap: dict = field(default_factory=dict)
+    orient: dict = field(default_factory=dict)
     color: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        # n_stoch_layers sample draw-order shuffles per eval frame: =1 -> static PNG, >1 -> strobe GIF
-        if self.n_stoch_layers < 1:
-            raise ValueError(f"n_stoch_layers must be >= 1, got {self.n_stoch_layers}")
+        # window of seeds (per setting/dataset group) that get manifold viz: idx_seed in
+        # [n_seeds_offset, n_seeds_offset + n_seeds). n_seeds 0 disables the subsystem; a window past the
+        # end of the campaign's seed sweep is legal and simply selects nothing (see train.py's gate).
+        if self.n_seeds < 0:
+            raise ValueError(f"n_seeds must be >= 0, got {self.n_seeds}")
+
+        if self.n_seeds_offset < 0:
+            raise ValueError(f"n_seeds_offset must be >= 0, got {self.n_seeds_offset}")
+
+        if self.pooled["budget"] <= 0:
+            raise ValueError(f"pooled.budget must be > 0, got {self.pooled['budget']}")
+
+        if self.pooled["pca_bounds"] not in (None, "final"):
+            raise ValueError(f"pooled.pca_bounds must be null or 'final', got {self.pooled['pca_bounds']!r}")
+
+        if self.umap["n_neighbors"] < 2:
+            raise ValueError(f"umap.n_neighbors must be >= 2, got {self.umap['n_neighbors']}")
+
+        if not 0.0 <= self.umap["min_dist"] < 1.0:
+            raise ValueError(f"umap.min_dist must be in [0.0, 1.0), got {self.umap['min_dist']}")
+
+        if not 0.0 < self.orient["ema_tau"] <= 1.0:
+            raise ValueError(f"orient.ema_tau must be in (0.0, 1.0], got {self.orient['ema_tau']}")
 
 
-def load_manifold_viz_config_dict() -> dict:
-    with open(paths["config"] / "manifold_viz.yaml") as f:
+def load_manif_viz_config_dict() -> dict:
+    with open(paths["config"] / "manif_viz.yaml") as f:
         return yaml.safe_load(f)
-
-def get_config_manifold_viz():
-    return ManifoldVizConfig(**load_manifold_viz_config_dict())
-
 
 @dataclass
 class StatsConfig:

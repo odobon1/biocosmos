@@ -12,14 +12,24 @@ import pdb
 
 # Aliases used when building setting names from `baseline_overrides` keys/values (derived names
 # for unnamed items, and combo-list name components): keys map through CFG_PARAM_ALIASES and
-# values through CFG_PARAM_VALUE_ALIASES (per original key); anything without an alias passes
-# through verbatim.
+# values through CFG_PARAM_VALUE_ALIASES (per original key), falling back to
+# CFG_UNIVERSAL_VALUE_ALIASES (key-independent) when no per-key alias exists; anything without
+# an alias passes through verbatim.
 CFG_PARAM_ALIASES = {
+    "n_epochs": "E",
     "batch_size": "BS",
-    "loss.targ": "L1T",
-    "loss2.targ": "L2T",
-    "opt.lr.init": "LR",
+    "loss.targ": "Targ",
+    "loss.wting.bce.dsmr": "DSMR",
+    "loss.logits.temp.init": "Tau",
+    "loss.logits.bce.bias.init": "Bias",
     "loss2.mix": "Mix",
+    "loss2.mix_unit_scale": "UnitMix",
+    "loss2.targ": "Targ2",
+    "loss2.wting.bce.dsmr": "DSMR2",
+    "loss2.logits.temp.init": "Tau2",
+    "loss2.logits.bce.bias.init": "Bias2",
+    "opt.lr.init": "LR",
+    "opt.wd": "WD",
 }
 
 CFG_PARAM_VALUE_ALIASES = {
@@ -39,6 +49,12 @@ CFG_PARAM_VALUE_ALIASES = {
     "loss2.targ": {
         "phylo": "hp",
     },
+}
+
+CFG_UNIVERSAL_VALUE_ALIASES = {
+    True: "T",
+    False: "F",
+    None: "N",
 }
 
 

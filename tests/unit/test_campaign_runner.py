@@ -728,6 +728,28 @@ def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
     ]
 
 
+def test_expand_settings_universal_value_aliases() -> None:
+    # True/False/None values map through CFG_UNIVERSAL_VALUE_ALIASES (key-independent) -> T/F/N;
+    # numeric values equal to a bool (0.0 == False, 1.0 == True) must NOT alias -- the lookup is
+    # identity-guarded against Python's bool/int equality
+    settings = cr._expand_settings(
+        [
+            [
+                {"htarg_shuf": True, "chain_floor": None},
+                {"dv_batching": False},
+                {"loss2.mix": 0.0},
+                {"loss2.mix": 1.0},
+            ]
+        ]
+    )
+    assert [name for name, _ in settings] == [
+        "htarg_shuf-T_chain_floor-N",
+        "dv_batching-F",
+        "Mix-0.0",
+        "Mix-1.0",
+    ]
+
+
 def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
     # a list-valued override is a combo list: the item expands to one setting per list value, the
     # (aliased) 'key-value' pair appended to the explicit 'name'

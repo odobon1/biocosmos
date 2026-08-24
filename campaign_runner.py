@@ -25,6 +25,7 @@ import yaml
 from utils.config import (
     CFG_PARAM_ALIASES, 
     CFG_PARAM_VALUE_ALIASES, 
+    CFG_UNIVERSAL_VALUE_ALIASES, 
     apply_overrides, 
     apply_train_debug_overrides, 
     get_config_stats, 
@@ -211,9 +212,16 @@ def _fmt_name_value(v) -> str:
 
 def _alias_pair(k: str, v) -> str:
     """Render one override as a 'key-value' name component, with the key mapped through
-    CFG_PARAM_ALIASES and the value through CFG_PARAM_VALUE_ALIASES (per original key) when an
-    alias exists, e.g. ('batch_size', 2048) -> 'bs-2k'."""
-    v_aliased = CFG_PARAM_VALUE_ALIASES.get(k, {}).get(v, v)
+    CFG_PARAM_ALIASES and the value through CFG_PARAM_VALUE_ALIASES (per original key), falling
+    back to CFG_UNIVERSAL_VALUE_ALIASES (key-independent) when no per-key alias exists,
+    e.g. ('batch_size', 2048) -> 'bs-2k'."""
+    if v in CFG_PARAM_VALUE_ALIASES.get(k, {}):
+        v_aliased = CFG_PARAM_VALUE_ALIASES[k][v]
+    # identity guard: dict lookup uses ==, and True == 1 / False == 0 would alias numeric values
+    elif v is None or isinstance(v, bool):
+        v_aliased = CFG_UNIVERSAL_VALUE_ALIASES[v]
+    else:
+        v_aliased = v
     return f"{CFG_PARAM_ALIASES.get(k, k)}-{_fmt_name_value(v_aliased)}"
 
 def _derive_item_name(item: dict) -> str:

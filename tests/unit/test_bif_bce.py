@@ -80,6 +80,7 @@ def _make_harness(model, crit1, crit2=None, mix=0.0, mix_unit_scale=False):
         loss={"crit": crit1.cfg["crit"]},
         loss2={"mix": mix, "mix_unit_scale": mix_unit_scale,
                "crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
+        dev={"batch_diagnostics": True},
     )
     return h
 

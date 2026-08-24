@@ -131,6 +131,7 @@ def build_harness(model_ddp, crit1, crit2, mix, mix_unit_scale, world_size, devi
         # mix scalars alongside; at mix == 0 only "mix" is ever read
         loss2={**(crit2.cfg if crit2 is not None else {}), "mix": mix, "mix_unit_scale": mix_unit_scale},
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
+        dev={"batch_diagnostics": True},
         device=device,
     )
     return h

@@ -445,25 +445,29 @@ class PrintLog:
                 return float("nan")
             return sum(grads).pow(2).sum().sqrt().item()
 
-        logits1 = logits[0]  # per-loss branch tuple | None (chunked path)
-        logits2 = logits[1]
-        if logits1 is None:
-            # chunked path (loss_chunk_size != null): no full logit matrix exists, so the
-            # diagnostic is structurally unavailable -- omit the field rather than log nan
-            line_logits = ""
-        elif logits2 is None:
-            line_logits = f"logit={branch_grad_l2_norm(logits1):.2e} "
-        else:
-            line_logits = f"logit1={branch_grad_l2_norm(logits1):.2e} "
-            line_logits += f"logit2={branch_grad_l2_norm(logits2):.2e} "
+        # dev.batch_diagnostics off -> no grads were retained and no norms computed (all None):
+        # the grad_norm and sim_targ lines are skipped outright
+        diag = grad_norm_model is not None
+        if diag:
+            logits1 = logits[0]  # per-loss branch tuple | None (chunked path)
+            logits2 = logits[1]
+            if logits1 is None:
+                # chunked path (loss_chunk_size != null): no full logit matrix exists, so the
+                # diagnostic is structurally unavailable -- omit the field rather than log nan
+                line_logits = ""
+            elif logits2 is None:
+                line_logits = f"logit={branch_grad_l2_norm(logits1):.2e} "
+            else:
+                line_logits = f"logit1={branch_grad_l2_norm(logits1):.2e} "
+                line_logits += f"logit2={branch_grad_l2_norm(logits2):.2e} "
 
-        line_grad_norm = (
-            f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
-            f"txt={tensor_grad_l2_norm(embs_txt_b):.2e} "
-            f"{line_logits}"
-            f"model={grad_norm_model:.2e} "
-            f"step={delta_norm_model:.2e}"  # ||delta theta||: the update the optimizer actually applied
-        )
+            line_grad_norm = (
+                f"img={tensor_grad_l2_norm(embs_img_b):.2e} "
+                f"txt={tensor_grad_l2_norm(embs_txt_b):.2e} "
+                f"{line_logits}"
+                f"model={grad_norm_model:.2e} "
+                f"step={delta_norm_model:.2e}"  # ||delta theta||: the update the optimizer actually applied
+            )
 
         line_logits_param = ""
         if hasattr(model.module, "logit_scale") and model.module.logit_scale is not None:
@@ -484,26 +488,28 @@ class PrintLog:
                 f"loss={loss_batch:.2e} "
                 f"\n"
             )
-            PrintLog.log_batch_grad_norm.write(
-                f"{batch_str:<10} "
-                f"{line_grad_norm}"
-                f"\n"
-            )
+            if diag:
+                PrintLog.log_batch_grad_norm.write(
+                    f"{batch_str:<10} "
+                    f"{line_grad_norm}"
+                    f"\n"
+                )
             PrintLog.log_batch_temp_bias.write(
                 f"{batch_str:<10} "
                 f"{line_logits_param}"
                 f"\n"
             )
-            stat_groups = ["sim1", "targ1"] + (["sim2", "targ2"] if "sim2_min" in batch_stats else [])
-            PrintLog.log_batch_similarity.write(
-                f"{batch_str:<10} "
-                + " | ".join(
-                    f"{group}: min={batch_stats[f'{group}_min']: .4f} max={batch_stats[f'{group}_max']: .4f} "
-                    f"med={batch_stats[f'{group}_median']: .4f} mean={batch_stats[f'{group}_mean']: .4f}"
-                    for group in stat_groups
+            if batch_stats is not None:
+                stat_groups = ["sim1", "targ1"] + (["sim2", "targ2"] if "sim2_min" in batch_stats else [])
+                PrintLog.log_batch_similarity.write(
+                    f"{batch_str:<10} "
+                    + " | ".join(
+                        f"{group}: min={batch_stats[f'{group}_min']: .4f} max={batch_stats[f'{group}_max']: .4f} "
+                        f"med={batch_stats[f'{group}_median']: .4f} mean={batch_stats[f'{group}_mean']: .4f}"
+                        for group in stat_groups
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
 
     @staticmethod
     @rank0

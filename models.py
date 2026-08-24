@@ -565,11 +565,14 @@ class VLMWrapper(abc.ABC):
         )
         # the gathered embeddings are what batch_step returns to the grad-norm logger; retain so
         # .grad carries the full-batch dL/dembs after backward (same quantity the chunked path
-        # all-reduces into its returned leaves)
-        if embs_img_b.requires_grad:
-            embs_img_b.retain_grad()
-        if embs_txt_b.requires_grad:
-            embs_txt_b.retain_grad()
+        # all-reduces into its returned leaves). diag off (dev.batch_diagnostics) skips every
+        # retain_grad and the batch stats (returned as None) -- the loss/gradient path is untouched
+        diag = self.cfg.dev["batch_diagnostics"]
+        if diag:
+            if embs_img_b.requires_grad:
+                embs_img_b.retain_grad()
+            if embs_txt_b.requires_grad:
+                embs_txt_b.retain_grad()
 
         if not loss_flag:
             return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b, None, (None, None)
@@ -583,9 +586,10 @@ class VLMWrapper(abc.ABC):
             secondary=False,
         )
         # retain every branch's grad for the aggregate (branch-summed) grad logging
-        for t in (*logits1, *sims1):
-            if t.requires_grad:
-                t.retain_grad()
+        if diag:
+            for t in (*logits1, *sims1):
+                if t.requires_grad:
+                    t.retain_grad()
 
         mix = self.cfg.loss2["mix"]
         if mix != 0.0:
@@ -597,9 +601,10 @@ class VLMWrapper(abc.ABC):
                 self.crit2,
                 secondary=True,
             )
-            for t in (*logits2, *sims2):
-                if t.requires_grad:
-                    t.retain_grad()
+            if diag:
+                for t in (*logits2, *sims2):
+                    if t.requires_grad:
+                        t.retain_grad()
 
             if self.cfg.loss2["mix_unit_scale"]:
                 # equalize the two losses' magnitudes so `mix` controls their true gradient-contribution
@@ -620,12 +625,12 @@ class VLMWrapper(abc.ABC):
             batch_stats = {
                 **sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss)),
                 **sim_targ_batch_stats(sims2[0], targs2, idx=2, logits=stat_logits(logits2, self.cfg.loss2)),
-            }
+            } if diag else None
 
             return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats, (sims1, sims2)
 
         # sims1[0]: branch values are identical, so the first branch carries the sim stats
-        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss))
+        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss)) if diag else None
         return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats, (sims1, None)
 
     def _gather_batch(
@@ -768,11 +773,13 @@ class VLMWrapper(abc.ABC):
         (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
         embs_img_b / embs_txt_b for grad-norm logging, and -- since the backward already ran and the
         sim matrices are gone -- the sims slot carries the (grad_sum_sim1, grad_sum_sim2) floats
-        accumulated tile-by-tile by chunked_bce_loss_backward.
+        accumulated tile-by-tile by chunked_bce_loss_backward. With dev.batch_diagnostics off,
+        batch_stats is None and the sims slot carries (None, None).
         """
         chunk = self.cfg.hw.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
         device = self.cfg.device
+        diag = self.cfg.dev["batch_diagnostics"]
 
         # DDP.forward must run under no_sync too, so the reducer is never armed for this step (we sync
         # gradients manually below); otherwise DDP would expect a matching synced backward. The reducer
@@ -795,7 +802,7 @@ class VLMWrapper(abc.ABC):
             loss, loss_raw, batch_stats, grad_sum_sims = chunked_bce_loss_backward(
                 img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss2["mix"],
                 self.cfg.loss2["mix_unit_scale"], self.compute_logits, chunk, mixed_prec, device,
-                rank, self.world_size
+                rank, self.world_size, batch_diagnostics=diag
             )
 
             # representation gradient: push the accumulated band-partial dL/dembs into the encoder (one
@@ -819,9 +826,11 @@ class VLMWrapper(abc.ABC):
                 if p.grad is not None:
                     dist.all_reduce(p.grad)
             # the representation backward has consumed the leaves' band-partial grads; fold them so the
-            # returned leaves carry full-batch dL/dembs for grad-norm logging
-            dist.all_reduce(img.grad)
-            dist.all_reduce(txt.grad)
+            # returned leaves carry full-batch dL/dembs for grad-norm logging (diagnostics-only, so
+            # skipped when dev.batch_diagnostics is off)
+            if diag:
+                dist.all_reduce(img.grad)
+                dist.all_reduce(txt.grad)
 
         return loss, loss_raw, img, txt, (None, None), class_encs_b, batch_stats, grad_sum_sims
 

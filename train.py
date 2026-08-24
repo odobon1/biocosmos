@@ -138,6 +138,7 @@ class TrainPipeline:
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
         self._logit_scalars_tracked = self._tracked_logit_scalars()
         self._targ_stats_tracked = self._tracked_targ_stats()
+        self._batch_diag = self.cfg.dev["batch_diagnostics"]
         self._params_prev = None  # pre-step parameter snapshot, allocated on the first step
 
         if resume_state is not None:
@@ -268,10 +269,11 @@ class TrainPipeline:
                             grad_sum_sim1, grad_sum_sim2):
         # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the
         # curve series keep only the histogram, and only for branches whose targets are worth curving
-        batch_stats = {
-            key: val for key, val in batch_stats.items()
-            if not key.startswith("targ") or (key.endswith("_hist") and key[:-len("_hist")] in self._targ_stats_tracked)
-        }
+        if batch_stats is not None:
+            batch_stats = {
+                key: val for key, val in batch_stats.items()
+                if not key.startswith("targ") or (key.endswith("_hist") and key[:-len("_hist")] in self._targ_stats_tracked)
+            }
         self.data.update_train_batch(
             self.n_samps_seen,
             lr=lr,
@@ -407,6 +409,8 @@ class TrainPipeline:
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
         loss.backward()
+        if not self._batch_diag:  # no grads were retained on the sims
+            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, (None, None)
         with torch.no_grad():
             # .float(): the retained grads are bf16 under mixed_prec, and casting the SUM result back
             # to bf16 quantizes it (~3 significant digits)
@@ -428,7 +432,11 @@ class TrainPipeline:
         by the LR and the moment ratio rather than by the raw gradient magnitude -- the two can move
         in opposite directions. Measured against a pre-step snapshot, which is optimizer-agnostic
         (no reliance on AdamW's internals) at the cost of one extra copy of the trainable params;
-        the buffers are allocated once and reused, so there's no per-step allocation churn."""
+        the buffers are allocated once and reused, so there's no per-step allocation churn.
+        With dev.batch_diagnostics off the snapshot/delta is skipped entirely (returns None)."""
+        if not self._batch_diag:
+            self.opt.step()
+            return None
         params = [p for p in self.modelw.model.parameters() if p.requires_grad]
         if self._params_prev is None:
             self._params_prev = [torch.empty_like(p) for p in params]
@@ -566,8 +574,10 @@ class TrainPipeline:
                         class_encs_sb,
                         targ_data_sb,
                     )
-                    with torch.no_grad():
-                        grad_norm_model = model_grad_l2_norm(self.modelw.model)
+                    grad_norm_model = None
+                    if self._batch_diag:
+                        with torch.no_grad():
+                            grad_norm_model = model_grad_l2_norm(self.modelw.model)
                     # the step is taken before logging so the line can carry the update norm too;
                     # grads survive it (zero_grad only runs at the top of the next iteration)
                     delta_norm_model = self._step_optimizer()

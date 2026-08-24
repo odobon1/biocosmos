@@ -1059,10 +1059,16 @@ def plot_composite_metrics(
     plot_title,
     output_filename,
 ):
+    # dev.batch_diagnostics off -> the per-batch diagnostic series were never recorded, and their
+    # panels (model grad norm, ||delta theta||, sim-grad sums, the S stats panel) are omitted outright
+    has_batch_diag = len(data_epoch["grad_norm_model"]) == len(x_train)
     # loss2 active (mix != 0) -> its sim-grad sum gets its own strip between the loss1 strip and the
-    # S panel, so each series keeps its own y-scale
-    has_loss2 = len(data_epoch["grad_sum_sim2"]) == len(x_train)
-    if has_loss2:
+    # S panel, so each series keeps its own y-scale. Checked over every loss2 series that can exist,
+    # since with diagnostics off only its logit scalars survive (the subscripted labels still apply)
+    has_loss2 = any(len(data_epoch[key]) == len(x_train) for key in ("grad_sum_sim2", "sim2_min", "temp2", "bias2"))
+    if not has_batch_diag:
+        height_ratios = [*height_ratios[:6], *height_ratios[10:]]  # drop the grad/step/sim-grad-sum/S slots
+    elif has_loss2:
         height_ratios = [*height_ratios[:9], 0.5, *height_ratios[9:]]
     # one Y-stats panel per loss branch whose targets carry distributional signal -- TrainPipeline
     # records targ stats only for phylo/tax branches (sp/mp targets are 0/1 indicators), so a branch
@@ -1208,51 +1214,54 @@ def plot_composite_metrics(
     ax5.grid(True)
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    ax6 = fig.add_subplot(gs[6, 0], sharex=ax0)
-    if len(data_epoch["grad_norm_model"]) == len(x_train):
-        ax6.plot(x_train, data_epoch["grad_norm_model"], color="tab:orange")
-    ax6.set_ylabel(r"$\|\nabla_{\theta}\mathcal{L}\|$", fontsize=fontsize_axes + 4)
-    # CM mathtext has no bold symbol fonts; a thin stroke outline fakes the bold
-    ax6.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
-    ax6.set_yscale("log")
-    ax6.minorticks_on()
-    ax6.grid(which="minor", axis="y")
-    ax6.grid(True)
-    ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+    axes = [ax0, ax1, ax2, ax3, ax4, ax5]
 
-    # the step the optimizer actually took, directly under the gradient that produced it: Adam
-    # rescales per parameter, so the two need not track each other
-    ax6b = fig.add_subplot(gs[7, 0], sharex=ax0)
-    if len(data_epoch["delta_norm_model"]) == len(x_train):
-        ax6b.plot(x_train, data_epoch["delta_norm_model"], color="tab:brown")
-    ax6b.set_ylabel(r"$\|\Delta\theta\|$", fontsize=fontsize_axes + 4)
-    ax6b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
-    ax6b.set_yscale("log")
-    ax6b.minorticks_on()
-    ax6b.grid(which="minor", axis="y")
-    ax6b.grid(True)
-    ax6b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+    if has_batch_diag:
+        ax6 = fig.add_subplot(gs[6, 0], sharex=ax0)
+        if len(data_epoch["grad_norm_model"]) == len(x_train):
+            ax6.plot(x_train, data_epoch["grad_norm_model"], color="tab:orange")
+        ax6.set_ylabel(r"$\|\nabla_{\theta}\mathcal{L}\|$", fontsize=fontsize_axes + 4)
+        # CM mathtext has no bold symbol fonts; a thin stroke outline fakes the bold
+        ax6.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        ax6.set_yscale("log")
+        ax6.minorticks_on()
+        ax6.grid(which="minor", axis="y")
+        ax6.grid(True)
+        ax6.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    ax7 = fig.add_subplot(gs[8, 0], sharex=ax0)
-    if len(data_epoch["grad_sum_sim1"]) == len(x_train):
-        ax7.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:orange", linewidth=1.0)
-    ax7.axhline(0.0, color="gray", linewidth=0.5)
-    ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_loss2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
-    ax7.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
-    ax7.grid(True)
-    ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        # the step the optimizer actually took, directly under the gradient that produced it: Adam
+        # rescales per parameter, so the two need not track each other
+        ax6b = fig.add_subplot(gs[7, 0], sharex=ax0)
+        if len(data_epoch["delta_norm_model"]) == len(x_train):
+            ax6b.plot(x_train, data_epoch["delta_norm_model"], color="tab:brown")
+        ax6b.set_ylabel(r"$\|\Delta\theta\|$", fontsize=fontsize_axes + 4)
+        ax6b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        ax6b.set_yscale("log")
+        ax6b.minorticks_on()
+        ax6b.grid(which="minor", axis="y")
+        ax6b.grid(True)
+        ax6b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    axes = [ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax6b, ax7]
+        ax7 = fig.add_subplot(gs[8, 0], sharex=ax0)
+        if len(data_epoch["grad_sum_sim1"]) == len(x_train):
+            ax7.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:orange", linewidth=1.0)
+        ax7.axhline(0.0, color="gray", linewidth=0.5)
+        ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_loss2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
+        ax7.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
+        ax7.grid(True)
+        ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
-    if has_loss2:
-        ax7b = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax7b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
-        ax7b.axhline(0.0, color="gray", linewidth=0.5)
-        ax7b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes - 1)
-        ax7b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
-        ax7b.grid(True)
-        ax7b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax7b)
+        axes += [ax6, ax6b, ax7]
+
+        if has_loss2:
+            ax7b = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+            ax7b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
+            ax7b.axhline(0.0, color="gray", linewidth=0.5)
+            ax7b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes - 1)
+            ax7b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
+            ax7b.grid(True)
+            ax7b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+            axes.append(ax7b)
 
     # sim1/sim2 are always identical in practice, so the one S panel shows loss1's. Min/max solid,
     # mean dashed, median dotted; teal/rose is a dark, mutually contrasting pair that also stays
@@ -1296,7 +1305,8 @@ def plot_composite_metrics(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-    add_stat_panel("sim1", "S", (-1.0, 1.0), "#008080")
+    if has_batch_diag:
+        add_stat_panel("sim1", "S", (-1.0, 1.0), "#008080")
     for hist_key, label in p_panels:
         add_hist_panel(hist_key, label, _P_CMAP)
     for hist_key, label in targ_panels:

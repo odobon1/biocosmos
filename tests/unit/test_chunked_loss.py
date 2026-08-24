@@ -319,6 +319,42 @@ def test_stats_split_by_crit():
         assert stats[f"targ{tag}_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
 
 
+def test_batch_diagnostics_off():
+    """batch_diagnostics=False must leave the loss and every gradient identical (the hooks/stats only
+    observe) while returning batch_stats None and grad_sum_sims (None, None)."""
+    B, C, K, D = 48, 16, 20, 16
+    crit1 = _make_crit(_cfg(targ="mp"), K, B)
+    crit2 = _make_crit(_cfg(crit="bif_bce", targ="mp"), K, B)
+    g = torch.Generator().manual_seed(3)
+    img0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
+    txt0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
+    class_encs_b = torch.randint(0, K, (B,), generator=g)
+
+    runs = {}
+    for diag in (True, False):
+        img = img0.clone().requires_grad_(True)
+        txt = txt0.clone().requires_grad_(True)
+        p = _params(1)
+        loss, loss_raw, stats, gsum = L.chunked_bce_loss_backward(
+            img, txt, class_encs_b, [None] * B, crit1, crit2, 0.3, False,
+            _compute_logits_fn(p), C, False, torch.device("cpu"), rank=0, world_size=1,
+            batch_diagnostics=diag,
+        )
+        runs[diag] = (loss, loss_raw, stats, gsum, img, txt, p)
+
+    loss_on, raw_on, stats_on, gsum_on, img_on, txt_on, p_on = runs[True]
+    loss_off, raw_off, stats_off, gsum_off, img_off, txt_off, p_off = runs[False]
+    assert stats_on is not None and gsum_on[0] is not None and gsum_on[1] is not None
+    assert stats_off is None
+    assert gsum_off == (None, None)
+    torch.testing.assert_close(loss_off, loss_on, rtol=0, atol=0)
+    torch.testing.assert_close(raw_off, raw_on, rtol=0, atol=0)
+    torch.testing.assert_close(img_off.grad, img_on.grad, rtol=0, atol=0)
+    torch.testing.assert_close(txt_off.grad, txt_on.grad, rtol=0, atol=0)
+    for key in ("scale", "bias", "scale2", "bias2"):
+        torch.testing.assert_close(p_off[key].grad, p_on[key].grad, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [
     ({"crit": "infonce", "targ": "mp"}, {"mix": 0.0, "crit": "bce"}),          # infonce primary
     ({"crit": "bce", "targ": "mp"}, {"mix": 0.3, "crit": "infonce"}),           # infonce secondary (mixed)

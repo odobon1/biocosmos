@@ -177,6 +177,10 @@ dev:
     n_chkpts: 2
     batch_size: 256
     opt.lr.warmup: 0.0
+  batch_diagnostics: false  # {true, false}; (false) Skip per-batch train diagnostics -- whole-model grad norm,
+  # ||delta theta|| update norm (pre-step param snapshot), retained embedding/logit/sim grads + sim-grad sums,
+  # and batch sim/targ distribution stats; their log lines and learning-curve panels are omitted
+  # (loss/LR/logit-scalar curves and evals unaffected)
   logging: true
   plot_every: chkpt  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
   # (trial) Only at the final checkpoint

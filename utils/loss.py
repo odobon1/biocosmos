@@ -17,12 +17,11 @@ _phylo_vcv_cache: dict[tuple, PhyloVCV] = {}
 _phylo_params: dict | None = None
 
 
-def configure_phylo_targs(beta: float, split: str, train_pt: str, batch_size: int,
+def configure_phylo_targs(split: str, train_pt: str, batch_size: int,
                           htarg_shuf: bool, seed: int | None) -> None:
     """Set the phylo-target params for this run; call once at setup before any loss is computed."""
     global _phylo_params
     _phylo_params = {
-        "beta": beta,
         "split": split,
         "train_pt": train_pt,
         "batch_size": batch_size,

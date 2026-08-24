@@ -19,7 +19,6 @@ def make_train_config_dummy(**overrides):
         "chain_floor": None,
         "dv_batching": False,
         "htarg_shuf": False,
-        "htarg_beta": 1.0,
         "dev": {"logging": False, "plot_every": "trial"},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
@@ -194,13 +193,6 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
     ))
 
     assert cfg.htarg_shuf is True
-
-
-def test_train_config_rejects_nonpositive_htarg_beta(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_hw(monkeypatch)
-
-    with pytest.raises(ValueError, match="htarg_beta must be a positive number"):
-        TrainConfig(**make_train_config_dummy(htarg_beta=0.0))
 
 
 def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:

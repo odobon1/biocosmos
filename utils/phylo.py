@@ -19,15 +19,15 @@ def get_tree(dataset: str) -> Tree:
 
 class PhyloVCV:
     """
-    Phylo target matrix from the dataset's tree: Y = exp(-beta * d / avg_dist), where
+    Phylo target matrix from the dataset's tree: Y = exp(-d / avg_dist), where
     d(a, b) = sqrt(patristic distance) -- the standard deviation of the Brownian-motion
-    contrast X_a - X_b, a root-independent tree metric -- and avg_dist normalizes beta to
+    contrast X_a - X_b, a root-independent tree metric -- and avg_dist normalizes d to
     units of the average sampled pair's distance (_avg_dist). Built once at startup
     (VCV -> distances -> targets); batches index into it (get_targs_batch /
     make_targ_block_fn).
     """
 
-    def __init__(self, dataset: str, beta: float, split: str, train_pt: str, batch_size: int,
+    def __init__(self, dataset: str, split: str, train_pt: str, batch_size: int,
                  htarg_shuf: bool = False, seed: int | None = None) -> None:
 
         self.tree: Tree = get_tree(dataset)
@@ -55,7 +55,7 @@ class PhyloVCV:
         dists = np.sqrt(tip_depths[:, None] + tip_depths[None, :] - 2.0 * vcv)
 
         avg_dist = self._avg_dist(dists, dataset, split, train_pt, batch_size)
-        self.targs = np.exp(-beta * dists / avg_dist)  # unit diagonal, (0, 1] range
+        self.targs = np.exp(-dists / avg_dist)  # unit diagonal, (0, 1] range
 
         if htarg_shuf:
             # Scramble which species maps to which position in the (already-built) target
@@ -73,7 +73,7 @@ class PhyloVCV:
         Pair-probability-frequency-weighted mean of `dists` over the train partition's classes
         (same-class d=0 pairs included), weighting each class pair by its batch co-occurrence
         probability (_pair_prob_freqs, the 2D BCE class-imbalance counting method). Normalizing
-        by it makes beta unit-free (calibrated to the average sampled pair's distance) and
+        by it makes the decay unit-free (calibrated to the average sampled pair's distance) and
         comparable across datasets. Computed once from global class counts, so it is a
         dataset-level constant identical across batches and DDP ranks.
         """

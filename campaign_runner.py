@@ -519,11 +519,17 @@ def _spawn_render(trial_rel: str) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
     trial's training. It renders purely from the trial's cached projections.npz (no GPU/DDP), using the
     campaign's frozen config snapshot. CUDA_VISIBLE_DEVICES is cleared so it never contends for the GPUs,
-    and RENDER_MAX_WORKERS caps its CPU fan-out to a quarter of the cores so it doesn't oversubscribe the
-    next trial's dataloaders -- the render has the whole next trial to finish, so it can afford to go slow."""
+    and the worker is held to a quarter of the cores so it doesn't oversubscribe the next trial's
+    dataloaders -- the render has the whole next trial to finish, so it can afford to go slow. That core
+    budget is enforced twice over: RENDER_MAX_WORKERS caps the plot-job process fan-out, and the
+    numba/BLAS thread caps hold the UMAP stage (NN-descent + layout run numba-parallel, the pooled PCA
+    runs on BLAS), which runs single-process BEFORE that fan-out and would otherwise burst to every core."""
     cmd = [sys.executable, "-m", "tools.regen_manif_viz", trial_rel, "snapshot"]
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
-    env.setdefault("RENDER_MAX_WORKERS", str(max(1, len(os.sched_getaffinity(0)) // 4)))
+    cap = str(max(1, len(os.sched_getaffinity(0)) // 4))
+    for var in ("RENDER_MAX_WORKERS", "NUMBA_NUM_THREADS", "OMP_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        env.setdefault(var, cap)
     return subprocess.Popen(cmd, env=env, start_new_session=True)
 
 def _trial_has_manif_cache(dpath_trial: Path) -> bool:

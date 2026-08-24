@@ -95,7 +95,7 @@ def make_manif_viz_config_dummy(**overrides):
         "plot_7panel": True,
         "plot_8panel": True,
         "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None},
-        "umap": {"n_neighbors": 15, "min_dist": 0.1, "n_iter": None},
+        "umap": {"n_neighbors": 15, "min_dist": 0.1, "n_iter": None, "n_iter_sphere": 100},
         "orient": {"ema_tau": 0.5},
     }
     config.update(overrides)
@@ -126,12 +126,12 @@ def test_manif_viz_config_rejects_invalid_pca_bounds() -> None:
 
 def test_manif_viz_config_rejects_too_few_umap_neighbors() -> None:
     with pytest.raises(ValueError, match="umap.n_neighbors must be >= 2"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 1, "min_dist": 0.1, "n_iter": None}))
+        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 1, "min_dist": 0.1, "n_iter": None, "n_iter_sphere": 100}))
 
 
 def test_manif_viz_config_rejects_out_of_range_umap_min_dist() -> None:
     with pytest.raises(ValueError, match=r"umap.min_dist must be in \[0.0, 1.0\)"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 15, "min_dist": 1.0, "n_iter": None}))
+        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 15, "min_dist": 1.0, "n_iter": None, "n_iter_sphere": 100}))
 
 
 def test_manif_viz_config_rejects_out_of_range_ema_tau() -> None:

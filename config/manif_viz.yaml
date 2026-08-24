@@ -9,8 +9,8 @@ n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whol
 n_seeds_offset: 0  # [int] >= 0; Where the window starts; (0) The first seed of every setting/dataset group;
 # (1) Skip the first, viz the second; etc.
 
-plot_2panel: true   # {true, false}; (true) Plot the per-method leaf/penult pairs
-plot_7panel: true   # {true, false}; (true) Plot the per-method 2x4 composites
+plot_2panel: false   # {true, false}; (true) Plot the per-method leaf/penult pairs
+plot_7panel: false   # {true, false}; (true) Plot the per-method 2x4 composites
 plot_8panel: true  # {true, false}; (true) Plot the cross-method grids (methods across, colorings down)
 
 pooled:  # Shared-frame manifold viz: one fit per method on all eval thresholds' embeddings pooled, then each
@@ -31,14 +31,20 @@ tsne:
 umap:  # Shared by BOTH UMAP variants -- the flat one (umap) and the spherical one (umap_sphere), which differ
 # only in output space. Both are fit off the GPU/collective path, in the post-trial render worker, from each eval's
 # cached embs.npz, and each eval's fit is initialized from the PREVIOUS eval's layout (which keeps the sequence
-# continuous at the source rather than only correcting it afterward with orientation). Sharing these params is also
-# what lets the two variants share ONE cosine nearest-neighbor search per subject instead of doing it twice.
-# Cost note: the spherical fit's layout optimization is ~30x the flat one's (haversine gradients), and it dominates
-# everything else -- n_iter below is the lever if the post-trial render gets too slow.
+# continuous at the source rather than only correcting it afterward with orientation). Sharing the input-side params
+# (n_neighbors, with the cosine metric fixed in code) is what lets the two variants share ONE nearest-neighbor search
+# per subject instead of doing it twice; the epoch counts are output-side, so they can differ per variant freely.
+# Cost note: the spherical fit's layout optimization is ~30x the flat one's PER EPOCH (haversine gradients), and it
+# dominates everything else -- n_iter_sphere below is the lever if the post-trial render gets too slow.
   n_neighbors: 15  # [int] >= 2; Local neighborhood size; smaller --> more local structure, larger --> more global
   min_dist: 0.1  # [0.0, 1.0); Minimum spacing of points in the layout; smaller --> tighter clumps; (umap_sphere)
   # Inert -- the spherical output space has no min_dist analogue
-  n_iter: null  # {null, [int]}; Layout optimization epochs; (null) UMAP's own default (200 for large N, 500 for small)
+  n_iter: null  # {null, [int]}; Flat-variant layout optimization epochs; (null) UMAP's own default (200 for large N,
+  # 500 for small)
+  n_iter_sphere: 100  # {null, [int]}; Spherical-variant layout optimization epochs; (null) UMAP's own default. Its
+  # own knob because a spherical epoch costs ~30x a flat one, making the sphere the render worker's dominant compute;
+  # 100 (vs the 500 small-N default) holds up because the chained warm starts land each fit near its converged layout
+  # already -- raise it if the sphere plots look under-converged (the first eval and the pooled fit start cold)
 
 orient:  # Cross-eval orientation: every method's layout is aligned to a running reference of per-class CoMs so the
 # evolving GIFs don't spin or mirror-flip between evals. t-SNE + UMAP get the full rigid alignment (orthogonal

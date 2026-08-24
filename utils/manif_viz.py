@@ -352,7 +352,10 @@ def compute_umap(embeddings, cfg_umap, init, spherical=False, knn=None):
     off-center cloud would sit in a corner of a mostly-empty panel.
     """
     import umap  # heavy (numba JIT) import, paid only in the render worker
-    kwargs = {} if cfg_umap["n_iter"] is None else {"n_epochs": cfg_umap["n_iter"]}
+    # each variant has its own epoch count: a spherical epoch costs ~30x a flat one (haversine
+    # gradients), so the sphere runs fewer of them (umap.n_iter_sphere) than the flat fit (umap.n_iter)
+    n_iter = cfg_umap["n_iter_sphere" if spherical else "n_iter"]
+    kwargs = {} if n_iter is None else {"n_epochs": n_iter}
     if spherical:
         kwargs["output_metric"] = "haversine"  # optimize great-circle distance on S^2, not in a plane
     reducer = umap.UMAP(
@@ -391,9 +394,11 @@ def _umap_knn(embeddings, cfg_umap):
     provably fit from an identical graph, so any difference between their plots is output-space only."""
     from umap.umap_ import nearest_neighbors
 
+    # low_memory=False: the faster NN-descent mode -- RAM is not the constraint on these nodes, and the
+    # pooled fits (up to pooled.budget points) are where the slow low-memory path actually costs minutes
     return nearest_neighbors(embeddings, n_neighbors=_umap_k(embeddings.shape[0], cfg_umap),
                              metric=_UMAP_METRIC, metric_kwds={}, angular=True, random_state=None,
-                             low_memory=True, verbose=False)
+                             low_memory=False, verbose=False)
 
 def _xyz_to_angles(xyz):
     """Unit vectors -> the (polar, azimuth) pair UMAP's haversine output space works in, so a previous
@@ -969,7 +974,9 @@ def composite_plot(grid, comp, fpath_png, suptitle, style, limits=None):
     data = {s: (comp[s][0], comp[s][1]) for s in stems}
     fig, sc_by = _composite_canvas(grid, limits, suptitle, _GIF_DPI, style)
     _composite_frame(sc_by, data, style.marker_size)
-    fig.savefig(fpath_png, dpi=300, bbox_inches="tight")
+    # no bbox_inches="tight": it rasterizes the ~36-megapixel figure twice (once to measure, once to
+    # write), and the margins are already engineered exactly (_grid_layout), so there's nothing to trim
+    fig.savefig(fpath_png, dpi=300)
     plt.close(fig)
 
 def _cids_by(cids_id, cids_ood):
@@ -1084,7 +1091,7 @@ def _8panel_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=
     limits = {**{k: _limits_for(k[0], [data[k][0]]) for k in data}, **(limits or {})}  # k = (method, stem)
     fig, sc_by = _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, _GIF_DPI, style)
     _composite_frame(sc_by, data, style.marker_size)
-    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    fig.savefig(fpath, dpi=300)  # no bbox_inches="tight" -- double-rasterizes; margins already exact
     plt.close(fig)
 
 def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
@@ -1302,16 +1309,22 @@ def compute_umap_pooled(dpath_evals, cfg_manif_viz):
     that compute_pooled_projections recorded in the pooled cache (idx_id/idx_ood), so the pooled UMAP
     covers exactly the same points in the same row order as the pooled PCA/t-SNE. One fit spans the whole
     sequence, so there is no init chain and no orientation here -- the frame is shared by construction.
-    Idempotent (returns immediately when the blocks are already cached)."""
+    Idempotent (returns immediately when the blocks are already cached in EVERY threshold; a sweep
+    killed mid-write refits from scratch rather than resuming half-done)."""
     dirs = _ordered_eval_dirs(dpath_evals, "projections_pooled.npz")
     if not dirs:
         return
+    # completion probe on the LAST cache: the write loop below sweeps dirs in order, so the last dir
+    # carrying the UMAP blocks means every dir does. Probing the first would misread a sweep killed
+    # mid-write (threshold 0 written, the rest not) as complete and strand the tail without UMAP blocks;
+    # probing before loading also makes the already-done path free.
+    with np.load(dirs[-1] / "projections_pooled.npz") as npz:
+        if "umap_sphere_joint" in npz:
+            return
     caches = []
     for d in dirs:
         with np.load(d / "projections_pooled.npz") as npz:
             caches.append(dict(npz))  # materialize: the same paths are rewritten below with UMAP appended
-    if "umap_sphere_joint" in caches[0]:
-        return
     idx_id, idx_ood = caches[0]["idx_id"], caches[0]["idx_ood"]
     m_id, m_ood = len(idx_id), len(idx_ood)
     pools = _pooled_pools(dirs, idx_id, idx_ood)

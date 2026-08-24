@@ -59,7 +59,7 @@ def test_tsne_separates_gaussian_clusters() -> None:
     assert inter > 3 * intra, f"clusters not separated: inter={inter:.2f} intra={intra:.2f}"
 
 
-_UMAP_CFG = {"n_neighbors": 15, "min_dist": 0.1, "n_iter": 200}
+_UMAP_CFG = {"n_neighbors": 15, "min_dist": 0.1, "n_iter": 200, "n_iter_sphere": 100}
 
 
 def test_umap_separates_gaussian_clusters() -> None:

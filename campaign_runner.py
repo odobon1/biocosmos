@@ -526,6 +526,20 @@ def _spawn_render(trial_rel: str) -> subprocess.Popen:
     env.setdefault("RENDER_MAX_WORKERS", str(max(1, len(os.sched_getaffinity(0)) // 4)))
     return subprocess.Popen(cmd, env=env, start_new_session=True)
 
+def _trial_has_manif_cache(dpath_trial: Path) -> bool:
+    """Whether this trial actually produced any manifold-viz cache worth post-trial rendering.
+
+    Most trials may sit outside the manif_viz seed window; those write no projections/embeddings, so
+    spawning the detached render worker would just start Python to discover there is nothing to do.
+    """
+    dpath_evals = dpath_trial / "evals"
+    if not dpath_evals.exists():
+        return False
+    for d in dpath_evals.iterdir():
+        if any((d / name).exists() for name in ("projections.npz", "projections_pooled.npz", "embs.npz")):
+            return True
+    return False
+
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
@@ -735,11 +749,14 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                     continue
 
                 # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
-                # training. At most one render in flight: wait on the prior one first (near-instant in
-                # practice, since a trial far outlasts a render).
-                if render_proc is not None and render_proc.poll() is None:
-                    render_proc.wait()
-                render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}")
+                # training, but only when this trial actually produced manifold caches. Trials outside the
+                # manif_viz seed window have nothing to render, so skip the extra Python process entirely.
+                # At most one render in flight: wait on the prior one only when a new render is about to
+                # start.
+                if _trial_has_manif_cache(dpath_trial):
+                    if render_proc is not None and render_proc.poll() is None:
+                        render_proc.wait()
+                    render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}")
 
     _render_campaign_tables(campaign, datasets)
 

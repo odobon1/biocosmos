@@ -196,6 +196,17 @@ def test_run_qual_campaign_relaunch_skips_done_and_copies_newly_qualified(tmp_pa
     assert meta["settings"] == ["phylo2", "sp", "phylo"]
 
 
+def test_launch_loads_config_and_forwards_completed_flag(tmp_path, monkeypatch) -> None:
+    (tmp_path / "quals").mkdir()
+    (tmp_path / "quals" / "dev.yaml").write_text("n_trials_qual: 3\nbase_campaign: base\nqualified_settings: [sp]\n")
+    monkeypatch.setattr(qr, "paths", {"config": tmp_path})
+    calls = []
+    monkeypatch.setattr(qr, "run_qual_campaign", lambda **kwargs: calls.append(kwargs) or True)
+
+    assert qr.launch("dev") is True
+    assert calls == [{"n_trials_qual": 3, "base_campaign": "base", "qualified_settings": ["sp"]}]
+
+
 def test_run_qual_campaign_dedupes_name_when_not_continuing(tmp_path, monkeypatch) -> None:
     scheduled = _wire(tmp_path, monkeypatch, continue_campaign=False)
     _make_base_campaign(tmp_path)

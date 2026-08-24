@@ -1,8 +1,6 @@
 """
-python -m qual_runner --dev
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m qual_runner --dev
-
-Qualified campaigns are defined in config/quals/<name>.yaml, e.g. --dev loads config/quals/dev.yaml.
+Qualified campaigns are defined in config/quals/<name>.yaml and launched through the campaign
+queue: a qual.<name> entry in config/camp_queue.yaml (see campaign_runner).
 
 A qualified campaign tops up a subset of a completed base campaign's settings (the ones that
 "qualified") to n_trials_qual trials per setting. It creates campaign <base_campaign>_qual seeded
@@ -13,7 +11,6 @@ per-setting overrides come from the base campaign's persisted overrides.json.
 """
 
 import shutil
-import sys
 import torch
 import yaml
 
@@ -21,12 +18,6 @@ from campaign_runner import _check_trial_completion, _dedupe_campaign_name, _dpa
 from utils.config import load_train_config_dict
 from utils.utils import load_json, paths
 
-
-def _parse_qual_name(argv: list[str]) -> str:
-    if len(argv) != 1:
-        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "quals").glob("*.yaml")))
-        raise SystemExit(f"Usage: python -m qual_runner --<qual>\nAvailable qual configs: {avail}")
-    return argv[0].lstrip("-")
 
 def _load_qual_config(name: str) -> dict:
     fpath = paths["config"] / "quals" / f"{name}.yaml"
@@ -79,7 +70,7 @@ def _copy_base_artifacts(base_campaign: str, campaign: str, qualified_settings: 
         dpath_tmp.rename(dpath_dst)
         print(f"copied {base_campaign}/settings/{setting} -> {campaign}/settings/{setting}", flush=True)
 
-def run_qual_campaign(n_trials_qual: int, base_campaign: str, qualified_settings: list[str]) -> None:
+def run_qual_campaign(n_trials_qual: int, base_campaign: str, qualified_settings: list[str]) -> bool:
     fpath_meta_base = _dpath_campaign(base_campaign) / "campaign_metadata.json"
     if not fpath_meta_base.exists():
         raise FileNotFoundError(f"base_campaign '{base_campaign}' not found: {fpath_meta_base}")
@@ -124,22 +115,19 @@ def run_qual_campaign(n_trials_qual: int, base_campaign: str, qualified_settings
         (setting, load_json(dpath_base_settings / setting / "overrides.json"))
         for setting in qualified_settings
     ]
-    run_campaign(
+    return run_campaign(
         campaign=campaign,
         n_trials=n_trials_qual,
         datasets=metadata_base["datasets"],
         settings=settings,
     )
 
-def main() -> None:
-    name = _parse_qual_name(sys.argv[1:])
+def launch(name: str) -> bool:
+    """Run the qual campaign defined by config/quals/<name>.yaml (queued as 'qual.<name>' in
+    config/camp_queue.yaml); returns run_campaign's completed flag."""
     cfg = _load_qual_config(name)
-    run_qual_campaign(
+    return run_qual_campaign(
         n_trials_qual=cfg["n_trials_qual"],
         base_campaign=cfg["base_campaign"],
         qualified_settings=cfg["qualified_settings"],
     )
-
-
-if __name__ == "__main__":
-    main()

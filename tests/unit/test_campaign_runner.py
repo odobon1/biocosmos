@@ -3,6 +3,7 @@ import json
 import os
 import pytest
 import subprocess
+import yaml
 
 import campaign_runner as cr
 from utils.utils import PrintLog
@@ -397,13 +398,15 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
-    cr.run_campaign(
+    completed = cr.run_campaign(
         campaign="cmp_render",
         n_trials=1,
         datasets=("cub",),
         settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
+    # an interrupted run reports False so the campaign queue stops instead of launching the next entry
+    assert completed is (not interrupted)
     # no trial ever completed, so the tables are empty -- the point is that they were written at all
     for fpath in _campaign_table_fpaths(Path(tmp_path) / "cmp_render", "cub"):
         assert fpath.exists(), fpath
@@ -1580,39 +1583,186 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
     assert launched == []
 
 
-def _run_main(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
-    """Run cr.main() with stubbed config loading and a no-op run_campaign; returns the campaign
-    name run_campaign was launched with."""
+def _run_launch_camp(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
+    """Run cr._launch_camp() with stubbed config loading and a no-op run_campaign; returns the
+    campaign name run_campaign was launched with."""
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
-    monkeypatch.setattr(cr, "_parse_campaign_name", lambda argv: "dev")
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: {
         "suffix": suffix, "n_trials": 1, "datasets": ["cub"], "baseline_overrides": [[{"name": "s"}]], "baseline": False,
     })
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": continue_campaign}})
     launched = []
     monkeypatch.setattr(cr, "run_campaign", lambda campaign, **kwargs: launched.append(campaign))
-    cr.main()
+    cr._launch_camp("dev")
     return launched[0]
 
 
-def test_main_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
+def test_launch_camp_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev").mkdir()
-    assert _run_main(tmp_path, monkeypatch, continue_campaign=True) == "dev"
+    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=True) == "dev"
 
 
-def test_main_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
-    assert _run_main(tmp_path, monkeypatch, continue_campaign=False) == "dev"
+def test_launch_camp_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
+    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False) == "dev"
 
 
-def test_main_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
+def test_launch_camp_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev").mkdir()
     (tmp_path / "dev2").mkdir()
-    assert _run_main(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
+    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
 
 
-def test_main_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
+def test_launch_camp_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev_foobar").mkdir()
-    assert _run_main(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
+    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
+
+
+def _wire_queue(tmp_path, monkeypatch) -> Path:
+    """Point the runner at a real config dir (camp_queue.yaml + camps/ + quals/ live under it) and
+    neutralize pytest's own argv; returns the config dir."""
+    dpath_config = tmp_path / "config"
+    (dpath_config / "camps").mkdir(parents=True)
+    (dpath_config / "quals").mkdir()
+    monkeypatch.setattr(cr, "paths", {"config": dpath_config})
+    monkeypatch.setattr(cr.sys, "argv", ["campaign_runner"])
+    return dpath_config
+
+
+def _write_queue(dpath_config: Path, entries: list[str]) -> None:
+    (dpath_config / "camp_queue.yaml").write_text(yaml.safe_dump({"campaigns": entries}))
+
+
+def _add_camp_config(dpath_config: Path, *names: str) -> None:
+    for name in names:
+        (dpath_config / "camps" / f"{name}.yaml").write_text("{}")
+
+
+def _stub_run_queue_entry(dpath_config, monkeypatch, on_run=None) -> list[str]:
+    """Stub cr._run_queue_entry to just record dispatched specs (returning True); `on_run(spec)`
+    can rewrite camp_queue.yaml mid-run to simulate live edits. Returns the record list."""
+    ran = []
+
+    def _fake_run_queue_entry(spec: str) -> bool:
+        ran.append(spec)
+        if on_run is not None:
+            on_run(spec)
+        return True
+
+    monkeypatch.setattr(cr, "_run_queue_entry", _fake_run_queue_entry)
+    return ran
+
+
+def test_main_runs_queue_in_order_and_picks_up_added_entries(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a", "b", "c")
+    _write_queue(dpath_config, ["camp.a", "camp.b"])
+
+    # camp.c is appended while camp.a runs -- the re-read after each campaign picks it up
+    def _append_during_a(spec: str) -> None:
+        if spec == "camp.a":
+            _write_queue(dpath_config, ["camp.a", "camp.b", "camp.c"])
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch, on_run=_append_during_a)
+    cr.main()
+    assert ran == ["camp.a", "camp.b", "camp.c"]
+
+
+def test_main_picks_up_entries_inserted_at_any_position(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a", "b", "c", "d")
+    _write_queue(dpath_config, ["camp.a", "camp.b"])
+
+    # while camp.a runs, camp.c is inserted at the front and camp.d in the middle: already-run
+    # entries are consumed by occurrence, so the insertions run next, in file order
+    def _insert_during_a(spec: str) -> None:
+        if spec == "camp.a":
+            _write_queue(dpath_config, ["camp.c", "camp.a", "camp.d", "camp.b"])
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch, on_run=_insert_during_a)
+    cr.main()
+    assert ran == ["camp.a", "camp.c", "camp.d", "camp.b"]
+
+
+def test_main_duplicate_entry_queues_a_second_run(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a")
+    _write_queue(dpath_config, ["camp.a", "camp.a"])
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    cr.main()
+    assert ran == ["camp.a", "camp.a"]
+
+
+@pytest.mark.parametrize("interrupt", ["returns_false", "raises"])
+def test_main_interrupted_campaign_stops_the_queue(tmp_path, monkeypatch, interrupt: str) -> None:
+    # both interrupt shapes stop the queue: run_campaign's caught-interrupt False, and a raw
+    # KeyboardInterrupt from an unguarded window (e.g. between trials)
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a", "b")
+    _write_queue(dpath_config, ["camp.a", "camp.b"])
+
+    ran = []
+
+    def _fake_run_queue_entry(spec: str) -> bool:
+        ran.append(spec)
+        if interrupt == "raises":
+            raise KeyboardInterrupt
+        return False
+
+    monkeypatch.setattr(cr, "_run_queue_entry", _fake_run_queue_entry)
+    cr.main()
+    assert ran == ["camp.a"]
+
+
+def test_main_empty_queue_exits_immediately(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    (dpath_config / "camp_queue.yaml").write_text("campaigns:\n")  # blank list parses to None
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    cr.main()
+    assert ran == []
+
+
+def test_main_rejects_arguments(tmp_path, monkeypatch) -> None:
+    _wire_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(cr.sys, "argv", ["campaign_runner", "--dev"])
+    with pytest.raises(SystemExit, match="camp_queue"):
+        cr.main()
+
+
+def test_main_invalid_next_entry_fails_before_running_anything(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _write_queue(dpath_config, ["bogus.a"])
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    with pytest.raises(SystemExit, match="camp.<name> or qual.<name>"):
+        cr.main()
+    assert ran == []
+
+
+def test_main_invalid_pending_entry_warns_then_fails_when_reached(tmp_path, monkeypatch, capsys) -> None:
+    # a bad entry behind valid ones only warns at first sight (fixable in place before its turn);
+    # left unfixed, it hard-fails when it becomes the entry about to run
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a")
+    _write_queue(dpath_config, ["camp.a", "camp.missing"])
+
+    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    with pytest.raises(SystemExit, match="missing"):
+        cr.main()
+    assert ran == ["camp.a"]
+    assert "pending entry 'camp.missing' is invalid" in capsys.readouterr().out
+
+
+def test_validate_queue_entry_qual_checks_quals_config(tmp_path, monkeypatch) -> None:
+    import qual_runner as qr
+
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(qr, "paths", {"config": dpath_config})
+    with pytest.raises(SystemExit, match="Qual config not found"):
+        cr._validate_queue_entry("qual.dev")
+    (dpath_config / "quals" / "dev.yaml").write_text("{}")
+    cr._validate_queue_entry("qual.dev")  # loadable config -> no raise
 
 
 def test_stash_nccl_dumps_moves_dumps_and_strips_prefix(tmp_path) -> None:

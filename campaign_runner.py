@@ -1,8 +1,12 @@
 """
-python -m campaign_runner --dev
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m campaign_runner --dev
+python -m campaign_runner
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m campaign_runner
 
-Campaigns are defined in config/camps/<campaign>.yaml, e.g. --dev_basic loads config/camps/dev_basic.yaml.
+Campaign execution is driven by the queue in config/camp_queue.yaml: its `campaigns` list names the
+runs, in order -- camp.<name> runs the campaign defined by config/camps/<name>.yaml, qual.<name>
+runs the qualified campaign defined by config/quals/<name>.yaml (see qual_runner). The queue file
+is re-read after every campaign, so entries may be added (at any position) while one runs; the
+runner exits once every listed entry has been run.
 """
 
 from pathlib import Path
@@ -577,11 +581,12 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: list[tuple[str, dict]]) -> None:
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: list[tuple[str, dict]]) -> bool:
     """Run the campaign's settings x datasets x n_trials-seeds trial matrix. `settings` is the
     already-expanded (name, overrides) list -- from _expand_campaign_settings for a camps config
-    (expanded in main, so an invalid matrix errors before any side effects), or rebuilt from the
-    base campaign's persisted overrides.json files by qual_runner."""
+    (expanded in _launch_camp, so an invalid matrix errors before any side effects), or rebuilt from
+    the base campaign's persisted overrides.json files by qual_runner. Returns False when the run
+    was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise."""
     seeds = _iter_seeds(n_trials)
 
     _enable_child_subreaper()
@@ -736,7 +741,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: li
                             render_proc.terminate()
                         _render_campaign_tables(campaign, datasets)
                         PrintLog.manifest(dpath_campaign, trials, in_progress=None)
-                        return
+                        return False
                     except Exception as e:
                         _log_crash(dpath_trial, e)
                         kind = _classify_crash(e)
@@ -789,13 +794,9 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: li
             render_proc.wait()
         except KeyboardInterrupt:
             render_proc.terminate()
+            return False
+    return True
 
-
-def _parse_campaign_name(argv: list[str]) -> str:
-    if len(argv) != 1:
-        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "camps").glob("*.yaml")))
-        raise SystemExit(f"Usage: python -m campaign_runner --<campaign>\nAvailable campaigns: {avail}")
-    return argv[0].lstrip("-")
 
 def _load_campaign_config(name: str) -> dict:
     fpath = paths["config"] / "camps" / f"{name}.yaml"
@@ -815,8 +816,10 @@ def _dedupe_campaign_name(campaign: str) -> str:
         n += 1
     return f"{campaign}{n}"
 
-def main() -> None:
-    name = _parse_campaign_name(sys.argv[1:])
+def _launch_camp(name: str) -> bool:
+    """Run the campaign defined by config/camps/<name>.yaml: resolve the campaign name (suffix +
+    dev.continue_campaign dedupe) and hand the expanded matrix to run_campaign; returns its
+    completed flag."""
     cfg = _load_campaign_config(name)
     suffix = cfg["suffix"]
     campaign = f"{name}_{suffix}" if suffix is not None else name
@@ -825,12 +828,75 @@ def main() -> None:
         if deduped != campaign:
             print(f"campaign '{campaign}' already exists -- starting '{deduped}' (dev.continue_campaign: false)", flush=True)
             campaign = deduped
-    run_campaign(
+    return run_campaign(
         campaign=campaign,
         n_trials=cfg["n_trials"],
         datasets=cfg["datasets"],
         settings=_expand_campaign_settings(cfg["baseline_overrides"], cfg["baseline"]),
     )
+
+def _load_queue() -> list[str]:
+    """The `campaigns` list from config/camp_queue.yaml (a blank list parses to None -> [])."""
+    with open(paths["config"] / "camp_queue.yaml") as f:
+        return yaml.safe_load(f)["campaigns"] or []
+
+def _validate_queue_entry(spec: str) -> None:
+    """Shallow fail-fast check of one queue entry: a known camp./qual. prefix and a loadable config
+    yaml. Deliberately nothing deeper -- e.g. a qual's base campaign may be produced by an earlier
+    queue entry, so its base checks only make sense at that entry's launch."""
+    kind, _, name = spec.partition(".")
+    if kind == "camp":
+        _load_campaign_config(name)
+    elif kind == "qual":
+        import qual_runner  # deferred: qual_runner imports campaign_runner helpers back
+        qual_runner._load_qual_config(name)
+    else:
+        raise SystemExit(f"Invalid camp_queue.yaml entry '{spec}': entries take the form camp.<name> or qual.<name>.")
+
+def _next_queue_entry(executed: list[str]) -> str | None:
+    """Re-read camp_queue.yaml and return the first entry not yet run this session, or None when
+    the queue is drained. Each executed entry consumes one matching occurrence from the list, so
+    entries may be added at any position while a campaign runs (and a duplicated name queues a
+    second run). Every pending entry is validated on each call: the one about to run hard-fails,
+    later ones only warn -- the file is re-read anyway, so a bad late addition can be fixed in
+    place before it is reached."""
+    pending = _load_queue()
+    for spec in executed:
+        if spec in pending:
+            pending.remove(spec)  # first occurrence
+    for spec in pending[1:]:
+        try:
+            _validate_queue_entry(spec)
+        except (SystemExit, yaml.YAMLError) as e:
+            print(f"camp_queue: pending entry '{spec}' is invalid -- fix before it is reached: {e}", flush=True)
+    if not pending:
+        return None
+    _validate_queue_entry(pending[0])
+    return pending[0]
+
+def _run_queue_entry(spec: str) -> bool:
+    """Dispatch one validated queue entry; returns run_campaign's completed flag."""
+    kind, _, name = spec.partition(".")
+    if kind == "camp":
+        return _launch_camp(name)
+    import qual_runner  # deferred: qual_runner imports campaign_runner helpers back
+    return qual_runner.launch(name)
+
+def main() -> None:
+    if sys.argv[1:]:
+        raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/camp_queue.yaml)")
+    executed: list[str] = []
+    while (spec := _next_queue_entry(executed)) is not None:
+        print(f"camp_queue: launching '{spec}'", flush=True)
+        try:
+            completed = _run_queue_entry(spec)
+        except KeyboardInterrupt:
+            completed = False
+        if not completed:
+            print(f"camp_queue: '{spec}' interrupted -- exiting queue", flush=True)
+            return
+        executed.append(spec)
+    print(f"camp_queue: drained -- {len(executed)} campaign(s) run", flush=True)
 
 
 if __name__ == "__main__":

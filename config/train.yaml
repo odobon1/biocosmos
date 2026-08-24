@@ -39,6 +39,11 @@ freeze:
 
 htarg_shuf: false  # {true, false}
 
+htarg_beta: 1.0  # (0.0, inf); Phylo target decay rate: Y = exp(-htarg_beta * d / avg_dist), where d = sqrt(patristic
+# distance between the two classes) and avg_dist = pair-probability-frequency-weighted average d over the train
+# partition's classes (same-class pairs included); larger --> faster decay (sharper targets); Inert unless a phylo
+# target is active
+
 loss:  # Primary loss
   crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
   # to standard BCE (identical gradient flows) if no anchor-wise methods are applied

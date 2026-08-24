@@ -25,7 +25,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.config import get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
-from utils.loss import configure_htarg_shuf, Criterion
+from utils.loss import configure_phylo_targs, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manif_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
@@ -691,7 +691,7 @@ def run_training(cfg):
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
     apply_backend_flags(cfg.hw)
-    configure_htarg_shuf(cfg.htarg_shuf, cfg.seed)
+    configure_phylo_targs(cfg.htarg_beta, cfg.split, cfg.train_pt, cfg.batch_size, cfg.htarg_shuf, cfg.seed)
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()

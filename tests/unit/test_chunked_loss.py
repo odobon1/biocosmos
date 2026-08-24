@@ -26,7 +26,8 @@ def import_loss_module():
 
     class DummyPhyloVCV:
         """Constant soft target (0.25); block builder agrees with the full matrix by construction."""
-        def __init__(self, dataset: str, htarg_shuf: bool = False, seed: int | None = None) -> None:
+        def __init__(self, dataset: str, beta: float, split: str, train_pt: str,
+                     batch_size: int, htarg_shuf: bool = False, seed: int | None = None) -> None:
             self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):
@@ -44,6 +45,8 @@ def import_loss_module():
 
 
 L = import_loss_module()
+# phylo-target params for get_phylo_vcv's constructor call (DummyPhyloVCV ignores them)
+L.configure_phylo_targs(beta=1.0, split="D10", train_pt="train", batch_size=4, htarg_shuf=False, seed=None)
 
 
 def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",
@@ -395,19 +398,19 @@ def _synthetic_vcv():
     K = 8
     rng = np.random.default_rng(0)
     A = rng.random((K, K))
-    corr = (A + A.T) / 2.0
-    # Deliberately non-1.0 diagonal (the real per-pair-normalized corr has a unit diagonal) so the
+    targs = (A + A.T) / 2.0
+    # Deliberately non-1.0 diagonal (the real target matrix has a unit diagonal -- exp(0)) so the
     # same-cid overwrite is observable rather than a no-op in this test.
-    np.fill_diagonal(corr, rng.uniform(0.3, 0.9, size=K))
-    corr[0, 0] = 1.0
-    vcv.corr = corr
+    np.fill_diagonal(targs, rng.uniform(0.3, 0.9, size=K))
+    targs[0, 0] = 1.0
+    vcv.targs = targs
     vcv._cid_to_idx = {f"c{i}": i for i in range(K)}
     return vcv
 
 
 def test_phylo_block_matches_full():
     """Real PhyloVCV.make_targ_block_fn reproduces the [rs:re, :] block of get_targs_batch (incl. the
-    same-cid overwrite), on a synthetic correlation matrix with all-in-tree cids and repeats."""
+    same-cid overwrite), on a synthetic target matrix with all-in-tree cids and repeats."""
     vcv = _synthetic_vcv()
     B = 20
     targ_data_b = [{"cid": f"c{i % 8}"} for i in range(B)]
@@ -420,11 +423,11 @@ def test_phylo_block_matches_full():
 
 
 def test_phylo_same_cid_pinned_to_one():
-    """Same-cid pairs are forced to 1.0 even when corr's diagonal disagrees (the real per-pair
-    normalization makes it 1.0; the synthetic matrix keeps it below so the overwrite is observable)."""
+    """Same-cid pairs are forced to 1.0 even when targs' diagonal disagrees (the real matrix's
+    diagonal is exp(0) = 1.0; the synthetic matrix keeps it below so the overwrite is observable)."""
     vcv = _synthetic_vcv()
-    assert vcv.corr[1, 1] < 1.0
+    assert vcv.targs[1, 1] < 1.0
     targ_data_b = [{"cid": "c1"}, {"cid": "c1"}, {"cid": "c2"}]  # samples 0 and 1 share c1
     full = vcv.get_targs_batch(targ_data_b)
     assert full[0, 0] == 1.0 and full[0, 1] == 1.0 and full[1, 0] == 1.0  # same-cid -> 1.0
-    assert full[0, 2] == pytest.approx(vcv.corr[1, 2])  # cross-species keeps the corr value
+    assert full[0, 2] == pytest.approx(vcv.targs[1, 2])  # cross-species keeps the target value

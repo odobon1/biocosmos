@@ -84,6 +84,7 @@ class TrainConfig:
     dropout: dict
     freeze: dict
     htarg_shuf: bool
+    htarg_beta: float
     loss: dict
     loss2: dict
     text_template: dict
@@ -183,6 +184,9 @@ class TrainConfig:
                 "dropout.siglip.proj_head > 0 requires arch.siglip.vis_proj_head to be 'linear' or 'mlp' "
                 "(projection-head dropout needs a projection head)"
             )
+
+        if isinstance(self.htarg_beta, bool) or not isinstance(self.htarg_beta, (int, float)) or self.htarg_beta <= 0:
+            raise ValueError(f"htarg_beta must be a positive number, got {self.htarg_beta!r}")
 
         if self.htarg_shuf:
             phylo_active = self.loss["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss2["mix"] != 0.0)

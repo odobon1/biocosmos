@@ -14,20 +14,26 @@ import pdb
 
 
 _phylo_vcv_cache: dict[tuple, PhyloVCV] = {}
-_htarg_shuf: bool = False
-_phylo_seed: int | None = None
+_phylo_params: dict | None = None
 
 
-def configure_htarg_shuf(htarg_shuf: bool, seed: int | None) -> None:
-    """Set phylo-target shuffling for this run; call once at setup before any loss is computed."""
-    global _htarg_shuf, _phylo_seed
-    _htarg_shuf = htarg_shuf
-    _phylo_seed = seed
+def configure_phylo_targs(beta: float, split: str, train_pt: str, batch_size: int,
+                          htarg_shuf: bool, seed: int | None) -> None:
+    """Set the phylo-target params for this run; call once at setup before any loss is computed."""
+    global _phylo_params
+    _phylo_params = {
+        "beta": beta,
+        "split": split,
+        "train_pt": train_pt,
+        "batch_size": batch_size,
+        "htarg_shuf": htarg_shuf,
+        "seed": seed,
+    }
 
 def get_phylo_vcv(dataset: str) -> PhyloVCV:
-    key = (dataset, _htarg_shuf, _phylo_seed)
+    key = (dataset, *_phylo_params.values())
     if key not in _phylo_vcv_cache:
-        _phylo_vcv_cache[key] = PhyloVCV(dataset=dataset, htarg_shuf=_htarg_shuf, seed=_phylo_seed)
+        _phylo_vcv_cache[key] = PhyloVCV(dataset=dataset, **_phylo_params)
     return _phylo_vcv_cache[key]
 
 def compute_targets(targ_type, batch_size, class_encs_b, targ_data_b, device):

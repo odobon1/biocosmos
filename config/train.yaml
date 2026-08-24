@@ -55,8 +55,9 @@ loss:  # Primary loss
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
       # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make tau_Y comparable to logits' tau
       # i.e. target range --> similarity range
-      sm_temp: pinned  # {pinned, [float]}
+      sm_temp: pinned  # {pinned, pinned1, [float]}
       # (pinned) Use the same learnable logit-scale (log(1 / tau)) as the logits (targs scaled by x2 first)
+      # (pinned1) Same as pinned but without the x2 target scaling
       # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss.infonce.tsm.type: linear)
   bce:  # Inert iff (loss.crit != bif_bce)
     targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its target
@@ -112,7 +113,7 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
   infonce:
     tsm:
       type: softmax  # {linear, softmax}
-      sm_temp: pinned  # {pinned, [float]}
+      sm_temp: pinned  # {pinned, pinned1, [float]}
   bce:
     targ_mass_neut: false  # {true, false}; Target mass neutralization
   wting:

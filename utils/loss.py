@@ -152,10 +152,13 @@ class InfoNCECriterion(Criterion):
             Y_scaled = Y / Y_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         elif self.cfg["infonce"]["tsm"]["type"] == "softmax":
             tau_Y = self.cfg["infonce"]["tsm"]["sm_temp"]
-            if tau_Y == "pinned":
+            if tau_Y == "pinned" or tau_Y == "pinned1":
                 if self.cfg["logits"]["temp"]["clamp"]:
                     logit_scale = logit_scale.clamp(max=math.log(100))
-                Y_scaled = F.softmax(2 * Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                if tau_Y == "pinned":
+                    Y_scaled = F.softmax(2 * Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                elif tau_Y == "pinned1":
+                    Y_scaled = F.softmax(Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
             else:
                 Y_scaled = F.softmax(2 * Y / tau_Y, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
 

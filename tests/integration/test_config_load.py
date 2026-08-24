@@ -24,8 +24,9 @@ def test_get_config_train_loads_repo_configs(monkeypatch: pytest.MonkeyPatch) ->
     cfg = get_config_train(cfg_dict)
 
     assert cfg.hw
-    assert cfg.opt["wd"] == 0.0
-    assert cfg.opt["beta2"] == 0.95
+    # the shipped default model_type is clip_vitb16 -> clip's model-specific opt defaults resolve
+    assert cfg.opt["wd"] == 0.2
+    assert cfg.opt["beta2"] == 0.98
 
 
 @pytest.mark.integration

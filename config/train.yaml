@@ -1,7 +1,7 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 10  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
+n_epochs: 1  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
 # epoch size is the batch-truncated train set floor(train_set_size / batch_size) * batch_size
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass consumes
 # ceil(chain_floor / train_set_size) permutations' worth of one continuous stream of full shuffled permutations of the
@@ -10,7 +10,7 @@ chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when tra
 # (null | train set >= chain_floor) One pass per epoch
 n_chkpts: 10  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
 # sample_volume / n_chkpts samples
-batch_size: 512  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
+batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
 # clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
@@ -43,7 +43,7 @@ loss:  # Primary loss
   crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
   # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
   sim: cos  # {cos, geo1, geo2}
-  targ: mp  # {sp, mp, tax, phylo}
+  targ: phylo  # {sp, mp, tax, phylo}
   infonce:  # Inert iff (loss.crit != infonce)
     tsm:  # Target Simplex Mapping
       type: softmax  # {linear, softmax}

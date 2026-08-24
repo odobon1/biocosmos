@@ -263,6 +263,7 @@ class TrainPipeline:
                 tracked.add(f"targ{tag}")
         return tracked
 
+    @rank0
     def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
                             grad_sum_sim1, grad_sum_sim2):
         # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the

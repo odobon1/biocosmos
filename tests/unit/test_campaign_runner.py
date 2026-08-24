@@ -711,7 +711,7 @@ def test_expand_settings_single_combo_group_unchanged() -> None:
 def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
     # an item without a 'name' is named by its overrides: 'key-value' pairs joined by '_', with
     # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists
-    # and anything unaliased (e.g. loss2.mix) passing through verbatim
+    # (e.g. loss2.mix -> Mix, mp -> MP) and anything unaliased passing through verbatim
     settings = cr._expand_settings(
         [
             [
@@ -722,8 +722,8 @@ def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
         ]
     )
     assert settings == [
-        ("loss2.mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("L1T-mp", {"loss.targ": "mp"}),
+        ("Mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
+        ("L1T-MP", {"loss.targ": "mp"}),
         ("sp", {"loss.targ": "sp"}),
     ]
 
@@ -740,10 +740,10 @@ def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
         ]
     )
     assert settings == [
-        ("hp_bs-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
-        ("hp_bs-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
-        ("sw_bs-1k", {"loss.targ": "mp", "batch_size": 1024}),
-        ("sw_bs-2k", {"loss.targ": "mp", "batch_size": 2048}),
+        ("hp_BS-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
+        ("hp_BS-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
+        ("mp_BS-1k", {"loss.targ": "mp", "batch_size": 1024}),
+        ("mp_BS-2k", {"loss.targ": "mp", "batch_size": 2048}),
     ]
 
 
@@ -758,20 +758,20 @@ def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
         ]
     )
     assert [name for name, _ in settings] == [
-        "hp_bs-1k_LR0-7.0e-6",
-        "hp_bs-1k_LR0-1.2e-5",
-        "hp_bs-2k_LR0-7.0e-6",
-        "hp_bs-2k_LR0-1.2e-5",
+        "hp_BS-1k_LR-7.0e-6",
+        "hp_BS-1k_LR-1.2e-5",
+        "hp_BS-2k_LR-7.0e-6",
+        "hp_BS-2k_LR-1.2e-5",
     ]
-    assert dict(settings)["hp_bs-2k_LR0-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
+    assert dict(settings)["hp_BS-2k_LR-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
 
 
 def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
     # in an unnamed item the expanded value is named like any other override, in declared position
     settings = cr._expand_settings([[{"loss.targ": "mp", "batch_size": [1024, 2048]}]])
     assert settings == [
-        ("L1T-sw_bs-1k", {"loss.targ": "mp", "batch_size": 1024}),
-        ("L1T-sw_bs-2k", {"loss.targ": "mp", "batch_size": 2048}),
+        ("L1T-MP_BS-1k", {"loss.targ": "mp", "batch_size": 1024}),
+        ("L1T-MP_BS-2k", {"loss.targ": "mp", "batch_size": 2048}),
     ]
 
 
@@ -793,9 +793,9 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
     assert len(settings) == 4
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
-        "hp_bs-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "L1T-sw_2k": {"loss.targ": "mp", "batch_size": 2048},
-        "L1T-sw_bs-1k": {"loss.targ": "mp", "batch_size": 1024},
+        "hp_BS-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
+        "L1T-MP_2k": {"loss.targ": "mp", "batch_size": 2048},
+        "L1T-MP_BS-1k": {"loss.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -818,8 +818,8 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
     assert dict(settings) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "sw_2k": {"loss.targ": "mp", "batch_size": 2048},
-        "sw_1k": {"loss.targ": "mp", "batch_size": 1024},
+        "mp_2k": {"loss.targ": "mp", "batch_size": 2048},
+        "mp_1k": {"loss.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -875,7 +875,7 @@ def test_expand_settings_null_name_skips_component() -> None:
     assert dict(settings) == {
         "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
         "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
-        "sw_if": {"loss.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
+        "mp_if": {"loss.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
         "mp": {"loss.targ": "mp", "loss.wting.cls_imb.type": "class_bal"},
     }
 
@@ -955,8 +955,8 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
     )
 
     assert set(scheduled) == {
-        ("iw_cos", "sp", "cos"),
-        ("iw_l2", "sp", "l2"),
+        ("sp_cos", "sp", "cos"),
+        ("sp_l2", "sp", "l2"),
         ("hp_cos", "phylo", "cos"),
         ("hp_l2", "phylo", "l2"),
     }

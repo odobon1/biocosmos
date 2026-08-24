@@ -127,7 +127,9 @@ def build_harness(model_ddp, crit1, crit2, mix, mix_unit_scale, world_size, devi
     h.txt_pp = lambda x: x  # identity: toy "text" is already a feature tensor
     h.cfg = SimpleNamespace(
         loss=crit1.cfg,
-        loss2={"mix": mix, "mix_unit_scale": mix_unit_scale},
+        # production loss2 is the full loss config (batch_step's stats read loss2["crit"]) with the
+        # mix scalars alongside; at mix == 0 only "mix" is ever read
+        loss2={**(crit2.cfg if crit2 is not None else {}), "mix": mix, "mix_unit_scale": mix_unit_scale},
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
         device=device,
     )

@@ -1,9 +1,10 @@
-n_trials: 2
-datasets: [lepid]
+n_trials: 1
+datasets: [cub]
 
 baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
 baseline_overrides:
   - - {loss2.mix: 0.3, name: phylo}
+    - {loss.targ: mp, name: mp}
     - {loss.targ: sp, name: sp}
 
 suffix: null  # {null, [str]}; no suffix if set to null

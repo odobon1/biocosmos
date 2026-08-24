@@ -150,11 +150,10 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_b",
         n_trials=2,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     assert len(scheduled) == 8
@@ -201,8 +200,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         campaign="cmp_baseline",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "phylo", "name": "hp"}]],
-        baseline=True,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "phylo", "name": "hp"}]], baseline=True),
     )
 
     # the baseline setting runs first, with no overrides applied
@@ -218,20 +216,11 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
     assert meta["settings"] == ["baseline", "hp"]
 
 
-def test_run_campaign_baseline_raises_on_reserved_name_collision(tmp_path, monkeypatch) -> None:
-    # the check fires before any side effects, like the dup-name check: no campaign dir is created
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
+def test_expand_campaign_settings_baseline_raises_on_reserved_name_collision() -> None:
+    # settings expansion happens in main(), before run_campaign -- an invalid matrix errors with no
+    # campaign dir ever created
     with pytest.raises(ValueError, match="reserves the setting name 'baseline'"):
-        cr.run_campaign(
-            campaign="cmp_baseline_dup",
-            n_trials=1,
-            datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "baseline"}]],
-            baseline=True,
-        )
-
-    assert not (tmp_path / "cmp_baseline_dup").exists()
+        cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "baseline"}]], baseline=True)
 
 
 def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None:
@@ -264,10 +253,9 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         campaign="cmp_c",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"loss.targ": "sp", "name": "sp"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     fpath = Path(tmp_path) / "cmp_c" / "settings" / "sp" / "overrides.json"
@@ -316,11 +304,10 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         campaign="cmp_defer",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     assert (dpath_settings / "sp" / "overrides.json").exists()
@@ -363,8 +350,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         campaign="cmp_complete",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     with open(dpath_trial / "trial_metadata.json") as f:
@@ -415,8 +401,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         campaign="cmp_render",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     # no trial ever completed, so the tables are empty -- the point is that they were written at all
@@ -457,7 +442,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
-    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]], baseline=False)
+    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False))
     cr.run_campaign(**kwargs)
     assert seen_at_launch == [False]  # first launch: cache deleted before the trial ran
 
@@ -509,8 +494,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         campaign="cmp_delt",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     assert seen_at_launch == [False, False]  # deleted before every trial, not just the first
@@ -561,8 +545,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         campaign="cmp_fail",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     # one initial attempt + max_retries (2, from the injected hardware config) no-progress resume attempts
@@ -602,8 +585,7 @@ def test_run_campaign_invalid_setting_config_fails_at_kickoff(tmp_path, monkeypa
             campaign="cmp_badcfg",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "mp", "name": "bad"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "mp", "name": "bad"}]], baseline=False),
         )
     assert scheduled == []
 
@@ -667,8 +649,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         campaign="cmp_flaky",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     assert calls["n"] == n_flakes + 1  # every progressing flake was retried; final attempt completed
@@ -969,11 +950,10 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         campaign="cmp_groups",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[
+        settings=cr._expand_campaign_settings([
             [{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "phylo", "name": "hp"}],
             [{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}],
-        ],
-        baseline=False,
+        ], baseline=False),
     )
 
     assert set(scheduled) == {
@@ -1030,10 +1010,9 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         campaign="cmp_opt",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"opt.wd": 0.33, "opt.beta2": 0.88, "name": "opt_tune"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     assert len(scheduled) == 1
@@ -1282,8 +1261,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         campaign="cmp_manifest_run",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     # each trial showed under In Progress while it was running (lepid appears once per retry; collapse them)
@@ -1344,8 +1322,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         campaign="cmp_manifest_interrupt",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     text = (dpath_campaign / "manifest.log").read_text()
@@ -1369,8 +1346,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_grow",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
@@ -1386,11 +1362,10 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_grow",
         n_trials=2,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
@@ -1412,8 +1387,7 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
         campaign="cmp_commit",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     head = subprocess.run(
@@ -1427,24 +1401,17 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
     assert meta["commit"] == head
 
 
-def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
-    # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
-    # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
+def test_expand_campaign_settings_raises_on_duplicate_name() -> None:
+    # settings expansion (with its dup-name validation) happens in main(), before run_campaign --
+    # an invalid matrix errors with no filesystem side effect (no campaign dir / time.pkl / metadata)
     with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
-        cr.run_campaign(
-            campaign="cmp_dup",
-            n_trials=1,
-            datasets=("cub",),
-            baseline_overrides=[[
+        cr._expand_campaign_settings(
+            [[
                 {"loss.targ": "sp", "name": "dup"},
                 {"loss.targ": "phylo", "name": "dup"},
             ]],
             baseline=False,
         )
-
-    assert not (tmp_path / "cmp_dup").exists()
 
 
 def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path, monkeypatch) -> None:
@@ -1457,8 +1424,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     fpath_meta = tmp_path / "cmp_roundtrip" / "campaign_metadata.json"
@@ -1471,8 +1437,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     meta = json.loads(fpath_meta.read_text())
@@ -1487,11 +1452,10 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_setting",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        settings=cr._expand_campaign_settings([[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
-        ]],
-        baseline=False,
+        ]], baseline=False),
     )
 
     with pytest.raises(RuntimeError, match="settings removed.*hp"):
@@ -1499,8 +1463,7 @@ def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_setting",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
         )
 
 
@@ -1511,8 +1474,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_dataset",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     with pytest.raises(RuntimeError, match="datasets removed.*lepid"):
@@ -1520,8 +1482,7 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_dataset",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
         )
 
 
@@ -1532,8 +1493,7 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_seed",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     with pytest.raises(RuntimeError, match="seeds removed.*43"):
@@ -1541,8 +1501,7 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_seed",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
         )
 
 
@@ -1564,8 +1523,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
             campaign="cmp_ic_missing",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
         )
     assert launched == []
 
@@ -1589,8 +1547,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
         campaign="cmp_ic_rt",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        settings=cr._expand_campaign_settings([[{"loss.targ": "sp", "name": "sp"}]], baseline=False),
     )
 
     meta = json.loads((tmp_path / "cmp_ic_rt" / "campaign_metadata.json").read_text())
@@ -1618,8 +1575,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
             campaign="cmp_ic_override",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"hw.use_img_cache": True, "name": "ic"}]],
-            baseline=False,
+            settings=cr._expand_campaign_settings([[{"hw.use_img_cache": True, "name": "ic"}]], baseline=False),
         )
     assert launched == []
 

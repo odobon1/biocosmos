@@ -316,6 +316,20 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
         settings.append((name, payload))
     return settings
 
+def _expand_campaign_settings(baseline_overrides: list[list[dict]], baseline: bool) -> list[tuple[str, dict]]:
+    """A camps config's full (name, overrides) settings list: `baseline_overrides` expanded via
+    _expand_settings, with the reserved 'baseline' setting (the frozen train snapshot as-is)
+    prepended when `baseline` is true."""
+    settings = _expand_settings(baseline_overrides)
+    if baseline:
+        if any(name == "baseline" for name, _ in settings):
+            raise ValueError(
+                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
+                "setting is already named 'baseline'."
+            )
+        settings.insert(0, ("baseline", {}))
+    return settings
+
 def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: dict) -> None:
     fpath = _dpath_campaign(campaign) / "settings" / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -563,16 +577,11 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]], baseline: bool) -> None:
-    # Validate the planned matrix before any side effects: every setting's name must be unique.
-    settings = _expand_settings(baseline_overrides)
-    if baseline:
-        if any(name == "baseline" for name, _ in settings):
-            raise ValueError(
-                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
-                "setting is already named 'baseline'."
-            )
-        settings.insert(0, ("baseline", {}))
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: list[tuple[str, dict]]) -> None:
+    """Run the campaign's settings x datasets x n_trials-seeds trial matrix. `settings` is the
+    already-expanded (name, overrides) list -- from _expand_campaign_settings for a camps config
+    (expanded in main, so an invalid matrix errors before any side effects), or rebuilt from the
+    base campaign's persisted overrides.json files by qual_runner."""
     seeds = _iter_seeds(n_trials)
 
     _enable_child_subreaper()
@@ -820,8 +829,7 @@ def main() -> None:
         campaign=campaign,
         n_trials=cfg["n_trials"],
         datasets=cfg["datasets"],
-        baseline_overrides=cfg["baseline_overrides"],
-        baseline=cfg["baseline"],
+        settings=_expand_campaign_settings(cfg["baseline_overrides"], cfg["baseline"]),
     )
 
 

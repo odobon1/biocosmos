@@ -6,7 +6,7 @@
 # campaign's seed count later brings them into the window as they run.
 n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whole subsystem -- nothing computed,
 # cached, or rendered, and the eval embeddings aren't even gathered for viz
-n_seeds_offset: 0  # [int] >= 0; Where the window starts; (0) The first seed of every setting/dataset group;
+n_seeds_offset: 1  # [int] >= 0; Where the window starts; (0) The first seed of every setting/dataset group;
 # (1) Skip the first, viz the second; etc.
 
 plot_2panel: false   # {true, false}; (true) Plot the per-method leaf/penult pairs

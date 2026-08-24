@@ -155,6 +155,33 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
 **Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (new members within an existing `baseline_overrides` combo group), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. (Adding a whole new *combo group* re-joins every setting name, e.g. `hp` → `hp_2k`, so it reads as removing all prior settings — start a new campaign for that.) You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
 
+## Run a qualified campaign
+
+A **qualified campaign** tops up a subset of a completed campaign's settings — the ones that "qualified" — to a higher trial count, without re-running what the base campaign already computed. Define it in `config/quals/<name>.yaml`:
+
+* `n_trials_qual` — **total** trials per qualified setting, base trials included (e.g. the base ran 1 seed and `n_trials_qual: 3` → 2 new trials per setting). Must be ≥ the base campaign's trial count.
+* `base_campaign` — the campaign to qualify from, by its `artifacts/` name. Every trial in its recorded matrix must be **complete**, else launch errors.
+* `qualified_settings` — the base settings to carry forward, by setting name (each must exist in the base campaign).
+
+There is no `datasets` field — the base campaign's datasets are used. Example (`config/quals/dev.yaml`):
+```yaml
+n_trials_qual: 3
+
+base_campaign: dev43
+
+qualified_settings:
+  - phylo2
+  - sp
+```
+Launch, selecting the qual config by name:
+```
+python -m qual_runner --<qual>   # e.g. python -m qual_runner --dev
+```
+
+This creates campaign **`<base_campaign>_qual`** (e.g. `dev43_qual`), seeded from the base campaign: `cfg_baseline.json` is copied over — qual trials train against the **base campaign's frozen config**, not the current yamls — and each qualified setting's whole `settings/<setting>/` directory (trials, metadata, per-dataset stats) is copied as if the qualified campaign had run those trials itself. Per-setting overrides come from the base campaign's persisted `settings/<setting>/overrides.json`, not from any camps yaml. The campaign then runs like any other over the matrix *`qualified_settings` × base datasets × `n_trials_qual` seeds*: the copied trials are already complete and are skipped, so only the seeds above the base campaign's run (base ran seed `42`, `n_trials_qual: 3` → seeds `43`, `44`).
+
+The usual campaign rules apply unchanged: `dev.continue_campaign` resume/dedupe semantics (a relaunch under `dev.continue_campaign: false` falls back to `<base_campaign>_qual2`, …), the additive-matrix rule (relaunch with more `qualified_settings` — newly-qualified settings are copied in — or a larger `n_trials_qual` to extend; never remove), and the GPU-count match on resume — additionally checked against the **base** campaign at launch, since the copied trials ran under its world size. The `manif_viz` seed window (`n_seeds`/`n_seeds_offset`, frozen from the base campaign's snapshot) gates which trials compute manifold viz by `idx_seed` over the qual campaign's seed sweep as usual — with the base's `n_seeds: 1, n_seeds_offset: 0`, the copied first seed already carries its viz and the added seeds compute none.
+
 ## Config Override Layers
 
 Training config is assembled from multiple sources. Layers are listed in increasing priority order — each layer overwrites anything set by earlier layers.

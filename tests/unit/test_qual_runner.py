@@ -28,6 +28,7 @@ BASE_SNAPSHOT = {
     "hardware": {"max_retries": 2, "use_img_cache": False},
     "manif_viz": {"eval_duration": 1500},
     "model_specific": {},
+    "dataset_specific": {},
 }
 
 OVERRIDES = {"phylo": {"loss2.mix": 0.3}, "phylo2": {"loss2.mix": 0.4}, "sp": {"loss.targ": "sp"}}

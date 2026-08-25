@@ -37,6 +37,7 @@ from utils.config import (
     load_train_config_dict, 
     load_manif_viz_config_dict, 
     load_model_specific_config_dict, 
+    load_dataset_specific_config_dict, 
     load_hardware_config_dict
 )
 from utils.data import stage_img_cache
@@ -176,14 +177,16 @@ def _get_commit_hash() -> str:
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
-    On first launch four config sources are bundled into a single `artifacts/<campaign>/cfg_baseline.json`
-    under the keys `train`, `hardware`, `manif_viz`, `model_specific`. The `train` snapshot is derived
-    from `config/train.yaml` (with `debug_mode` overrides folded in); the other three are `config/hardware.yaml`,
-    `config/manif_viz.yaml`, and `config/model_specific.yaml` verbatim. Every trial starts from the
-    `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manif_viz`,
-    `model_specific`). Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled
-    per trial from the `model_specific` snapshot, so a per-setting `arch.model_type` override still picks
-    up the matching family's defaults. Every later relaunch (resume or matrix extension) reloads that
+    On first launch five config sources are bundled into a single `artifacts/<campaign>/cfg_baseline.json`
+    under the keys `train`, `hardware`, `manif_viz`, `model_specific`, `dataset_specific`. The `train`
+    snapshot is derived from `config/train.yaml` (with `debug_mode` overrides folded in); the other four are
+    `config/hardware.yaml`, `config/manif_viz.yaml`, `config/model_specific.yaml`, and
+    `config/dataset_specific.yaml` verbatim. Every trial starts from the `train` snapshot and has the
+    sibling snapshots injected per trial (as `hw`, `manif_viz`, `model_specific`, `dataset_specific`).
+    Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled per trial from the
+    `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching
+    family's defaults; a null `n_epochs` is likewise left unresolved and filled per trial from the
+    `dataset_specific` snapshot as per the trial's dataset. Every later relaunch (resume or matrix extension) reloads that
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
     never alter that campaign -- all of its trials, original or added later, train against the same
     frozen config."""
@@ -197,6 +200,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
         "hardware": load_hardware_config_dict(),
         "manif_viz": load_manif_viz_config_dict(),
         "model_specific": load_model_specific_config_dict(),
+        "dataset_specific": load_dataset_specific_config_dict(),
     }
     fpath.parent.mkdir(parents=True, exist_ok=True)
     save_json(cfg_snapshot, fpath)
@@ -445,6 +449,7 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setti
     cfg_dict["n_trials_total"] = n_trials_total
     cfg_dict["manif_viz"] = cfg_snapshot["manif_viz"]
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
+    cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
     cfg_dict["hw"] = cfg_snapshot["hardware"]
     cfg_dict["_setting_overrides"] = setting_payload
     return apply_overrides(cfg_dict, setting_payload)

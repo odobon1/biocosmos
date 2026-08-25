@@ -534,7 +534,7 @@ class TrainPipeline:
                 for idx_batch, data_sb in enumerate(pbar := tqdm(
                     _timed_next(self.dataloader, data_wait),
                     total=len(self.dataloader),
-                    desc=f"Train ({epoch_label}/{self.cfg.n_epochs:g})",
+                    desc=f"Train ({epoch_label}/{self.cfg.n_epochs})",
                     leave=False,
                     disable=(dist.get_rank() != 0),
                     file=sys.stdout,

@@ -90,7 +90,7 @@ class TrainConfig:
     split: str
     train_pt: str
 
-    n_epochs: int | float
+    n_epochs: int
     chain_floor: int | None
     n_chkpts: int
     batch_size: int
@@ -130,6 +130,10 @@ class TrainConfig:
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
 
+        # bool guard: True/False are ints; a null n_epochs reaches here only when it skipped
+        # dataset-specific resolution (get_config_train / apply_dataset_specific_defaults)
+        if isinstance(self.n_epochs, bool) or not isinstance(self.n_epochs, int):
+            raise ValueError(f"n_epochs must be an int, got {self.n_epochs!r}")
         if self.n_epochs <= 0:
             raise ValueError(f"n_epochs must be greater than 0, got {self.n_epochs}")
 
@@ -158,7 +162,7 @@ class TrainConfig:
         # with chain-shuffle epochs stay nominal train-set permutations
         self.samps_per_epoch = self.samps_per_pass if self.chain_perms is None else size_train
         # epochs specify duration; everything downstream still drives on samples
-        self.sample_volume = round(self.n_epochs * self.samps_per_epoch)
+        self.sample_volume = self.n_epochs * self.samps_per_epoch
         self.n_passes = math.ceil(self.sample_volume / self.samps_per_pass)
 
         if self.n_chkpts <= 0:
@@ -388,11 +392,27 @@ def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dic
     cfg_out["opt"] = opt
     return cfg_out
 
+def load_dataset_specific_config_dict() -> dict:
+    with open(paths["config"] / "dataset_specific.yaml") as f:
+        return yaml.safe_load(f)
+
+def apply_dataset_specific_defaults(cfg_dict: dict, dataset_specific_config: dict | None = None) -> dict:
+    """Fills n_epochs only if null, from the trial's dataset entry in config/dataset_specific.yaml."""
+    cfg_out = deepcopy(cfg_dict)
+    if cfg_out["n_epochs"] is not None:
+        return cfg_out
+    if dataset_specific_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
+        dataset_specific_config = load_dataset_specific_config_dict()
+    cfg_out["n_epochs"] = dataset_specific_config[cfg_out["dataset"]]["n_epochs"]
+    return cfg_out
+
 def get_config_train(cfg_dict: dict) -> TrainConfig:
     setting_overrides = cfg_dict.pop("_setting_overrides", None)
     model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; otherwise read live
+    dataset_specific = cfg_dict.pop("dataset_specific", None)  # ditto
     cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg_dict = apply_model_specific_opt_defaults(cfg_dict, model_specific)
+    cfg_dict = apply_dataset_specific_defaults(cfg_dict, dataset_specific)
     if setting_overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, setting_overrides)
     cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live

@@ -314,7 +314,7 @@ class PrintLog:
 
         def fmt_trial_progress(metadata_trial):
             progress = metadata_trial["progress"]
-            return f"{progress['epoch']}/{progress['n_epochs']:g}"
+            return f"{progress['epoch']}/{progress['n_epochs']}"
 
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
@@ -371,7 +371,7 @@ class PrintLog:
     @staticmethod
     def _make_epoch_header(epoch_first, epoch_last, n_epochs, width=75):
         label = f"Epoch {epoch_last}" if epoch_first == epoch_last else f"Epochs {epoch_first}-{epoch_last}"
-        return f"{f' {label}/{n_epochs:g} ':#^{width}}"
+        return f"{f' {label}/{n_epochs} ':#^{width}}"
 
     @staticmethod
     @rank0
@@ -620,7 +620,7 @@ class PrintLog:
             )),
             "",
             PrintLog._dash_aligned_lines((
-                ("Epochs",      f"{cfg_train.n_epochs:g} ({cfg_train.sample_volume:,} samples)"),
+                ("Epochs",      f"{cfg_train.n_epochs} ({cfg_train.sample_volume:,} samples)"),
                 ("Checkpoints", f"{cfg_train.n_chkpts} (every {cfg_train.chkpt_interval:,} samples)"),
                 ("Batch Size",  f"{cfg_train.batch_size}"),
                 ("DV Batching", f"{cfg_train.dv_batching}"),

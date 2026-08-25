@@ -278,6 +278,11 @@ class ArtifactManager:
             del metadata["n_trials_total"]
             del metadata["dataset"]
             del metadata["split"]
+            # dataset-resolved duration (config/dataset_specific.yaml fills a null n_epochs per
+            # dataset), so it may differ across a setting's trials like the two keys above; the
+            # per-dataset duration is recorded in setting_metadata.json's horizon (and each
+            # trial's trial_metadata.json progress)
+            del metadata["n_epochs"]
 
             del metadata["dev"]
 

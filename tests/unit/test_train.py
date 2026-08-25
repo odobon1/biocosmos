@@ -43,6 +43,7 @@ class _FakeSettingCfg:
     n_trials_total: int = 8
     dataset: str = "cub"
     split: str = "D10"
+    n_epochs: int = 5
     batch_size: int = 1_024
     dev: dict = field(default_factory=dict)
     arch: dict = field(default_factory=lambda: {
@@ -70,6 +71,7 @@ def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypat
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
     assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
+    assert "n_epochs" not in config  # dataset-resolved duration, not a setting param
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
         "horizon": {"cub": {
@@ -92,6 +94,10 @@ def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypat
     (tmp_path / "setting_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
     ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the state
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == metadata
+    assert json.loads((tmp_path / "config.json").read_text()) == config
+
+    cfg.n_epochs = 2  # another dataset's trial resolves a different duration: must still match config.json
+    ArtifactManager.save_metadata_setting(cfg)
     assert json.loads((tmp_path / "config.json").read_text()) == config
 
 
@@ -333,10 +339,6 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
     cfg = SimpleNamespace(samps_per_pass=4_928, samps_per_epoch=4_928, sample_volume=24_640)
 
     assert [pass_epoch_span(cfg, p) for p in range(1, 6)] == [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
-
-    # fractional n_epochs: the final pass stops at sample_volume, still inside its own epoch
-    cfg_frac = SimpleNamespace(samps_per_pass=4_928, samps_per_epoch=4_928, sample_volume=12_320)
-    assert pass_epoch_span(cfg_frac, 3) == (3, 3)
 
 
 def _fake_targ_pipe(targ1, targ2, mix):

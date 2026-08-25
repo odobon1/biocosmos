@@ -3,6 +3,7 @@ import pytest
 from utils.config import GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import apply_model_specific_opt_defaults
+from utils.config import apply_dataset_specific_defaults
 
 
 def make_train_config_dummy(**overrides):
@@ -83,6 +84,17 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError, match="Secondary loss mix out of bounds"):
         TrainConfig(**make_train_config_dummy(loss2={"crit": "bce", "sim": "cos", "targ": "sp", "mix": 1.5,
                                                      "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}}))
+
+
+def test_train_config_rejects_non_int_n_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="n_epochs must be an int"):
+        TrainConfig(**make_train_config_dummy(n_epochs=2.5))
+
+    # a null that skipped dataset-specific resolution (TrainConfig built without get_config_train)
+    with pytest.raises(ValueError, match="n_epochs must be an int"):
+        TrainConfig(**make_train_config_dummy(n_epochs=None))
 
 
 def make_manif_viz_config_dummy(**overrides):
@@ -426,6 +438,37 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
 
     assert out["opt"]["wd"] == 0.2
     assert out["opt"]["beta2"] == 0.98
+
+
+def test_dataset_specific_defaults_resolve_null_n_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "utils.config.load_dataset_specific_config_dict",
+        lambda: {"cub": {"n_epochs": 100}, "lepid": {"n_epochs": 20}},
+    )
+
+    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="cub"))["n_epochs"] == 100
+    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="lepid"))["n_epochs"] == 20
+
+
+def test_dataset_specific_defaults_leave_set_n_epochs_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    # non-null n_epochs: the dataset-specific default is not consulted (the yaml isn't even read)
+    def _boom():
+        raise AssertionError("dataset_specific.yaml must not be read when n_epochs is set")
+    monkeypatch.setattr("utils.config.load_dataset_specific_config_dict", _boom)
+
+    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=7))["n_epochs"] == 7
+
+
+def test_dataset_specific_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a campaign trial passes the frozen snapshot; the live dataset_specific.yaml must not be read
+    def _boom():
+        raise AssertionError("dataset_specific.yaml must not be read when a snapshot is passed")
+    monkeypatch.setattr("utils.config.load_dataset_specific_config_dict", _boom)
+
+    snapshot = {"cub": {"n_epochs": 100}}
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="cub"), snapshot)
+
+    assert out["n_epochs"] == 100
 
 
 # cub D10 train split has 4_935 samples (the dummy's dataset/split)

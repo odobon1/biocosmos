@@ -48,6 +48,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -71,35 +72,40 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     hw_a = {"mixed_prec": True, "prefetch_factor": 4}
     mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
     ms_a = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
+    ds_a = {"cub": {"n_epochs": 100}, "lepid": {"n_epochs": 20}}
 
     train_b = {"campaign": "changed", "split": "dev"}
     hw_b = {"mixed_prec": False, "prefetch_factor": 2}
     mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
     ms_b = {"siglip": {"wd": 0.1, "beta2": 0.5}, "clip": {"wd": 0.3, "beta2": 0.7}}
+    ds_b = {"cub": {"n_epochs": 5}, "lepid": {"n_epochs": 2}}
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
     monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_a)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_a)
+    monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_a)
     out_first = cr._load_or_create_campaign_config("cmp_a")
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_b)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_b)
     monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_b)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_b)
+    monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_b)
     out_second = cr._load_or_create_campaign_config("cmp_a")
 
-    # the four sources are bundled into one snapshot and frozen on first launch
-    expected = {"train": train_a, "hardware": hw_a, "manif_viz": mviz_a, "model_specific": ms_a}
+    # the five sources are bundled into one snapshot and frozen on first launch
+    expected = {"train": train_a, "hardware": hw_a, "manif_viz": mviz_a, "model_specific": ms_a, "dataset_specific": ds_a}
     assert out_first == expected
     assert out_second == expected
 
 
-def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, monkeypatch) -> None:
+def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     train_cfg = {
         "campaign": "dev",
+        "n_epochs": None,
         "arch": {"model_type": "siglip_vitb16"},
         "opt": {"wd": None, "beta2": None},
     }
@@ -107,14 +113,16 @@ def test_load_or_create_campaign_config_keeps_model_specific_nulls(tmp_path, mon
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
     monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
+    monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: {"cub": {"n_epochs": 100}})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
-    # model-family defaults are NOT resolved into the train snapshot -- they stay null so a per-setting
-    # arch.model_type override can pick up the matching family per trial (resolution happens in the
-    # trial, from the model_specific snapshot).
+    # model-family and dataset-specific defaults are NOT resolved into the train snapshot -- they stay
+    # null so a per-setting arch.model_type override / the trial's dataset can pick up the matching
+    # value per trial (resolution happens in the trial, from the model_specific/dataset_specific snapshots).
     assert snapshot["train"]["opt"]["wd"] is None
     assert snapshot["train"]["opt"]["beta2"] is None
+    assert snapshot["train"]["n_epochs"] is None
 
 
 def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
@@ -135,6 +143,7 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -186,6 +195,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -242,6 +252,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -288,6 +299,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -333,6 +345,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -388,6 +401,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         "hardware": {"max_retries": 0, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -430,6 +444,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -474,6 +489,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -522,6 +538,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     dpath_trial = Path(tmp_path) / "cmp_fail" / "settings" / "sp" / "cub" / "42"
@@ -626,6 +643,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
@@ -937,6 +955,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -997,6 +1016,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -1231,6 +1251,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     # keep the post-trial render off the real subprocess path
@@ -1307,6 +1328,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "dataset_specific": {},
     })
 
     dpath_campaign = Path(tmp_path) / "cmp_manifest_interrupt"
@@ -1516,6 +1538,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manif_viz": {},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     launched = []
@@ -1542,6 +1565,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
         "hardware": {"max_retries": 2, "use_img_cache": True},
         "manif_viz": {},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: _leave_completed_trial(tmp_path, cfg_dict))
@@ -1568,6 +1592,7 @@ def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path
         "hardware": {"max_retries": 2, "use_img_cache": False},
         "manif_viz": {},
         "model_specific": {},
+        "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     launched = []

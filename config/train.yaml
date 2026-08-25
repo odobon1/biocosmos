@@ -1,8 +1,9 @@
 split: D10
 train_pt: train  # {train, trainval}
 
-n_epochs: 1  # {[int], [float]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
-# epoch size is the batch-truncated train set floor(train_set_size / batch_size) * batch_size
+n_epochs: null  # {null, [int]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
+# epoch size is the batch-truncated train set floor(train_set_size / batch_size) * batch_size; (null) Resolved from
+# config/dataset_specific.yaml as per the dataset being run on
 chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass consumes
 # ceil(chain_floor / train_set_size) permutations' worth of one continuous stream of full shuffled permutations of the
 # train set (partial-batch permutation tails carry into the next pass rather than dropping), decoupling pass length
@@ -173,7 +174,7 @@ opt:  # Optimization
 dev:
   debug_mode: false  # {true, false}
   debug:  # Config overrides applied iff (dev.debug_mode: true)
-    n_epochs: 1
+    n_epochs: null
     chain_floor: null
     n_chkpts: 2
     batch_size: 256

@@ -1,0 +1,11 @@
+bryo:
+  n_epochs: 100
+
+cub:
+  n_epochs: 100
+
+lepid:
+  n_epochs: 20
+
+nymph:
+  n_epochs: 50

@@ -724,7 +724,7 @@ def _gsum_hook(acc):
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, mix_unit_scale,
                               compute_logits, chunk_size, mixed_prec, device, rank, world_size,
-                              batch_diagnostics=True):
+                              sim_grad_sums=True, sim_targ_stats=True):
     """
     Tiled + row-band-sharded global-batch BCE-family loss + backward (GradCache-style representation
     gradients). Computes the exact same weighted loss and gradients as the full-batch path
@@ -753,8 +753,8 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                          tile; center_global carries the precomputed full-batch centering quantity
                          (module header) so tiled centering is exact.
     - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
-    - batch_diagnostics  False skips the diagnostics -- no sim-grad-sum hooks, no per-tile stats
-                         accumulation -- and returns batch_stats None, grad_sum_sims (None, None).
+    - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sims (None, None).
+    - sim_targ_stats ---- False skips the per-tile stats accumulation and returns batch_stats None.
 
     Returns (loss, loss_raw, batch_stats, grad_sum_sims), all detached; gradients left in the leaves' /
     params' .grad. grad_sum_sims = (sum(dL/dsim1), sum(dL/dsim2)|None), the full-batch sums accumulated
@@ -841,10 +841,10 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                             # per-branch in-graph mean: the centering's backward routes into the
                             # branch's live tower only, mirroring the branch's detach pattern
                             cg = torch.dot(rows_live.mean(0), cols.mean(0))
-                            if batch_diagnostics and cg.requires_grad:
+                            if sim_grad_sums and cg.requires_grad:
                                 cg.register_hook(_gsum_hook(grad_sums[k]))
                         sim_block, logits_f = _crit_block_logits_f(crit, secondary, rows_live[rs:re], cols, compute_logits, centers[k], cg, half_live=True)
-                        if batch_diagnostics and sim_block.requires_grad:
+                        if sim_grad_sums and sim_block.requires_grad:
                             sim_block.register_hook(_gsum_hook(grad_sums[k]))
                         b_num, bce = _bif_block_num_raw(crit, logits_f, targs_block, consts_list[k]["w_ci"][rs:re], W_dsmr, neut_mass)
                         num = num + b_num  # branches summed un-halved (full-batch: mean1 + mean2 = (sum1 + sum2)/B)
@@ -858,10 +858,10 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                         # in-graph per block: the centering's backward routes through the mean embeddings
                         # into every leaf row, completing the exact full-batch projection across blocks
                         cg = torch.dot(img.mean(0), txt.mean(0))
-                        if batch_diagnostics and cg.requires_grad:
+                        if sim_grad_sums and cg.requires_grad:
                             cg.register_hook(_gsum_hook(grad_sums[k]))
                     sim_block, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits, centers[k], cg)
-                    if batch_diagnostics and sim_block.requires_grad:
+                    if sim_grad_sums and sim_block.requires_grad:
                         sim_block.register_hook(_gsum_hook(grad_sums[k]))
                     W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_list[k])
                     num = (W * bce).sum()
@@ -874,7 +874,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
                 sim_blocks.append(sim_block_k)
                 logits_blocks.append(logits_block_k)
         block_loss.backward()
-        if batch_diagnostics:
+        if sim_targ_stats:
             for k in range(len(crits)):
                 stats[k].update(sim_blocks[k], targ_blocks[k], logits_blocks[k])
 
@@ -890,10 +890,13 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     for k in range(len(crits)):
         loss += coeffs[k] * (wbce_tot[k] / B)
         loss_raw += mix_w[k] * (raw_tot[k] / B)
-    if not batch_diagnostics:
-        return loss.float(), loss_raw.float(), None, (None, None)
-    grad_sum_sims = (grad_sums[0].item(), grad_sums[1].item() if len(crits) == 2 else None)
-    batch_stats = {}
-    for k in range(len(crits)):  # fixed order: finalize runs collectives, so ranks must agree
-        batch_stats.update(stats[k].finalize(world_size, idx=k + 1))
+    if sim_grad_sums:
+        grad_sum_sims = (grad_sums[0].item(), grad_sums[1].item() if len(crits) == 2 else None)
+    else:
+        grad_sum_sims = (None, None)
+    batch_stats = None
+    if sim_targ_stats:
+        batch_stats = {}
+        for k in range(len(crits)):  # fixed order: finalize runs collectives, so ranks must agree
+            batch_stats.update(stats[k].finalize(world_size, idx=k + 1))
     return loss.float(), loss_raw.float(), batch_stats, grad_sum_sims

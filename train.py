@@ -409,7 +409,7 @@ class TrainPipeline:
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
         loss.backward()
-        if not self._batch_diag:  # no grads were retained on the sims
+        if not self._batch_diag["sim_grad_sums"]:  # no grads were retained on the sims
             return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, (None, None)
         with torch.no_grad():
             # .float(): the retained grads are bf16 under mixed_prec, and casting the SUM result back
@@ -433,8 +433,8 @@ class TrainPipeline:
         in opposite directions. Measured against a pre-step snapshot, which is optimizer-agnostic
         (no reliance on AdamW's internals) at the cost of one extra copy of the trainable params;
         the buffers are allocated once and reused, so there's no per-step allocation churn.
-        With dev.batch_diagnostics off the snapshot/delta is skipped entirely (returns None)."""
-        if not self._batch_diag:
+        With dev.batch_diagnostics.delta_norm_model off the snapshot/delta is skipped entirely (returns None)."""
+        if not self._batch_diag["delta_norm_model"]:
             self.opt.step()
             return None
         params = [p for p in self.modelw.model.parameters() if p.requires_grad]
@@ -575,14 +575,14 @@ class TrainPipeline:
                         targ_data_sb,
                     )
                     grad_norm_model = None
-                    if self._batch_diag:
+                    if self._batch_diag["grad_norm_model"]:
                         with torch.no_grad():
                             grad_norm_model = model_grad_l2_norm(self.modelw.model)
                     # the step is taken before logging so the line can carry the update norm too;
                     # grads survive it (zero_grad only runs at the top of the next iteration)
                     delta_norm_model = self._step_optimizer()
                     PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model,
-                                   grad_norm_model, delta_norm_model, batch_stats)
+                                   grad_norm_model, delta_norm_model, batch_stats, self._batch_diag)
 
                     if self.n_samps_seen >= self.lr_warmup:
                         self.lr_sched.step()

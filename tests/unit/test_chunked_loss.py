@@ -323,8 +323,9 @@ def test_stats_split_by_crit():
 
 
 def test_batch_diagnostics_off():
-    """batch_diagnostics=False must leave the loss and every gradient identical (the hooks/stats only
-    observe) while returning batch_stats None and grad_sum_sims (None, None)."""
+    """Disabling either diagnostics component must leave the loss and every gradient identical (the
+    hooks/stats only observe): sim_grad_sums=False returns grad_sum_sims (None, None) and
+    sim_targ_stats=False returns batch_stats None, each flag independent of the other."""
     B, C, K, D = 48, 16, 20, 16
     crit1 = _make_crit(_cfg(targ="mp"), K, B)
     crit2 = _make_crit(_cfg(crit="bif_bce", targ="mp"), K, B)
@@ -333,29 +334,29 @@ def test_batch_diagnostics_off():
     txt0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
     class_encs_b = torch.randint(0, K, (B,), generator=g)
 
-    runs = {}
-    for diag in (True, False):
+    def run(sim_grad_sums, sim_targ_stats):
         img = img0.clone().requires_grad_(True)
         txt = txt0.clone().requires_grad_(True)
         p = _params(1)
         loss, loss_raw, stats, gsum = L.chunked_bce_loss_backward(
             img, txt, class_encs_b, [None] * B, crit1, crit2, 0.3, False,
             _compute_logits_fn(p), C, False, torch.device("cpu"), rank=0, world_size=1,
-            batch_diagnostics=diag,
+            sim_grad_sums=sim_grad_sums, sim_targ_stats=sim_targ_stats,
         )
-        runs[diag] = (loss, loss_raw, stats, gsum, img, txt, p)
+        return loss, loss_raw, stats, gsum, img, txt, p
 
-    loss_on, raw_on, stats_on, gsum_on, img_on, txt_on, p_on = runs[True]
-    loss_off, raw_off, stats_off, gsum_off, img_off, txt_off, p_off = runs[False]
+    loss_on, raw_on, stats_on, gsum_on, img_on, txt_on, p_on = run(True, True)
     assert stats_on is not None and gsum_on[0] is not None and gsum_on[1] is not None
-    assert stats_off is None
-    assert gsum_off == (None, None)
-    torch.testing.assert_close(loss_off, loss_on, rtol=0, atol=0)
-    torch.testing.assert_close(raw_off, raw_on, rtol=0, atol=0)
-    torch.testing.assert_close(img_off.grad, img_on.grad, rtol=0, atol=0)
-    torch.testing.assert_close(txt_off.grad, txt_on.grad, rtol=0, atol=0)
-    for key in ("scale", "bias", "scale2", "bias2"):
-        torch.testing.assert_close(p_off[key].grad, p_on[key].grad, rtol=0, atol=0)
+    for sim_grad_sums, sim_targ_stats in ((False, False), (True, False), (False, True)):
+        loss_off, raw_off, stats_off, gsum_off, img_off, txt_off, p_off = run(sim_grad_sums, sim_targ_stats)
+        assert stats_off == (stats_on if sim_targ_stats else None)
+        assert gsum_off == (gsum_on if sim_grad_sums else (None, None))
+        torch.testing.assert_close(loss_off, loss_on, rtol=0, atol=0)
+        torch.testing.assert_close(raw_off, raw_on, rtol=0, atol=0)
+        torch.testing.assert_close(img_off.grad, img_on.grad, rtol=0, atol=0)
+        torch.testing.assert_close(txt_off.grad, txt_on.grad, rtol=0, atol=0)
+        for key in ("scale", "bias", "scale2", "bias2"):
+            torch.testing.assert_close(p_off[key].grad, p_on[key].grad, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("cfg_loss,cfg_loss2", [

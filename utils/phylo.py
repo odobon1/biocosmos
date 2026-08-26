@@ -71,7 +71,8 @@ class PhyloVCV:
     def _avg_dist(self, dists: np.ndarray, dataset: str, split: str, train_pt: str, batch_size: int) -> float:
         """
         Pair-probability-frequency-weighted mean of `dists` over the train partition's classes
-        (same-class d=0 pairs included), weighting each class pair by its batch co-occurrence
+        (same-class d=0 pairs included; each unordered class pair counted once via the upper
+        triangle, as in build_wting's wt_mean), weighting each class pair by its batch co-occurrence
         probability (_pair_prob_freqs, the 2D BCE class-imbalance counting method). Normalizing
         by it makes the decay unit-free (calibrated to the average sampled pair's distance) and
         comparable across datasets. Computed once from global class counts, so it is a
@@ -82,7 +83,8 @@ class PhyloVCV:
         encs = (~torch.isnan(counts)).nonzero(as_tuple=True)[0]  # classes present in the partition
         pair_freqs = _pair_prob_freqs(counts, encs, batch_size).numpy()
         idxs = np.array([self._cid_to_idx[split_obj.enc2cid[int(enc)]] for enc in encs])
-        return float((pair_freqs * dists[np.ix_(idxs, idxs)]).sum() / pair_freqs.sum())
+        triu_mask = np.triu(np.ones_like(pair_freqs, dtype=bool))  # diagonal + one triangle, as in build_wting
+        return float((pair_freqs[triu_mask] * dists[np.ix_(idxs, idxs)][triu_mask]).sum() / pair_freqs[triu_mask].sum())
 
     def build_vcv_matrix(self) -> np.ndarray:
 

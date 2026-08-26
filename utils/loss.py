@@ -152,6 +152,7 @@ class InfoNCECriterion(Criterion):
         elif self.cfg["infonce"]["tsm"]["type"] == "softmax":
             tau_Y = self.cfg["infonce"]["tsm"]["sm_temp"]
             if tau_Y == "pinned" or tau_Y == "pinned1":
+                logit_scale = logit_scale.detach()
                 if self.cfg["logits"]["temp"]["clamp"]:
                     logit_scale = logit_scale.clamp(max=math.log(100))
                 if tau_Y == "pinned":

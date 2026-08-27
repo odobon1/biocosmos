@@ -57,7 +57,7 @@ A note on CUB: standard protocol test partitions used (not stratified; appears t
 The repo includes a `pytest` suite under `tests/` for fast unit tests and lightweight integration checks. See [tests/README.md](tests/README.md) for common test commands and usage details.
 
 # Train & Eval
-Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train.yaml` and the standalone eval config at `config/eval.yaml`.
+Training and evaluation are config-driven: switch models, losses, LR schedules, batch size in YAML (no code edits). The main training config lives at `config/train.yaml`.
 
 Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is computed for all model types, including SigLIP. Setting an integer `loss_chunk_size` enables a SigLIP-style implementation of the global-batch BCE-family loss (`bce`/`bif_bce`): the BxB rows are sharded across ranks (each rank computes only its B/world_size band, as in the chunked loss decomposition from the SigLIP paper) and swept in C-row tiles, with negatives taken from gathered embeddings rather than the paper's ring permute. See `config/hardware.yaml` for details.
 
@@ -66,24 +66,6 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     * `model_type`, `loss_type`, `targ_type`, `lr_sched_type`, etc.
     * Mixed precision & activation checkpointing can be toggled in `config/hardware.yaml`: `mixed_prec`, `act_chkpt` (autocast dtype is always bf16)
 2. Training runs through campaigns — see [Run a campaign](#run-a-campaign) below. `config/train.yaml` is the base config (layer 1) every campaign trial starts from. For a single one-off run, use a minimal campaign (e.g. `config/camps/dev.yaml`).
-
-## Evaluate a trained model
-**Note:** trials no longer save model weights, so campaigns produce no checkpoint directory to point this at — `rdpath_model` needs an externally supplied one laid out as `<seed>/chkpts/<name>/model.pt` (the loader reads the trial's `trial_metadata.json` and the setting's `config.json` from that dir's ancestors).
-1. In `config/eval.yaml`, set `rdpath_model` to a checkpointed model directory (e.g. `artifacts/dev/settings/sp/lepid/42/chkpts/final`).
-2. Run:
-    ```
-    torchrun --standalone --nproc-per-node=auto -m eval
-    ```
-    When `rdpath_model` is set, eval overrides `dataset`, `split`, `model_type` from setting + trial saved metadata.
-
-    Note: n-shot performance is reported for the ID partition only; the bucket set follows `eval_type` — `val` → `train/val` buckets, `test` → `trainval/test` buckets.
-
-## Evaluate a base model
-1. In `config/eval.yaml`, set `rdpath_model: null`.
-2. Run:
-    ```
-    torchrun --standalone --nproc-per-node=auto -m eval
-    ```
 
 ## Run a campaign
 1. Define the campaign in `config/camps/<campaign>.yaml`:
@@ -167,7 +149,7 @@ Training config is assembled from multiple sources. Layers are listed in increas
 | Priority | Source | Applied by | Description |
 |----------|--------|-----------|-------------|
 | 1 (lowest) | `config/train.yaml` | `load_train_config_dict()` | Base config; the starting point for all training runs. |
-| 2 | `config/hardware.yaml` | `load_hardware_config_dict()` (→ `hw`) | Static hardware knobs (`mixed_prec`, `act_chkpt`, `loss_chunk_size`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers`, `use_img_cache`, `eval`) under the `hw` key. `use_img_cache: true` reads images from the prebuilt per-dataset pack (`tools/build_img_cache.py`), staged once per node to node-local scratch (`SLURM_TMPDIR`/`TMPDIR`/`/tmp`) instead of per-sample files on the shared FS; the campaign runner stages up front (error at startup if a pack is missing — also when caching is enabled only via a per-setting `hw.use_img_cache` override) and records per-dataset staging seconds to `campaign_metadata.json` under `runtime_img_cache` (`null` = dataset unused or caching off). Staged copies live at `<SLURM_TMPDIR\|TMPDIR\|/tmp>/img_cache-<user>/<dataset>/`; job-scoped scratch is purged by the scheduler, while the `/tmp` fallback persists (and is revalidated/re-staged automatically if a tmp reaper evicts files). Standalone entrypoints (`eval.py`, tools) stage on first dataloader construction. Cached to `cfg_baseline.json` (under the `hardware` key) at first launch and injected per trial; the live `n_workers`/`n_gpus`/`n_cpus`/`ram` scaling is computed separately from the SLURM allocation. |
+| 2 | `config/hardware.yaml` | `load_hardware_config_dict()` (→ `hw`) | Static hardware knobs (`mixed_prec`, `act_chkpt`, `loss_chunk_size`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers`, `use_img_cache`, `eval`) under the `hw` key. `use_img_cache: true` reads images from the prebuilt per-dataset pack (`tools/build_img_cache.py`), staged once per node to node-local scratch (`SLURM_TMPDIR`/`TMPDIR`/`/tmp`) instead of per-sample files on the shared FS; the campaign runner stages up front (error at startup if a pack is missing — also when caching is enabled only via a per-setting `hw.use_img_cache` override) and records per-dataset staging seconds to `campaign_metadata.json` under `runtime_img_cache` (`null` = dataset unused or caching off). Staged copies live at `<SLURM_TMPDIR\|TMPDIR\|/tmp>/img_cache-<user>/<dataset>/`; job-scoped scratch is purged by the scheduler, while the `/tmp` fallback persists (and is revalidated/re-staged automatically if a tmp reaper evicts files). Tools stage on first dataloader construction. Cached to `cfg_baseline.json` (under the `hardware` key) at first launch and injected per trial; the live `n_workers`/`n_gpus`/`n_cpus`/`ram` scaling is computed separately from the SLURM allocation. |
 | 3 | Campaign runner injections | `run_campaign()` | Injects `campaign`, `setting`, `seed`, `dataset` from the campaign matrix (these per-trial keys exist only here, not in `train.yaml`). |
 | 4 | `config/model_specific.yaml` | `apply_model_specific_opt_defaults()` | Fills `opt.wd` and `opt.beta2` **only if `null`**, based on model family (`clip` or `siglip`). Has no effect if those fields are already set in `config/train.yaml`. |
 | 5 | `config/dataset_specific.yaml` | `apply_dataset_specific_defaults()` | Fills `n_epochs` **only if `null`**, from the trial's dataset entry. Has no effect if `n_epochs` is already set in `config/train.yaml`. |
@@ -191,7 +173,7 @@ Model selection: hyperparameter tuning, preliminary ablations, etc.
 Final performance measurement, performed ideally only once. Each additional look at test performance risks leaking test-set information into subsequent decisions (adaptive overfitting), inflating the reported numbers relative to true generalization; keeping the test partitions untouched until the end preserves them as an unbiased estimate.
 * With hyperparameters and design choices fixed from Stage 1, train on the `trainval` partition.
 * Evaluate on the ID and OOD **test** partitions.
-* No train-time evaluations are performed while training on `trainval`; final performance is collected via standalone evaluation.
+* No train-time evaluations are performed while training on `trainval`.
 
 <br>
 

@@ -22,9 +22,6 @@ from utils.utils import DATASET_ALIAS2NAME, save_pickle, load_pickle
 from utils.config import DATASET2MARKER_SIZE
 
 
-_EVAL_ALIAS2NAME = {"val": "Validation", "test": "Test"}
-
-
 @dataclass(frozen=True)
 class VizContext:
     """Identity of the eval being visualized -- drives plot titles and the per-dataset color/label
@@ -32,7 +29,6 @@ class VizContext:
     setting: str
     dataset: str
     split: str
-    eval_type: str
 
 
 @dataclass(frozen=True)
@@ -51,7 +47,7 @@ class RenderStyle:
 
 def _manifold_title(method, viz_context, subject, suffix=""):
     """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp, Nymphalidae, 50k'."""
-    return f"{method}: {subject} {_EVAL_ALIAS2NAME[viz_context.eval_type]} -- {viz_context.setting}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
+    return f"{method}: {subject} Validation -- {viz_context.setting}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
 
 _GIF_DPI = 100  # evolving-GIF frame resolution (lower than the 300-dpi static PNGs)
 _OOD_LABEL = "__OOD__"  # sentinel label for OOD points in the n-shot panel (always drawn black)
@@ -1184,7 +1180,7 @@ def _build_color_maps(viz_context, cids_all, cfg_color):
     color across every plot/eval. Returns (color_leaf, color_penult, color_nshot, cid_2_penult,
     cid_2_nshot, nst_names)."""
     cid_2_penult = load_cid_2_penult(viz_context.dataset)
-    cid_2_nshot, nst_names = load_cid_2_nshot(viz_context.dataset, viz_context.split, viz_context.eval_type)
+    cid_2_nshot, nst_names = load_cid_2_nshot(viz_context.dataset, viz_context.split)
     color_leaf = assign_colors(cid_2_penult.keys(), Counter(cids_all), cfg_color, hue_offset=0.0)
     color_penult = assign_colors(cid_2_penult.values(), Counter(cid_2_penult[c] for c in cids_all), cfg_color, hue_offset=0.5)
     color_nshot = nshot_color_map(nst_names)  # bucket colors matching the learning curves (+ OOD black)

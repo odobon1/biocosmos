@@ -11,13 +11,13 @@ from open_clip.pretrained import get_pretrained_cfg, download_pretrained
 import abc
 import math
 from contextlib import nullcontext
-from typing import List, Tuple, Any, Dict, Union, Optional
+from typing import List, Tuple, Any, Dict, Optional
 
 from utils.utils import paths
 from utils.loss import Criterion, chunked_bce_loss_backward, HIST_BINS
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
-from utils.config import TrainConfig, EvalConfig
+from utils.config import TrainConfig
 
 import pdb
 
@@ -164,7 +164,7 @@ class VLMWrapper(abc.ABC):
     """
     def __init__(
         self, 
-        config: Union[TrainConfig, EvalConfig], 
+        config: TrainConfig, 
         model_name: str, 
         pretrained: str, 
         quick_gelu: bool
@@ -182,8 +182,8 @@ class VLMWrapper(abc.ABC):
         # wholesale, so every override is folded into a copy of the base config).
         #   - vis_proj_head -> timm_proj: an ARCHITECTURE choice, applied for train AND eval so a checkpoint's
         #     projection head reloads with a matching module.
-        #   - patch/head/stochastic-depth dropout: parameterless and train-only (EvalConfig carries no `dropout`,
-        #     and eval runs in eval mode regardless).
+        #   - patch/head/stochastic-depth dropout: parameterless and train-only (applied only when the model is in
+        #     train mode; eval runs in eval mode regardless).
         # Native CLIP takes only patch_dropout, via open_clip's force_patch_dropout.
         force_patch_dropout = None
         vision_cfg_extra = {}
@@ -289,10 +289,9 @@ class VLMWrapper(abc.ABC):
                 self.model.logit_bias2.requires_grad_(False)
 
     @classmethod
-    def build(cls, config: Union[TrainConfig, EvalConfig], verbose: bool) -> Any:
+    def build(cls, config: TrainConfig, verbose: bool) -> Any:
         """
         Factory method to construct the appropriate VLM wrapper based on configuration.
-        Handles loading from checkpoint if `rdpath_model` is specified.
 
         Args:
         - config ---- Configuration object containing architecture and loss settings
@@ -301,18 +300,8 @@ class VLMWrapper(abc.ABC):
         Returns:
         - Initialized VLMWrapper subclass instance
         """
-        checkpoint = None
-        if getattr(config, "rdpath_model", None) is not None:
-            if verbose:
-                print(f"Loading '{config.rdpath_model}'/model.pt...")
-            fpath_model = paths["root"] / config.rdpath_model / "model.pt"
-            checkpoint = torch.load(
-                fpath_model, 
-                map_location="cpu",  # map_location="cpu" avoids loading two copies of the entire state dict into VRAM at once
-            )
-        else:
-            if verbose:
-                print("Loading base model...")
+        if verbose:
+            print("Loading base model...")
 
         if config.arch["model_type"] in CLIP_MODELS:
             modelw = CLIPWrapper(config)
@@ -320,12 +309,6 @@ class VLMWrapper(abc.ABC):
             modelw = SigLIPWrapper(config)
         else:
             raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
-
-        if checkpoint is not None:
-            modelw._unwrapped_model.load_state_dict(checkpoint["model"], strict=False)
-            for key in ("logit_scale2", "logit_bias2"):
-                if key in checkpoint["model"]:
-                    modelw._unwrapped_model.register_parameter(key, nn.Parameter(checkpoint["model"][key]))
 
         modelw.set_image_preprocessors()
 
@@ -921,7 +904,7 @@ class VLMWrapper(abc.ABC):
         return loss_total / len(chunk_stats), chunk_stats
 
 class CLIPWrapper(VLMWrapper):
-    def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
+    def __init__(self, config: TrainConfig) -> None:
         model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
@@ -948,7 +931,7 @@ class CLIPWrapper(VLMWrapper):
         self._unwrapped_model.attn_mask.zero_()  # convert causal attention mask to non-causal
 
 class SigLIPWrapper(VLMWrapper):
-    def __init__(self, config: Union[TrainConfig, EvalConfig]) -> None:
+    def __init__(self, config: TrainConfig) -> None:
         model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 

@@ -35,13 +35,12 @@ from utils.utils import load_json, paths
 
 def _viz_context(dpath_trial):
     # dataset/split from the trial metadata, setting from the path (<campaign>/settings/<setting>/<dataset>/<seed>).
-    # Training manifold viz is only produced for eval-enabled trials (train_pt="train" -> eval_type="val").
+    # Training manifold viz is only produced for eval-enabled trials (train_pt="train").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
         setting=dpath_trial.parent.parent.name,
         dataset=meta["dataset"],
         split=meta["split"],
-        eval_type="val",
     )
 
 def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manif_viz=None):

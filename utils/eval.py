@@ -2,14 +2,14 @@ import torch
 from torch.amp import autocast
 import torch.distributed as dist
 from tqdm import tqdm
-from typing import Tuple, Any, List, Callable, Dict, Union, Optional
+from typing import Tuple, Any, List, Callable, Dict, Optional
 from collections import defaultdict
 import math
 
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
 from utils.utils import load_split, Timer
-from utils.config import TrainConfig, EvalConfig
+from utils.config import TrainConfig
 
 import pdb
 
@@ -50,12 +50,12 @@ def compute_class_means_from_query_metric(
     class_values[active_classes] = class_value_sums[active_classes] / class_value_counts[active_classes]
     return class_values
 
-def list_eval_partitions(split: Any, eval_type: str) -> List[str]:
+def list_eval_partitions(split: Any) -> List[str]:
     partitions = []
     seen_partition_ids = set()
 
     for partition in ("id", "ood"):
-        data_index = split.get_data(f"{eval_type}_{partition}")
+        data_index = split.get_data(f"val_{partition}")
         data_index_id = id(data_index)
         if data_index_id in seen_partition_ids:
             continue
@@ -102,7 +102,7 @@ class PartitionEvaluationPipeline:
     def __init__(
             self, 
             partition: str, 
-            config: Union[TrainConfig, EvalConfig], 
+            config: TrainConfig, 
             text_template: List[List[str]],
             img_pp: Callable,
         ) -> None:
@@ -149,7 +149,6 @@ class PartitionEvaluationPipeline:
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 config.dataset,
                 config.split,
-                config.eval_type,
                 self.cid2enc,
             )
         else:
@@ -661,7 +660,7 @@ class EvaluationPipeline:
 
     def __init__(
         self,
-        config: Union[TrainConfig, EvalConfig],
+        config: TrainConfig,
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
@@ -671,7 +670,7 @@ class EvaluationPipeline:
 
         self.split = load_split(config.dataset, config.split)
         self.nshot_bucket_names = list(self.split.nshot["names"])
-        self.partitions = list_eval_partitions(self.split, config.eval_type)
+        self.partitions = list_eval_partitions(self.split)
         self.partition_pipes = {
             partition: PartitionEvaluationPipeline(
                 partition=partition,
@@ -828,15 +827,13 @@ class EvaluationPipeline:
 def build_class_enc_to_train_nshot_bucket(
     dataset: str,
     split: str,
-    eval_type: str,
     cid2enc: Dict[str, int],
 ) -> Dict[int, str]:
     """
-    Build class_enc -> bucket_name using the n-shot bucket set for the eval partition:
-    eval_type "val" -> "train/val" buckets, eval_type "test" -> "trainval/test" buckets.
+    Build class_enc -> bucket_name using the n-shot bucket set for the validation partition.
     """
 
-    bucket_key = "train/val" if eval_type == "val" else "trainval/test"
+    bucket_key = "train/val"
     split = load_split(dataset, split)
     class_enc_to_bucket = {}
 

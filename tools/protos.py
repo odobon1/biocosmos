@@ -1,10 +1,12 @@
 """
-torchrun --standalone --nproc-per-node=auto -m tools.protos
+torchrun --standalone --nproc-per-node=auto -m tools.protos --dataset <dataset>
 
 Note: only tested with 1 GPU
 """
 
 print("Importing modules...")
+
+from argparse import ArgumentParser
 
 import torch
 import torch.nn.functional as F
@@ -13,14 +15,26 @@ from PIL import Image
 from tqdm import tqdm
 
 from models import VLMWrapper
-from utils.config import get_config_eval
+from utils.config import get_config_train, load_train_config_dict
 from utils.ddp import setup_ddp, cleanup_ddp
-from utils.utils import load_pickle, save_pickle, paths
+from utils.utils import load_split, save_pickle, paths
 
 import pdb
 
 
-split_p = load_pickle(paths["metadata"]["nymph"] / "splits/P38-42/split.pkl")
+parser = ArgumentParser()
+parser.add_argument("--dataset", required=True, choices=("bryo", "cub", "lepid", "nymph"))
+args = parser.parse_args()
+
+_, device = setup_ddp()
+
+# base model under the train.yaml base config (split, batch_size, arch); campaign/setting/seed are placeholders
+cfg_dict = load_train_config_dict()
+cfg_dict.update({"campaign": "protos", "setting": "protos", "seed": None, "dataset": args.dataset})
+cfg = get_config_train(cfg_dict)
+cfg.device = device  # set local device
+
+split_p = load_split(cfg.dataset, cfg.split)
 enc2cid = split_p.enc2cid
 
 di_val_id = split_p.get_data("val_id")
@@ -30,19 +44,16 @@ partition = ["id"] * len(di_val_id) + ["ood"] * len(di_val_ood)
 cids = [enc2cid[d["class_enc"]] for d in di_val_id] + [enc2cid[d["class_enc"]] for d in di_val_ood]
 rfpaths = [d["rfpath"] for d in di_val_id] + [d["rfpath"] for d in di_val_ood]
 
-_, device = setup_ddp()
-config_eval = get_config_eval(verbose=(dist.get_rank() == 0))
-
-modelw = VLMWrapper.build(config_eval, verbose=(dist.get_rank() == 0))
+modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
 modelw.model = modelw.model.to(device).eval()
 
-fpath_imgs = paths["imgs"]["nymph"]
+fpath_imgs = paths["imgs"][cfg.dataset]
 
 protos = {"id": {}, "ood": {}}
 
-for i in tqdm(range(len(cids) // config_eval.batch_size + 1)):
-    start = i * config_eval.batch_size
-    end = min((i + 1) * config_eval.batch_size, len(cids))
+for i in tqdm(range(len(cids) // cfg.batch_size + 1)):
+    start = i * cfg.batch_size
+    end = min((i + 1) * cfg.batch_size, len(cids))
     if start >= end:
         break
 
@@ -78,6 +89,6 @@ for partition_k in tqdm(protos.keys()):
 
         protos[partition_k][cid_k] = {"prototype": proto_k, "n_samples": n_samps}
 
-save_pickle(protos, "prototypes_cos-cos_1-0.pkl")
+save_pickle(protos, f"prototypes_{cfg.dataset}_cos-cos_1-0.pkl")
 
 cleanup_ddp()

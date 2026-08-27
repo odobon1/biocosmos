@@ -705,34 +705,6 @@ class PrintLog:
         return lines_hw
 
     @staticmethod
-    def init_eval(cfg_eval):
-        lines: list[str] = [
-            "",
-            f"Checkpoint: {cfg_eval.rdpath_model}/",
-            "",
-            PrintLog._dash_aligned_lines((
-                ("Dataset",   cfg_eval.dataset),
-                ("Split",     cfg_eval.split),
-                ("Eval Type", cfg_eval.eval_type),
-            )),
-            "",
-            f"Batch Size --- {cfg_eval.batch_size}",
-            "",
-            "=== Architecture ===",
-            PrintLog._dash_aligned_lines((
-                ("Model Type", cfg_eval.arch['model_type']),
-                ("Non-Causal", cfg_eval.arch['clip']['non_causal']),
-            )),
-            "",
-            f"Text Template --- {cfg_eval.text_template}",
-            "",
-        ]
-
-        lines.extend(PrintLog._format_hw_block(cfg_eval))
-
-        print(*lines, sep="\n")
-
-    @staticmethod
     def _format_loss_block(
         cfg_loss: dict, 
         secondary: bool = False

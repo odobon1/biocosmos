@@ -32,7 +32,7 @@ from pathlib import Path
 
 from utils.text import get_text_generator
 from utils.utils import paths, load_pickle, load_json, load_split, shuffle_list
-from utils.config import EvalConfig, _default_train_aug_cfg
+from utils.config import TrainConfig, _default_train_aug_cfg
 
 import pdb
 
@@ -591,7 +591,7 @@ def build_cid2enc(index_data, enc2cid):
         cid2enc[enc2cid[class_enc]] = class_enc
     return cid2enc
 
-def spawn_partition_data(config: EvalConfig, partition: str):
+def spawn_partition_data(config: TrainConfig, partition: str):
     """
 
     Args:
@@ -602,7 +602,7 @@ def spawn_partition_data(config: EvalConfig, partition: str):
     if partition in ("train", "trainval"):
         index_data = split.get_data(partition)
     else:
-        index_data = split.get_data(f"{config.eval_type}_{partition}")
+        index_data = split.get_data(f"val_{partition}")
     cid2enc = build_cid2enc(index_data, split.enc2cid)
     return index_data, cid2enc, split.enc2cid
 
@@ -759,11 +759,11 @@ def load_cid_2_penult(dataset: str) -> dict:
     key = _PENULT_KEY[dataset]
     return {cid: entry[key] for cid, entry in class_data.items()}
 
-def load_cid_2_nshot(dataset: str, split: str, eval_type: str):
-    """(cid -> n-shot bucket name, ordered bucket names) for the eval partition's n-shot buckets
-    ('train/val' for val, 'trainval/test' for test) -- the same buckets the learning curves use."""
+def load_cid_2_nshot(dataset: str, split: str):
+    """(cid -> n-shot bucket name, ordered bucket names) for the validation partition's n-shot buckets
+    ('train/val') -- the same buckets the learning curves use."""
     sp = load_split(dataset, split)
-    bucket_key = "train/val" if eval_type == "val" else "trainval/test"
+    bucket_key = "train/val"
     cid_2_nshot = {cid: name for name in sp.nshot["names"] for cid in sp.nshot["buckets"][bucket_key][name]}
     return cid_2_nshot, list(sp.nshot["names"])
 

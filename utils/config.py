@@ -4,7 +4,7 @@ from copy import deepcopy
 import math
 import yaml
 
-from utils.utils import PrintLog, load_json, load_split, paths
+from utils.utils import PrintLog, load_split, paths
 from utils.hardware import compute_dataloader_workers_prefetch
 
 import pdb
@@ -113,8 +113,6 @@ class TrainConfig:
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
 
-    eval_type: str = field(init=False)  # derived from train_pt: "train" -> "val", "trainval" -> None (eval skipped)
-
     hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, otherwise loaded live (converted to HardwareConfig in __post_init__)
 
     def __post_init__(self):
@@ -124,8 +122,6 @@ class TrainConfig:
 
         if self.train_pt not in ("train", "trainval"):
             raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
-
-        self.eval_type = "val" if self.train_pt == "train" else None
 
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
@@ -453,86 +449,6 @@ def load_hardware_config_dict() -> dict:
 
 def get_config_hardware():
     return HardwareConfig(**load_hardware_config_dict())
-
-
-@dataclass
-class EvalConfig:
-
-    rdpath_model: str | None
-    dataset: str
-    split: str
-    eval_type: str
-
-    batch_size: int
-
-    arch: dict
-
-    text_template: str
-
-    hw: dict = field(init=False, default_factory=dict)
-    
-    def __post_init__(self):
-
-        if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
-            raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
-
-        if self.eval_type not in ("val", "test"):
-            raise ValueError(f"Unknown eval partition: '{self.eval_type}', must be one of {{val, test}}")
-
-        # standalone base-model eval (rdpath_model: null) defaults to the released arch -- eval.yaml
-        # exposes no non_causal/vis_proj_head knobs; checkpoint eval overrides from the setting's config.json below
-        self.arch["clip"] = {"non_causal": False}
-        self.arch["siglip"] = {"vis_proj_head": None}
-
-        if self.rdpath_model is not None:
-            dpath_model = paths["root"] / self.rdpath_model
-            fpath_model = dpath_model / "model.pt"
-            if not fpath_model.exists():
-                raise FileNotFoundError(f"Model checkpoint not found: {fpath_model}")
-
-            fpath_metadata_trial = dpath_model / "../../trial_metadata.json"
-            fpath_config_setting = dpath_model / "../../../../config.json"
-            config_setting = load_json(fpath_config_setting)
-            metadata_trial = load_json(fpath_metadata_trial)
-
-            self.arch["model_type"] = config_setting["arch"]["model_type"]  # override model_type
-            # config.json carries only the checkpoint family's arch section (the other family's is
-            # pruned as inert); the absent one keeps its released default set above
-            if "clip" in config_setting["arch"]:
-                self.arch["clip"]["non_causal"] = config_setting["arch"]["clip"]["non_causal"]  # override non_causal
-            if "siglip" in config_setting["arch"]:
-                self.arch["siglip"]["vis_proj_head"] = config_setting["arch"]["siglip"]["vis_proj_head"]  # override vis_proj_head (projection head must match checkpoint)
-            self.dataset = metadata_trial["dataset"]  # override dataset
-            self.split = metadata_trial["split"]  # override split
-
-        # after the arch override: the worker RAM bound keys off the checkpoint's actual model_type
-        cfg_hw = get_config_hardware()
-        self.use_img_cache = cfg_hw.use_img_cache
-        self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
-            batch_size=self.batch_size,
-            model_type=self.arch["model_type"],
-            max_n_workers_gpu=cfg_hw.max_n_workers_gpu,
-            prefetch_factor=cfg_hw.prefetch_factor,
-        )
-        self.n_gpus = slurm_alloc["n_gpus"]
-        self.n_cpus = slurm_alloc["n_cpus"]
-        self.ram = slurm_alloc["ram"]
-
-        self.device = torch.device("cuda")
-
-    @classmethod
-    def has_field(cls, name_field):
-        return name_field in cls.__dataclass_fields__
-
-
-def get_config_eval(verbose=True):
-    with open(paths["config"] / "eval.yaml") as f:
-        cfg_dict = yaml.safe_load(f)
-    cfg = EvalConfig(**cfg_dict)
-    cfg.hw = get_config_hardware()
-    if verbose:
-        PrintLog.init_eval(cfg)
-    return cfg
 
 
 # per-dataset manifold-viz scatter marker size (nymph/lepid have many points -> smaller markers)

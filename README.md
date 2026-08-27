@@ -143,7 +143,7 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     ```
     python -m campaign_runner
     ```
-   The runner works through `campaigns` in order — `camp.<name>` runs `config/camps/<name>.yaml`, `qual.<name>` runs `config/quals/<name>.yaml` (see qualified campaigns below). After each campaign finishes, the queue file is **re-read**, so more campaigns can be queued up while one runs — appended to the bottom or inserted at any position — and the runner exits once every listed entry has been run. Each entry is one run: listing the same name twice queues a second run (which resumes/extends or dedupes per `dev.continue_campaign`). At launch and at every re-read, all still-pending entries are shallow-validated (known `camp.`/`qual.` prefix, config file loads); the entry about to run fails hard, while later entries only print a warning — fix them in place before they're reached, since the file is re-read anyway. Ctrl-C (or SIGTERM) stops the whole queue, not just the running campaign.
+   The runner works through `campaigns` in order — `camp.<name>` runs `config/camps/<name>.yaml`. After each campaign finishes, the queue file is **re-read**, so more campaigns can be queued up while one runs — appended to the bottom or inserted at any position — and the runner exits once every listed entry has been run. Each entry is one run: listing the same name twice queues a second run (which resumes/extends or dedupes per `dev.continue_campaign`). At launch and at every re-read, all still-pending entries are shallow-validated (`camp.` prefix, config file loads); the entry about to run fails hard, while later entries only print a warning — fix them in place before they're reached, since the file is re-read anyway. Ctrl-C (or SIGTERM) stops the whole queue, not just the running campaign.
 3. Each trial is launched in a fresh subprocess (`campaign_trial_runner`) to isolate DDP/DataLoader worker state between trials.
 4. If a trial fails, campaign execution continues and the error is written to that trial's `error.log` (`artifacts/<campaign>/settings/<setting>/<dataset>/<seed>/error.log`).
 5. `artifacts/<campaign>/manifest.log` tracks trial progress, bucketing every planned trial (by `setting/dataset/seed`) into Failed / Completed / In Progress / Queued. Completed and Failed entries also show the trial's recorded wall-clock, and Failed entries additionally show epoch progress and the failure type (`<setting>/<dataset>/<seed> --- D-HH:MM:SS --- E/N --- RAM|VRAM|Other|Mixed`, epoch index / `n_epochs`; `n/a` for a trial that failed before ever writing metadata; the failure type aggregates the fatal retry loop's crashes -- Mixed when they span categories). It is regenerated at kickoff and at each trial's start and finish.
@@ -159,30 +159,6 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 **Note:** Every resulting setting `name` must be unique (for crossed combo groups, the joined name, e.g. `hp_2k`); a duplicate raises an error at kickoff.
 
 **Note:** A campaign's matrix is **additive across runs**. After a campaign has run, you may **add** settings (new members within an existing `baseline_overrides` combo group), `datasets`, or seeds (by raising `n_trials`) and relaunch to extend it — already-completed trials are skipped and only the new ones run. (Adding a whole new *combo group* re-joins every setting name, e.g. `hp` → `hp_2k`, so it reads as removing all prior settings — start a new campaign for that.) You may **never remove** a setting, dataset, or seed that a prior run recorded: the planned settings/datasets/seeds are saved to `artifacts/<campaign>/campaign_metadata.json` at each launch, and a relaunch whose config drops any previously-recorded item raises an error before any trials execute (removing one would orphan its already-computed trials). To drop items, start a new campaign instead.
-
-## Run a qualified campaign
-
-A **qualified campaign** tops up a subset of a completed campaign's settings — the ones that "qualified" — to a higher trial count, without re-running what the base campaign already computed. Define it in `config/quals/<name>.yaml`:
-
-* `n_trials_qual` — **total** trials per qualified setting, base trials included (e.g. the base ran 1 seed and `n_trials_qual: 3` → 2 new trials per setting). Must be ≥ the base campaign's trial count.
-* `base_campaign` — the campaign to qualify from, by its `artifacts/` name. Every trial in its recorded matrix must be **complete**, else launch errors.
-* `qualified_settings` — the base settings to carry forward, by setting name (each must exist in the base campaign).
-
-There is no `datasets` field — the base campaign's datasets are used. Example (`config/quals/dev.yaml`):
-```yaml
-n_trials_qual: 3
-
-base_campaign: dev43
-
-qualified_settings:
-  - phylo2
-  - sp
-```
-Launch by queueing it in `config/camp_queue.yaml` (as `qual.<name>`, e.g. `qual.dev`) and running `python -m campaign_runner` — qual entries go through the same campaign queue as regular ones. A qual may be queued behind the campaign that produces its base (e.g. `camp.dev` then `qual.dev`): its base-campaign checks only run when its turn comes.
-
-This creates campaign **`<base_campaign>_qual`** (e.g. `dev43_qual`), seeded from the base campaign: `cfg_baseline.json` is copied over — qual trials train against the **base campaign's frozen config**, not the current yamls — and each qualified setting's whole `settings/<setting>/` directory (trials, metadata, per-dataset stats) is copied as if the qualified campaign had run those trials itself. Per-setting overrides come from the base campaign's persisted `settings/<setting>/overrides.json`, not from any camps yaml. The campaign then runs like any other over the matrix *`qualified_settings` × base datasets × `n_trials_qual` seeds*: the copied trials are already complete and are skipped, so only the seeds above the base campaign's run (base ran seed `42`, `n_trials_qual: 3` → seeds `43`, `44`).
-
-The usual campaign rules apply unchanged: `dev.continue_campaign` resume/dedupe semantics (a relaunch under `dev.continue_campaign: false` falls back to `<base_campaign>_qual2`, …), the additive-matrix rule (relaunch with more `qualified_settings` — newly-qualified settings are copied in — or a larger `n_trials_qual` to extend; never remove), and the GPU-count match on resume — additionally checked against the **base** campaign at launch, since the copied trials ran under its world size. The `manif_viz` seed window (`n_seeds`/`n_seeds_offset`, frozen from the base campaign's snapshot) gates which trials compute manifold viz by `idx_seed` over the qual campaign's seed sweep as usual — with the base's `n_seeds: 1, n_seeds_offset: 0`, the copied first seed already carries its viz and the added seeds compute none.
 
 ## Config Override Layers
 

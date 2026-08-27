@@ -1,7 +1,0 @@
-n_trials_qual: 3
-
-base_campaign: dev46
-
-qualified_settings:
-  - phylo
-  - mp

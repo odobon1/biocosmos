@@ -3,10 +3,9 @@ python -m campaign_runner
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m campaign_runner
 
 Campaign execution is driven by the queue in config/camp_queue.yaml: its `campaigns` list names the
-runs, in order -- camp.<name> runs the campaign defined by config/camps/<name>.yaml, qual.<name>
-runs the qualified campaign defined by config/quals/<name>.yaml (see qual_runner). The queue file
-is re-read after every campaign, so entries may be added (at any position) while one runs; the
-runner exits once every listed entry has been run.
+runs, in order -- camp.<name> runs the campaign defined by config/camps/<name>.yaml. The queue
+file is re-read after every campaign, so entries may be added (at any position) while one runs;
+the runner exits once every listed entry has been run.
 """
 
 from pathlib import Path
@@ -324,20 +323,6 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
         settings.append((name, payload))
     return settings
 
-def _expand_campaign_settings(baseline_overrides: list[list[dict]], baseline: bool) -> list[tuple[str, dict]]:
-    """A camps config's full (name, overrides) settings list: `baseline_overrides` expanded via
-    _expand_settings, with the reserved 'baseline' setting (the frozen train snapshot as-is)
-    prepended when `baseline` is true."""
-    settings = _expand_settings(baseline_overrides)
-    if baseline:
-        if any(name == "baseline" for name, _ in settings):
-            raise ValueError(
-                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
-                "setting is already named 'baseline'."
-            )
-        settings.insert(0, ("baseline", {}))
-    return settings
-
 def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: dict) -> None:
     fpath = _dpath_campaign(campaign) / "settings" / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -586,12 +571,18 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], settings: list[tuple[str, dict]]) -> bool:
-    """Run the campaign's settings x datasets x n_trials-seeds trial matrix. `settings` is the
-    already-expanded (name, overrides) list -- from _expand_campaign_settings for a camps config
-    (expanded in _launch_camp, so an invalid matrix errors before any side effects), or rebuilt from
-    the base campaign's persisted overrides.json files by qual_runner. Returns False when the run
-    was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise."""
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]], baseline: bool) -> bool:
+    """Run the campaign's settings x datasets x n_trials-seeds trial matrix. Returns False when the
+    run was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise."""
+    # Validate the planned matrix before any side effects: every setting's name must be unique.
+    settings = _expand_settings(baseline_overrides)
+    if baseline:
+        if any(name == "baseline" for name, _ in settings):
+            raise ValueError(
+                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
+                "setting is already named 'baseline'."
+            )
+        settings.insert(0, ("baseline", {}))
     seeds = _iter_seeds(n_trials)
 
     _enable_child_subreaper()
@@ -837,7 +828,8 @@ def _launch_camp(name: str) -> bool:
         campaign=campaign,
         n_trials=cfg["n_trials"],
         datasets=cfg["datasets"],
-        settings=_expand_campaign_settings(cfg["baseline_overrides"], cfg["baseline"]),
+        baseline_overrides=cfg["baseline_overrides"],
+        baseline=cfg["baseline"],
     )
 
 def _load_queue() -> list[str]:
@@ -846,17 +838,11 @@ def _load_queue() -> list[str]:
         return yaml.safe_load(f)["campaigns"] or []
 
 def _validate_queue_entry(spec: str) -> None:
-    """Shallow fail-fast check of one queue entry: a known camp./qual. prefix and a loadable config
-    yaml. Deliberately nothing deeper -- e.g. a qual's base campaign may be produced by an earlier
-    queue entry, so its base checks only make sense at that entry's launch."""
+    """Shallow fail-fast check of one queue entry: the camp. prefix and a loadable config yaml."""
     kind, _, name = spec.partition(".")
-    if kind == "camp":
-        _load_campaign_config(name)
-    elif kind == "qual":
-        import qual_runner  # deferred: qual_runner imports campaign_runner helpers back
-        qual_runner._load_qual_config(name)
-    else:
-        raise SystemExit(f"Invalid camp_queue.yaml entry '{spec}': entries take the form camp.<name> or qual.<name>.")
+    if kind != "camp":
+        raise SystemExit(f"Invalid camp_queue.yaml entry '{spec}': entries take the form camp.<name>.")
+    _load_campaign_config(name)
 
 def _next_queue_entry(executed: list[str]) -> str | None:
     """Re-read camp_queue.yaml and return the first entry not yet run this session, or None when
@@ -881,11 +867,8 @@ def _next_queue_entry(executed: list[str]) -> str | None:
 
 def _run_queue_entry(spec: str) -> bool:
     """Dispatch one validated queue entry; returns run_campaign's completed flag."""
-    kind, _, name = spec.partition(".")
-    if kind == "camp":
-        return _launch_camp(name)
-    import qual_runner  # deferred: qual_runner imports campaign_runner helpers back
-    return qual_runner.launch(name)
+    _, _, name = spec.partition(".")
+    return _launch_camp(name)
 
 def main() -> None:
     if sys.argv[1:]:

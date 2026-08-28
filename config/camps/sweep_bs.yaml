@@ -3,8 +3,7 @@
 n_trials: 3
 datasets: [nymph, lepid]
 
-baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
-baseline_overrides:
+ablation_arms:
   - - {batch_size: 1_024, opt.lr.init: 2.0e-5, name: bs1k}
     - {batch_size: 2_048, opt.lr.init: 2.828e-5, name: bs2k}
     - {batch_size: 4_096, opt.lr.init: 4.0e-5, name: bs4k}
@@ -14,5 +13,8 @@ baseline_overrides:
   - - {loss2.mix: 0.3, loss2.targ: phylo, name: hp}
     - {loss.targ: mp, name: mp}
     - {loss.targ: sp, name: sp}
+
+hpo_coords:
+  - - {name: base}
 
 suffix: null  # {null, [str]}; no suffix if set to null

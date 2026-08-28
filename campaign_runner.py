@@ -10,6 +10,7 @@ the runner exits once every listed entry has been run.
 
 from pathlib import Path
 from copy import deepcopy
+from decimal import Decimal
 import ctypes
 import itertools
 import json
@@ -41,7 +42,7 @@ from utils.config import (
 )
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
-from utils.report import update_stats_tables, update_convergence_plots, update_metrics_xlsx
+from utils.report import update_arm_stats, update_dataset_stats, update_campaign_stats
 from utils.train import ArtifactManager
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
@@ -64,7 +65,8 @@ def _relevant_stderr(stderr: str) -> str:
     idx = stderr.find(marker)
     return stderr if idx == -1 else stderr[idx:]
 
-def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, setting: str, exc: Exception, failure: str) -> None:
+def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int, dataset: str, arm: str, coord: str,
+                     exc: Exception, failure: str) -> None:
     """Log trial error to stdout and to error.log in the trial-seed's directory. `failure` is the
     aggregate cause over the fatal retry loop's crashes -- RAM / VRAM / Other when every crash was
     that one kind, Mixed when they span kinds -- written as a 'failure=' marker that
@@ -74,7 +76,7 @@ def _log_trial_error(dpath_trial: Path, idx_trial: int, n_trials: int, seed: int
     # Format error message with context
     error_msg = (
         f"\n[{idx_trial}/{n_trials}] TRIAL FAILED\n"
-        f"  seed={seed}, dataset={dataset}, setting={setting}, failure={failure}"
+        f"  seed={seed}, dataset={dataset}, arm={arm}, coord={coord}, failure={failure}"
     )
     stderr_body = None
     if isinstance(exc, subprocess.CalledProcessError):
@@ -124,35 +126,33 @@ def _classify_crash(exc: Exception) -> str:
         return "ram"
     return "other"
 
-def _render_campaign_tables(campaign: str, datasets: list[str]) -> None:
-    """Re-render the campaign-level tables/workbooks from whatever is on disk. Trials render the
-    workbooks only when a seed completes across the whole matrix (train.py; the per-dataset png tables
-    refresh trial by trial), so a campaign that ends mid-sweep -- one interrupted, or with a (setting,
-    dataset) that never succeeds -- would otherwise leave the workbooks a sweep behind. Checkpoint
-    selection is NOT redone: every completed trial already reselected its own (setting, dataset) at its
-    own trial end."""
+def _render_campaign_tables(campaign: str, datasets: list[str], arms: list[str]) -> None:
+    """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, campaign_stats)
+    from whatever is on disk. Trials render each level only when a seed completes across that level's
+    cycle (train.py), so a campaign that ends mid-cycle -- one interrupted, or with a (dataset, arm, coord)
+    that never succeeds -- would otherwise leave them a cycle behind. Checkpoint selection is NOT redone:
+    every completed trial already reselected its own (dataset, arm, coord) at its own trial end."""
     cfg_stats = get_config_stats()
     ArtifactManager.dpath_campaign = _dpath_campaign(campaign)
+    style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset in datasets:
-        ArtifactManager.dataset = dataset
-        update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                            cfg_stats.supp_scores)
-        update_convergence_plots()
-    update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                        cfg_stats.supp_scores, cfg_stats.baseline_overrides)
+        for arm in arms:
+            update_arm_stats(dataset, arm, *style)
+        update_dataset_stats(dataset, *style)
+    update_campaign_stats(*style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
-    setting, and campaign levels. The three counters are bumped independently rather than re-summed
-    from the trials, so the setting and campaign totals stay accurate even when a no-progress restart
+    coord, and campaign levels. The three counters are bumped independently rather than re-summed
+    from the trials, so the coord and campaign totals stay accurate even when a no-progress restart
     wipes the trial dir (which resets that trial's own counts). Each file seeds the zeroed dict at
-    creation (campaign at kickoff, setting/trial by the subprocess), so a bump is a plain
-    read-increment-save; the setting/trial files are guarded because a crash can precede the
+    creation (campaign at kickoff, coord/trial by the subprocess), so a bump is a plain
+    read-increment-save; the coord/trial files are guarded because a crash can precede the
     subprocess writing them, whereas campaign_metadata.json always exists by the time any trial runs."""
-    dpath_setting = dpath_trial.parent
+    dpath_coord = dpath_trial.parent
     for fpath in (
         dpath_trial / "trial_metadata.json",
-        dpath_setting / "setting_metadata.json",
+        dpath_coord / "coord_metadata.json",
         dpath_campaign / "campaign_metadata.json",
     ):
         if fpath.exists():
@@ -183,7 +183,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     `config/dataset_specific.yaml` verbatim. Every trial starts from the `train` snapshot and has the
     sibling snapshots injected per trial (as `hw`, `manif_viz`, `model_specific`, `dataset_specific`).
     Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled per trial from the
-    `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching
+    `model_specific` snapshot, so a per-arm/coord `arch.model_type` override still picks up the matching
     family's defaults; a null `n_epochs` / `n_chkpts` is likewise left unresolved and filled per trial from the
     `dataset_specific` snapshot as per the trial's dataset. Every later relaunch (resume or matrix extension) reloads that
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
@@ -206,16 +206,17 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     return cfg_snapshot
 
 def _fmt_name_value(v) -> str:
-    """Format an override value for use in a setting name. Floats that Python renders in scientific
-    notation are normalized to read like the YAML that declared them: '7e-06' -> '7.0e-6' (mantissa
-    keeps a decimal point, exponent drops zero-padding)."""
-    s = str(v)
-    if isinstance(v, float) and "e" in s:
-        mant, exp = s.split("e")
-        if "." not in mant:
-            mant += ".0"
-        s = f"{mant}e{int(exp)}"
-    return s
+    """Format an override value for use in an arm / coord name. Floats read like the YAML that declares
+    them: any nonzero float below 1e-2 in magnitude (or one Python itself renders in scientific notation)
+    is written '<shortest mantissa, with a decimal point>e<exponent, no zero-padding>' -- 0.0002 -> '2.0e-4',
+    7e-06 -> '7.0e-6', 1.131e-4 -> '1.131e-4'. Python alone switches to scientific notation only below
+    1e-4, which would put 'LR-0.0002' next to 'LR-2.0e-5' in an LR sweep; larger floats keep their plain
+    rendering ('0.3', '0.05')."""
+    if isinstance(v, float) and v != 0.0 and (abs(v) < 1e-2 or "e" in repr(v)):
+        sign, digits, exp = Decimal(repr(v)).as_tuple()  # repr: the shortest round-trip digits
+        mant = f"{digits[0]}.{''.join(map(str, digits[1:])) or '0'}"
+        return f"{'-' if sign else ''}{mant}e{exp + len(digits) - 1}"
+    return str(v)
 
 def _alias_pair(k: str, v) -> str:
     """Render one override as a 'key-value' name component, with the key mapped through
@@ -232,21 +233,21 @@ def _alias_pair(k: str, v) -> str:
     return f"{CFG_PARAM_ALIASES.get(k, k)}-{_fmt_name_value(v_aliased)}"
 
 def _derive_item_name(item: dict) -> str:
-    """Name an unnamed `baseline_overrides` item by its overrides: _alias_pair components joined
-    by '_', e.g. {'loss.targ': 'mp', 'batch_size': 2048} -> 'L1T-sw_bs-2k'."""
+    """Name an unnamed `ablation_arms` / `hpo_coords` item by its overrides: _alias_pair components
+    joined by '_', e.g. {'loss.targ': 'mp', 'batch_size': 2048} -> 'Targ-MP_BS-2k'."""
     return "_".join(_alias_pair(k, v) for k, v in item.items())
 
 def _item_name(item: dict) -> str | None:
-    """The setting-name component an item contributes: its explicit 'name', or a name derived from
-    its overrides via _derive_item_name when 'name' is absent. An explicit 'name: null' returns
+    """The name component an item contributes: its explicit 'name', or a name derived from its
+    overrides via _derive_item_name when 'name' is absent. An explicit 'name: null' returns
     None -- the item contributes no component and is skipped when member names are joined."""
     return item["name"] if "name" in item else _derive_item_name(item)
 
 def _expand_combo_lists(item: dict) -> list[dict]:
     """Expand an item's combo lists (list-valued overrides) into scalar items, one per combination
     of list values; several combo lists in one item cross with each other, the last-listed key
-    varying fastest. The chosen 'key-value' pairs always show in the setting name: appended to an
-    explicit 'name' (e.g. {'batch_size': [1024, 2048], 'name': 'hp'} -> 'hp_bs-1k', 'hp_bs-2k'),
+    varying fastest. The chosen 'key-value' pairs always show in the name: appended to an
+    explicit 'name' (e.g. {'batch_size': [1024, 2048], 'name': 'hp'} -> 'hp_BS-1k', 'hp_BS-2k'),
     or picked up by _derive_item_name like any other override when the item is unnamed."""
     list_keys = [k for k, v in item.items() if k != "name" and isinstance(v, list)]
     if not list_keys:
@@ -260,24 +261,27 @@ def _expand_combo_lists(item: dict) -> list[dict]:
         expanded.append(scalar_item)
     return expanded
 
-def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
-    """Expand the campaign's combo groups into the full list of (name, overrides) settings.
+def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tuple[str, dict]]:
+    """Expand one camp-yaml override list (`param`: 'ablation_arms' -> the arms, 'hpo_coords' -> the
+    coords) from its combo groups into the full list of (name, overrides) members.
 
-    `baseline_overrides` is a list of combo groups; each combo group is a list of partial settings
-    (a dict of dotted-key overrides plus an optional 'name'; an item without one is named from its
-    overrides via _derive_item_name, e.g. {'loss.targ': 'mp'} -> 'L1T-mp'). An override
-    value given as a list is a combo list: the item is first expanded into one partial setting per
-    combination of its list values, named per _expand_combo_lists. The campaign's settings are the
-    Cartesian product across combo groups: one partial setting is drawn from each combo group and
-    merged into one setting, its name the members' names joined by '_' in combo-group order (e.g.
-    'hp' x '2k' -> 'hp_2k'). A single combo group expands to its members unchanged. Combo groups
-    are independent dimensions, so no override key may appear in more than one combo group -- a
-    shared key would have two values fighting to define it when members merge.
+    The list is a list of combo groups; each combo group is a list of partial members (a dict of
+    dotted-key overrides plus an optional 'name'; an item without one is named from its overrides
+    via _derive_item_name, e.g. {'loss.targ': 'mp'} -> 'Targ-MP'). An override value given as a
+    list is a combo list: the item is first expanded into one partial member per combination of its
+    list values, named per _expand_combo_lists. The members are the Cartesian product across combo
+    groups: one partial member is drawn from each combo group and merged into one member, its name
+    the parts' names joined by '_' in combo-group order (e.g. 'hp' x '2k' -> 'hp_2k'). A single
+    combo group expands to its items unchanged. Combo groups are independent dimensions, so no
+    override key may appear in more than one combo group -- a shared key would have two values
+    fighting to define it when parts merge.
 
     An item may set 'name' explicitly to null: it then contributes no name component and is skipped
     in the join (e.g. 'hp' x null -> 'hp'). At most one item per combo group may be null (two would
-    give two settings the same name), and at least one combo group must have all its items named
-    (else the all-null combination would yield an empty setting name)."""
+    give two members the same name), and at least one combo group must have all its items named
+    (else the all-null combination would yield an empty name)."""
+    if not combo_groups:
+        raise ValueError(f"{param} must list at least one combo group.")
     combo_groups = [
         [scalar_item for item in group for scalar_item in _expand_combo_lists(item)]
         for group in combo_groups
@@ -290,7 +294,7 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
         shared = keys_i & keys_j
         if shared:
             raise ValueError(
-                f"baseline_overrides key(s) {sorted(shared)} collide between combo groups {i} and {j}; "
+                f"{param} key(s) {sorted(shared)} collide between combo groups {i} and {j}; "
                 f"each override key must belong to exactly one combo group."
             )
 
@@ -301,45 +305,62 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
     for i, n_null in enumerate(null_counts):
         if n_null > 1:
             raise ValueError(
-                f"combo group {i} has {n_null} items with `name: null`; at most one item per combo "
+                f"{param} combo group {i} has {n_null} items with `name: null`; at most one item per combo "
                 f"group may set `name: null`."
             )
-    if null_counts and all(n_null > 0 for n_null in null_counts):
+    if all(n_null > 0 for n_null in null_counts):
         raise ValueError(
-            "every combo group has an item with `name: null`; at least one combo group must have "
-            "all its items named, else the all-null combination yields an empty setting name."
+            f"every {param} combo group has an item with `name: null`; at least one combo group must have "
+            f"all its items named, else the all-null combination yields an empty name."
         )
 
-    settings = []
+    members = []
     seen_names: set[str] = set()
     for combo in itertools.product(*combo_groups):
         name = "_".join(
             part for item in combo if (part := _item_name(item)) is not None
         )
         if name in seen_names:
-            raise ValueError(f"Duplicate baseline_overrides name: {name}")
+            raise ValueError(f"Duplicate {param} name: {name}")
         seen_names.add(name)
         payload = {k: deepcopy(v) for item in combo for k, v in item.items() if k != "name"}
-        settings.append((name, payload))
-    return settings
+        members.append((name, payload))
+    return members
 
-def _write_setting_overrides(campaign: str, setting: str, dataset: str, normalized_overrides: dict) -> None:
-    fpath = _dpath_campaign(campaign) / "datasets" / dataset / "settings" / setting / "overrides.json"
-    fpath.parent.mkdir(parents=True, exist_ok=True)
-    with open(fpath, "w") as f:
-        json.dump(normalized_overrides, f, indent=2, sort_keys=True)
+def _expand_matrix(ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+    """(arms, coords): the campaign's arms expanded from `ablation_arms` and its coords from `hpo_coords`
+    (each per _expand_combo_groups). Every arm is crossed with every coord, the two override sets merging
+    into one trial config, so the two lists form ONE override space: a key may belong to exactly one combo
+    group across both (an arm key that is also a coord key would have two values fighting to define it)."""
+    arms = _expand_combo_groups(ablation_arms, "ablation_arms")
+    coords = _expand_combo_groups(hpo_coords, "hpo_coords")
+    shared = {k for _, payload in arms for k in payload} & {k for _, payload in coords for k in payload}
+    if shared:
+        raise ValueError(
+            f"override key(s) {sorted(shared)} appear in both ablation_arms and hpo_coords; "
+            f"each override key must belong to exactly one combo group."
+        )
+    return arms, coords
+
+def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict) -> None:
+    """The coord dir's overrides.json: the arm's and the coord's declared overrides, kept apart under
+    'arm' / 'coord' (the stats overrides bands read each side separately)."""
+    dpath_coord.mkdir(parents=True, exist_ok=True)
+    with open(dpath_coord / "overrides.json", "w") as f:
+        json.dump({"arm": arm_payload, "coord": coord_payload}, f, indent=2, sort_keys=True)
 
 def _iter_seeds(n_trials: int) -> list[int]:
     return list(range(SEED0, SEED0 + n_trials))
 
-def _check_no_removals(campaign: str, prev_meta: dict, setting_names: list[str], datasets: list[str], seeds: list[int]) -> None:
-    """A campaign's matrix may grow across runs (add settings/datasets/seeds) but never shrink.
+def _check_no_removals(campaign: str, prev_meta: dict, arm_names: list[str], coord_names: list[str], datasets: list[str], seeds: list[int]) -> None:
+    """A campaign's matrix may grow across runs (add arms/coords/datasets/seeds) but never shrink.
     Compare the planned matrix against the one persisted from a prior run and raise if any
-    previously-run setting, dataset, or seed is missing -- dropping one would orphan its
+    previously-run arm, coord, dataset, or seed is missing -- dropping one would orphan its
     already-computed trials and silently remove them from the campaign."""
     removed = []
     for kind, prev_vals, curr_vals in (
-        ("settings", prev_meta["settings"], setting_names),
+        ("arms", prev_meta["arms"], arm_names),
+        ("coords", prev_meta["coords"], coord_names),
         ("datasets", prev_meta["datasets"], datasets),
         ("seeds", prev_meta["seeds"], seeds),
     ):
@@ -349,7 +370,7 @@ def _check_no_removals(campaign: str, prev_meta: dict, setting_names: list[str],
     if removed:
         raise RuntimeError(
             f"Campaign '{campaign}' config drops items recorded by a prior run "
-            f"(settings/datasets/seeds may be added across runs but never removed):\n"
+            f"(arms/coords/datasets/seeds may be added across runs but never removed):\n"
             + "\n".join(removed)
             + "\nRestore the removed items, or start a new campaign."
         )
@@ -420,13 +441,15 @@ def _stash_nccl_dumps(dpath_campaign: Path) -> None:
     for fpath in fpaths:
         fpath.rename(dpath_traces / fpath.name.removeprefix("nccl_trace_"))
 
-def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setting_payload: dict,
+def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, arm: str, coord: str, overrides: dict,
                           seed: int, dataset: str, idx_seed: int,
                           idx_trial: int | None = None, n_trials_total: int | None = None) -> dict:
-    """Effective per-trial config dict: frozen campaign snapshot + trial identity + setting overrides."""
+    """Effective per-trial config dict: frozen campaign snapshot + trial identity + the merged arm + coord
+    overrides."""
     cfg_dict = deepcopy(cfg_snapshot["train"])
     cfg_dict["campaign"] = campaign
-    cfg_dict["setting"] = setting
+    cfg_dict["arm"] = arm
+    cfg_dict["coord"] = coord
     cfg_dict["seed"] = seed
     cfg_dict["dataset"] = dataset
     cfg_dict["idx_seed"] = idx_seed
@@ -436,8 +459,8 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, setting: str, setti
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
     cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
     cfg_dict["hw"] = cfg_snapshot["hardware"]
-    cfg_dict["_setting_overrides"] = setting_payload
-    return apply_overrides(cfg_dict, setting_payload)
+    cfg_dict["_overrides"] = overrides
+    return apply_overrides(cfg_dict, overrides)
 
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
     cmd = [
@@ -464,7 +487,7 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
     env.setdefault("TORCH_NCCL_DUMP_ON_TIMEOUT", "1")
     env.setdefault(
         "TORCH_NCCL_DEBUG_INFO_TEMP_FILE",
-        str(dpath_campaign / f"nccl_trace_{cfg_dict['setting']}_{cfg_dict['dataset']}_{cfg_dict['seed']}_rank"),
+        str(dpath_campaign / f"nccl_trace_{cfg_dict['arm']}_{cfg_dict['coord']}_{cfg_dict['dataset']}_{cfg_dict['seed']}_rank"),
     )
 
     # start_new_session isolates torchrun from the terminal's Ctrl-C so the
@@ -571,18 +594,13 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_overrides: list[list[dict]], baseline: bool) -> bool:
-    """Run the campaign's settings x datasets x n_trials-seeds trial matrix. Returns False when the
-    run was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise."""
-    # Validate the planned matrix before any side effects: every setting's name must be unique.
-    settings = _expand_settings(baseline_overrides)
-    if baseline:
-        if any(name == "baseline" for name, _ in settings):
-            raise ValueError(
-                "`baseline: true` reserves the setting name 'baseline', but a baseline_overrides "
-                "setting is already named 'baseline'."
-            )
-        settings.insert(0, ("baseline", {}))
+def run_campaign(campaign: str, n_trials: int, datasets: list[str], ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> bool:
+    """Run the campaign's arms x coords x datasets x n_trials-seeds trial matrix (seed-major, then dataset,
+    arm, coord). Returns False when the run was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops
+    on it -- True otherwise."""
+    # Validate the planned matrix before any side effects: every arm / coord name must be unique, and
+    # no override key may be claimed by both an arm and a coord.
+    arms, coords = _expand_matrix(ablation_arms, hpo_coords)
     seeds = _iter_seeds(n_trials)
 
     _enable_child_subreaper()
@@ -600,7 +618,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
 
     n_gpus = torch.cuda.device_count()
     slurm_alloc = get_slurm_alloc()
-    setting_names = [name for name, _ in settings]
+    arm_names = [name for name, _ in arms]
+    coord_names = [name for name, _ in coords]
     fpath_meta = dpath_campaign / "campaign_metadata.json"
     first_launch = not fpath_meta.exists()
     if fpath_meta.exists():
@@ -611,7 +630,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 f"{metadata_camp['n_gpus']} GPUs but current environment has {n_gpus}."
             )
         # campaign matrix is additive across runs: items may be added but never removed
-        _check_no_removals(campaign, metadata_camp, setting_names, datasets, seeds)
+        _check_no_removals(campaign, metadata_camp, arm_names, coord_names, datasets, seeds)
     else:
         metadata_camp = {
             "duration": "0-00:00:00",
@@ -623,7 +642,8 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # running totals of crashes across all trials, bucketed by cause (see _classify_crash / _bump_crash_counts)
         }
     # record the (possibly grown) planned matrix so the next run can detect removals
-    metadata_camp["settings"] = setting_names
+    metadata_camp["arms"] = arm_names
+    metadata_camp["coords"] = coord_names
     metadata_camp["datasets"] = list(datasets)
     metadata_camp["seeds"] = seeds
     save_json(metadata_camp, fpath_meta)
@@ -633,17 +653,19 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     cfg_hardware = cfg_snapshot["hardware"]
     max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
 
-    # Fail-fast config validation: construct every setting x dataset's effective TrainConfig now, so a
-    # misconfigured setting (e.g. a batch_size that doesn't band-shard over world_size x loss_chunk_size)
+    # Fail-fast config validation: construct every arm x coord x dataset's effective TrainConfig now, so a
+    # misconfigured combination (e.g. a batch_size that doesn't band-shard over world_size x loss_chunk_size)
     # kills the campaign at kickoff instead of erroring when its trial finally launches. Seed only needs
     # to be representative -- config validation is seed-independent beyond requiring a non-null seed.
-    for setting, setting_payload in settings:
-        for dataset in datasets:
-            cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seeds[0], dataset, 0)
-            try:
-                get_config_train(cfg_dict=cfg_dict)
-            except Exception as e:
-                raise ValueError(f"invalid config for setting '{setting}' on dataset '{dataset}': {e}") from e
+    for arm, arm_payload in arms:
+        for coord, coord_payload in coords:
+            for dataset in datasets:
+                cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, arm, coord, {**arm_payload, **coord_payload},
+                                                 seeds[0], dataset, 0)
+                try:
+                    get_config_train(cfg_dict=cfg_dict)
+                except Exception as e:
+                    raise ValueError(f"invalid config for arm '{arm}' / coord '{coord}' on dataset '{dataset}': {e}") from e
 
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
@@ -652,12 +674,13 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
         _del_base_eval_cache()
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
-    # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every setting.
-    # Effective per setting = frozen hw baseline overlaid with that setting's hw.use_img_cache override, so a
-    # setting-level enable is still checked/staged at startup rather than erroring mid-campaign.
+    # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every arm and
+    # coord. Effective per trial = frozen hw baseline overlaid with its arm's / coord's hw.use_img_cache
+    # override, so an override-level enable is still checked/staged at startup rather than erroring
+    # mid-campaign.
     metadata_camp["runtime_img_cache"] = {ds: None for ds in sorted(paths["imgs"])}
     use_img_cache = any(
-        payload.get("hw.use_img_cache", cfg_hardware["use_img_cache"]) for _, payload in settings
+        payload.get("hw.use_img_cache", cfg_hardware["use_img_cache"]) for _, payload in [*arms, *coords]
     )
     if use_img_cache:
         missing = [ds for ds in datasets if not (paths["img_cache"] / ds / "meta.json").exists()]
@@ -670,14 +693,15 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             metadata_camp["runtime_img_cache"][dataset] = round(stage_img_cache(dataset), 2)
     save_json(metadata_camp, fpath_meta)
 
-    n_trials_total = len(seeds) * len(datasets) * len(settings)
+    n_trials_total = len(seeds) * len(datasets) * len(arms) * len(coords)
     print(f"Campaign: '{campaign}' ({n_trials_total} trials)")
 
     trials = [
-        (setting, dataset, seed)
+        (dataset, arm, coord, seed)
         for seed in seeds
         for dataset in datasets
-        for setting, _ in settings
+        for arm, _ in arms
+        for coord, _ in coords
     ]
     PrintLog.manifest(dpath_campaign, trials, in_progress=None)
 
@@ -686,103 +710,108 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
     idx_trial = 0
     for idx_seed, seed in enumerate(seeds):
         for dataset in datasets:
-            for setting, setting_payload in settings:
-                idx_trial += 1
+            for arm, arm_payload in arms:
+                for coord, coord_payload in coords:
+                    idx_trial += 1
 
-                dpath_trial = _dpath_campaign(campaign) / "datasets" / dataset / "settings" / setting / str(seed)
-                if _check_trial_completion(dpath_trial):
-                    print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {setting}/{dataset}/{seed}")
-                    continue
+                    dpath_coord = _dpath_campaign(campaign) / "datasets" / dataset / "arms" / arm / "coords" / coord
+                    dpath_trial = dpath_coord / str(seed)
+                    trial_id = f"{dataset}/{arm}/{coord}/{seed}"
+                    if _check_trial_completion(dpath_trial):
+                        print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {trial_id}")
+                        continue
 
-                # the setting dir is created here, at trial launch, not at campaign kickoff -- a
-                # planned setting whose trials never start leaves no artifacts/<campaign>/datasets/<dataset>/settings/ entry
-                _write_setting_overrides(campaign, setting, dataset, setting_payload)
+                    # the coord dir (and with it the arm dir) is created here, at trial launch, not at campaign
+                    # kickoff -- a planned arm/coord whose trials never start leaves no
+                    # artifacts/<campaign>/datasets/<dataset>/arms/ entry
+                    _write_overrides(dpath_coord, arm_payload, coord_payload)
 
-                cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seed, dataset, idx_seed,
-                                                 idx_trial, n_trials_total)
+                    cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, arm, coord, {**arm_payload, **coord_payload},
+                                                     seed, dataset, idx_seed, idx_trial, n_trials_total)
 
-                if dpath_trial.exists():
-                    print(f"[{idx_trial}/{n_trials_total}] RESUME: {setting}/{dataset}/{seed}")
-                else:
-                    print(f"[{idx_trial}/{n_trials_total}] {setting}/{dataset}/{seed}")
+                    if dpath_trial.exists():
+                        print(f"[{idx_trial}/{n_trials_total}] RESUME: {trial_id}")
+                    else:
+                        print(f"[{idx_trial}/{n_trials_total}] {trial_id}")
 
-                if del_base_eval_cache["trial"]:
-                    _del_base_eval_cache()
+                    if del_base_eval_cache["trial"]:
+                        _del_base_eval_cache()
 
-                PrintLog.manifest(dpath_campaign, trials, in_progress=(setting, dataset, seed))
-                spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
+                    PrintLog.manifest(dpath_campaign, trials, in_progress=(dataset, arm, coord, seed))
+                    spare_pid = render_proc.pid if render_proc is not None and render_proc.poll() is None else None
 
-                # Retry-with-resume loop: a crash mid-training costs only the work since the last checkpoint,
-                # not the whole trial. `stalled` counts consecutive attempts that didn't advance the
-                # checkpoint; any attempt that does reset it, so distinct flakes recover indefinitely.
-                fpath_ckpt = dpath_trial / "chkpts/in_progress/train_state.pt"
-                stalled = 0
-                crash_kinds = []  # every crash kind across this trial's retry loop, for the fatal failure= label
-                succeeded = False
-                while True:
-                    ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
-                    try:
-                        _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
-                        shutil.rmtree(dpath_trial / "chkpts")  # only holds in_progress/ -- no weights are saved
-                        _mark_trial_complete(dpath_trial)
-                        PrintLog.manifest(dpath_campaign, trials, in_progress=None)
-                        succeeded = True
-                        break
-                    except KeyboardInterrupt:
-                        print(
-                            f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
-                            flush=True,
-                        )
-                        if render_proc is not None and render_proc.poll() is None:
-                            render_proc.terminate()
-                        _render_campaign_tables(campaign, datasets)
-                        PrintLog.manifest(dpath_campaign, trials, in_progress=None)
-                        return False
-                    except Exception as e:
-                        _log_crash(dpath_trial, e)
-                        kind = _classify_crash(e)
-                        _bump_crash_counts(dpath_trial, dpath_campaign, kind)
-                        crash_kinds.append(kind)
-                        made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
-                        stalled = 0 if made_progress else stalled + 1
-                        if stalled > max_retries:
-                            # a no-progress restart wipes the trial dir (metadata + errors/), so the
-                            # in-loop crash_kinds is the only record covering ALL of this loop's crashes
-                            kinds = set(crash_kinds)
-                            failure = {"ram": "RAM", "vram": "VRAM", "other": "Other"}[next(iter(kinds))] if len(kinds) == 1 else "Mixed"
-                            _log_trial_error(
-                                dpath_trial=dpath_trial,
-                                idx_trial=idx_trial,
-                                n_trials=n_trials_total,
-                                seed=seed,
-                                dataset=dataset,
-                                setting=setting,
-                                exc=e,
-                                failure=failure,
-                            )
+                    # Retry-with-resume loop: a crash mid-training costs only the work since the last checkpoint,
+                    # not the whole trial. `stalled` counts consecutive attempts that didn't advance the
+                    # checkpoint; any attempt that does reset it, so distinct flakes recover indefinitely.
+                    fpath_ckpt = dpath_trial / "chkpts/in_progress/train_state.pt"
+                    stalled = 0
+                    crash_kinds = []  # every crash kind across this trial's retry loop, for the fatal failure= label
+                    succeeded = False
+                    while True:
+                        ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
+                        try:
+                            _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
+                            shutil.rmtree(dpath_trial / "chkpts")  # only holds in_progress/ -- no weights are saved
+                            _mark_trial_complete(dpath_trial)
                             PrintLog.manifest(dpath_campaign, trials, in_progress=None)
+                            succeeded = True
                             break
-                        reason = "resumed past last checkpoint" if made_progress else f"no progress {stalled}/{max_retries}"
-                        print(
-                            f"\n[{idx_trial}/{n_trials_total}] TRIAL FAILED ({reason}) — retrying with resume: {setting}/{dataset}/{seed}",
-                            flush=True,
-                        )
-                        PrintLog.manifest(dpath_campaign, trials, in_progress=(setting, dataset, seed))
+                        except KeyboardInterrupt:
+                            print(
+                                f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
+                                flush=True,
+                            )
+                            if render_proc is not None and render_proc.poll() is None:
+                                render_proc.terminate()
+                            _render_campaign_tables(campaign, datasets, arm_names)
+                            PrintLog.manifest(dpath_campaign, trials, in_progress=None)
+                            return False
+                        except Exception as e:
+                            _log_crash(dpath_trial, e)
+                            kind = _classify_crash(e)
+                            _bump_crash_counts(dpath_trial, dpath_campaign, kind)
+                            crash_kinds.append(kind)
+                            made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
+                            stalled = 0 if made_progress else stalled + 1
+                            if stalled > max_retries:
+                                # a no-progress restart wipes the trial dir (metadata + errors/), so the
+                                # in-loop crash_kinds is the only record covering ALL of this loop's crashes
+                                kinds = set(crash_kinds)
+                                failure = {"ram": "RAM", "vram": "VRAM", "other": "Other"}[next(iter(kinds))] if len(kinds) == 1 else "Mixed"
+                                _log_trial_error(
+                                    dpath_trial=dpath_trial,
+                                    idx_trial=idx_trial,
+                                    n_trials=n_trials_total,
+                                    seed=seed,
+                                    dataset=dataset,
+                                    arm=arm,
+                                    coord=coord,
+                                    exc=e,
+                                    failure=failure,
+                                )
+                                PrintLog.manifest(dpath_campaign, trials, in_progress=None)
+                                break
+                            reason = "resumed past last checkpoint" if made_progress else f"no progress {stalled}/{max_retries}"
+                            print(
+                                f"\n[{idx_trial}/{n_trials_total}] TRIAL FAILED ({reason}) — retrying with resume: {trial_id}",
+                                flush=True,
+                            )
+                            PrintLog.manifest(dpath_campaign, trials, in_progress=(dataset, arm, coord, seed))
 
-                if not succeeded:
-                    continue
+                    if not succeeded:
+                        continue
 
-                # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
-                # training, but only when this trial actually produced manifold caches. Trials outside the
-                # manif_viz seed window have nothing to render, so skip the extra Python process entirely.
-                # At most one render in flight: wait on the prior one only when a new render is about to
-                # start.
-                if _trial_has_manif_cache(dpath_trial):
-                    if render_proc is not None and render_proc.poll() is None:
-                        render_proc.wait()
-                    render_proc = _spawn_render(f"{campaign}/datasets/{dataset}/settings/{setting}/{seed}")
+                    # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
+                    # training, but only when this trial actually produced manifold caches. Trials outside the
+                    # manif_viz seed window have nothing to render, so skip the extra Python process entirely.
+                    # At most one render in flight: wait on the prior one only when a new render is about to
+                    # start.
+                    if _trial_has_manif_cache(dpath_trial):
+                        if render_proc is not None and render_proc.poll() is None:
+                            render_proc.wait()
+                        render_proc = _spawn_render(f"{campaign}/datasets/{dataset}/arms/{arm}/coords/{coord}/{seed}")
 
-    _render_campaign_tables(campaign, datasets)
+    _render_campaign_tables(campaign, datasets, arm_names)
 
     # let the last trial's render finish before the campaign exits
     if render_proc is not None:
@@ -828,8 +857,8 @@ def _launch_camp(name: str) -> bool:
         campaign=campaign,
         n_trials=cfg["n_trials"],
         datasets=cfg["datasets"],
-        baseline_overrides=cfg["baseline_overrides"],
-        baseline=cfg["baseline"],
+        ablation_arms=cfg["ablation_arms"],
+        hpo_coords=cfg["hpo_coords"],
     )
 
 def _load_queue() -> list[str]:

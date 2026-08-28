@@ -1,10 +1,12 @@
 n_trials: 1
 datasets: [cub]
 
-baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
-baseline_overrides:
+ablation_arms:
   - - {loss2.mix: 0.3, name: phylo}
     - {loss.targ: mp, name: mp}
     - {loss.targ: sp, name: sp}
+
+hpo_coords:
+  - - {name: base}
 
 suffix: null  # {null, [str]}; no suffix if set to null

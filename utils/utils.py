@@ -294,7 +294,7 @@ class PrintLog:
     def manifest(dpath_campaign: Path, trials: List[tuple], in_progress: Optional[tuple]) -> None:
         """Write <dpath_campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
         into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
-        start and finish so it tracks progress. `trials` is the full planned set of (setting, dataset, seed)
+        start and finish so it tracks progress. `trials` is the full planned set of (dataset, arm, coord, seed)
         tuples in launch order; `in_progress` is the trial currently running (None when nothing is). A trial
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
@@ -318,9 +318,9 @@ class PrintLog:
 
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
-            setting, dataset, seed = trial
-            dpath_trial = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
-            trial_id = f"{setting}/{dataset}/{seed}"
+            dataset, arm, coord, seed = trial
+            dpath_trial = dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
+            trial_id = f"{dataset}/{arm}/{coord}/{seed}"
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
             if metadata_trial is not None and metadata_trial["complete"]:
@@ -613,7 +613,8 @@ class PrintLog:
             "",
             PrintLog._dash_aligned_lines((
                 ("Campaign", cfg_train.campaign),
-                ("Setting",  cfg_train.setting),
+                ("Arm",      cfg_train.arm),
+                ("Coord",    cfg_train.coord),
                 ("Dataset",  cfg_train.dataset),
                 ("Split",    cfg_train.split),
                 ("Seed",     cfg_train.seed),

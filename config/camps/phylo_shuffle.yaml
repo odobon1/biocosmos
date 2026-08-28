@@ -1,9 +1,11 @@
 n_trials: 3
 datasets: [nymph, lepid]
 
-baseline: false  # {true, false}; (true) also run train.yaml config as-is as "baseline" setting
-baseline_overrides:
+ablation_arms:
   - - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: true, name: shuffle}
     - {loss2.mix: 0.3, loss2.targ: phylo, htarg_shuf: false, name: no-shuffle}
+
+hpo_coords:
+  - - {name: base}
 
 suffix: null  # {null, [str]}; no suffix if set to null

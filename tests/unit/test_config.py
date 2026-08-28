@@ -9,7 +9,8 @@ from utils.config import apply_dataset_specific_defaults
 def make_train_config_dummy(**overrides):
     config = {
         "campaign": "campaign",
-        "setting": "exp",
+        "arm": "exp",
+        "coord": "base",
         "seed": 7,
         "dataset": "cub",
         "split": "D10",
@@ -678,7 +679,7 @@ def _make_stats_config_dummy(**overrides):
         "ordered": True,
         "heatmap": False,
         "supp_scores": {"primitive": False, "n_shot": False},
-        "baseline_overrides": False,
+        "overrides": False,
     }
     config.update(overrides)
     return config

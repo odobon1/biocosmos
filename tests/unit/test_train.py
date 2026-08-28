@@ -34,9 +34,10 @@ def _full_loss_cfg(crit="bce", targ="mp"):
 
 
 @dataclass
-class _FakeSettingCfg:
+class _FakeCoordCfg:
     campaign: str = "c"
-    setting: str = "sp"
+    arm: str = "sp"
+    coord: str = "base"
     seed: int = 42
     idx_seed: int = 0
     idx_trial: int = 1
@@ -61,19 +62,19 @@ class _FakeSettingCfg:
         self.sample_volume = 102_500  # derived in TrainConfig.__post_init__, not a config field
 
 
-def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
-    # setting-level config params go to config.json; setting_metadata.json holds the mutable state --
+def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
+    # coord-level config params go to config.json; coord_metadata.json holds the mutable state --
     # n_crashes (bumped by the campaign runner), best_chkpt (rewritten at each trial end), and the
     # precomputed horizon (sample/step totals with their LR-warmup shares). A later
-    # trial of the same setting must re-assert config.json unchanged and must not reset the state.
-    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
-    cfg = _FakeSettingCfg()
+    # trial of the same coord must re-assert config.json unchanged and must not reset the state.
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
+    cfg = _FakeCoordCfg()
 
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
-    assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
-    assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not setting params
-    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {
+    assert "loss" in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
+    assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
         "horizon": {
             # warmup is the share OF each total: round(0.04 x 102_500) samples, ceil'd to steps
@@ -92,24 +93,24 @@ def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypat
         },
         "best_chkpt": {"map": {"native": {"idx": 3}}},
     }
-    (tmp_path / "setting_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
-    ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the state
-    assert json.loads((tmp_path / "setting_metadata.json").read_text()) == metadata
+    (tmp_path / "coord_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
+    ArtifactManager.save_metadata_coord(cfg)  # a later trial re-saves: must not raise, must not reset the state
+    assert json.loads((tmp_path / "coord_metadata.json").read_text()) == metadata
     assert json.loads((tmp_path / "config.json").read_text()) == config
 
     cfg.n_epochs = 2  # n_epochs is pruned from config.json, so a differing resolved duration still matches it
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     assert json.loads((tmp_path / "config.json").read_text()) == config
 
 
-def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> None:
+def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     # absence in config.json is the inert signal (the stats overrides table renders absent params
     # as '-'): every param another param renders inert must be pruned from the saved dict
 
     # SigLIP + BCE + inv_freq + loss2 off (the fake's defaults)
     (tmp_path / "s1").mkdir()
-    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s1")
-    ArtifactManager.save_metadata_setting(_FakeSettingCfg())
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s1")
+    ArtifactManager.save_metadata_coord(_FakeCoordCfg())
     config = json.loads((tmp_path / "s1" / "config.json").read_text())
     assert "clip" not in config["arch"]  # non_causal is CLIP-only
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
@@ -124,13 +125,13 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
 
     # CLIP + InfoNCE + class_bal: the 1D path reads none of the BCE-only machinery
     (tmp_path / "s2").mkdir()
-    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s2")
-    cfg = _FakeSettingCfg()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s2")
+    cfg = _FakeCoordCfg()
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
     cfg.loss = _full_loss_cfg(crit="infonce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
     cfg.loss["wting"]["cls_imb"]["norm"] = False
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
@@ -144,10 +145,10 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
 
     # bif_bce: 1D per-anchor weighting, and the BCE-family blocks stay live
     (tmp_path / "s4").mkdir()
-    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s4")
-    cfg = _FakeSettingCfg()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s4")
+    cfg = _FakeCoordCfg()
     cfg.loss = _full_loss_cfg(crit="bif_bce")
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
     assert "infonce" not in config["loss"]
     assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
@@ -155,14 +156,14 @@ def test_save_metadata_setting_prunes_inert_params(tmp_path, monkeypatch) -> Non
 
     # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
     (tmp_path / "s3").mkdir()
-    monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path / "s3")
-    cfg = _FakeSettingCfg()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s3")
+    cfg = _FakeCoordCfg()
     cfg.loss["wting"]["cls_imb"]["type"] = None
     del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
     cfg.loss["wting"]["bce"]["dsmr"] = False
     cfg.loss2["mix"] = 0.3
     cfg.loss2["mix_unit_scale"] = True
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss"]
     assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True

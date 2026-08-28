@@ -181,7 +181,7 @@ class TrialData:
 class ArtifactManager:
 
     dpath_campaign = None
-    dpath_setting = None
+    dpath_coord = None
     dpath_trial = None
     fpath_metadata_trial = None
     dpath_eval_final = None
@@ -194,12 +194,13 @@ class ArtifactManager:
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign
-        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "datasets" / cfg_train.dataset / "settings" / cfg_train.setting
+        ArtifactManager.dpath_coord = (ArtifactManager.dpath_campaign / "datasets" / cfg_train.dataset / "arms" / cfg_train.arm
+                                       / "coords" / cfg_train.coord)
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals" / f"eval{cfg_train.n_chkpts}"
@@ -264,14 +265,15 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_setting(cfg_train):
-        
+    def save_metadata_coord(cfg_train):
+
         def clean_metadata(metadata):
             """Params rendered inert by other config params are pruned, so absence in config.json
-            is the inert signal (the stats overrides table renders absent params as '-')."""
+            is the inert signal (the stats overrides tables render absent params as '-')."""
 
             del metadata["campaign"]
-            del metadata["setting"]
+            del metadata["arm"]
+            del metadata["coord"]
             del metadata["seed"]
             del metadata["idx_seed"]
             del metadata["idx_trial"]
@@ -279,8 +281,8 @@ class ArtifactManager:
             del metadata["dataset"]
             del metadata["split"]
             # dataset-resolved duration and checkpoint count (config/dataset_specific.yaml fills a null
-            # n_epochs / n_chkpts per dataset), not setting params; the duration is recorded in
-            # setting_metadata.json's horizon (and each trial's trial_metadata.json progress), the
+            # n_epochs / n_chkpts per dataset), not arm/coord params; the duration is recorded in
+            # coord_metadata.json's horizon (and each trial's trial_metadata.json progress), the
             # checkpoint count in every eval file's chkpt field
             del metadata["n_epochs"]
             del metadata["n_chkpts"]
@@ -355,19 +357,20 @@ class ArtifactManager:
         metadata = asdict(cfg_train)
         clean_metadata(metadata)
 
-        # setting-level config params live in config.json (write-once; asserted unchanged on later trials of
-        # the setting). setting_metadata.json holds only n_crashes -- mutable per-cause counters the
-        # campaign runner bumps on crashes -- so the two concerns don't share a file.
-        fpath_config = ArtifactManager.dpath_setting / "config.json"
+        # coord-level config params (the arm's + coord's effective config) live in config.json (write-once;
+        # asserted unchanged on later trials of the coord). coord_metadata.json holds only n_crashes --
+        # mutable per-cause counters the campaign runner bumps on crashes -- so the two concerns don't
+        # share a file.
+        fpath_config = ArtifactManager.dpath_coord / "config.json"
         if fpath_config.exists():
-            assert metadata == load_json(fpath_config), "Setting params changed!"
+            assert metadata == load_json(fpath_config), "Coord params changed!"
         else:
             save_json(metadata, fpath_config)
 
-        fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
+        fpath_meta = ArtifactManager.dpath_coord / "coord_metadata.json"
         if not fpath_meta.exists():
             # best_chkpt: per criterion x eval group, the checkpoint every trial of this
-            # setting is scored at -- filled in at each trial end by report.update_chkpt_selection
+            # coord is scored at -- filled in at each trial end by report.update_chkpt_selection
             save_json(
                 {
                     "n_crashes": {"ram": 0, "vram": 0, "other": 0},
@@ -378,20 +381,20 @@ class ArtifactManager:
             )
         # horizon: the trial duration in samples and optimizer steps, with the LR warmup's share OF
         # each total (not additional to it). Sample volume is data-derived (train-set size); identical
-        # across trials of a setting/dataset, so overwriting is idempotent. Every batch is a full
+        # across trials of a coord/dataset, so overwriting is idempotent. Every batch is a full
         # batch_size (drop_last) and training breaks the moment n_samps_seen >= sample_volume, hence
         # ceil; the warmup converts the way the trainer does (warmup fraction -> samples -> steps,
         # train.py's scheduler warmup-step count).
-        metadata_setting = load_json(fpath_meta)
+        metadata_coord = load_json(fpath_meta)
         warmup_samps = round(cfg_train.opt["lr"]["warmup"] * cfg_train.sample_volume)
-        metadata_setting["horizon"] = {
+        metadata_coord["horizon"] = {
             "n_samps": {"total": cfg_train.sample_volume, "warmup": warmup_samps},
             "n_steps": {
                 "total": math.ceil(cfg_train.sample_volume / cfg_train.batch_size),
                 "warmup": math.ceil(warmup_samps / cfg_train.batch_size),
             },
         }
-        save_json(metadata_setting, fpath_meta)
+        save_json(metadata_coord, fpath_meta)
 
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):

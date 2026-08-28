@@ -19,7 +19,7 @@ For each dataset in DATASETS this writes, under <project_root>/../../img_cache/<
 
 The pack is keyed by rfpath -- the path relative to paths["imgs"][dataset], the SAME key utils/data.py already
 uses (index_data[idx]["rfpath"]) -- and holds the FULL image corpus under that root, so it is split-agnostic
-(one pack serves every split/setting/seed). Random access by rfpath is preserved, so the existing map-style
+(one pack serves every split/arm/coord/seed). Random access by rfpath is preserved, so the existing map-style
 global shuffle (EpochEncodingDistributedSampler + torch.randperm) keeps working unchanged once reads are
 pointed at the pack. Source images are never modified. The FIRST build of a dataset is slow -- it reads every
 small source file once (the per-sample cost we are amortizing away) -- and is metadata/IO-bound.

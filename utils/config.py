@@ -10,8 +10,8 @@ from utils.hardware import compute_dataloader_workers_prefetch
 import pdb
 
 
-# Aliases used when building setting names from `baseline_overrides` keys/values (derived names
-# for unnamed items, and combo-list name components): keys map through CFG_PARAM_ALIASES and
+# Aliases used when building arm / coord names from `ablation_arms` / `hpo_coords` keys/values (derived
+# names for unnamed items, and combo-list name components): keys map through CFG_PARAM_ALIASES and
 # values through CFG_PARAM_VALUE_ALIASES (per original key), falling back to
 # CFG_UNIVERSAL_VALUE_ALIASES (key-independent) when no per-key alias exists; anything without
 # an alias passes through verbatim.
@@ -84,7 +84,8 @@ def _default_train_aug_cfg() -> dict:
 class TrainConfig:
 
     campaign: str
-    setting: str
+    arm: str
+    coord: str
     seed: int | None
     dataset: str
     split: str
@@ -304,9 +305,9 @@ def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
     """Overwrite an existing config field addressed by dot-path.
 
     Every segment must already be declared: overrides replace declared fields, never create them.
-    A typo'd or stale key (a renamed param still swept in a campaign's `baseline_overrides`) would
-    otherwise land silently in a field nothing reads, and the campaign runs the baseline value
-    under a setting name advertising the override.
+    A typo'd or stale key (a renamed param still swept in a campaign's `ablation_arms` / `hpo_coords`)
+    would otherwise land silently in a field nothing reads, and the campaign runs the baseline value
+    under an arm / coord name advertising the override.
     """
     keys = [key for key in key_path.split(".") if key]
     if not keys:
@@ -408,14 +409,14 @@ def apply_dataset_specific_defaults(cfg_dict: dict, dataset_specific_config: dic
     return cfg_out
 
 def get_config_train(cfg_dict: dict) -> TrainConfig:
-    setting_overrides = cfg_dict.pop("_setting_overrides", None)
+    overrides = cfg_dict.pop("_overrides", None)  # campaign trials: the merged arm + coord overrides
     model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; otherwise read live
     dataset_specific = cfg_dict.pop("dataset_specific", None)  # ditto
     cfg_dict = apply_train_debug_overrides(cfg_dict)
     cfg_dict = apply_model_specific_opt_defaults(cfg_dict, model_specific)
     cfg_dict = apply_dataset_specific_defaults(cfg_dict, dataset_specific)
-    if setting_overrides is not None:
-        cfg_dict = apply_overrides(cfg_dict, setting_overrides)
+    if overrides is not None:
+        cfg_dict = apply_overrides(cfg_dict, overrides)
     cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live
     cfg = TrainConfig(**cfg_dict)
     # campaign trials inject the frozen snapshot; otherwise load live. Either way it goes through
@@ -486,7 +487,7 @@ class ManifoldVizConfig:
     color: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        # window of seeds (per setting/dataset group) that get manifold viz: idx_seed in
+        # window of seeds (per arm/coord/dataset group) that get manifold viz: idx_seed in
         # [n_seeds_offset, n_seeds_offset + n_seeds). n_seeds 0 disables the subsystem; a window past the
         # end of the campaign's seed sweep is legal and simply selects nothing (see train.py's gate).
         if self.n_seeds < 0:
@@ -526,7 +527,7 @@ class StatsConfig:
     ordered: bool
     heatmap: bool  # (True) shade score cells by value over a fixed 0 -> 100 range
     supp_scores: dict  # {primitive: bool, n_shot: bool}; supplemental score columns appended right of the composite columns
-    baseline_overrides: bool  # (True) append a "Baseline Overrides" config table to each xlsx sheet
+    overrides: bool  # (True) append the "Arm Overrides" / "Coord Overrides" config tables to each xlsx sheet
 
     def __post_init__(self):
 

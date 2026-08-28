@@ -9,19 +9,28 @@ import campaign_runner as cr
 from utils.utils import PrintLog
 
 
+# a single no-override coord: the degenerate no-HPO case, so a campaign's matrix is its arms alone
+_BASE_COORD = [[{"name": "base"}]]
+
+
 @pytest.fixture(autouse=True)
 def _stub_kickoff_config_validation(monkeypatch):
-    """run_campaign constructs every setting's effective TrainConfig at kickoff (fail-fast validation);
+    """run_campaign constructs every arm x coord's effective TrainConfig at kickoff (fail-fast validation);
     the minimal baselines these tests inject can't build the real one (and there's no SLURM alloc in the
     test env), so stub the constructor. The kickoff loop itself still runs --
-    test_run_campaign_invalid_setting_config_fails_at_kickoff re-patches it to raise."""
+    test_run_campaign_invalid_config_fails_at_kickoff re-patches it to raise."""
     monkeypatch.setattr(cr, "get_config_train", lambda cfg_dict: None)
+
+
+def _dpath_trial(tmp_path, cfg_dict) -> Path:
+    return (tmp_path / cfg_dict["campaign"] / "datasets" / cfg_dict["dataset"] / "arms" / cfg_dict["arm"] / "coords"
+            / cfg_dict["coord"] / str(cfg_dict["seed"]))
 
 
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     """Mimic a real successful trial subprocess: leave chkpts/in_progress + incomplete metadata behind so
     run_campaign's success path (rmtree in_progress + flip complete=True) has something to act on."""
-    d = tmp_path / cfg_dict["campaign"] / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
+    d = _dpath_trial(tmp_path, cfg_dict)
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -30,13 +39,14 @@ def _leave_completed_trial(tmp_path, cfg_dict) -> None:
 def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     """Wire run_campaign so trials complete cleanly without real subprocesses/renders: each fake trial
     leaves the chkpts/in_progress dir + incomplete metadata behind (the runner flips complete=True).
-    Returns the list of (setting, dataset, seed) tuples each launched trial was invoked with."""
+    Returns the list of (arm, coord, dataset, seed) tuples each launched trial was invoked with."""
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     baseline = {
         "campaign": "base_campaign",
-        "setting": "base_setting",
+        "arm": "base_arm",
+        "coord": "base_coord",
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
@@ -55,8 +65,8 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
     scheduled: list = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        scheduled.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
-        d = tmp_path / cfg_dict["campaign"] / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
+        scheduled.append((cfg_dict["arm"], cfg_dict["coord"], cfg_dict["dataset"], cfg_dict["seed"]))
+        d = _dpath_trial(tmp_path, cfg_dict)
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -119,7 +129,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
     # model-family and dataset-specific defaults are NOT resolved into the train snapshot -- they stay
-    # null so a per-setting arch.model_type override / the trial's dataset can pick up the matching
+    # null so a per-arm/coord arch.model_type override / the trial's dataset can pick up the matching
     # value per trial (resolution happens in the trial, from the model_specific/dataset_specific snapshots).
     assert snapshot["train"]["opt"]["wd"] is None
     assert snapshot["train"]["opt"]["beta2"] is None
@@ -127,33 +137,42 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     assert snapshot["train"]["n_chkpts"] is None
 
 
-def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
+def _stub_campaign_config(monkeypatch, dev=None, hardware=None, manif_viz=None, train_extra=None) -> dict:
+    """Inject a minimal frozen campaign snapshot; returns its train baseline."""
     baseline = {
         "campaign": "base_campaign",
-        "setting": "base_setting",
+        "arm": "base_arm",
+        "coord": "base_coord",
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
         "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
+        "dev": dev or {"del_base_eval_cache": {"campaign": False, "trial": False}},
+        **(train_extra or {}),
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
+        "hardware": hardware or {"max_retries": 2, "use_img_cache": False},
+        "manif_viz": manif_viz or {"eval_duration": 1500},
         "model_specific": {},
         "dataset_specific": {},
     })
-
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    return baseline
+
+
+def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
+    # arms x coords x datasets x seeds: every combination is launched once, with the arm's and the
+    # coord's overrides both applied to the trial config
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch, train_extra={"opt": {"lr": {"init": 1.0e-5}}})
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        scheduled.append((cfg_dict["seed"], cfg_dict["dataset"], cfg_dict["setting"], cfg_dict["loss"]["targ"]))
+        scheduled.append((cfg_dict["seed"], cfg_dict["dataset"], cfg_dict["arm"], cfg_dict["coord"],
+                          cfg_dict["loss"]["targ"], cfg_dict["opt"]["lr"]["init"]))
         _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -162,167 +181,96 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_b",
         n_trials=2,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[
+        ablation_arms=[[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
-        baseline=False,
+        hpo_coords=[[{"opt.lr.init": [2.0e-5, 2.0e-6]}]],
     )
 
-    assert len(scheduled) == 8
+    assert len(scheduled) == 16
 
     assert set(scheduled) == {
-        (seed, dataset, setting, targ)
+        (seed, dataset, arm, coord, targ, lr)
         for seed in (42, 43)
         for dataset in ("cub", "lepid")
-        for setting, targ in (("sp", "sp"), ("hp", "phylo"))
+        for arm, targ in (("sp", "sp"), ("hp", "phylo"))
+        for coord, lr in (("LR-2.0e-5", 2.0e-5), ("LR-2.0e-6", 2.0e-6))
     }
+    # seed-major, then dataset, arm, coord (the inner loop) -- the cycle order the stats levels key off
+    assert scheduled[:4] == [
+        (42, "cub", "sp", "LR-2.0e-5", "sp", 2.0e-5),
+        (42, "cub", "sp", "LR-2.0e-6", "sp", 2.0e-6),
+        (42, "cub", "hp", "LR-2.0e-5", "phylo", 2.0e-5),
+        (42, "cub", "hp", "LR-2.0e-6", "phylo", 2.0e-6),
+    ]
+    assert scheduled[4][1] == "lepid" and scheduled[8][0] == 43
+
+    meta = json.loads((tmp_path / "cmp_b" / "campaign_metadata.json").read_text())
+    assert meta["arms"] == ["sp", "hp"]
+    assert meta["coords"] == ["LR-2.0e-5", "LR-2.0e-6"]
 
 
-def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypatch) -> None:
-    # baseline=True prepends a "baseline" setting that trains the frozen train snapshot as-is
-    monkeypatch.setattr(cr, "SEED0", 42)
+def test_run_campaign_raises_on_arm_coord_key_collision_before_side_effects(tmp_path, monkeypatch) -> None:
+    # arms and coords merge into one trial config, so a key claimed by both is rejected at kickoff, before
+    # any filesystem side effect (no campaign dir)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    baseline_cfg = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline_cfg,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    with pytest.raises(ValueError, match=r"loss\.targ.*appear in both ablation_arms and hpo_coords"):
+        cr.run_campaign(
+            campaign="cmp_collide",
+            n_trials=1,
+            datasets=("cub",),
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=[[{"loss.targ": "mp", "name": "mp"}]],
+        )
 
+    assert not (tmp_path / "cmp_collide").exists()
+
+
+def test_run_campaign_writes_split_overrides(tmp_path, monkeypatch) -> None:
+    # a coord dir's overrides.json records the arm's and the coord's declared overrides separately
+    monkeypatch.setattr(cr, "SEED0", 7)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch, train_extra={"opt": {"lr": {"init": 1.0e-5}}})
     scheduled = []
 
-    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        scheduled.append((cfg_dict["setting"], cfg_dict["loss"]["targ"], cfg_dict["_setting_overrides"]))
+    def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
+        scheduled.append(cfg_dict["_overrides"])
         _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
     cr.run_campaign(
-        campaign="cmp_baseline",
-        n_trials=1,
-        datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "phylo", "name": "hp"}]],
-        baseline=True,
-    )
-
-    # the baseline setting runs first, with no overrides applied
-    assert scheduled == [
-        ("baseline", "sp", {}),
-        ("hp", "phylo", {"loss.targ": "phylo"}),
-    ]
-
-    with open(Path(tmp_path) / "cmp_baseline" / "datasets" / "cub" / "settings" / "baseline" / "overrides.json") as f:
-        assert json.load(f) == {}
-
-    meta = json.loads((tmp_path / "cmp_baseline" / "campaign_metadata.json").read_text())
-    assert meta["settings"] == ["baseline", "hp"]
-
-
-def test_run_campaign_baseline_raises_on_reserved_name_collision(tmp_path, monkeypatch) -> None:
-    # the check fires before any side effects, like the dup-name check: no campaign dir is created
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    with pytest.raises(ValueError, match="reserves the setting name 'baseline'"):
-        cr.run_campaign(
-            campaign="cmp_baseline_dup",
-            n_trials=1,
-            datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "baseline"}]],
-            baseline=True,
-        )
-
-    assert not (tmp_path / "cmp_baseline_dup").exists()
-
-
-def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "SEED0", 7)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
-    monkeypatch.setattr(
-        cr,
-        "_run_trial_subprocess",
-        lambda cfg_dict, spare_render_pid=None: _leave_completed_trial(tmp_path, cfg_dict),
-    )
-
-    cr.run_campaign(
         campaign="cmp_c",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
-            {"loss.targ": "sp", "name": "sp"},
-        ]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=[[{"opt.lr.init": 2.0e-5, "name": "lr"}]],
     )
 
-    fpath = Path(tmp_path) / "cmp_c" / "datasets" / "cub" / "settings" / "sp" / "overrides.json"
+    fpath = tmp_path / "cmp_c" / "datasets" / "cub" / "arms" / "sp" / "coords" / "lr" / "overrides.json"
     assert fpath.exists()
-
     with open(fpath) as f:
-        data = json.load(f)
+        assert json.load(f) == {"arm": {"loss.targ": "sp"}, "coord": {"opt.lr.init": 2.0e-5}}
+    # the trial itself gets the merged set
+    assert scheduled == [{"loss.targ": "sp", "opt.lr.init": 2.0e-5}]
 
-    assert data["loss.targ"] == "sp"
 
-
-def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
-    # a setting's dir (datasets/<dataset>/settings/<setting>/, holding overrides.json) is created at its first trial's
-    # launch, not at campaign kickoff -- a planned setting whose trials never start leaves no dir
+def test_run_campaign_defers_coord_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
+    # a coord's dir (datasets/<dataset>/arms/<arm>/coords/<coord>/, holding overrides.json) is created at
+    # its first trial's launch, not at campaign kickoff -- a planned arm whose trials never start leaves
+    # no arms/<arm>/ dir
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch)
 
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    dpath_arms = tmp_path / "cmp_defer" / "datasets" / "cub" / "arms"
 
-    dpath_settings = Path(tmp_path) / "cmp_defer" / "datasets" / "cub" / "settings"
-
-    # abort the campaign during the first trial (setting 'sp'): its overrides.json must already be
+    # abort the campaign during the first trial (arm 'sp'): its overrides.json must already be
     # in place at launch, while 'hp' -- planned but never launched -- must have no dir at all
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
-        assert (dpath_settings / cfg_dict["setting"] / "overrides.json").exists()
+        assert (dpath_arms / cfg_dict["arm"] / "coords" / cfg_dict["coord"] / "overrides.json").exists()
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -331,40 +279,23 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
         campaign="cmp_defer",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        ablation_arms=[[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
-        baseline=False,
+        hpo_coords=_BASE_COORD,
     )
 
-    assert (dpath_settings / "sp" / "overrides.json").exists()
-    assert not (dpath_settings / "hp").exists()
+    assert (dpath_arms / "sp" / "coords" / "base" / "overrides.json").exists()
+    assert not (dpath_arms / "hp").exists()
 
 
 def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch)
 
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
-
-    dpath_trial = Path(tmp_path) / "cmp_complete" / "datasets" / "cub" / "settings" / "sp" / "42"
+    dpath_trial = tmp_path / "cmp_complete" / "datasets" / "cub" / "arms" / "sp" / "coords" / "base" / "42"
 
     # a real trial writes its metadata (complete still False) + leaves a chkpts/in_progress dir behind;
     # the campaign runner is what cleans up and flips complete=True on a clean exit
@@ -379,8 +310,8 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         campaign="cmp_complete",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     with open(dpath_trial / "trial_metadata.json") as f:
@@ -388,38 +319,27 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     assert not (dpath_trial / "chkpts").exists()  # the whole tree goes: it only ever held the resume state
 
 
-def _campaign_table_fpaths(dpath_campaign: Path, dataset: str) -> list[Path]:
+def _campaign_table_fpaths(dpath_campaign: Path, dataset: str, arm: str) -> list[Path]:
     groups = ("native", "native_macro", "joint", "joint_macro")
-    return [dpath_campaign / "datasets" / dataset / "stats" / criterion / group / "metrics.png" for criterion in ("map", "acc") for group in groups] + [
-        dpath_campaign / "stats" / criterion / f"{group}.xlsx" for criterion in ("map", "acc") for group in groups
-    ]
+    dpath_dataset = dpath_campaign / "datasets" / dataset
+    fpaths = []
+    for criterion in ("map", "acc"):
+        for group in groups:
+            fpaths.append(dpath_dataset / "arms" / arm / "arm_stats" / criterion / group / "metrics.png")
+            for kind in ("arm_coords", "arms"):
+                fpaths.append(dpath_dataset / "dataset_stats" / kind / criterion / group / "metrics.png")
+                fpaths.append(dpath_campaign / "campaign_stats" / kind / criterion / f"{group}.xlsx")
+    return fpaths
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted: bool) -> None:
-    # trials render the campaign-level tables/workbooks only when a seed completes across the whole
-    # matrix, so the runner renders once on the way out -- covering a campaign that ends mid-sweep,
-    # whether it ran to the end (a trial that never succeeds) or was interrupted
+    # trials render each stats level only when a seed completes across that level's cycle, so the runner
+    # renders every level once on the way out -- covering a campaign that ends mid-cycle, whether it ran
+    # to the end (a trial that never succeeds) or was interrupted
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 0, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    _stub_campaign_config(monkeypatch, hardware={"max_retries": 0, "use_img_cache": False})
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         if interrupted:
@@ -432,38 +352,21 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         campaign="cmp_render",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     # an interrupted run reports False so the campaign queue stops instead of launching the next entry
     assert completed is (not interrupted)
     # no trial ever completed, so the tables are empty -- the point is that they were written at all
-    for fpath in _campaign_table_fpaths(Path(tmp_path) / "cmp_render", "cub"):
+    for fpath in _campaign_table_fpaths(tmp_path / "cmp_render", "cub", "sp"):
         assert fpath.exists(), fpath
 
 
 def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": True, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    _stub_campaign_config(monkeypatch, dev={"del_base_eval_cache": {"campaign": True, "trial": False}})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -477,7 +380,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
-    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]], baseline=False)
+    kwargs = dict(campaign="cmp_delc", n_trials=1, datasets=("cub",), ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign(**kwargs)
     assert seen_at_launch == [False]  # first launch: cache deleted before the trial ran
 
@@ -491,24 +394,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": True}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    _stub_campaign_config(monkeypatch, dev={"del_base_eval_cache": {"campaign": False, "trial": True}})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -530,8 +416,8 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         campaign="cmp_delt",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     assert seen_at_launch == [False, False]  # deleted before every trial, not just the first
@@ -541,25 +427,9 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
 def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch)
 
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-
-    dpath_trial = Path(tmp_path) / "cmp_fail" / "datasets" / "cub" / "settings" / "sp" / "42"
+    dpath_trial = tmp_path / "cmp_fail" / "datasets" / "cub" / "arms" / "sp" / "coords" / "base" / "42"
 
     # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
     # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
@@ -571,7 +441,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     ]
     calls = []
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        calls.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
+        calls.append((cfg_dict["arm"], cfg_dict["coord"], cfg_dict["dataset"], cfg_dict["seed"]))
         dpath_trial.mkdir(parents=True, exist_ok=True)
         with open(dpath_trial / "trial_metadata.json", "w") as f:
             json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -583,8 +453,8 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         campaign="cmp_fail",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     # one initial attempt + max_retries (2, from the injected hardware config) no-progress resume attempts
@@ -594,7 +464,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     # the fatal error.log carries the aggregate failure= label (vram + ram + other crashes -> Mixed),
     # which the manifest surfaces on the Failed line
     assert "failure=Mixed" in (dpath_trial / "error.log").read_text()
-    assert "--- Mixed" in (tmp_path / "cmp_fail" / "manifest.log").read_text()
+    assert "--- Mixed" in (tmp_path / "cmp_fail" / "manifest.log").read_text(encoding="utf-8")
     # every crash (all three, at the same 200k checkpoint) also lands its own file under errors/
     assert sorted(p.name for p in (dpath_trial / "errors").iterdir()) == [
         "error-200000-0.log", "error-200000-1.log", "error-200000-2.log",
@@ -608,24 +478,41 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": 1}
 
 
-def test_run_campaign_invalid_setting_config_fails_at_kickoff(tmp_path, monkeypatch) -> None:
-    # a setting whose effective TrainConfig fails validation kills the campaign at kickoff, with the
-    # failing setting named -- no trial is ever launched
+def test_bump_crash_counts_reaches_coord_metadata(tmp_path) -> None:
+    # the coord-level counter (coord_metadata.json, the trial dir's parent) is bumped alongside the trial's
+    # and the campaign's, and only when it exists (a crash can precede the subprocess writing it)
+    dpath_campaign = tmp_path / "cmp"
+    dpath_trial = dpath_campaign / "datasets" / "cub" / "arms" / "sp" / "coords" / "base" / "42"
+    dpath_trial.mkdir(parents=True)
+    (dpath_campaign / "campaign_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
+
+    cr._bump_crash_counts(dpath_trial, dpath_campaign, "vram")
+    assert json.loads((dpath_campaign / "campaign_metadata.json").read_text())["n_crashes"] == {"ram": 0, "vram": 1, "other": 0}
+
+    (dpath_trial.parent / "coord_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
+    cr._bump_crash_counts(dpath_trial, dpath_campaign, "ram")
+    assert json.loads((dpath_trial.parent / "coord_metadata.json").read_text())["n_crashes"] == {"ram": 1, "vram": 0, "other": 0}
+    assert json.loads((dpath_campaign / "campaign_metadata.json").read_text())["n_crashes"] == {"ram": 1, "vram": 1, "other": 0}
+
+
+def test_run_campaign_invalid_config_fails_at_kickoff(tmp_path, monkeypatch) -> None:
+    # an arm x coord whose effective TrainConfig fails validation kills the campaign at kickoff, with the
+    # failing combination named -- no trial is ever launched
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
 
     def _fake_get_config_train(cfg_dict):
-        if cfg_dict["setting"] == "bad":
+        if cfg_dict["arm"] == "bad":
             raise ValueError("batch_size (1024) must be an exact multiple of world_size (2) x hardware.loss_chunk_size (1024)")
 
     monkeypatch.setattr(cr, "get_config_train", _fake_get_config_train)
 
-    with pytest.raises(ValueError, match="invalid config for setting 'bad' on dataset 'cub'"):
+    with pytest.raises(ValueError, match="invalid config for arm 'bad' / coord 'base' on dataset 'cub'"):
         cr.run_campaign(
             campaign="cmp_badcfg",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "mp", "name": "bad"}]],
-            baseline=False,
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "mp", "name": "bad"}]],
+            hpo_coords=_BASE_COORD,
         )
     assert scheduled == []
 
@@ -648,26 +535,9 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     # no-progress counter resets on every forward step, so more flakes than the cap still recover.
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch)
 
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
-
-    dpath_trial = Path(tmp_path) / "cmp_flaky" / "datasets" / "cub" / "settings" / "sp" / "42"
+    dpath_trial = tmp_path / "cmp_flaky" / "datasets" / "cub" / "arms" / "sp" / "coords" / "base" / "42"
     fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
 
     # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
@@ -690,8 +560,8 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         campaign="cmp_flaky",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     assert calls["n"] == n_flakes + 1  # every progressing flake was retried; final attempt completed
@@ -703,59 +573,72 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": n_flakes}  # each recovered flake is counted at the campaign level
 
 
-def test_expand_settings_raises_on_duplicate_names() -> None:
-    with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
-        cr._expand_settings(
+def test_expand_combo_groups_raises_on_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="Duplicate hpo_coords name"):
+        cr._expand_combo_groups(
             [
                 [
                     {"loss.targ": "sp", "name": "dup"},
                     {"loss.targ": "phylo", "name": "dup"},
                 ]
-            ]
+            ],
+            "hpo_coords",
         )
 
 
-def test_expand_settings_single_combo_group_unchanged() -> None:
+def test_expand_combo_groups_rejects_empty_list() -> None:
+    # zero combo groups would expand to one nameless member (an empty Cartesian product), whose dir
+    # name would vanish from the artifact path -- a no-HPO campaign spells its single coord out instead
+    with pytest.raises(ValueError, match="hpo_coords must list at least one combo group"):
+        cr._expand_combo_groups([], "hpo_coords")
+    assert cr._expand_combo_groups(_BASE_COORD, "hpo_coords") == [("base", {})]
+
+
+def test_expand_combo_groups_single_combo_group_unchanged() -> None:
     # one combo group -> members expand unchanged: names are not joined and payloads carry through as-is
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
                 {"loss.targ": "sp", "name": "sp"},
             ]
-        ]
+        ],
+        "ablation_arms",
     )
-    assert settings == [
+    assert members == [
         ("hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
         ("sp", {"loss.targ": "sp"}),
     ]
 
 
-def test_expand_settings_derives_name_from_overrides_when_omitted() -> None:
+def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
     # an item without a 'name' is named by its overrides: 'key-value' pairs joined by '_', with
     # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists
     # (e.g. loss2.mix -> Mix, mp -> MP) and anything unaliased passing through verbatim
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo"},
                 {"loss.targ": "mp"},
                 {"loss.targ": "sp", "name": "sp"},
+                {"loss.sim": "geo1"},
             ]
-        ]
+        ],
+        "ablation_arms",
     )
-    assert settings == [
-        ("Mix-0.3_L2T-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
-        ("L1T-MP", {"loss.targ": "mp"}),
+    assert members == [
+        ("Mix-0.3_Targ2-hp", {"loss2.mix": 0.3, "loss2.targ": "phylo"}),
+        ("Targ-MP", {"loss.targ": "mp"}),
         ("sp", {"loss.targ": "sp"}),
+        ("loss.sim-geo1", {"loss.sim": "geo1"}),
     ]
 
 
-def test_expand_settings_universal_value_aliases() -> None:
+def test_expand_combo_groups_universal_value_aliases() -> None:
     # True/False/None values map through CFG_UNIVERSAL_VALUE_ALIASES (key-independent) -> T/F/N;
     # numeric values equal to a bool (0.0 == False, 1.0 == True) must NOT alias -- the lookup is
     # identity-guarded against Python's bool/int equality
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"htarg_shuf": True, "chain_floor": None},
@@ -763,9 +646,10 @@ def test_expand_settings_universal_value_aliases() -> None:
                 {"loss2.mix": 0.0},
                 {"loss2.mix": 1.0},
             ]
-        ]
+        ],
+        "ablation_arms",
     )
-    assert [name for name, _ in settings] == [
+    assert [name for name, _ in members] == [
         "htarg_shuf-T_chain_floor-N",
         "dv_batching-F",
         "Mix-0.0",
@@ -773,18 +657,19 @@ def test_expand_settings_universal_value_aliases() -> None:
     ]
 
 
-def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
-    # a list-valued override is a combo list: the item expands to one setting per list value, the
+def test_expand_combo_groups_combo_list_expands_item_and_appends_to_name() -> None:
+    # a list-valued override is a combo list: the item expands to one member per list value, the
     # (aliased) 'key-value' pair appended to the explicit 'name'
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
                 {"loss.targ": "mp", "batch_size": [1024, 2048], "name": "mp"},
             ]
-        ]
+        ],
+        "ablation_arms",
     )
-    assert settings == [
+    assert members == [
         ("hp_BS-1k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
         ("hp_BS-2k", {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
         ("mp_BS-1k", {"loss.targ": "mp", "batch_size": 1024}),
@@ -792,37 +677,67 @@ def test_expand_settings_combo_list_expands_item_and_appends_to_name() -> None:
     ]
 
 
-def test_expand_settings_multiple_combo_lists_cross_within_item() -> None:
+def test_fmt_name_value_floats_read_like_yaml() -> None:
+    # nonzero floats below 1e-2 render in scientific notation with the shortest mantissa (a decimal point
+    # kept, the exponent unpadded) -- including the 1e-4 .. 1e-2 band Python itself renders as decimals
+    # (0.0002 -> '0.0002'), so an LR sweep reads uniformly; larger floats, zero, ints and strings pass
+    # through str()
+    assert cr._fmt_name_value(2.0e-4) == "2.0e-4"
+    assert cr._fmt_name_value(7e-06) == "7.0e-6"
+    assert cr._fmt_name_value(1.131e-4) == "1.131e-4"
+    assert cr._fmt_name_value(2.828e-5) == "2.828e-5"
+    assert cr._fmt_name_value(1.0e-3) == "1.0e-3"
+    assert cr._fmt_name_value(-2.0e-4) == "-2.0e-4"
+    assert cr._fmt_name_value(0.01) == "0.01"
+    assert cr._fmt_name_value(0.05) == "0.05"
+    assert cr._fmt_name_value(0.3) == "0.3"
+    assert cr._fmt_name_value(0.0) == "0.0"
+    assert cr._fmt_name_value(2048) == "2048"
+    assert cr._fmt_name_value("sp") == "sp"
+
+
+def test_expand_combo_groups_multiple_combo_lists_cross_within_item() -> None:
     # several combo lists in one item cross with each other, the last-listed key varying fastest;
-    # scientific-notation floats read like the YAML that declared them (7e-06 -> '7.0e-6')
-    settings = cr._expand_settings(
+    # scientific-notation floats read like the YAML that declared them (7e-06 -> '7.0e-6', 2.0e-4 ->
+    # '2.0e-4' rather than Python's '0.0002')
+    members = cr._expand_combo_groups(
         [
             [
-                {"loss2.mix": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 1.2e-5], "name": "hp"},
+                {"loss2.mix": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 2.0e-4], "name": "hp"},
             ]
-        ]
+        ],
+        "hpo_coords",
     )
-    assert [name for name, _ in settings] == [
+    assert [name for name, _ in members] == [
         "hp_BS-1k_LR-7.0e-6",
-        "hp_BS-1k_LR-1.2e-5",
+        "hp_BS-1k_LR-2.0e-4",
         "hp_BS-2k_LR-7.0e-6",
-        "hp_BS-2k_LR-1.2e-5",
+        "hp_BS-2k_LR-2.0e-4",
     ]
-    assert dict(settings)["hp_BS-2k_LR-1.2e-5"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 1.2e-5}
+    assert dict(members)["hp_BS-2k_LR-2.0e-4"] == {"loss2.mix": 0.3, "batch_size": 2048, "opt.lr.init": 2.0e-4}
 
 
-def test_expand_settings_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
-    # in an unnamed item the expanded value is named like any other override, in declared position
-    settings = cr._expand_settings([[{"loss.targ": "mp", "batch_size": [1024, 2048]}]])
-    assert settings == [
-        ("L1T-MP_BS-1k", {"loss.targ": "mp", "batch_size": 1024}),
-        ("L1T-MP_BS-2k", {"loss.targ": "mp", "batch_size": 2048}),
+def test_expand_combo_groups_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
+    # in an unnamed item the expanded value is named like any other override, in declared position --
+    # the dev_new.yaml shape: unnamed combo-list items, one per combo group, crossing into a coord grid
+    members = cr._expand_combo_groups([[{"loss.targ": "mp", "batch_size": [1024, 2048]}]], "ablation_arms")
+    assert members == [
+        ("Targ-MP_BS-1k", {"loss.targ": "mp", "batch_size": 1024}),
+        ("Targ-MP_BS-2k", {"loss.targ": "mp", "batch_size": 2048}),
     ]
+    coords = cr._expand_combo_groups(
+        [[{"opt.lr.init": [2.0e-6, 2.0e-5]}], [{"loss.logits.temp.init": [0.0, 0.1]}]],
+        "hpo_coords",
+    )
+    assert [name for name, _ in coords] == [
+        "LR-2.0e-6_Tau-0.0", "LR-2.0e-6_Tau-0.1", "LR-2.0e-5_Tau-0.0", "LR-2.0e-5_Tau-0.1",
+    ]
+    assert dict(coords)["LR-2.0e-5_Tau-0.1"] == {"opt.lr.init": 2.0e-5, "loss.logits.temp.init": 0.1}
 
 
-def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -> None:
+def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups() -> None:
     # derived names compose with explicit ones the same way in the cross-combo-group join
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
@@ -832,21 +747,22 @@ def test_expand_settings_derived_and_explicit_names_join_across_combo_groups() -
                 {"batch_size": 2048, "name": "2k"},
                 {"batch_size": 1024},
             ],
-        ]
+        ],
+        "ablation_arms",
     )
 
-    assert len(settings) == 4
-    assert dict(settings) == {
+    assert len(members) == 4
+    assert dict(members) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_BS-1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "L1T-MP_2k": {"loss.targ": "mp", "batch_size": 2048},
-        "L1T-MP_BS-1k": {"loss.targ": "mp", "batch_size": 1024},
+        "Targ-MP_2k": {"loss.targ": "mp", "batch_size": 2048},
+        "Targ-MP_BS-1k": {"loss.targ": "mp", "batch_size": 1024},
     }
 
 
-def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
+def test_expand_combo_groups_cartesian_product_merges_and_joins_names() -> None:
     # two combo groups -> every cross-combo-group combination; payloads merge, names join with '_' in combo-group order
-    settings = cr._expand_settings(
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
@@ -856,11 +772,12 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
                 {"batch_size": 2048, "name": "2k"},
                 {"batch_size": 1024, "name": "1k"},
             ],
-        ]
+        ],
+        "ablation_arms",
     )
 
-    assert len(settings) == 4
-    assert dict(settings) == {
+    assert len(members) == 4
+    assert dict(members) == {
         "hp_2k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
         "hp_1k": {"loss2.mix": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
         "mp_2k": {"loss.targ": "mp", "batch_size": 2048},
@@ -868,27 +785,28 @@ def test_expand_settings_cartesian_product_merges_and_joins_names() -> None:
     }
 
 
-def test_expand_settings_generalizes_to_three_combo_groups() -> None:
-    settings = cr._expand_settings(
+def test_expand_combo_groups_generalizes_to_three_combo_groups() -> None:
+    members = cr._expand_combo_groups(
         [
             [{"a": 1, "name": "x"}, {"a": 2, "name": "y"}],
             [{"b": 1, "name": "p"}, {"b": 2, "name": "q"}],
             [{"c": 1, "name": "m"}, {"c": 2, "name": "n"}],
-        ]
+        ],
+        "ablation_arms",
     )
 
-    assert len(settings) == 8
-    assert {name for name, _ in settings} == {
+    assert len(members) == 8
+    assert {name for name, _ in members} == {
         "x_p_m", "x_p_n", "x_q_m", "x_q_n",
         "y_p_m", "y_p_n", "y_q_m", "y_q_n",
     }
-    assert dict(settings)["y_q_n"] == {"a": 2, "b": 2, "c": 2}
+    assert dict(members)["y_q_n"] == {"a": 2, "b": 2, "c": 2}
 
 
-def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
+def test_expand_combo_groups_raises_on_cross_combo_group_key_collision() -> None:
     # the same override key appears in two combo groups -> two values would fight to define it when merged
-    with pytest.raises(ValueError, match="collide between combo groups"):
-        cr._expand_settings(
+    with pytest.raises(ValueError, match="ablation_arms key.*collide between combo groups"):
+        cr._expand_combo_groups(
             [
                 [
                     {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
@@ -898,14 +816,31 @@ def test_expand_settings_raises_on_cross_combo_group_key_collision() -> None:
                     {"loss2.mix": 0.4, "loss2.targ": "phylo", "name": "hp4"},
                     {"loss.targ": "mp", "name": "sw2"},
                 ],
-            ]
+            ],
+            "ablation_arms",
         )
 
 
-def test_expand_settings_null_name_skips_component() -> None:
+def test_expand_matrix_raises_on_arm_coord_key_collision() -> None:
+    # arms and coords are one override space: a key in an arm combo group and a coord combo group collides
+    # exactly like one shared between two combo groups of the same list
+    with pytest.raises(ValueError, match=r"batch_size.*appear in both ablation_arms and hpo_coords"):
+        cr._expand_matrix(
+            [[{"loss.targ": "mp", "batch_size": 2048, "name": "mp"}]],
+            [[{"batch_size": [1024, 2048]}]],
+        )
+    arms, coords = cr._expand_matrix(
+        [[{"loss.targ": "mp", "name": "mp"}, {"loss.targ": "sp", "name": "sp"}]],
+        [[{"batch_size": [1024, 2048]}]],
+    )
+    assert arms == [("mp", {"loss.targ": "mp"}), ("sp", {"loss.targ": "sp"})]
+    assert coords == [("BS-1k", {"batch_size": 1024}), ("BS-2k", {"batch_size": 2048})]
+
+
+def test_expand_combo_groups_null_name_skips_component() -> None:
     # an item with an explicit `name: null` contributes no name component; the override still applies,
-    # so the setting is named by the other combo groups alone (e.g. 'hp' x null -> 'hp')
-    settings = cr._expand_settings(
+    # so the member is named by the other combo groups alone (e.g. 'hp' x null -> 'hp')
+    members = cr._expand_combo_groups(
         [
             [
                 {"loss2.mix": 0.3, "loss2.targ": "phylo", "name": "hp"},
@@ -915,9 +850,10 @@ def test_expand_settings_null_name_skips_component() -> None:
                 {"loss.wting.cls_imb.type": "inv_freq", "name": "if"},
                 {"loss.wting.cls_imb.type": "class_bal", "name": None},
             ],
-        ]
+        ],
+        "ablation_arms",
     )
-    assert dict(settings) == {
+    assert dict(members) == {
         "hp_if": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
         "hp": {"loss2.mix": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
         "mp_if": {"loss.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
@@ -925,24 +861,25 @@ def test_expand_settings_null_name_skips_component() -> None:
     }
 
 
-def test_expand_settings_raises_on_multiple_null_names_in_group() -> None:
-    # two null-named items in one combo group would give two settings the same joined name
+def test_expand_combo_groups_raises_on_multiple_null_names_in_group() -> None:
+    # two null-named items in one combo group would give two members the same joined name
     with pytest.raises(ValueError, match="at most one item per combo group may set"):
-        cr._expand_settings(
+        cr._expand_combo_groups(
             [
                 [
                     {"loss.targ": "mp", "name": "mp"},
                     {"loss.targ": "sp", "name": None},
                     {"loss.targ": "phylo", "name": None},
                 ]
-            ]
+            ],
+            "ablation_arms",
         )
 
 
-def test_expand_settings_raises_when_every_combo_group_has_null_name() -> None:
-    # a null item in every combo group -> the all-null combination yields an empty setting name
+def test_expand_combo_groups_raises_when_every_combo_group_has_null_name() -> None:
+    # a null item in every combo group -> the all-null combination yields an empty name
     with pytest.raises(ValueError, match="at least one combo group must have"):
-        cr._expand_settings(
+        cr._expand_combo_groups(
             [
                 [
                     {"loss.targ": "mp", "name": "mp"},
@@ -952,39 +889,22 @@ def test_expand_settings_raises_when_every_combo_group_has_null_name() -> None:
                     {"batch_size": 2048, "name": "2k"},
                     {"batch_size": 1024, "name": None},
                 ],
-            ]
+            ],
+            "ablation_arms",
         )
 
 
-def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
-    # the Cartesian product flows through run_campaign: each combined setting schedules and gets its
-    # own merged overrides.json
+def test_run_campaign_crosses_arms_with_coords(tmp_path, monkeypatch) -> None:
+    # the arms x coords product flows through run_campaign: each combination schedules with both sides'
+    # overrides merged into its config, and its coord dir gets the two sides recorded separately
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+    _stub_campaign_config(monkeypatch)
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        scheduled.append((cfg_dict["setting"], cfg_dict["loss"]["targ"], cfg_dict["loss"]["sim"]))
+        scheduled.append((cfg_dict["arm"], cfg_dict["coord"], cfg_dict["loss"]["targ"], cfg_dict["loss"]["sim"]))
         _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -993,36 +913,26 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         campaign="cmp_groups",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[
-            [{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "phylo", "name": "hp"}],
-            [{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}],
-        ],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "phylo", "name": "hp"}]],
+        hpo_coords=[[{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}]],
     )
 
     assert set(scheduled) == {
-        ("sp_cos", "sp", "cos"),
-        ("sp_l2", "sp", "l2"),
-        ("hp_cos", "phylo", "cos"),
-        ("hp_l2", "phylo", "l2"),
+        ("sp", "cos", "sp", "cos"),
+        ("sp", "l2", "sp", "l2"),
+        ("hp", "cos", "phylo", "cos"),
+        ("hp", "l2", "phylo", "l2"),
     }
 
-    with open(Path(tmp_path) / "cmp_groups" / "datasets" / "cub" / "settings" / "hp_l2" / "overrides.json") as f:
+    with open(tmp_path / "cmp_groups" / "datasets" / "cub" / "arms" / "hp" / "coords" / "l2" / "overrides.json") as f:
         data = json.load(f)
-    assert data == {"loss.targ": "phylo", "loss.sim": "l2"}
+    assert data == {"arm": {"loss.targ": "phylo"}, "coord": {"loss.sim": "l2"}}
 
 
 def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 9)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
+    _stub_campaign_config(monkeypatch, train_extra={
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
@@ -1031,17 +941,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
             "beta2": None,
             "eps": 1.0e-6,
         },
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500, "tsne": {"perplexity": 30, "n_iter": 1000}},
-        "model_specific": {},
-        "dataset_specific": {},
     })
-
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
     scheduled = []
 
@@ -1055,10 +955,8 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
         campaign="cmp_opt",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
-            {"opt.wd": 0.33, "opt.beta2": 0.88, "name": "opt_tune"},
-        ]],
-        baseline=False,
+        ablation_arms=[[{"opt.wd": 0.33, "name": "wd"}]],
+        hpo_coords=[[{"opt.beta2": 0.88, "name": "b2"}]],
     )
 
     assert len(scheduled) == 1
@@ -1069,7 +967,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
 def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "base" / "cub" / "42"
     err = subprocess.CalledProcessError(
         returncode=1,
         cmd=["torchrun", "..."],
@@ -1082,7 +980,8 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
         n_trials=10,
         seed=42,
         dataset="cub",
-        setting="sp",
+        arm="sp",
+        coord="base",
         exc=err,
         failure="VRAM",
     )
@@ -1093,7 +992,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
     text = log_fpath.read_text()
 
     assert "TRIAL FAILED" in text
-    assert "failure=VRAM" in text  # the marker PrintLog.manifest parses for the Failed section
+    assert "arm=sp, coord=base, failure=VRAM" in text  # the marker PrintLog.manifest parses for the Failed section
     assert "stderr" in text
     assert "line3" in text
 
@@ -1101,7 +1000,7 @@ def test_log_trial_error_writes_to_trial_dir_with_stderr(tmp_path, monkeypatch) 
 def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_d") / "sp" / "base" / "cub" / "42"
     stderr = (
         "W0626 21:53:01 site-packages/torch/distributed/run.py:766] warning spam\n"
         "Eval (val):  50%|#####     | 5/10 [00:01<00:01,  4.5it/s]\n"
@@ -1117,7 +1016,8 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
         n_trials=1,
         seed=42,
         dataset="cub",
-        setting="sp",
+        arm="sp",
+        coord="base",
         exc=err,
         failure="Other",
     )
@@ -1132,7 +1032,7 @@ def test_log_trial_error_strips_precrash_noise(tmp_path, monkeypatch) -> None:
 def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    dpath_trial = cr._dpath_campaign("cmp_c") / "sp" / "cub" / "42"
+    dpath_trial = cr._dpath_campaign("cmp_c") / "sp" / "base" / "cub" / "42"
     dpath_trial.mkdir(parents=True, exist_ok=True)
 
     # errors/ is created only once a crash occurs; before the first checkpoint there's no metadata, so
@@ -1156,8 +1056,8 @@ def test_log_crash_writes_per_crash_files_indexed_by_samples(tmp_path, monkeypat
 def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
-    def _make_trial(setting, dataset, seed, complete=None, failure=None, runtime=None, epoch=0):
-        d = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
+    def _make_trial(dataset, arm, coord, seed, complete=None, failure=None, runtime=None, epoch=0):
+        d = dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
             with open(d / "trial_metadata.json", "w") as f:
@@ -1168,49 +1068,49 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
                     "progress": {"epoch": epoch, "n_epochs": 35, "n_samps_seen": 0},
                 }, f)
         if failure is not None:  # errored, with the failure= marker _log_trial_error writes
-            (d / "error.log").write_text(f"TRIAL FAILED\n  seed={seed}, dataset={dataset}, setting={setting}, failure={failure}\nboom")
+            (d / "error.log").write_text(f"TRIAL FAILED\n  seed={seed}, dataset={dataset}, arm={arm}, coord={coord}, failure={failure}\nboom")
 
-    _make_trial("hp", "cub", 42, complete=True, runtime="113723.9", epoch=35)  # completed
-    _make_trial("hp", "lepid", 42, complete=False, failure="VRAM", runtime="3723.4", epoch=19)  # failed
-    # hp/moss/42 -> failed before ever writing metadata (e.g. crashed at startup): no runtime to show
-    _make_trial("hp", "moss", 42, failure="Mixed")
-    # hp/nymph/42 -> in progress: it's a resume-after-failure, so it carries a stale error.log; the
+    _make_trial("cub", "hp", "c0", 42, complete=True, runtime="113723.9", epoch=35)  # completed
+    _make_trial("lepid", "hp", "c0", 42, complete=False, failure="VRAM", runtime="3723.4", epoch=19)  # failed
+    # moss/hp/c0/42 -> failed before ever writing metadata (e.g. crashed at startup): no runtime to show
+    _make_trial("moss", "hp", "c0", 42, failure="Mixed")
+    # nymph/hp/c0/42 -> in progress: it's a resume-after-failure, so it carries a stale error.log; the
     # running trial (passed explicitly) must outrank that error.log and bucket as In Progress, not Failed
-    _make_trial("hp", "nymph", 42, failure="Other")
-    # hp/bryo/42  -> queued (no dir at all)
+    _make_trial("nymph", "hp", "c0", 42, failure="Other")
+    # cub/hp/c1/42  -> queued (no dir at all)
 
     trials = [
-        ("hp", "cub", 42),
-        ("hp", "lepid", 42),
-        ("hp", "moss", 42),
-        ("hp", "nymph", 42),
-        ("hp", "bryo", 42),
+        ("cub", "hp", "c0", 42),
+        ("lepid", "hp", "c0", 42),
+        ("moss", "hp", "c0", 42),
+        ("nymph", "hp", "c0", 42),
+        ("cub", "hp", "c1", 42),
     ]
-    PrintLog.manifest(dpath_campaign, trials, in_progress=("hp", "nymph", 42))
+    PrintLog.manifest(dpath_campaign, trials, in_progress=("nymph", "hp", "c0", 42))
 
     # Completed/Failed entries carry the trial wall-clock, dash-padded per section (min 3 dashes at the
     # longest trial id) so the times line up
-    text = (dpath_campaign / "manifest.log").read_text()
+    text = (dpath_campaign / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
-        "hp/lepid/42 --- 0-01:02:03 --- 19/35 --- VRAM\n"
-        "hp/moss/42 ---- n/a --- Mixed\n"
+        "lepid/hp/c0/42 --- 0-01:02:03 --- 19/35 --- VRAM\n"
+        "moss/hp/c0/42 ---- n/a --- Mixed\n"
         "\n"
         "✅ Completed:\n"
-        "hp/cub/42 --- 1-07:35:23\n"
+        "cub/hp/c0/42 --- 1-07:35:23\n"
         "\n"
         "🏃 In Progress:\n"
-        "hp/nymph/42\n"
+        "nymph/hp/c0/42\n"
         "\n"
         "⏳ Queued:\n"
-        "hp/bryo/42\n"
+        "cub/hp/c1/42\n"
     )
 
 
 def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
     # a trial that failed once then succeeded on resume keeps its old error.log; complete=True wins
     dpath_campaign = Path(tmp_path) / "cmp_manifest_resume"
-    d = dpath_campaign / "datasets" / "cub" / "settings" / "hp" / "42"
+    d = dpath_campaign / "datasets" / "cub" / "arms" / "hp" / "coords" / "c0" / "42"
     d.mkdir(parents=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({
@@ -1221,14 +1121,14 @@ def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
         }, f)
     (d / "error.log").write_text("old failure")
 
-    PrintLog.manifest(dpath_campaign, [("hp", "cub", 42)], in_progress=None)
+    PrintLog.manifest(dpath_campaign, [("cub", "hp", "c0", 42)], in_progress=None)
 
-    text = (dpath_campaign / "manifest.log").read_text()
+    text = (dpath_campaign / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
         "\n"
         "✅ Completed:\n"
-        "hp/cub/42 --- 0-12:34:56\n"
+        "cub/hp/c0/42 --- 0-12:34:56\n"
         "\n"
         "🏃 In Progress:\n"
         "\n"
@@ -1240,9 +1140,9 @@ def test_manifest_shows_all_headers_at_kickoff(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest_kickoff"
     dpath_campaign.mkdir(parents=True)
 
-    PrintLog.manifest(dpath_campaign, [("hp", "cub", 42), ("hp", "lepid", 42)], in_progress=None)
+    PrintLog.manifest(dpath_campaign, [("cub", "hp", "c0", 42), ("lepid", "hp", "c0", 42)], in_progress=None)
 
-    text = (dpath_campaign / "manifest.log").read_text()
+    text = (dpath_campaign / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
         "\n"
@@ -1251,31 +1151,15 @@ def test_manifest_shows_all_headers_at_kickoff(tmp_path) -> None:
         "🏃 In Progress:\n"
         "\n"
         "⏳ Queued:\n"
-        "hp/cub/42\n"
-        "hp/lepid/42\n"
+        "cub/hp/c0/42\n"
+        "lepid/hp/c0/42\n"
     )
 
 
 def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
+    _stub_campaign_config(monkeypatch)
 
     # keep the post-trial render off the real subprocess path
     class _FakeProc:
@@ -1293,9 +1177,9 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
 
     # cub completes cleanly; lepid crashes without progress on every attempt (retried up to the cap)
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
-        cur = f"{cfg_dict['setting']}/{cfg_dict['dataset']}/{cfg_dict['seed']}"
-        in_progress_snapshots.append((cur, (dpath_campaign / "manifest.log").read_text()))
-        d = dpath_campaign / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
+        cur = f"{cfg_dict['dataset']}/{cfg_dict['arm']}/{cfg_dict['coord']}/{cfg_dict['seed']}"
+        in_progress_snapshots.append((cur, (dpath_campaign / "manifest.log").read_text(encoding="utf-8")))
+        d = _dpath_trial(tmp_path, cfg_dict)
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -1308,24 +1192,24 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         campaign="cmp_manifest_run",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     # each trial showed under In Progress while it was running (lepid appears once per retry; collapse them)
     order = [cur for cur, _ in in_progress_snapshots]
     distinct_order = [cur for i, cur in enumerate(order) if i == 0 or cur != order[i - 1]]
-    assert distinct_order == ["sp/cub/42", "sp/lepid/42"]
+    assert distinct_order == ["cub/sp/base/42", "lepid/sp/base/42"]
     for cur, snapshot in in_progress_snapshots:
         assert f"🏃 In Progress:\n{cur}\n" in snapshot
 
-    text = (dpath_campaign / "manifest.log").read_text()
+    text = (dpath_campaign / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
-        "sp/lepid/42 --- 0-01:01:01 --- 1/35 --- Other\n"
+        "lepid/sp/base/42 --- 0-01:01:01 --- 1/35 --- Other\n"
         "\n"
         "✅ Completed:\n"
-        "sp/cub/42 --- 0-01:01:01\n"
+        "cub/sp/base/42 --- 0-01:01:01\n"
         "\n"
         "🏃 In Progress:\n"
         "\n"
@@ -1337,29 +1221,13 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
     # a campaign abort (Ctrl-C / SIGTERM / scancel) must not leave the killed trial frozen as In Progress
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-
-    baseline = {
-        "campaign": "base_campaign",
-        "setting": "base_setting",
-        "seed": 0,
-        "dataset": "cub",
-        "split": "D10",
-        "loss": {"targ": "sp", "crit": "bce", "sim": "cos"},
-        "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}},
-    }
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": baseline,
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
+    _stub_campaign_config(monkeypatch)
 
     dpath_campaign = Path(tmp_path) / "cmp_manifest_interrupt"
 
     # the trial gets killed mid-run: leaves chkpts/in_progress + incomplete metadata, no error.log
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
-        d = dpath_campaign / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
+        d = _dpath_trial(tmp_path, cfg_dict)
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -1371,11 +1239,11 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         campaign="cmp_manifest_interrupt",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
-    text = (dpath_campaign / "manifest.log").read_text()
+    text = (dpath_campaign / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
         "\n"
@@ -1384,8 +1252,8 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         "🏃 In Progress:\n"
         "\n"
         "⏳ Queued:\n"
-        "sp/cub/42\n"
-        "sp/lepid/42\n"
+        "cub/sp/base/42\n"
+        "lepid/sp/base/42\n"
     )
 
 
@@ -1396,40 +1264,42 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         campaign="cmp_grow",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
         meta = json.load(f)
-    assert meta["settings"] == ["sp"]
+    assert meta["arms"] == ["sp"]
+    assert meta["coords"] == ["base"]
     assert meta["datasets"] == ["cub"]
     assert meta["seeds"] == [42]
-    assert scheduled == [("sp", "cub", 42)]
+    assert scheduled == [("sp", "base", "cub", 42)]
 
-    # relaunch with added settings, datasets, and seeds -> matrix grows, no error
+    # relaunch with added arms, coords, datasets, and seeds -> matrix grows, no error
     n_before = len(scheduled)
     cr.run_campaign(
         campaign="cmp_grow",
         n_trials=2,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[
+        ablation_arms=[[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
-        baseline=False,
+        hpo_coords=[[{"name": "base"}, {"loss.sim": "geo1"}]],
     )
 
     with open(tmp_path / "cmp_grow" / "campaign_metadata.json") as f:
         meta = json.load(f)
-    assert meta["settings"] == ["sp", "hp"]
+    assert meta["arms"] == ["sp", "hp"]
+    assert meta["coords"] == ["base", "loss.sim-geo1"]
     assert meta["datasets"] == ["cub", "lepid"]
     assert meta["seeds"] == [42, 43]
 
-    # the already-completed sp/cub/42 trial is skipped; only the 7 newly-added trials run
+    # the already-completed cub/sp/base/42 trial is skipped; only the 15 newly-added trials run
     relaunch_calls = scheduled[n_before:]
-    assert ("sp", "cub", 42) not in relaunch_calls
-    assert len(relaunch_calls) == 7
+    assert ("sp", "base", "cub", 42) not in relaunch_calls
+    assert len(relaunch_calls) == 2 * 2 * 2 * 2 - 1
 
 
 def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch) -> None:
@@ -1439,8 +1309,8 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
         campaign="cmp_commit",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     head = subprocess.run(
@@ -1459,16 +1329,16 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
     # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    with pytest.raises(ValueError, match="Duplicate baseline_overrides name"):
+    with pytest.raises(ValueError, match="Duplicate ablation_arms name"):
         cr.run_campaign(
             campaign="cmp_dup",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[
+            ablation_arms=[[
                 {"loss.targ": "sp", "name": "dup"},
                 {"loss.targ": "phylo", "name": "dup"},
             ]],
-            baseline=False,
+            hpo_coords=_BASE_COORD,
         )
 
     assert not (tmp_path / "cmp_dup").exists()
@@ -1484,8 +1354,8 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     fpath_meta = tmp_path / "cmp_roundtrip" / "campaign_metadata.json"
@@ -1498,8 +1368,8 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         campaign="cmp_roundtrip",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     meta = json.loads(fpath_meta.read_text())
@@ -1507,27 +1377,48 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
     assert meta["datasets"] == ["cub", "lepid"]
 
 
-def test_run_campaign_raises_on_removed_setting(tmp_path, monkeypatch) -> None:
+def test_run_campaign_raises_on_removed_arm(tmp_path, monkeypatch) -> None:
     _setup_completing_campaign(tmp_path, monkeypatch)
 
     cr.run_campaign(
-        campaign="cmp_rm_setting",
+        campaign="cmp_rm_arm",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[
+        ablation_arms=[[
             {"loss.targ": "sp", "name": "sp"},
             {"loss.targ": "phylo", "name": "hp"},
         ]],
-        baseline=False,
+        hpo_coords=_BASE_COORD,
     )
 
-    with pytest.raises(RuntimeError, match="settings removed.*hp"):
+    with pytest.raises(RuntimeError, match="arms removed.*hp"):
         cr.run_campaign(
-            campaign="cmp_rm_setting",
+            campaign="cmp_rm_arm",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=_BASE_COORD,
+        )
+
+
+def test_run_campaign_raises_on_removed_coord(tmp_path, monkeypatch) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    cr.run_campaign(
+        campaign="cmp_rm_coord",
+        n_trials=1,
+        datasets=("cub",),
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]],
+    )
+
+    with pytest.raises(RuntimeError, match="coords removed.*loss.sim-geo1"):
+        cr.run_campaign(
+            campaign="cmp_rm_coord",
+            n_trials=1,
+            datasets=("cub",),
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=[[{"loss.sim": ["cos"]}]],
         )
 
 
@@ -1538,8 +1429,8 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_dataset",
         n_trials=1,
         datasets=("cub", "lepid"),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     with pytest.raises(RuntimeError, match="datasets removed.*lepid"):
@@ -1547,8 +1438,8 @@ def test_run_campaign_raises_on_removed_dataset(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_dataset",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=_BASE_COORD,
         )
 
 
@@ -1559,8 +1450,8 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
         campaign="cmp_rm_seed",
         n_trials=2,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     with pytest.raises(RuntimeError, match="seeds removed.*43"):
@@ -1568,22 +1459,26 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
             campaign="cmp_rm_seed",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=_BASE_COORD,
         )
 
 
-def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, monkeypatch) -> None:
+def _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache: bool) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
-        "hardware": {"max_retries": 2, "use_img_cache": True},
+        "train": {"campaign": "c", "arm": "a", "coord": "c", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
+        "hardware": {"max_retries": 2, "use_img_cache": use_img_cache},
         "manif_viz": {},
         "model_specific": {},
         "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+
+
+def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, monkeypatch) -> None:
+    _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache=True)
     launched = []
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda *a, **k: launched.append(1))
 
@@ -1592,34 +1487,25 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
             campaign="cmp_ic_missing",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-            baseline=False,
+            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=_BASE_COORD,
         )
     assert launched == []
 
 
 def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
+    _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache=True)
     (tmp_path / "img_cache" / "cub").mkdir(parents=True)
     (tmp_path / "img_cache" / "cub" / "meta.json").write_text("{}")
     monkeypatch.setattr(cr, "stage_img_cache", lambda ds: 1.2345)
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
-        "hardware": {"max_retries": 2, "use_img_cache": True},
-        "manif_viz": {},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: _leave_completed_trial(tmp_path, cfg_dict))
 
     cr.run_campaign(
         campaign="cmp_ic_rt",
         n_trials=1,
         datasets=("cub",),
-        baseline_overrides=[[{"loss.targ": "sp", "name": "sp"}]],
-        baseline=False,
+        ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
     )
 
     meta = json.loads((tmp_path / "cmp_ic_rt" / "campaign_metadata.json").read_text())
@@ -1627,29 +1513,22 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
     assert meta["runtime_img_cache"] == {"bryo": None, "cub": 1.23}
 
 
-def test_run_campaign_use_img_cache_setting_override_checked_at_startup(tmp_path, monkeypatch) -> None:
-    # baseline use_img_cache=False, but one setting enables it via hw.* override: the missing-pack
-    # error must still fire at startup, before any trial launches
-    monkeypatch.setattr(cr, "SEED0", 42)
-    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
-    monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "setting": "s", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"targ": "sp", "crit": "bce", "sim": "cos"}, "dev": {"del_base_eval_cache": {"campaign": False, "trial": False}}},
-        "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {},
-        "model_specific": {},
-        "dataset_specific": {},
-    })
-    monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
+@pytest.mark.parametrize("side", ["arm", "coord"])
+def test_run_campaign_use_img_cache_override_checked_at_startup(tmp_path, monkeypatch, side: str) -> None:
+    # baseline use_img_cache=False, but one arm (or one coord) enables it via hw.* override: the
+    # missing-pack error must still fire at startup, before any trial launches
+    _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache=False)
     launched = []
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda *a, **k: launched.append(1))
 
+    ic = [[{"hw.use_img_cache": True, "name": "ic"}]]
     with pytest.raises(FileNotFoundError, match="cub"):
         cr.run_campaign(
             campaign="cmp_ic_override",
             n_trials=1,
             datasets=("cub",),
-            baseline_overrides=[[{"hw.use_img_cache": True, "name": "ic"}]],
-            baseline=False,
+            ablation_arms=ic if side == "arm" else [[{"loss.targ": "sp", "name": "sp"}]],
+            hpo_coords=ic if side == "coord" else _BASE_COORD,
         )
     assert launched == []
 
@@ -1659,13 +1538,14 @@ def _run_launch_camp(tmp_path, monkeypatch, continue_campaign, suffix=None) -> s
     campaign name run_campaign was launched with."""
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: {
-        "suffix": suffix, "n_trials": 1, "datasets": ["cub"], "baseline_overrides": [[{"name": "s"}]], "baseline": False,
+        "suffix": suffix, "n_trials": 1, "datasets": ["cub"], "ablation_arms": [[{"name": "s"}]], "hpo_coords": _BASE_COORD,
     })
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": continue_campaign}})
     launched = []
-    monkeypatch.setattr(cr, "run_campaign", lambda campaign, **kwargs: launched.append(campaign))
+    monkeypatch.setattr(cr, "run_campaign", lambda campaign, **kwargs: launched.append((campaign, kwargs)))
     cr._launch_camp("dev")
-    return launched[0]
+    assert launched[0][1]["ablation_arms"] == [[{"name": "s"}]] and launched[0][1]["hpo_coords"] == _BASE_COORD
+    return launched[0][0]
 
 
 def test_launch_camp_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
@@ -1825,14 +1705,14 @@ def test_main_invalid_pending_entry_warns_then_fails_when_reached(tmp_path, monk
 
 
 def test_stash_nccl_dumps_moves_dumps_and_strips_prefix(tmp_path) -> None:
-    (tmp_path / "nccl_trace_base_setting_cub_42_rank0").write_text("dump0")
-    (tmp_path / "nccl_trace_base_setting_cub_42_rank1").write_text("dump1")
+    (tmp_path / "nccl_trace_sp_base_cub_42_rank0").write_text("dump0")
+    (tmp_path / "nccl_trace_sp_base_cub_42_rank1").write_text("dump1")
     (tmp_path / "cfg_baseline.json").write_text("{}")
 
     cr._stash_nccl_dumps(tmp_path)
 
-    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank0").read_text() == "dump0"
-    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank1").read_text() == "dump1"
+    assert (tmp_path / "nccl_traces" / "sp_base_cub_42_rank0").read_text() == "dump0"
+    assert (tmp_path / "nccl_traces" / "sp_base_cub_42_rank1").read_text() == "dump1"
     assert not list(tmp_path.glob("nccl_trace_*"))
     assert (tmp_path / "cfg_baseline.json").exists()
 
@@ -1848,9 +1728,9 @@ def test_stash_nccl_dumps_without_dumps_creates_nothing(tmp_path) -> None:
 def test_stash_nccl_dumps_accumulates_into_existing_dir(tmp_path) -> None:
     (tmp_path / "nccl_traces").mkdir()
     (tmp_path / "nccl_traces" / "earlier_cub_7_rank0").write_text("old")
-    (tmp_path / "nccl_trace_base_setting_cub_42_rank0").write_text("new")
+    (tmp_path / "nccl_trace_sp_base_cub_42_rank0").write_text("new")
 
     cr._stash_nccl_dumps(tmp_path)
 
     assert (tmp_path / "nccl_traces" / "earlier_cub_7_rank0").read_text() == "old"
-    assert (tmp_path / "nccl_traces" / "base_setting_cub_42_rank0").read_text() == "new"
+    assert (tmp_path / "nccl_traces" / "sp_base_cub_42_rank0").read_text() == "new"

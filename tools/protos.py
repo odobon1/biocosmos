@@ -28,9 +28,9 @@ args = parser.parse_args()
 
 _, device = setup_ddp()
 
-# base model under the train.yaml base config (split, batch_size, arch); campaign/setting/seed are placeholders
+# base model under the train.yaml base config (split, batch_size, arch); campaign/arm/coord/seed are placeholders
 cfg_dict = load_train_config_dict()
-cfg_dict.update({"campaign": "protos", "setting": "protos", "seed": None, "dataset": args.dataset})
+cfg_dict.update({"campaign": "protos", "arm": "protos", "coord": "protos", "seed": None, "dataset": args.dataset})
 cfg = get_config_train(cfg_dict)
 cfg.device = device  # set local device
 

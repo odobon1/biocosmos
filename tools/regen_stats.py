@@ -2,24 +2,29 @@
 python -m tools.regen_stats <campaign>
 
 Regenerate a campaign's stats artifacts from its completed trials -- no train/eval rerun. Reselects, per run
-(setting, dataset), the checkpoint its trials are scored at (argmax of the across-trial mean curve) and rewrites
+(dataset, arm, coord), the checkpoint its trials are scored at (argmax of the across-trial mean curve) and rewrites
 every completed trial's evals/_best/{map,acc}/<group>.json to that checkpoint, plus
-datasets/<dataset>/settings/<setting>/stats/{map,acc}/<group>/{metrics.json, metrics_listview.json, chkpt_means.pkl,
-chkpt_means.png} and setting_metadata.json's best_chkpt,
-and re-renders artifacts/<campaign>/datasets/<dataset>/stats/{map,acc}/<group>/{metrics.png, convergence.png} and
-artifacts/<campaign>/stats/{map,acc}/<group>.xlsx (one per selection criterion x eval group), all using the
-CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
-edits to any of them take effect for an already-run campaign. Each trial's cached per-checkpoint
-evals/{base,eval*}/ metrics files are reused and re-aggregated exactly as on the trial-completion path in
-train.py (update_chkpt_selection -> update_metric_stats -> update_stats_tables -> update_convergence_plots ->
-update_metrics_xlsx) -- except
-that the workbooks render unconditionally here, rather than only at a seed's full sweep of the matrix.
+datasets/<dataset>/arms/<arm>/coords/<coord>/coord_stats/{map,acc}/<group>/{metrics.json, metrics_listview.json,
+chkpt_means.pkl, chkpt_means.png} and coord_metadata.json's best_chkpt, and re-renders every cross-coord level:
+datasets/<dataset>/arms/<arm>/arm_stats/ and datasets/<dataset>/dataset_stats/{arm_coords,arms}/ (each
+{map,acc}/<group>/{metrics,convergence}.png) and campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx, all using
+the CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides), so edits to any
+of them take effect for an already-run campaign. Each trial's cached per-checkpoint evals/{base,eval*}/ metrics
+files are reused and re-aggregated exactly as on the trial-completion path in train.py (update_chkpt_selection ->
+update_metric_stats -> update_arm_stats -> update_dataset_stats -> update_campaign_stats) -- except that every
+level renders unconditionally here, rather than only at the end of its seed cycle.
 """
 
 import sys
 
 from utils.config import get_config_stats
-from utils.report import update_metric_stats, update_chkpt_selection, update_stats_tables, update_convergence_plots, update_metrics_xlsx
+from utils.report import (
+    update_metric_stats,
+    update_chkpt_selection,
+    update_arm_stats,
+    update_dataset_stats,
+    update_campaign_stats,
+)
 from utils.train import ArtifactManager
 from utils.utils import load_json, paths
 
@@ -27,35 +32,22 @@ from utils.utils import load_json, paths
 def regen_campaign(campaign, cfg_stats):
     ArtifactManager.dpath_campaign = paths["artifacts"] / campaign
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
-    settings, datasets = metadata["settings"], metadata["datasets"]
-
-    # per (setting, dataset) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
-    for setting in settings:
-        for dataset in datasets:
-            ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting
-            if ArtifactManager.dpath_setting.exists():
-                ArtifactManager.dataset = dataset
-                update_chkpt_selection(cfg_stats.spread_type)
-                update_metric_stats(cfg_stats.spread_type)
+    arms, coords, datasets = metadata["arms"], metadata["coords"], metadata["datasets"]
+    style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
 
     for dataset in datasets:
         ArtifactManager.dataset = dataset
-        update_stats_tables(
-            cfg_stats.spread_type,
-            cfg_stats.bold_high,
-            cfg_stats.ordered,
-            cfg_stats.heatmap,
-            cfg_stats.supp_scores,
-        )
-        update_convergence_plots()
-    update_metrics_xlsx(
-        cfg_stats.spread_type,
-        cfg_stats.bold_high,
-        cfg_stats.ordered,
-        cfg_stats.heatmap,
-        cfg_stats.supp_scores,
-        cfg_stats.baseline_overrides,
-    )
+        for arm in arms:
+            # per (dataset, arm, coord) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
+            for coord in coords:
+                ArtifactManager.dpath_coord = (ArtifactManager.dpath_campaign / "datasets" / dataset / "arms" / arm
+                                               / "coords" / coord)
+                if ArtifactManager.dpath_coord.exists():
+                    update_chkpt_selection(cfg_stats.spread_type)
+                    update_metric_stats(cfg_stats.spread_type)
+            update_arm_stats(dataset, arm, *style)
+        update_dataset_stats(dataset, *style)
+    update_campaign_stats(*style, cfg_stats.overrides)
 
 
 def main():

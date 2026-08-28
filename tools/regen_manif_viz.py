@@ -10,12 +10,12 @@ the first pass, since they have no sharded GPU implementation and this process i
 t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
 
 python -m tools.regen_manif_viz <campaign>
-python -m tools.regen_manif_viz <campaign>/datasets/<dataset>/settings/<setting>/<seed> [evo_only|no_evo] [snapshot]
+python -m tools.regen_manif_viz <campaign>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed> [evo_only|no_evo] [snapshot]
 
 <campaign>  e.g. dev40 -- re-render every trial in the campaign, from its campaign_metadata.json matrix
-            (settings x datasets x seeds); trials that never ran are skipped
-<campaign>/datasets/<dataset>/settings/<setting>/<seed>  e.g. dev40/datasets/cub/settings/mp/42 -- one trial. This is the
-            form the campaign render worker spawns per completed trial.
+            (datasets x arms x coords x seeds); trials that never ran are skipped
+<campaign>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>  e.g. dev40/datasets/cub/arms/mp/coords/LR-1.0e-5/42 --
+            one trial. This is the form the campaign render worker spawns per completed trial.
 evo_only    re-render only the cross-eval evolving GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolving GIFs
 snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under artifacts/<campaign>/,
@@ -34,11 +34,13 @@ from utils.utils import load_json, paths
 
 
 def _viz_context(dpath_trial):
-    # dataset/split from the trial metadata, setting from the path (<campaign>/datasets/<dataset>/settings/<setting>/<seed>).
+    # dataset/split from the trial metadata, arm/coord from the path
+    # (<campaign>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>).
     # Training manifold viz is only produced for eval-enabled trials (train_pt="train").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
-        setting=dpath_trial.parent.name,
+        arm=dpath_trial.parents[2].name,
+        coord=dpath_trial.parent.name,
         dataset=meta["dataset"],
         split=meta["split"],
     )
@@ -78,24 +80,25 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None
     trial_metadata.json and are skipped rather than erroring, so this works on a partially-run campaign."""
     dpath_campaign = paths["artifacts"] / campaign
     metadata = load_json(dpath_campaign / "campaign_metadata.json")
-    for setting in metadata["settings"]:
-        for dataset in metadata["datasets"]:
-            for seed in metadata["seeds"]:
-                dpath_trial = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
-                if not (dpath_trial / "trial_metadata.json").exists():
-                    continue
-                # a campaign sweep is a long foreground job, so it reports per trial -- unlike the
-                # single-trial invocation, which the render worker runs detached alongside the next
-                # trial's progress bar and so stays silent
-                print(f"{setting}/{dataset}/{seed}", flush=True)
-                render_trial(dpath_trial, evo_only, skip_evo, cfg_manif_viz)
+    for dataset in metadata["datasets"]:
+        for arm in metadata["arms"]:
+            for coord in metadata["coords"]:
+                for seed in metadata["seeds"]:
+                    dpath_trial = dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
+                    if not (dpath_trial / "trial_metadata.json").exists():
+                        continue
+                    # a campaign sweep is a long foreground job, so it reports per trial -- unlike the
+                    # single-trial invocation, which the render worker runs detached alongside the next
+                    # trial's progress bar and so stays silent
+                    print(f"{dataset}/{arm}/{coord}/{seed}", flush=True)
+                    render_trial(dpath_trial, evo_only, skip_evo, cfg_manif_viz)
 
 def main():
     args = sys.argv[1:]
     flags = {a for a in args if a in ("evo_only", "no_evo", "snapshot")}
     targets = [a for a in args if a not in flags]
     if len(targets) != 1:
-        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/datasets/<dataset>/settings/<setting>/<seed>] "
+        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>] "
                  "[evo_only|no_evo] [snapshot]")
     target = targets[0].strip("/")
     evo_only, skip_evo = "evo_only" in flags, "no_evo" in flags

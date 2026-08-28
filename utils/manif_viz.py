@@ -25,8 +25,9 @@ from utils.config import DATASET2MARKER_SIZE
 @dataclass(frozen=True)
 class VizContext:
     """Identity of the eval being visualized -- drives plot titles and the per-dataset color/label
-    lookups. Built once from the train config and threaded through the manifold-viz entry points."""
-    setting: str
+    lookups. Built once per trial and threaded through the manifold-viz entry points."""
+    arm: str
+    coord: str
     dataset: str
     split: str
 
@@ -46,8 +47,8 @@ class RenderStyle:
 
 
 def _manifold_title(method, viz_context, subject, suffix=""):
-    """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp, Nymphalidae, 50k'."""
-    return f"{method}: {subject} Validation -- {viz_context.setting}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
+    """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp/LR-1.0e-5, Nymphalidae, 50k'."""
+    return f"{method}: {subject} Validation -- {viz_context.arm}/{viz_context.coord}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
 
 _GIF_DPI = 100  # evolving-GIF frame resolution (lower than the 300-dpi static PNGs)
 _OOD_LABEL = "__OOD__"  # sentinel label for OOD points in the n-shot panel (always drawn black)

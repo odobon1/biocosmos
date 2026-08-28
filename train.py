@@ -29,7 +29,17 @@ from utils.loss import configure_phylo_targs, Criterion
 from utils.eval import EvaluationPipeline
 from utils.manif_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
-from utils.report import plot_metrics, update_metric_stats, update_chkpt_selection, seed_sweep_complete, update_stats_tables, update_convergence_plots, update_metrics_xlsx
+from utils.report import (
+    plot_metrics,
+    update_metric_stats,
+    update_chkpt_selection,
+    arm_sweep_complete,
+    dataset_sweep_complete,
+    seed_sweep_complete,
+    update_arm_stats,
+    update_dataset_stats,
+    update_campaign_stats,
+)
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 
@@ -109,7 +119,7 @@ class TrainPipeline:
         )
 
         self.eval_enabled = self.cfg.train_pt != "trainval"
-        # manifold viz runs for a window of each setting/dataset group's seed sweep: the manif_viz.n_seeds
+        # manifold viz runs for a window of each arm/coord/dataset group's seed sweep: the manif_viz.n_seeds
         # seeds starting at manif_viz.n_seeds_offset. A window the sweep hasn't reached selects nothing (no
         # error, no warning) -- raising the campaign's seed count later pulls those trials into it.
         seed_off = self.cfg.manif_viz["n_seeds_offset"]
@@ -353,7 +363,7 @@ class TrainPipeline:
             self.data.eval_metrics,
             self.eval_pipe,
             header=header,
-            banner_suffix=f"[{self.cfg.idx_trial}/{self.cfg.n_trials_total}] ({self.cfg.campaign}/{self.cfg.setting}/{self.cfg.dataset}/{self.cfg.seed})",
+            banner_suffix=f"[{self.cfg.idx_trial}/{self.cfg.n_trials_total}] ({self.cfg.campaign}/{self.cfg.dataset}/{self.cfg.arm}/{self.cfg.coord}/{self.cfg.seed})",
             n_samps_seen=self.n_samps_seen,
             time_eval=self.data.time_eval,
             time_eval_avg=self.time_tracker.mean("eval"),
@@ -696,7 +706,7 @@ def run_training(cfg):
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
-    ArtifactManager.save_metadata_setting(cfg)
+    ArtifactManager.save_metadata_coord(cfg)
     if cfg.dev["logging"]:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
     PrintLog.init_train(cfg)
@@ -723,17 +733,22 @@ def run_training(cfg):
     )
     train_pipe.train()
     cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
-    # reselects this setting/dataset's checkpoint over ALL its completed trials (this one included) and
-    # rewrites their evals/_best/, so the per-dataset aggregates below see the current selection
+    # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
+    # rewrites their evals/_best/, so the aggregates below see the current selection
     update_chkpt_selection(cfg_stats.spread_type)
     update_metric_stats(cfg_stats.spread_type)
-    # this dataset's cross-setting png tables/plots refresh trial by trial
-    update_stats_tables(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
-    update_convergence_plots()
-    # the cross-dataset workbooks read every (setting, dataset)'s _best/, so they wait for a full pass
-    # of the matrix: only once this seed has completed in every (setting, dataset) is the whole
-    # campaign reselected against the same set of trials
+    # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
+    # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
+    # (dataset_stats), and the whole matrix (campaign_stats) -- so it is never rendered from a mix of
+    # coords reselected against different trial counts
+    if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
+        update_arm_stats(cfg.dataset, cfg.arm, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                         cfg_stats.supp_scores)
+    if dataset_sweep_complete(cfg.seed, cfg.dataset):
+        update_dataset_stats(cfg.dataset, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                             cfg_stats.supp_scores)
     if seed_sweep_complete(cfg.seed):
-        update_metrics_xlsx(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.baseline_overrides)
+        update_campaign_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
+                              cfg_stats.overrides)
 
     cleanup_ddp()

@@ -194,12 +194,12 @@ class ArtifactManager:
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign
-        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "settings" / cfg_train.setting
+        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "datasets" / cfg_train.dataset / "settings" / cfg_train.setting
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / cfg_train.dataset / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_setting / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals" / f"eval{cfg_train.n_chkpts}"
@@ -278,11 +278,12 @@ class ArtifactManager:
             del metadata["n_trials_total"]
             del metadata["dataset"]
             del metadata["split"]
-            # dataset-resolved duration (config/dataset_specific.yaml fills a null n_epochs per
-            # dataset), so it may differ across a setting's trials like the two keys above; the
-            # per-dataset duration is recorded in setting_metadata.json's horizon (and each
-            # trial's trial_metadata.json progress)
+            # dataset-resolved duration and checkpoint count (config/dataset_specific.yaml fills a null
+            # n_epochs / n_chkpts per dataset), not setting params; the duration is recorded in
+            # setting_metadata.json's horizon (and each trial's trial_metadata.json progress), the
+            # checkpoint count in every eval file's chkpt field
             del metadata["n_epochs"]
+            del metadata["n_chkpts"]
 
             del metadata["dev"]
 
@@ -365,7 +366,7 @@ class ArtifactManager:
 
         fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
         if not fpath_meta.exists():
-            # best_chkpt: per dataset x criterion x eval group, the checkpoint every trial of this
+            # best_chkpt: per criterion x eval group, the checkpoint every trial of this
             # setting is scored at -- filled in at each trial end by report.update_chkpt_selection
             save_json(
                 {
@@ -375,16 +376,15 @@ class ArtifactManager:
                 },
                 fpath_meta,
             )
-        # horizon.<dataset>: the trial duration in samples and optimizer steps, with the LR warmup's
-        # share OF each total (not additional to it). Sample volume is data-derived (train-set size),
-        # so the horizon varies per dataset within the setting; identical across trials of a
-        # setting/dataset, so overwriting is idempotent. Every batch is a full batch_size (drop_last)
-        # and training breaks the moment n_samps_seen >= sample_volume, hence ceil; the warmup
-        # converts the way the trainer does (warmup fraction -> samples -> steps, train.py's
-        # scheduler warmup-step count).
+        # horizon: the trial duration in samples and optimizer steps, with the LR warmup's share OF
+        # each total (not additional to it). Sample volume is data-derived (train-set size); identical
+        # across trials of a setting/dataset, so overwriting is idempotent. Every batch is a full
+        # batch_size (drop_last) and training breaks the moment n_samps_seen >= sample_volume, hence
+        # ceil; the warmup converts the way the trainer does (warmup fraction -> samples -> steps,
+        # train.py's scheduler warmup-step count).
         metadata_setting = load_json(fpath_meta)
         warmup_samps = round(cfg_train.opt["lr"]["warmup"] * cfg_train.sample_volume)
-        metadata_setting["horizon"][cfg_train.dataset] = {
+        metadata_setting["horizon"] = {
             "n_samps": {"total": cfg_train.sample_volume, "warmup": warmup_samps},
             "n_steps": {
                 "total": math.ceil(cfg_train.sample_volume / cfg_train.batch_size),

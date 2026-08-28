@@ -1,11 +1,15 @@
 bryo:
   n_epochs: 100
+  n_chkpts: 100
 
 cub:
   n_epochs: 100
+  n_chkpts: 100
 
 lepid:
   n_epochs: 20
+  n_chkpts: 20
 
 nymph:
   n_epochs: 50
+  n_chkpts: 50

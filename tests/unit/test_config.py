@@ -97,6 +97,17 @@ def test_train_config_rejects_non_int_n_epochs(monkeypatch: pytest.MonkeyPatch) 
         TrainConfig(**make_train_config_dummy(n_epochs=None))
 
 
+def test_train_config_rejects_non_int_n_chkpts(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="n_chkpts must be an int"):
+        TrainConfig(**make_train_config_dummy(n_chkpts=2.5))
+
+    # a null that skipped dataset-specific resolution (TrainConfig built without get_config_train)
+    with pytest.raises(ValueError, match="n_chkpts must be an int"):
+        TrainConfig(**make_train_config_dummy(n_chkpts=None))
+
+
 def make_manif_viz_config_dummy(**overrides):
     config = {
         "n_seeds": 1,
@@ -440,23 +451,39 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
     assert out["opt"]["beta2"] == 0.98
 
 
-def test_dataset_specific_defaults_resolve_null_n_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dataset_specific_defaults_resolve_null_n_epochs_and_n_chkpts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_dataset_specific_config_dict",
-        lambda: {"cub": {"n_epochs": 100}, "lepid": {"n_epochs": 20}},
+        lambda: {"cub": {"n_epochs": 100, "n_chkpts": 50}, "lepid": {"n_epochs": 20, "n_chkpts": 10}},
     )
 
-    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="cub"))["n_epochs"] == 100
-    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="lepid"))["n_epochs"] == 20
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, n_chkpts=None, dataset="cub"))
+    assert (out["n_epochs"], out["n_chkpts"]) == (100, 50)
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, n_chkpts=None, dataset="lepid"))
+    assert (out["n_epochs"], out["n_chkpts"]) == (20, 10)
 
 
-def test_dataset_specific_defaults_leave_set_n_epochs_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
-    # non-null n_epochs: the dataset-specific default is not consulted (the yaml isn't even read)
+def test_dataset_specific_defaults_resolve_each_key_independently(monkeypatch: pytest.MonkeyPatch) -> None:
+    # only the null key is filled; a set key keeps its value even though the yaml is read for the other
+    monkeypatch.setattr(
+        "utils.config.load_dataset_specific_config_dict",
+        lambda: {"cub": {"n_epochs": 100, "n_chkpts": 50}},
+    )
+
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=7, n_chkpts=None, dataset="cub"))
+    assert (out["n_epochs"], out["n_chkpts"]) == (7, 50)
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, n_chkpts=3, dataset="cub"))
+    assert (out["n_epochs"], out["n_chkpts"]) == (100, 3)
+
+
+def test_dataset_specific_defaults_leave_set_keys_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    # non-null n_epochs and n_chkpts: the dataset-specific defaults are not consulted (the yaml isn't even read)
     def _boom():
-        raise AssertionError("dataset_specific.yaml must not be read when n_epochs is set")
+        raise AssertionError("dataset_specific.yaml must not be read when n_epochs and n_chkpts are set")
     monkeypatch.setattr("utils.config.load_dataset_specific_config_dict", _boom)
 
-    assert apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=7))["n_epochs"] == 7
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=7, n_chkpts=3))
+    assert (out["n_epochs"], out["n_chkpts"]) == (7, 3)
 
 
 def test_dataset_specific_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -465,10 +492,10 @@ def test_dataset_specific_defaults_use_passed_snapshot(monkeypatch: pytest.Monke
         raise AssertionError("dataset_specific.yaml must not be read when a snapshot is passed")
     monkeypatch.setattr("utils.config.load_dataset_specific_config_dict", _boom)
 
-    snapshot = {"cub": {"n_epochs": 100}}
-    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, dataset="cub"), snapshot)
+    snapshot = {"cub": {"n_epochs": 100, "n_chkpts": 50}}
+    out = apply_dataset_specific_defaults(make_train_config_dummy(n_epochs=None, n_chkpts=None, dataset="cub"), snapshot)
 
-    assert out["n_epochs"] == 100
+    assert (out["n_epochs"], out["n_chkpts"]) == (100, 50)
 
 
 # cub D10 train split has 4_935 samples (the dummy's dataset/split)

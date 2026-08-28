@@ -9,8 +9,9 @@ chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when tra
 # train set (partial-batch permutation tails carry into the next pass rather than dropping), decoupling pass length
 # (and max batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
 # (null | train set >= chain_floor) One pass per epoch
-n_chkpts: 10  # Number of train-time checkpoints/evals (final included, base excluded), evenly spaced every
-# sample_volume / n_chkpts samples
+n_chkpts: null  # {null, [int]} > 0; Number of train-time checkpoints/evals (final included, base excluded), evenly
+# spaced every sample_volume / n_chkpts samples; (null) Resolved from config/dataset_specific.yaml as per the dataset
+# being run on
 batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
 # clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)

@@ -126,12 +126,14 @@ class TrainConfig:
         split = load_split(self.dataset, self.split)
         size_train = len(split.get_data(self.train_pt))
 
-        # bool guard: True/False are ints; a null n_epochs reaches here only when it skipped
+        # bool guard: True/False are ints; a null n_epochs / n_chkpts reaches here only when it skipped
         # dataset-specific resolution (get_config_train / apply_dataset_specific_defaults)
         if isinstance(self.n_epochs, bool) or not isinstance(self.n_epochs, int):
             raise ValueError(f"n_epochs must be an int, got {self.n_epochs!r}")
         if self.n_epochs <= 0:
             raise ValueError(f"n_epochs must be greater than 0, got {self.n_epochs}")
+        if isinstance(self.n_chkpts, bool) or not isinstance(self.n_chkpts, int):
+            raise ValueError(f"n_chkpts must be an int, got {self.n_chkpts!r}")
 
         if self.chain_floor is not None and self.chain_floor <= 0:
             raise ValueError(f"chain_floor must be greater than 0 or null, got {self.chain_floor}")
@@ -393,13 +395,16 @@ def load_dataset_specific_config_dict() -> dict:
         return yaml.safe_load(f)
 
 def apply_dataset_specific_defaults(cfg_dict: dict, dataset_specific_config: dict | None = None) -> dict:
-    """Fills n_epochs only if null, from the trial's dataset entry in config/dataset_specific.yaml."""
+    """Fills n_epochs / n_chkpts, each only if null, from the trial's dataset entry in
+    config/dataset_specific.yaml."""
     cfg_out = deepcopy(cfg_dict)
-    if cfg_out["n_epochs"] is not None:
+    keys = [key for key in ("n_epochs", "n_chkpts") if cfg_out[key] is None]
+    if not keys:
         return cfg_out
     if dataset_specific_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
         dataset_specific_config = load_dataset_specific_config_dict()
-    cfg_out["n_epochs"] = dataset_specific_config[cfg_out["dataset"]]["n_epochs"]
+    for key in keys:
+        cfg_out[key] = dataset_specific_config[cfg_out["dataset"]][key]
     return cfg_out
 
 def get_config_train(cfg_dict: dict) -> TrainConfig:

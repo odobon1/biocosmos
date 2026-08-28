@@ -34,10 +34,10 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
     # trials by their written best-checkpoint (_best/<criterion>/) metrics -- not by a `complete` flag that
     # isn't set yet; each criterion aggregates its own _best files into its own stats/<criterion>/ subtree
     dataset = "cub"
-    dpath_dataset = tmp_path / dataset
+    dpath_setting = tmp_path
     for seed, map_v, acc_v in (("42", "0.50", "0.30"), ("43", "0.60", "0.40")):
         for criterion, all_v in (("map", map_v), ("acc", acc_v)):
-            dpath_best = dpath_dataset / seed / "evals" / "_best" / criterion
+            dpath_best = dpath_setting / seed / "evals" / "_best" / criterion
             dpath_best.mkdir(parents=True)
             for group_key in ("native", "native_macro", "joint", "joint_macro"):
                 (dpath_best / f"{group_key}.json").write_text(json.dumps({
@@ -53,13 +53,13 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
 
     report.update_metric_stats("std")
 
-    stats = json.loads((dpath_dataset / "stats" / "map" / "native" / "metrics.json").read_text())
+    stats = json.loads((dpath_setting / "stats" / "map" / "native" / "metrics.json").read_text())
     assert stats["n_trials"] == 2
     assert stats["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
     # only the scores tree is aggregated; the non-score fields are dropped
     assert set(stats) == {"n_trials", "scores"}
 
-    listview_text = (dpath_dataset / "stats" / "map" / "native" / "metrics_listview.json").read_text()
+    listview_text = (dpath_setting / "stats" / "map" / "native" / "metrics_listview.json").read_text()
     listview = json.loads(listview_text)
     assert listview["n_trials"] == 2
     assert set(listview) == {"n_trials", "scores"}
@@ -67,13 +67,13 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
     # each leaf list stays on a single line
     assert '"all": ["50.00", "60.00"]' in listview_text
     # the acc tree aggregates the acc-selected _best files, separately from map's
-    stats_acc = json.loads((dpath_dataset / "stats" / "acc" / "native" / "metrics.json").read_text())
+    stats_acc = json.loads((dpath_setting / "stats" / "acc" / "native" / "metrics.json").read_text())
     assert stats_acc["scores"]["comp"]["map"]["all"] == "35.00 ± 7.07"
     # one aggregate + one listview file per criterion x eval group
     for criterion in ("map", "acc"):
         for group_key in ("native", "native_macro", "joint", "joint_macro"):
-            assert (dpath_dataset / "stats" / criterion / group_key / "metrics.json").exists()
-            assert (dpath_dataset / "stats" / criterion / group_key / "metrics_listview.json").exists()
+            assert (dpath_setting / "stats" / criterion / group_key / "metrics.json").exists()
+            assert (dpath_setting / "stats" / criterion / group_key / "metrics_listview.json").exists()
 
 
 _GROUP_KEYS = ("native", "native_macro", "joint", "joint_macro")
@@ -101,17 +101,17 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
     # MEAN curve, not each trial's own argmax -- and every trial is scored there. Trial 42 peaks at
     # chkpt 1 and trial 43 at chkpt 3, but the mean peaks at 2, so BOTH are scored at chkpt 2.
     dataset = "cub"
-    dpath_dataset = tmp_path / dataset
+    dpath_setting = tmp_path
     (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_dataset / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
-    _write_trial_evals(dpath_dataset / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
+    _write_trial_evals(dpath_setting / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
+    _write_trial_evals(dpath_setting / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
 
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection("std")
 
-    chkpt_means = load_pickle(dpath_dataset / "stats" / "map" / "native" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_setting / "stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
     assert list(chkpt_means["chkpts"]) == [0, 1, 2, 3]  # the base eval leads the curve
     assert chkpt_means["means"] == pytest.approx([0.10, 0.50, 0.60, 0.50])
@@ -119,41 +119,41 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
 
     # both trials scored at the SAME checkpoint -- neither trial's own argmax
     for seed, score in (("42", "0.50"), ("43", "0.70")):
-        best = json.loads((dpath_dataset / seed / "evals" / "_best" / "map" / "native.json").read_text())
+        best = json.loads((dpath_setting / seed / "evals" / "_best" / "map" / "native.json").read_text())
         assert best["chkpt"].startswith("2/3")
         assert best["scores"]["comp"]["map"]["all"] == score  # 42's own best was 0.90, 43's 0.80
 
     metadata = json.loads((tmp_path / "setting_metadata.json").read_text())
-    assert metadata["best_chkpt"]["cub"]["map"]["native"] == {
+    assert metadata["best_chkpt"]["map"]["native"] == {
         "idx": 2, "n_trials": 2, "mean": "0.6000",
     }
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
-            assert (dpath_dataset / "stats" / criterion / group_key / "chkpt_means.pkl").exists()
-            assert (dpath_dataset / "stats" / criterion / group_key / "chkpt_means.png").exists()
-            assert metadata["best_chkpt"]["cub"][criterion][group_key]["idx"] == 2
+            assert (dpath_setting / "stats" / criterion / group_key / "chkpt_means.pkl").exists()
+            assert (dpath_setting / "stats" / criterion / group_key / "chkpt_means.png").exists()
+            assert metadata["best_chkpt"][criterion][group_key]["idx"] == 2
 
 
 def test_update_chkpt_selection_excludes_base_and_unfinished_trials(tmp_path, monkeypatch) -> None:
     # the base eval (index 0) is plotted but never selectable, and a trial short of its final eval
     # doesn't enter the mean at all (nor get a _best/): here 43 stopped at chkpt 1 of 2
     dataset = "cub"
-    dpath_dataset = tmp_path / dataset
+    dpath_setting = tmp_path
     (tmp_path / "setting_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_dataset / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
-    _write_trial_evals(dpath_dataset / "43", (("0.10", "0.10"), ("0.99", "0.99")), n_chkpts=2)
+    _write_trial_evals(dpath_setting / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
+    _write_trial_evals(dpath_setting / "43", (("0.10", "0.10"), ("0.99", "0.99")), n_chkpts=2)
 
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection("std")
 
-    chkpt_means = load_pickle(dpath_dataset / "stats" / "map" / "native" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_setting / "stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1  # only trial 42 counted
     assert chkpt_means["means"] == pytest.approx([0.90, 0.10, 0.30])  # 42's curve alone
     assert list(chkpt_means["spreads"]) == [0.0] * 3  # ddof=1 undefined for one trial -> flat band
     assert chkpt_means["idx_best"] == 2  # 0.90 at base is higher, but base can't win
-    assert not (dpath_dataset / "43" / "evals" / "_best").exists()
+    assert not (dpath_setting / "43" / "evals" / "_best").exists()
 
 
 def test_seed_sweep_complete_needs_every_setting_and_dataset(tmp_path, monkeypatch) -> None:
@@ -164,17 +164,17 @@ def test_seed_sweep_complete_needs_every_setting_and_dataset(tmp_path, monkeypat
     scores = (("0.10", "0.10"), ("0.30", "0.30"))
     for setting in ("sp", "mp"):
         for dataset in ("cub", "lepid"):
-            _write_trial_evals(tmp_path / "settings" / setting / dataset / "42", scores)
+            _write_trial_evals(tmp_path / "datasets" / dataset / "settings" / setting / "42", scores)
     # seed 43 has run everywhere but mp/lepid, where it stopped short of its final eval
     for setting, dataset, n_chkpts in (("sp", "cub", None), ("sp", "lepid", None), ("mp", "cub", None), ("mp", "lepid", 2)):
-        _write_trial_evals(tmp_path / "settings" / setting / dataset / "43", scores, n_chkpts=n_chkpts)
+        _write_trial_evals(tmp_path / "datasets" / dataset / "settings" / setting / "43", scores, n_chkpts=n_chkpts)
 
     assert report.seed_sweep_complete(42)
     assert not report.seed_sweep_complete(43)
 
-    (tmp_path / "settings" / "mp" / "lepid" / "43" / "evals" / "eval2").mkdir()
+    (tmp_path / "datasets" / "lepid" / "settings" / "mp" / "43" / "evals" / "eval2").mkdir()
     for group_key in _GROUP_KEYS:  # its final eval lands -> the sweep closes
-        (tmp_path / "settings" / "mp" / "lepid" / "43" / "evals" / "eval2" / f"{group_key}.json").write_text(json.dumps({
+        (tmp_path / "datasets" / "lepid" / "settings" / "mp" / "43" / "evals" / "eval2" / f"{group_key}.json").write_text(json.dumps({
             "scores": {"comp": {"map": {"all": "0.30"}, "acc": {"i2t": "0.30"}}},
             "chkpt": "2/2 (0.0M/0.0M samples)",
         }))
@@ -216,12 +216,12 @@ def _write_group_metrics(dpath_best, scores_grp: dict, macro: dict | None = None
         (dpath_best / criterion).mkdir(parents=True, exist_ok=True)
         for group_key, grp in (("native", grp_std), ("native_macro", grp_macro), ("joint", grp_std), ("joint_macro", grp_macro)):
             (dpath_best / criterion / f"{group_key}.json").write_text(json.dumps({"scores": grp}))
-    dpath_trial = dpath_best.parent.parent  # <setting>/<dataset>/<seed>/evals/_best
+    dpath_trial = dpath_best.parent.parent  # <dataset>/<setting>/<seed>/evals/_best
     (dpath_trial / "trial_metadata.json").write_text(json.dumps({
         "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": "1.00"},
         "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
     }))
-    fpath_meta_setting = dpath_trial.parent.parent / "setting_metadata.json"
+    fpath_meta_setting = dpath_trial.parent / "setting_metadata.json"
     if not fpath_meta_setting.exists():
         fpath_meta_setting.write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
 
@@ -272,7 +272,7 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     # bold_high=True + heatmap=True exercise the real matplotlib styling paths (winner bold +
     # heatmap shading) end-to-end.
     dataset = "cub"
-    dpath_best = tmp_path / "settings" / "hp" / dataset / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / dataset / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _scores_grp(_comp(0.50)))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": [dataset]}))
@@ -283,8 +283,8 @@ def test_update_stats_tables_writes_pngs(tmp_path, monkeypatch) -> None:
     report.update_stats_tables("std", True, False, True, _SUPP_OFF)
 
     for group_key in ("native", "native_macro", "joint", "joint_macro"):
-        assert (tmp_path / "stats" / dataset / "map" / group_key / "metrics.png").exists()
-        assert (tmp_path / "stats" / dataset / "acc" / group_key / "metrics.png").exists()
+        assert (tmp_path / "datasets" / dataset / "stats" / "map" / group_key / "metrics.png").exists()
+        assert (tmp_path / "datasets" / dataset / "stats" / "acc" / group_key / "metrics.png").exists()
 
 
 def _write_chkpt_means(dpath_campaign, setting, dataset, means, idx_best) -> None:
@@ -292,7 +292,7 @@ def _write_chkpt_means(dpath_campaign, setting, dataset, means, idx_best) -> Non
     every criterion x group."""
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
-            dpath_group = dpath_campaign / "settings" / setting / dataset / "stats" / criterion / group_key
+            dpath_group = dpath_campaign / "datasets" / dataset / "settings" / setting / "stats" / criterion / group_key
             dpath_group.mkdir(parents=True)
             save_pickle(
                 {
@@ -319,7 +319,7 @@ def test_update_convergence_plots_writes_pngs(tmp_path, monkeypatch) -> None:
 
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
-            assert (tmp_path / "stats" / dataset / criterion / group_key / "convergence.png").exists()
+            assert (tmp_path / "datasets" / dataset / "stats" / criterion / group_key / "convergence.png").exists()
 
 
 def test_update_convergence_plots_winner_is_highest_selected_mean(tmp_path, monkeypatch) -> None:
@@ -355,7 +355,7 @@ def test_update_stats_tables_ordered_localized_per_metric(tmp_path, monkeypatch)
         ("c", "bryo"): (0.90, "0.90"),
     }
     for (setting, dataset), (all_v, acc_v) in comp_vals.items():
-        dpath_best = tmp_path / "settings" / setting / dataset / "42" / "evals" / "_best"
+        dpath_best = tmp_path / "datasets" / dataset / "settings" / setting / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v, acc_v)))
     (tmp_path / "campaign_metadata.json").write_text(
@@ -390,7 +390,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
     # "mp" has no completed trials anywhere -> no rows at all until its first trial completes.
     settings = ["hp", "mp"]
     for seed, base in (("42", 0.50), ("43", 0.60)):
-        dpath_best = tmp_path / "settings" / "hp" / "cub" / seed / "evals" / "_best"
+        dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / seed / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
     (tmp_path / "campaign_metadata.json").write_text(
@@ -401,7 +401,7 @@ def test_update_metrics_xlsx_writes_stacked_tables(tmp_path, monkeypatch) -> Non
 
     report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
-    fpath_xlsx = tmp_path / "stats" / "metrics" / "map" / "native.xlsx"
+    fpath_xlsx = tmp_path / "stats" / "map" / "native.xlsx"
     assert fpath_xlsx.exists()
     wb = load_workbook(fpath_xlsx)
     ws = wb.active
@@ -505,7 +505,7 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
     # only in bryo, so its CUB row is blank "-" -- ignored and never bolded.
     settings = ["hp", "mp", "sp"]
     for setting, dataset, base in (("hp", "cub", 0.60), ("mp", "cub", 0.50), ("sp", "bryo", 0.10)):
-        dpath_best = tmp_path / "settings" / setting / dataset / "42" / "evals" / "_best"
+        dpath_best = tmp_path / "datasets" / dataset / "settings" / setting / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
     (tmp_path / "campaign_metadata.json").write_text(
@@ -516,7 +516,7 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", True, False, False, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "stats" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, setting rows
     # 5/6/7 = hp/mp/sp; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
     assert ws.cell(row=3, column=1).value == "CUB"
@@ -529,9 +529,9 @@ def test_update_metrics_xlsx_bold_high(tmp_path, monkeypatch) -> None:
 
 
 def test_update_metrics_xlsx_per_group_files(tmp_path, monkeypatch) -> None:
-    # one workbook per eval group under stats/metrics/, each reading its own comp map:
+    # one workbook per eval group under stats/<criterion>/, each reading its own comp map:
     # native_macro.xlsx <- the best-checkpoint native_macro.json, not the (different) standard values
-    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(
         dpath_best,
@@ -546,7 +546,7 @@ def test_update_metrics_xlsx_per_group_files(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
-    dpath_metrics = tmp_path / "stats" / "metrics"
+    dpath_metrics = tmp_path / "stats"
     for criterion in ("map", "acc"):
         assert sorted(p.name for p in (dpath_metrics / criterion).glob("*.xlsx")) == [
             "joint.xlsx", "joint_macro.xlsx", "native.xlsx", "native_macro.xlsx"
@@ -560,10 +560,10 @@ def test_update_metrics_xlsx_per_group_files(tmp_path, monkeypatch) -> None:
 
 
 def test_update_metrics_xlsx_criterion_sourcing(tmp_path, monkeypatch) -> None:
-    # one workbook set per selection criterion: BOTH sheets of stats/metrics/<criterion>/ source
+    # one workbook set per selection criterion: BOTH sheets of stats/<criterion>/ source
     # that criterion's best checkpoints -- the map/ workbook's accuracy sheet holds the acc scores
     # AT the best-mAP checkpoint (not the best-acc ones), and vice versa; banners name the selection
-    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(
         dpath_best,
@@ -576,14 +576,14 @@ def test_update_metrics_xlsx_criterion_sourcing(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, False)
 
-    wb_map = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb_map = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_map["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
     assert grid[4][:2] == ["hp (1)", "50.00"]   # mAP at the map-best checkpoint
     assert agrid[4][:2] == ["hp (1)", "56.00"]  # acc at the map-best checkpoint
 
-    wb_acc = load_workbook(tmp_path / "stats" / "metrics" / "acc" / "native.xlsx")
+    wb_acc = load_workbook(tmp_path / "stats" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_acc["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; Acc-selection)"
@@ -606,7 +606,7 @@ def test_update_metrics_xlsx_ordered_per_sheet_metric(tmp_path, monkeypatch) -> 
     # -> accuracy sheet keeps [a, b].
     for setting, acc_v, cub_all, bryo_all in (("a", "0.80", 0.20, 0.40), ("b", "0.20", 0.40, 0.40)):
         for dataset, all_v in (("cub", cub_all), ("bryo", bryo_all)):
-            dpath_best = tmp_path / "settings" / setting / dataset / "42" / "evals" / "_best"
+            dpath_best = tmp_path / "datasets" / dataset / "settings" / setting / "42" / "evals" / "_best"
             dpath_best.mkdir(parents=True)
             _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v, acc_v)))
     (tmp_path / "campaign_metadata.json").write_text(
@@ -617,7 +617,7 @@ def test_update_metrics_xlsx_ordered_per_sheet_metric(tmp_path, monkeypatch) -> 
 
     report.update_metrics_xlsx("std", False, True, False, _SUPP_OFF, False)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     # campaign banner + blank row, then the dataset tables (Mean at the bottom); setting rows ordered
     # by the mean table's "All" column -> b before a
@@ -656,7 +656,7 @@ def test_update_metrics_xlsx_heatmap(tmp_path, monkeypatch) -> None:
     # other cells; 20/50/80 -> #ffddd6 / #ffaa99 / #ff775c. One dataset, so the Mean "All" column
     # mirrors the values and is shaded too; "d" (no completed trials anywhere) gets no row at all.
     for setting, all_v in (("a", 0.20), ("b", 0.50), ("c", 0.80)):
-        dpath_best = tmp_path / "settings" / setting / "cub" / "42" / "evals" / "_best"
+        dpath_best = tmp_path / "datasets" / "cub" / "settings" / setting / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v)))
     (tmp_path / "campaign_metadata.json").write_text(
@@ -667,7 +667,7 @@ def test_update_metrics_xlsx_heatmap(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", False, False, True, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "stats" / "map" / "native.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
     # setting rows 5/6/7 = a/b/c
     assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
@@ -694,7 +694,7 @@ _PRIM_MAP_HEADER = ["Setting", "All", "ID", "OOD", "I2T", "I2I", "T2I",
 def test_update_metrics_xlsx_supp_primitive(tmp_path, monkeypatch) -> None:
     # supp_scores.primitive appends the per-partition primitive score columns: ID/OOD x I2T/I2I/T2I
     # on the mAP sheet, ID I2T / OOD I2T on the accuracy sheet -- in every table, incl. the seed blocks
-    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _prim_scores_grp())
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["cub"]}))
@@ -703,7 +703,7 @@ def test_update_metrics_xlsx_supp_primitive(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", False, False, False, _SUPP_PRIM, False)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # mAP banners split: unmerged title + grey merged 'Composite Scores'/'Primitive Scores' group headers
@@ -737,7 +737,7 @@ def test_update_metrics_xlsx_supp_primitive(tmp_path, monkeypatch) -> None:
 
 def test_update_stats_tables_supp_primitive(tmp_path, monkeypatch) -> None:
     # supp_scores.primitive appends the per-partition primitive score columns to the png grids too
-    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _prim_scores_grp())
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["cub"]}))
@@ -783,7 +783,7 @@ def test_update_metrics_xlsx_supp_n_shot(tmp_path, monkeypatch) -> None:
     # few-shot (no classes there, as on the dev split), cub has all three -> [few, med, many]; the
     # absent bucket renders "-" in bryo's rows and is left out of the Mean (cub's value alone).
     for dataset, nshot in (("bryo", _NSHOT_NO_FEW), ("cub", _NSHOT_FULL)):
-        dpath_best = tmp_path / "settings" / "hp" / dataset / "42" / "evals" / "_best"
+        dpath_best = tmp_path / "datasets" / dataset / "settings" / "hp" / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _nshot_scores_grp(*nshot))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["bryo", "cub"]}))
@@ -792,7 +792,7 @@ def test_update_metrics_xlsx_supp_n_shot(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", False, False, False, {"primitive": True, "n_shot": True}, False)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -825,7 +825,7 @@ def test_update_metrics_xlsx_supp_n_shot(tmp_path, monkeypatch) -> None:
     # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
     report.update_metrics_xlsx("std", False, False, False, {"primitive": False, "n_shot": True}, False)
 
-    ws = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "stats" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
     assert grid[2][7] == "N-Shot Scores"
@@ -836,7 +836,7 @@ def test_update_metrics_xlsx_supp_n_shot(tmp_path, monkeypatch) -> None:
 
 def test_update_stats_tables_supp_n_shot(tmp_path, monkeypatch) -> None:
     # supp_scores.n_shot appends the bucket columns to the png grids too
-    dpath_best = tmp_path / "settings" / "hp" / "cub" / "42" / "evals" / "_best"
+    dpath_best = tmp_path / "datasets" / "cub" / "settings" / "hp" / "42" / "evals" / "_best"
     dpath_best.mkdir(parents=True)
     _write_group_metrics(dpath_best, _nshot_scores_grp(*_NSHOT_FULL))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp"], "datasets": ["cub"]}))
@@ -873,8 +873,8 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
         ("mp", 0.40, {"loss.targ": "mp"},
          {"loss": {"targ": "mp"}}),
     ):
-        dpath_setting = tmp_path / "settings" / setting
-        dpath_best = dpath_setting / "cub" / "42" / "evals" / "_best"
+        dpath_setting = tmp_path / "datasets" / "cub" / "settings" / setting
+        dpath_best = dpath_setting / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
         (dpath_setting / "overrides.json").write_text(json.dumps(overrides))
@@ -885,7 +885,7 @@ def test_update_metrics_xlsx_baseline_overrides(tmp_path, monkeypatch) -> None:
 
     report.update_metrics_xlsx("std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # score blocks shift right past the 2-wide overrides band + separator col C: aggregate at D..J
@@ -929,8 +929,8 @@ def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path
     # every overridden param resolves to the same value for every setting -> no column survives, so
     # the Baseline Overrides band is omitted entirely and the score blocks sit leftmost
     for setting, base in (("hp", 0.50), ("mp", 0.40)):
-        dpath_setting = tmp_path / "settings" / setting
-        dpath_best = dpath_setting / "cub" / "42" / "evals" / "_best"
+        dpath_setting = tmp_path / "datasets" / "cub" / "settings" / setting
+        dpath_best = dpath_setting / "42" / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
         (dpath_setting / "overrides.json").write_text(json.dumps({"loss.targ": "mp"}))
@@ -941,7 +941,7 @@ def test_update_metrics_xlsx_baseline_overrides_all_uniform_omits_table(tmp_path
 
     report.update_metrics_xlsx("std", False, False, False, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert not any(v == "Baseline Overrides" for r in grid for v in r)
     assert grid[2][0] == "CUB"  # score blocks leftmost: no band, no separator column
@@ -957,7 +957,7 @@ def test_update_metrics_xlsx_hw_sheet(tmp_path, monkeypatch) -> None:
     # across datasets -- hp's cub trial times (100.4, 200.4) mean to 150.4, then with bryo's 350.0
     # -> 250.2 -> "250" (a pooled per-trial mean would give 217: the two-level aggregation
     # matters) -- plus the Total Crashes RAM/VRAM/Other columns (Mean table only, crash totals
-    # don't decompose per dataset/seed) straight from setting_metadata.json's n_crashes
+    # don't decompose per dataset/seed) summed over the per-dataset setting_metadata.json n_crashes
     # (per-setting totals across seeds + datasets). Hardware cells get no winner-bold/heatmap
     # styling despite bold_high/heatmap on; the score sheets carry no hardware tables.
     hw_vals = {  # (setting, dataset, seed) -> (trial, train mean, eval mean, ram, vram)
@@ -967,7 +967,7 @@ def test_update_metrics_xlsx_hw_sheet(tmp_path, monkeypatch) -> None:
         ("mp", "cub", "42"): ("63.49", "7.70", "6.49", "117.2/128.0 GB", "26.3/178.4 GB"),
     }
     for (setting, dataset, seed), (trial_t, train_t, eval_t, ram, vram) in hw_vals.items():
-        dpath_trial = tmp_path / "settings" / setting / dataset / seed
+        dpath_trial = tmp_path / "datasets" / dataset / "settings" / setting / seed
         dpath_best = dpath_trial / "evals" / "_best"
         dpath_best.mkdir(parents=True)
         _write_group_metrics(dpath_best, _scores_grp(_comp(0.50)))
@@ -975,20 +975,24 @@ def test_update_metrics_xlsx_hw_sheet(tmp_path, monkeypatch) -> None:
             "runtime": {"train": {"mean": train_t}, "eval": {"mean": eval_t}, "trial": trial_t},
             "memory": {"ram": ram, "vram": vram},
         }))
-    for setting, overrides, meta, crashes in (
-        ("hp", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 2, "vram": 1, "other": 0}),
-        ("mp", {"loss.targ": "mp"}, {"loss": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
+    # the per-dataset setting files: overrides/config identical across a setting's datasets, the
+    # crash counters per dataset (hp's 2/1/0 total is split across cub and bryo)
+    for setting, dataset, overrides, meta, crashes in (
+        ("hp", "cub", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 1, "vram": 1, "other": 0}),
+        ("hp", "bryo", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 1, "vram": 0, "other": 0}),
+        ("mp", "cub", {"loss.targ": "mp"}, {"loss": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
-        (tmp_path / "settings" / setting / "overrides.json").write_text(json.dumps(overrides))
-        (tmp_path / "settings" / setting / "config.json").write_text(json.dumps({**meta}))
-        (tmp_path / "settings" / setting / "setting_metadata.json").write_text(json.dumps({"n_crashes": crashes}))
+        dpath_setting = tmp_path / "datasets" / dataset / "settings" / setting
+        (dpath_setting / "overrides.json").write_text(json.dumps(overrides))
+        (dpath_setting / "config.json").write_text(json.dumps({**meta}))
+        (dpath_setting / "setting_metadata.json").write_text(json.dumps({"n_crashes": crashes}))
     (tmp_path / "campaign_metadata.json").write_text(json.dumps({"settings": ["hp", "mp"], "datasets": ["cub", "bryo"]}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
 
     report.update_metrics_xlsx("std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "stats" / "metrics" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "stats" / "map" / "native.xlsx")
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
     ws = wb["Hardware Performance"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]

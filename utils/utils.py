@@ -319,7 +319,7 @@ class PrintLog:
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
             setting, dataset, seed = trial
-            dpath_trial = dpath_campaign / "settings" / setting / dataset / str(seed)
+            dpath_trial = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
             trial_id = f"{setting}/{dataset}/{seed}"
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None

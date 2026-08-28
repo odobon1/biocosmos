@@ -44,6 +44,7 @@ class _FakeSettingCfg:
     dataset: str = "cub"
     split: str = "D10"
     n_epochs: int = 5
+    n_chkpts: int = 5
     batch_size: int = 1_024
     dev: dict = field(default_factory=dict)
     arch: dict = field(default_factory=lambda: {
@@ -63,7 +64,7 @@ class _FakeSettingCfg:
 def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
     # setting-level config params go to config.json; setting_metadata.json holds the mutable state --
     # n_crashes (bumped by the campaign runner), best_chkpt (rewritten at each trial end), and the
-    # per-dataset precomputed horizon (sample/step totals with their LR-warmup shares). A later
+    # precomputed horizon (sample/step totals with their LR-warmup shares). A later
     # trial of the same setting must re-assert config.json unchanged and must not reset the state.
     monkeypatch.setattr(ArtifactManager, "dpath_setting", tmp_path)
     cfg = _FakeSettingCfg()
@@ -71,32 +72,32 @@ def test_save_metadata_setting_splits_config_and_crash_count(tmp_path, monkeypat
     ArtifactManager.save_metadata_setting(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
     assert "loss" in config and "setting" not in config  # config params kept, identity keys stripped
-    assert "n_epochs" not in config  # dataset-resolved duration, not a setting param
+    assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not setting params
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
-        "horizon": {"cub": {
+        "horizon": {
             # warmup is the share OF each total: round(0.04 x 102_500) samples, ceil'd to steps
             "n_samps": {"total": 102_500, "warmup": 4_100},
             # ceil(102_500 / 1_024): the partial final batch still steps
             "n_steps": {"total": 101, "warmup": 5},
-        }},
+        },
         "best_chkpt": {},
     }
 
     metadata = {
         "n_crashes": {"ram": 1, "vram": 2, "other": 4},
-        "horizon": {"cub": {
+        "horizon": {
             "n_samps": {"total": 102_500, "warmup": 4_100},
             "n_steps": {"total": 101, "warmup": 5},
-        }},
-        "best_chkpt": {"cub": {"map": {"native": {"idx": 3}}}},
+        },
+        "best_chkpt": {"map": {"native": {"idx": 3}}},
     }
     (tmp_path / "setting_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
     ArtifactManager.save_metadata_setting(cfg)  # a later trial re-saves: must not raise, must not reset the state
     assert json.loads((tmp_path / "setting_metadata.json").read_text()) == metadata
     assert json.loads((tmp_path / "config.json").read_text()) == config
 
-    cfg.n_epochs = 2  # another dataset's trial resolves a different duration: must still match config.json
+    cfg.n_epochs = 2  # n_epochs is pruned from config.json, so a differing resolved duration still matches it
     ArtifactManager.save_metadata_setting(cfg)
     assert json.loads((tmp_path / "config.json").read_text()) == config
 

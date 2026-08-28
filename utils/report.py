@@ -1,7 +1,7 @@
 """
 Campaign reporting/presentation: metric-stats aggregation, per-eval-group composite-score
-summary tables + cross-setting convergence plots (stats/<dataset>/{map,acc}/<group>/{metrics,
-convergence}.png) and metrics workbooks (stats/metrics/*.xlsx), and per-trial learning-curve plots. Everything here renders
+summary tables + cross-setting convergence plots (datasets/<dataset>/stats/{map,acc}/<group>/{metrics,
+convergence}.png) and metrics workbooks (stats/{map,acc}/*.xlsx), and per-trial learning-curve plots. Everything here renders
 from artifacts already on disk and reads its paths from ArtifactManager; trial/checkpoint state
 I/O lives in utils/train.py.
 """
@@ -131,12 +131,12 @@ def _listview_metric_stats(values):
 
 @rank0
 def update_metric_stats(spread_type):
-    dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
-    dpath_stats = dpath_dataset / "stats"
+    dpath_setting = ArtifactManager.dpath_setting
+    dpath_stats = dpath_setting / "stats"
     for criterion in BEST_CRITERIA:
         for group_key in _EVAL_GROUPS:
             metric_dicts = []
-            for dpath_trial in sorted(dpath_dataset.iterdir()):
+            for dpath_trial in sorted(dpath_setting.iterdir()):
                 # update_chkpt_selection runs first and (re)writes evals/_best/<criterion>/ for
                 # exactly the completed trials, so their presence still marks the set to aggregate
                 fpath_metrics = dpath_trial / f"evals/_best/{criterion}/{group_key}.json"
@@ -186,7 +186,7 @@ def seed_sweep_complete(seed):
     cross-dataset artifacts would mix settings reselected against different trial counts."""
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
     return all(
-        _chkpt_dpaths(ArtifactManager.dpath_campaign / "settings" / setting / dataset / str(seed)) is not None
+        _chkpt_dpaths(ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)) is not None
         for setting in metadata["settings"]
         for dataset in metadata["datasets"]
     )
@@ -224,14 +224,14 @@ def update_chkpt_selection(spread_type):
       - evals/_best/<criterion>/<group>.json in each trial: a copy of ITS eval<idx_best> file
       - stats/<criterion>/<group>/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads',
         'idx_best'}) + chkpt_means.png (mean curve, mean +- spread band, selection marked)
-      - setting_metadata.json's best_chkpt[<dataset>][<criterion>][<group>]
+      - setting_metadata.json's best_chkpt[<criterion>][<group>]
     """
-    dpath_dataset = ArtifactManager.dpath_setting / ArtifactManager.dataset
+    dpath_setting = ArtifactManager.dpath_setting
     best_chkpt = {criterion: {} for criterion in BEST_CRITERIA}
     for criterion, (score_key, metric) in BEST_CRITERIA.items():
         for group_key, group_name in _EVAL_GROUPS.items():
             trials = []  # (trial dir, its comp score at each checkpoint), completed trials only
-            for dpath_trial in sorted(dpath_dataset.iterdir()):
+            for dpath_trial in sorted(dpath_setting.iterdir()):
                 dpaths_chkpt = _chkpt_dpaths(dpath_trial)
                 if dpaths_chkpt is None:
                     continue
@@ -264,7 +264,7 @@ def update_chkpt_selection(spread_type):
                 "mean": f"{means[idx_best]:.4f}",
             }
 
-            dpath_group = dpath_dataset / "stats" / criterion / group_key
+            dpath_group = dpath_setting / "stats" / criterion / group_key
             dpath_group.mkdir(parents=True, exist_ok=True)
             save_pickle(
                 {
@@ -286,7 +286,7 @@ def update_chkpt_selection(spread_type):
 
     fpath_meta = ArtifactManager.dpath_setting / "setting_metadata.json"
     metadata = load_json(fpath_meta)
-    metadata["best_chkpt"][ArtifactManager.dataset] = best_chkpt
+    metadata["best_chkpt"] = best_chkpt
     save_json(metadata, fpath_meta)
 
 def _stats_table_grid(labels, setting_score_maps, spread_type):
@@ -325,10 +325,10 @@ def _collect_comps(settings, datasets, criterion):
     comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
     for setting in settings:
         for dataset in datasets:
-            dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
+            dpath_setting = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting
             comps = {group_key: {} for group_key in _EVAL_GROUPS}
-            if dpath_dataset.exists():
-                for dpath_trial in sorted(dpath_dataset.iterdir()):
+            if dpath_setting.exists():
+                for dpath_trial in sorted(dpath_setting.iterdir()):
                     for group_key in _EVAL_GROUPS:
                         fpath_metrics = dpath_trial / f"evals/_best/{criterion}/{group_key}.json"
                         if fpath_metrics.exists():
@@ -371,16 +371,16 @@ def _collect_hw(settings, datasets):
     strings (numerator taken). A written best-checkpoint (evals/_best/map/) metrics file is the
     completion signal, same as _collect_comps (native.json stands in for the set -- all per-group
     files are materialized together at trial end). Also each setting's n_crashes totals ({'ram'/'vram'/'other' -> int},
-    summed across all its trials -- seeds + datasets, completed or not) from
-    setting_metadata.json, whose counters survive the trial-dir wipes that reset
-    trial_metadata's."""
+    summed across all its trials -- seeds + datasets, completed or not) from its per-dataset
+    setting_metadata.json files (datasets/<dataset>/settings/<setting>/; a dataset the setting never launched in
+    has none), whose counters survive the trial-dir wipes that reset trial_metadata's."""
     hw_by = {}
     for setting in settings:
         for dataset in datasets:
-            dpath_dataset = ArtifactManager.dpath_campaign / "settings" / setting / dataset
+            dpath_setting = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting
             trials = {}
-            if dpath_dataset.exists():
-                for dpath_trial in sorted(dpath_dataset.iterdir()):
+            if dpath_setting.exists():
+                for dpath_trial in sorted(dpath_setting.iterdir()):
                     if (dpath_trial / "evals/_best/map/native.json").exists():
                         meta = load_json(dpath_trial / "trial_metadata.json")
                         trials[dpath_trial.name] = {
@@ -391,10 +391,14 @@ def _collect_hw(settings, datasets):
                             "Peak VRAM": float(meta["memory"]["vram"].split("/")[0]),
                         }
             hw_by[(setting, dataset)] = trials
-    crashes_by = {
-        setting: load_json(ArtifactManager.dpath_campaign / "settings" / setting / "setting_metadata.json")["n_crashes"]
-        for setting in settings
-    }
+    crashes_by = {}
+    for setting in settings:
+        crashes_by[setting] = {"ram": 0, "vram": 0, "other": 0}
+        for dataset in datasets:
+            fpath_meta = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting / "setting_metadata.json"
+            if fpath_meta.exists():
+                for kind, n in load_json(fpath_meta)["n_crashes"].items():
+                    crashes_by[setting][kind] += n
     return hw_by, crashes_by
 
 def _score_labels(supp_scores, nshot_names):
@@ -473,7 +477,7 @@ def _render_stats_table(grid, title, fpath, bold_high, heatmap):
     styles = _col_styles(grid, bold_high)
     for (row, col), cell in table.get_celld().items():
         if row == 0 or col == 0:
-            cell.set_text_props(fontweight="bold")
+            cell.set_text_props(fontweight="bold", ha="left" if col == 0 and row > 0 else "center")  # setting names left-aligned
             cell.set_facecolor("#eaeaea")
             continue
         means, winners = styles[col]
@@ -487,7 +491,7 @@ def _render_stats_table(grid, title, fpath, bold_high, heatmap):
 @rank0
 def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render the campaign-level composite-score summary tables for this trial's dataset, one pair
-    per eval group: artifacts/<campaign>/stats/<dataset>/map/<group>/metrics.png (comp mAP:
+    per eval group: artifacts/<campaign>/datasets/<dataset>/stats/map/<group>/metrics.png (comp mAP:
     All/ID/OOD/I2T/I2I/T2I score columns) and acc/<group>/metrics.png (comp I2T accuracy: single
     I2T column) -- each png sources its own selection criterion's best checkpoints (map pngs from
     evals/_best/map/, acc pngs from evals/_best/acc/). supp_scores ({'primitive', 'n_shot'} -> bool)
@@ -511,7 +515,7 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
     settings = [s for s in settings_all if comps_ref[(s, dataset)]]
     map_labels, acc_labels = _score_labels(supp_scores, _nshot_names(comps_all))
 
-    dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
+    dpath_stats = ArtifactManager.dpath_campaign / "datasets" / dataset / "stats"
 
     for group_key, group_name in _EVAL_GROUPS.items():
         comps_map = comps_all["map"][group_key]
@@ -545,7 +549,7 @@ def update_stats_tables(spread_type, bold_high, ordered, heatmap, supp_scores):
 
 def _plot_convergence(curves, idx_win, score_name, title, fpath):
     """[(setting, mean curve, its selected index), ...] overlaid on one log-x axes: every setting
-    grey, curves[idx_win] redrawn in black on top with its selection starred and a red dashed line
+    grey, curves[idx_win] redrawn in black on top with its selection marked by a diamond and a red dashed line
     across the plot at its score. Checkpoint 0 (the base eval) has no place on a log axis and is dropped -- it
     is not a selection candidate either way, so every curve starts at checkpoint 1."""
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -561,9 +565,9 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
 
     setting, means, idx_best = curves[idx_win]
     ax.axhline(means[idx_best], color="red", linestyle="--", linewidth=1)
-    ax.plot(np.arange(1, len(means)), means[1:], color="black", linewidth=2, zorder=4, label=setting)
-    # star + value on the selected point itself, matching the per-setting chkpt-mean curves
-    ax.plot(idx_best, means[idx_best], marker="*", color="black", markersize=14, linestyle="none",
+    ax.plot(np.arange(1, len(means)), means[1:], color="black", linewidth=1, zorder=4, label=setting)
+    # diamond + value on the selected point itself
+    ax.plot(idx_best, means[idx_best], marker="D", color="black", markersize=6, linestyle="none",
             zorder=5, label=f"selected ({idx_best})")
     ax.annotate(f"{means[idx_best]:.4f}", (idx_best, means[idx_best]), textcoords="offset points",
                 xytext=(0, 9), ha="center", color="black", fontsize=9, fontweight="bold")
@@ -572,14 +576,14 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
     ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
     ax.set_ylim(0, 1)
     ax.grid(True)
-    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curves and the selected-point star
+    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curves and the selected-point marker
     fig.savefig(fpath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 @rank0
 def update_convergence_plots():
     """Render the campaign-level convergence plots for this trial's dataset, one per criterion x eval
-    group: artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>/convergence.png overlays every
+    group: artifacts/<campaign>/datasets/<dataset>/stats/{map,acc}/<group>/convergence.png overlays every
     setting's across-trial mean curve -- the same curves update_chkpt_selection plots per setting,
     read back from its stats/<criterion>/<group>/chkpt_means.pkl, on a log-scaled checkpoint axis.
     All settings grey; the winner (the highest mean at its OWN selected checkpoint) black on top, its
@@ -588,12 +592,12 @@ def update_convergence_plots():
     skipped. Re-rendered at each trial completion, alongside update_stats_tables."""
     settings_all = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["settings"]
     dataset = ArtifactManager.dataset
-    dpath_stats = ArtifactManager.dpath_campaign / "stats" / dataset
+    dpath_stats = ArtifactManager.dpath_campaign / "datasets" / dataset / "stats"
     for criterion in BEST_CRITERIA:
         for group_key, group_name in _EVAL_GROUPS.items():
             curves = []
             for setting in settings_all:
-                fpath_means = (ArtifactManager.dpath_campaign / "settings" / setting / dataset /
+                fpath_means = (ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting /
                                "stats" / criterion / group_key / "chkpt_means.pkl")
                 if not fpath_means.exists():
                     continue
@@ -613,7 +617,7 @@ def update_convergence_plots():
 @rank0
 def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, supp_scores, baseline_overrides):
     """Write one workbook per selection criterion x eval group to
-    artifacts/<campaign>/stats/metrics/{map,acc}/<group>.xlsx, each with three sheets: 'Composite
+    artifacts/<campaign>/stats/{map,acc}/<group>.xlsx, each with three sheets: 'Composite
     mAP' (comp map scores, All/ID/OOD/I2T/I2I/T2I score columns), 'Composite I2T Accuracy'
     (comp acc, single I2T column) and 'Hardware Performance' (see below) -- the score sheets
     source the workbook's own criterion's best checkpoints (evals/_best/<criterion>/), so e.g.
@@ -688,13 +692,18 @@ def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, supp_scores, b
     seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
 
     if baseline_overrides:
-        dpath_settings = ArtifactManager.dpath_campaign / "settings"
+        # a setting's overrides.json / config.json are written per dataset (datasets/<dataset>/settings/<setting>/)
+        # but identical across them, so read each setting's from the first dataset it has completed trials in
+        dpath_settings = {
+            s: ArtifactManager.dpath_campaign / "datasets" / next(d for d in datasets if comps_ref[(s, d)]) / "settings" / s
+            for s in settings
+        }
         okeys = []  # union of overridden params, first-seen order across settings (campaign order)
         for s in settings:
-            for key in load_json(dpath_settings / s / "overrides.json"):
+            for key in load_json(dpath_settings[s] / "overrides.json"):
                 if key not in okeys:
                     okeys.append(key)
-        metadata_by = {s: load_json(dpath_settings / s / "config.json") for s in settings}
+        metadata_by = {s: load_json(dpath_settings[s] / "config.json") for s in settings}
 
         def override_value(setting, key):
             # a param absent from the setting's metadata is inert under that configuration -> '-'
@@ -916,11 +925,11 @@ def update_metrics_xlsx(spread_type, bold_high, ordered, heatmap, supp_scores, b
         map_groups.append(("N-Shot Scores", len(nshot_names)))
     if len(map_groups) == 1:
         map_groups = None
-    # one workbook set per selection criterion: every score in stats/metrics/<criterion>/ (both
+    # one workbook set per selection criterion: every score in stats/<criterion>/ (both
     # sheets) comes from that criterion's best checkpoints (e.g. the map/ workbooks' accuracy
     # sheet holds the acc scores at the best-mAP checkpoint), with the banner naming the selection
     for criterion, selection_name in _SELECTION_NAMES.items():
-        dpath_metrics = ArtifactManager.dpath_campaign / "stats" / "metrics" / criterion
+        dpath_metrics = ArtifactManager.dpath_campaign / "stats" / criterion
         dpath_metrics.mkdir(parents=True, exist_ok=True)
         for group_key, group_name in _EVAL_GROUPS.items():
             comps_by = comps_all[criterion][group_key]

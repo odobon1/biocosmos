@@ -26,14 +26,14 @@ def regen_learning_curves(campaign):
     metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
 
     for setting in metadata["settings"]:
-        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "settings" / setting
-        overrides = load_json(ArtifactManager.dpath_setting / "overrides.json")
         for dataset in metadata["datasets"]:
+            ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting
             for seed in metadata["seeds"]:
-                dpath_trial = ArtifactManager.dpath_setting / dataset / str(seed)
+                dpath_trial = ArtifactManager.dpath_setting / str(seed)
                 fpath_data = dpath_trial / "data_trial.pkl"
                 if not fpath_data.exists():
                     continue
+                overrides = load_json(ArtifactManager.dpath_setting / "overrides.json")
 
                 # effective trial config as on the campaign launch path (_build_trial_cfg_dict):
                 # frozen snapshot + trial identity + setting overrides (applied by get_config_train)

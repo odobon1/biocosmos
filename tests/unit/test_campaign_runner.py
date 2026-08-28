@@ -21,7 +21,7 @@ def _stub_kickoff_config_validation(monkeypatch):
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
     """Mimic a real successful trial subprocess: leave chkpts/in_progress + incomplete metadata behind so
     run_campaign's success path (rmtree in_progress + flip complete=True) has something to act on."""
-    d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+    d = tmp_path / cfg_dict["campaign"] / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
     (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -56,7 +56,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append((cfg_dict["setting"], cfg_dict["dataset"], cfg_dict["seed"]))
-        d = tmp_path / cfg_dict["campaign"] / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = tmp_path / cfg_dict["campaign"] / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -106,6 +106,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     train_cfg = {
         "campaign": "dev",
         "n_epochs": None,
+        "n_chkpts": None,
         "arch": {"model_type": "siglip_vitb16"},
         "opt": {"wd": None, "beta2": None},
     }
@@ -113,7 +114,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
     monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
-    monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: {"cub": {"n_epochs": 100}})
+    monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: {"cub": {"n_epochs": 100, "n_chkpts": 50}})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
@@ -123,6 +124,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     assert snapshot["train"]["opt"]["wd"] is None
     assert snapshot["train"]["opt"]["beta2"] is None
     assert snapshot["train"]["n_epochs"] is None
+    assert snapshot["train"]["n_chkpts"] is None
 
 
 def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
@@ -222,7 +224,7 @@ def test_run_campaign_baseline_setting_runs_config_unmodified(tmp_path, monkeypa
         ("hp", "phylo", {"loss.targ": "phylo"}),
     ]
 
-    with open(Path(tmp_path) / "cmp_baseline" / "settings" / "baseline" / "overrides.json") as f:
+    with open(Path(tmp_path) / "cmp_baseline" / "datasets" / "cub" / "settings" / "baseline" / "overrides.json") as f:
         assert json.load(f) == {}
 
     meta = json.loads((tmp_path / "cmp_baseline" / "campaign_metadata.json").read_text())
@@ -282,7 +284,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
         baseline=False,
     )
 
-    fpath = Path(tmp_path) / "cmp_c" / "settings" / "sp" / "overrides.json"
+    fpath = Path(tmp_path) / "cmp_c" / "datasets" / "cub" / "settings" / "sp" / "overrides.json"
     assert fpath.exists()
 
     with open(fpath) as f:
@@ -292,7 +294,7 @@ def test_run_campaign_writes_explicit_iw_override(tmp_path, monkeypatch) -> None
 
 
 def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
-    # a setting's dir (settings/<setting>/, holding overrides.json) is created at its first trial's
+    # a setting's dir (datasets/<dataset>/settings/<setting>/, holding overrides.json) is created at its first trial's
     # launch, not at campaign kickoff -- a planned setting whose trials never start leaves no dir
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
@@ -315,7 +317,7 @@ def test_run_campaign_defers_setting_dir_until_trial_launch(tmp_path, monkeypatc
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_settings = Path(tmp_path) / "cmp_defer" / "settings"
+    dpath_settings = Path(tmp_path) / "cmp_defer" / "datasets" / "cub" / "settings"
 
     # abort the campaign during the first trial (setting 'sp'): its overrides.json must already be
     # in place at launch, while 'hp' -- planned but never launched -- must have no dir at all
@@ -362,7 +364,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_complete" / "settings" / "sp" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_complete" / "datasets" / "cub" / "settings" / "sp" / "42"
 
     # a real trial writes its metadata (complete still False) + leaves a chkpts/in_progress dir behind;
     # the campaign runner is what cleans up and flips complete=True on a clean exit
@@ -388,8 +390,8 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
 
 def _campaign_table_fpaths(dpath_campaign: Path, dataset: str) -> list[Path]:
     groups = ("native", "native_macro", "joint", "joint_macro")
-    return [dpath_campaign / "stats" / dataset / criterion / group / "metrics.png" for criterion in ("map", "acc") for group in groups] + [
-        dpath_campaign / "stats" / "metrics" / criterion / f"{group}.xlsx" for criterion in ("map", "acc") for group in groups
+    return [dpath_campaign / "datasets" / dataset / "stats" / criterion / group / "metrics.png" for criterion in ("map", "acc") for group in groups] + [
+        dpath_campaign / "stats" / criterion / f"{group}.xlsx" for criterion in ("map", "acc") for group in groups
     ]
 
 
@@ -557,7 +559,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         "dataset_specific": {},
     })
 
-    dpath_trial = Path(tmp_path) / "cmp_fail" / "settings" / "sp" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_fail" / "datasets" / "cub" / "settings" / "sp" / "42"
 
     # every attempt crashes without ever writing a checkpoint (no forward progress), so the runner retries
     # up to the no-progress cap and then gives up, leaving the trial incomplete with an error.log.
@@ -665,7 +667,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
 
-    dpath_trial = Path(tmp_path) / "cmp_flaky" / "settings" / "sp" / "cub" / "42"
+    dpath_trial = Path(tmp_path) / "cmp_flaky" / "datasets" / "cub" / "settings" / "sp" / "42"
     fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
 
     # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
@@ -1005,7 +1007,7 @@ def test_run_campaign_expands_combo_groups(tmp_path, monkeypatch) -> None:
         ("hp_l2", "phylo", "l2"),
     }
 
-    with open(Path(tmp_path) / "cmp_groups" / "settings" / "hp_l2" / "overrides.json") as f:
+    with open(Path(tmp_path) / "cmp_groups" / "datasets" / "cub" / "settings" / "hp_l2" / "overrides.json") as f:
         data = json.load(f)
     assert data == {"loss.targ": "phylo", "loss.sim": "l2"}
 
@@ -1155,7 +1157,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
     dpath_campaign = Path(tmp_path) / "cmp_manifest"
 
     def _make_trial(setting, dataset, seed, complete=None, failure=None, runtime=None, epoch=0):
-        d = dpath_campaign / "settings" / setting / dataset / str(seed)
+        d = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
         d.mkdir(parents=True, exist_ok=True)
         if complete is not None:
             with open(d / "trial_metadata.json", "w") as f:
@@ -1208,7 +1210,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
 def test_manifest_completed_beats_stale_error_log(tmp_path) -> None:
     # a trial that failed once then succeeded on resume keeps its old error.log; complete=True wins
     dpath_campaign = Path(tmp_path) / "cmp_manifest_resume"
-    d = dpath_campaign / "settings" / "hp" / "cub" / "42"
+    d = dpath_campaign / "datasets" / "cub" / "settings" / "hp" / "42"
     d.mkdir(parents=True)
     with open(d / "trial_metadata.json", "w") as f:
         json.dump({
@@ -1293,7 +1295,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
         cur = f"{cfg_dict['setting']}/{cfg_dict['dataset']}/{cfg_dict['seed']}"
         in_progress_snapshots.append((cur, (dpath_campaign / "manifest.log").read_text()))
-        d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = dpath_campaign / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True, exist_ok=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
@@ -1357,7 +1359,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
 
     # the trial gets killed mid-run: leaves chkpts/in_progress + incomplete metadata, no error.log
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
-        d = dpath_campaign / "settings" / cfg_dict["setting"] / cfg_dict["dataset"] / str(cfg_dict["seed"])
+        d = dpath_campaign / "datasets" / cfg_dict["dataset"] / "settings" / cfg_dict["setting"] / str(cfg_dict["seed"])
         (d / "chkpts" / "in_progress").mkdir(parents=True)
         with open(d / "trial_metadata.json", "w") as f:
             json.dump({"dataset": cfg_dict["dataset"], "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)

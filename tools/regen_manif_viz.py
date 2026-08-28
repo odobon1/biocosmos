@@ -10,11 +10,11 @@ the first pass, since they have no sharded GPU implementation and this process i
 t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
 
 python -m tools.regen_manif_viz <campaign>
-python -m tools.regen_manif_viz <campaign>/settings/<setting>/<dataset>/<seed> [evo_only|no_evo] [snapshot]
+python -m tools.regen_manif_viz <campaign>/datasets/<dataset>/settings/<setting>/<seed> [evo_only|no_evo] [snapshot]
 
 <campaign>  e.g. dev40 -- re-render every trial in the campaign, from its campaign_metadata.json matrix
             (settings x datasets x seeds); trials that never ran are skipped
-<campaign>/settings/<setting>/<dataset>/<seed>  e.g. dev40/settings/mp/cub/42 -- one trial. This is the
+<campaign>/datasets/<dataset>/settings/<setting>/<seed>  e.g. dev40/datasets/cub/settings/mp/42 -- one trial. This is the
             form the campaign render worker spawns per completed trial.
 evo_only    re-render only the cross-eval evolving GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolving GIFs
@@ -34,11 +34,11 @@ from utils.utils import load_json, paths
 
 
 def _viz_context(dpath_trial):
-    # dataset/split from the trial metadata, setting from the path (<campaign>/settings/<setting>/<dataset>/<seed>).
+    # dataset/split from the trial metadata, setting from the path (<campaign>/datasets/<dataset>/settings/<setting>/<seed>).
     # Training manifold viz is only produced for eval-enabled trials (train_pt="train").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
-        setting=dpath_trial.parent.parent.name,
+        setting=dpath_trial.parent.name,
         dataset=meta["dataset"],
         split=meta["split"],
     )
@@ -81,7 +81,7 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None
     for setting in metadata["settings"]:
         for dataset in metadata["datasets"]:
             for seed in metadata["seeds"]:
-                dpath_trial = dpath_campaign / "settings" / setting / dataset / str(seed)
+                dpath_trial = dpath_campaign / "datasets" / dataset / "settings" / setting / str(seed)
                 if not (dpath_trial / "trial_metadata.json").exists():
                     continue
                 # a campaign sweep is a long foreground job, so it reports per trial -- unlike the
@@ -95,7 +95,7 @@ def main():
     flags = {a for a in args if a in ("evo_only", "no_evo", "snapshot")}
     targets = [a for a in args if a not in flags]
     if len(targets) != 1:
-        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/settings/<setting>/<dataset>/<seed>] "
+        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/datasets/<dataset>/settings/<setting>/<seed>] "
                  "[evo_only|no_evo] [snapshot]")
     target = targets[0].strip("/")
     evo_only, skip_evo = "evo_only" in flags, "no_evo" in flags

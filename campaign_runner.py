@@ -149,7 +149,7 @@ def _bump_crash_counts(dpath_trial: Path, dpath_campaign: Path, kind: str) -> No
     creation (campaign at kickoff, setting/trial by the subprocess), so a bump is a plain
     read-increment-save; the setting/trial files are guarded because a crash can precede the
     subprocess writing them, whereas campaign_metadata.json always exists by the time any trial runs."""
-    dpath_setting = dpath_trial.parent.parent
+    dpath_setting = dpath_trial.parent
     for fpath in (
         dpath_trial / "trial_metadata.json",
         dpath_setting / "setting_metadata.json",
@@ -184,7 +184,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     sibling snapshots injected per trial (as `hw`, `manif_viz`, `model_specific`, `dataset_specific`).
     Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled per trial from the
     `model_specific` snapshot, so a per-setting `arch.model_type` override still picks up the matching
-    family's defaults; a null `n_epochs` is likewise left unresolved and filled per trial from the
+    family's defaults; a null `n_epochs` / `n_chkpts` is likewise left unresolved and filled per trial from the
     `dataset_specific` snapshot as per the trial's dataset. Every later relaunch (resume or matrix extension) reloads that
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
     never alter that campaign -- all of its trials, original or added later, train against the same
@@ -323,8 +323,8 @@ def _expand_settings(combo_groups: list[list[dict]]) -> list[tuple[str, dict]]:
         settings.append((name, payload))
     return settings
 
-def _write_setting_overrides(campaign: str, setting: str, normalized_overrides: dict) -> None:
-    fpath = _dpath_campaign(campaign) / "settings" / setting / "overrides.json"
+def _write_setting_overrides(campaign: str, setting: str, dataset: str, normalized_overrides: dict) -> None:
+    fpath = _dpath_campaign(campaign) / "datasets" / dataset / "settings" / setting / "overrides.json"
     fpath.parent.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w") as f:
         json.dump(normalized_overrides, f, indent=2, sort_keys=True)
@@ -689,14 +689,14 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
             for setting, setting_payload in settings:
                 idx_trial += 1
 
-                dpath_trial = _dpath_campaign(campaign) / "settings" / setting / dataset / str(seed)
+                dpath_trial = _dpath_campaign(campaign) / "datasets" / dataset / "settings" / setting / str(seed)
                 if _check_trial_completion(dpath_trial):
                     print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {setting}/{dataset}/{seed}")
                     continue
 
                 # the setting dir is created here, at trial launch, not at campaign kickoff -- a
-                # planned setting whose trials never start leaves no artifacts/<campaign>/settings/ entry
-                _write_setting_overrides(campaign, setting, setting_payload)
+                # planned setting whose trials never start leaves no artifacts/<campaign>/datasets/<dataset>/settings/ entry
+                _write_setting_overrides(campaign, setting, dataset, setting_payload)
 
                 cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, setting, setting_payload, seed, dataset, idx_seed,
                                                  idx_trial, n_trials_total)
@@ -780,7 +780,7 @@ def run_campaign(campaign: str, n_trials: int, datasets: list[str], baseline_ove
                 if _trial_has_manif_cache(dpath_trial):
                     if render_proc is not None and render_proc.poll() is None:
                         render_proc.wait()
-                    render_proc = _spawn_render(f"{campaign}/settings/{setting}/{dataset}/{seed}")
+                    render_proc = _spawn_render(f"{campaign}/datasets/{dataset}/settings/{setting}/{seed}")
 
     _render_campaign_tables(campaign, datasets)
 

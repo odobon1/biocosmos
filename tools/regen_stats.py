@@ -4,10 +4,10 @@ python -m tools.regen_stats <campaign>
 Regenerate a campaign's stats artifacts from its completed trials -- no train/eval rerun. Reselects, per run
 (setting, dataset), the checkpoint its trials are scored at (argmax of the across-trial mean curve) and rewrites
 every completed trial's evals/_best/{map,acc}/<group>.json to that checkpoint, plus
-settings/<setting>/<dataset>/stats/{map,acc}/<group>/{metrics.json, metrics_listview.json, chkpt_means.pkl,
+datasets/<dataset>/settings/<setting>/stats/{map,acc}/<group>/{metrics.json, metrics_listview.json, chkpt_means.pkl,
 chkpt_means.png} and setting_metadata.json's best_chkpt,
-and re-renders artifacts/<campaign>/stats/<dataset>/{map,acc}/<group>/{metrics.png, convergence.png} and
-artifacts/<campaign>/stats/metrics/{map,acc}/<group>.xlsx (one per selection criterion x eval group), all using the
+and re-renders artifacts/<campaign>/datasets/<dataset>/stats/{map,acc}/<group>/{metrics.png, convergence.png} and
+artifacts/<campaign>/stats/{map,acc}/<group>.xlsx (one per selection criterion x eval group), all using the
 CURRENT config/stats.yaml settings (spread_type/bold_high/ordered/heatmap), so
 edits to any of them take effect for an already-run campaign. Each trial's cached per-checkpoint
 evals/{base,eval*}/ metrics files are reused and re-aggregated exactly as on the trial-completion path in
@@ -31,9 +31,9 @@ def regen_campaign(campaign, cfg_stats):
 
     # per (setting, dataset) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
     for setting in settings:
-        ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "settings" / setting
         for dataset in datasets:
-            if (ArtifactManager.dpath_setting / dataset).exists():
+            ArtifactManager.dpath_setting = ArtifactManager.dpath_campaign / "datasets" / dataset / "settings" / setting
+            if ArtifactManager.dpath_setting.exists():
                 ArtifactManager.dataset = dataset
                 update_chkpt_selection(cfg_stats.spread_type)
                 update_metric_stats(cfg_stats.spread_type)

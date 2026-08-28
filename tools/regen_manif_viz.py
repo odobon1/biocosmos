@@ -79,7 +79,7 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None
     """Re-render every trial in a campaign, sweeping each phase's planned matrix from its campaign_metadata.json
     the way the other regen_* tools do. Trials that never ran (or never reached an eval) have no
     trial_metadata.json and are skipped rather than erroring, so this works on a partially-run campaign."""
-    for phase in ("screening", "qual"):
+    for phase in ("screening", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
         dpath_phase = paths["artifacts"] / campaign / phase
         if not dpath_phase.exists():  # no qual phase: n_trials_qual null, or not reached yet
             continue

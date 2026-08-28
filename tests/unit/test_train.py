@@ -3,8 +3,9 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
+import torch
 
-from train import TrainPipeline, pass_epoch_span
+from train import TrainPipeline, pass_epoch_span, samps_stop
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
@@ -360,3 +361,25 @@ def test_tracked_targ_stats_only_graded_targets_of_active_branches() -> None:
     # loss2 off: its targ is irrelevant however it's configured
     assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) == {"targ1"}
     assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) == set()
+
+
+def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:
+    # the trainval phase stops at chkpt_stop's threshold; null (every other phase) and the last index run to
+    # sample_volume itself, which covers the skipped last mid-train threshold the way the final eval does
+    cfg = SimpleNamespace(sample_volume=1_000, n_chkpts=10, chkpt_interval=100, chkpt_stop=None)
+    assert samps_stop(cfg) == 1_000
+    cfg.chkpt_stop = 3
+    assert samps_stop(cfg) == 300
+    cfg.chkpt_stop = 10
+    assert samps_stop(cfg) == 1_000
+
+
+def test_save_model_writes_unwrapped_state_dict(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path)
+    model = torch.nn.Linear(2, 1)
+
+    ArtifactManager.save_model(SimpleNamespace(_unwrapped_model=model))
+
+    state = torch.load(tmp_path / "model.pt")
+    assert set(state) == {"weight", "bias"}
+    assert torch.equal(state["weight"], model.weight.detach())

@@ -32,7 +32,7 @@ from utils.utils import load_json, paths
 
 def regen_campaign(campaign, cfg_stats):
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
-    for phase in ("screening", "qual"):
+    for phase in ("screening", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
         ArtifactManager.dpath_phase = paths["artifacts"] / campaign / phase
         if not ArtifactManager.dpath_phase.exists():  # no qual phase: n_trials_qual null, or not reached yet
             continue

@@ -84,7 +84,7 @@ def _default_train_aug_cfg() -> dict:
 class TrainConfig:
 
     campaign: str
-    phase: str  # the campaign phase whose tree the trial writes to: 'screening' | 'qual' (campaign_runner)
+    phase: str  # the campaign phase whose tree the trial writes to: 'screening' | 'qual' | 'trainval' (campaign_runner)
     arm: str
     coord: str
     seed: int | None
@@ -114,6 +114,8 @@ class TrainConfig:
     idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
+    chkpt_stop: int | None = None  # trainval phase: stop training once this checkpoint index (1..n_chkpts, the pick's
+    # qual-selected one) is reached instead of running to sample_volume; the LR schedule keeps its full horizon
 
     hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, otherwise loaded live (converted to HardwareConfig in __post_init__)
 
@@ -167,6 +169,8 @@ class TrainConfig:
 
         if self.n_chkpts <= 0:
             raise ValueError(f"n_chkpts must be greater than 0, got {self.n_chkpts}")
+        if self.chkpt_stop is not None and not 1 <= self.chkpt_stop <= self.n_chkpts:
+            raise ValueError(f"chkpt_stop must be a checkpoint index in 1..n_chkpts ({self.n_chkpts}), got {self.chkpt_stop}")
         # sample interval between checkpoint/eval thresholds; sample_volume is data-derived so it need
         # not divide evenly -- the trainer skips the last mid-train threshold and the final eval covers
         # it at sample_volume
@@ -552,10 +556,13 @@ class CampaignConfig:
     """config/camps/<name>.yaml contents -- one campaign's trial matrix (see campaign_runner): its arms
     (ablation_arms) x coords (hpo_coords) x datasets, run for n_trials_screen seeds each in the screening phase,
     then each arm's best coord per dataset topped up to n_trials_qual seeds in the qual phase (null: no qual
-    phase). suffix is appended to the campaign name (null: none)."""
+    phase), then -- with trainval -- each of those picks retrained on the trainval partition up to its
+    qual-selected checkpoint, one run per qual seed (the trainval phase). suffix is appended to the campaign name
+    (null: none)."""
 
     n_trials_screen: int
     n_trials_qual: int | None
+    trainval: bool
     datasets: list
     ablation_arms: list
     hpo_coords: list
@@ -568,6 +575,12 @@ class CampaignConfig:
                 f"n_trials_screen ({self.n_trials_screen}) exceeds n_trials_qual ({self.n_trials_qual}): the qual phase "
                 f"tops each pick up FROM its n_trials_screen screening trials TO n_trials_qual, so n_trials_qual must be "
                 f">= n_trials_screen (or null to skip the qual phase)"
+            )
+
+        if self.trainval and self.n_trials_qual is None:
+            raise ValueError(
+                "trainval: true requires a qual phase (n_trials_qual set): the trainval phase trains each arm's qual pick "
+                "up to its qual-selected checkpoint"
             )
 
 

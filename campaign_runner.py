@@ -134,6 +134,8 @@ def _render_phase_tables(campaign: str, phase: str) -> None:
     a (dataset, arm, coord) that never succeeds -- would otherwise leave them a cycle behind. Checkpoint
     selection is NOT redone: every completed trial already reselected its own (dataset, arm, coord) at its own
     trial end."""
+    if phase == "trainval":  # runs no evals -> nothing to select or aggregate
+        return
     cfg_stats = get_config_stats()
     ArtifactManager.dpath_phase = _dpath_phase(campaign, phase)
     matrix = load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")["matrix"]
@@ -169,7 +171,7 @@ def _dpath_campaign(campaign: str) -> Path:
     return paths["artifacts"] / campaign
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
-    """A phase's dir, artifacts/<campaign>/<phase>/ ('screening' | 'qual'): the root of every artifact the runner and
+    """A phase's dir, artifacts/<campaign>/<phase>/ ('screening' | 'qual' | 'trainval'): the root of every artifact the runner and
     that phase's trials write (datasets/, campaign_stats/, campaign_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
     return _dpath_campaign(campaign) / phase
@@ -454,9 +456,10 @@ def _stash_nccl_dumps(dpath_phase: Path) -> None:
 
 def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, phase: str, arm: str, coord: str, overrides: dict,
                           seed: int, dataset: str, idx_seed: int,
-                          idx_trial: int | None = None, n_trials_total: int | None = None) -> dict:
+                          idx_trial: int | None = None, n_trials_total: int | None = None, injections: dict | None = None) -> dict:
     """Effective per-trial config dict: frozen campaign snapshot + trial identity (incl. the phase whose tree the
-    trial writes to) + the merged arm + coord overrides."""
+    trial writes to) + `injections` (phase-level settings laid over the snapshot -- the trainval phase's train_pt /
+    chkpt_stop; not overrides, so not recorded as such) + the merged arm + coord overrides."""
     cfg_dict = deepcopy(cfg_snapshot["train"])
     cfg_dict["campaign"] = campaign
     cfg_dict["phase"] = phase
@@ -472,6 +475,8 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, phase: str, arm: st
     cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
     cfg_dict["hw"] = cfg_snapshot["hardware"]
     cfg_dict["_overrides"] = overrides
+    if injections:
+        cfg_dict.update(injections)
     return apply_overrides(cfg_dict, overrides)
 
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
@@ -611,7 +616,7 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
     """Load (or, on the phase's first launch, create) the phase's campaign_metadata.json and record its planned
     matrix; returns (metadata, its path). `matrix` is {dataset: {arm: [coords]}} -- the phase's planned (dataset,
     arm, coord) combos in campaign order: every coord under every arm for the screening phase, each arm's picked
-    coord (or none) for the qual phase -- the shape the stats code keys its sweep gates and table rows off. The
+    coord for the qual and trainval phases -- the shape the stats code keys its sweep gates and table rows off. The
     GPU count must match the phase's first launch, and the planned matrix may only grow across launches
     (_check_no_removals)."""
     n_gpus = torch.cuda.device_count()
@@ -646,13 +651,17 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
     return metadata, fpath_meta
 
 def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[str, dict]], coords: list[tuple[str, dict]],
-               datasets: list[str], seeds: list[int], matrix: dict) -> bool:
+               datasets: list[str], seeds: list[int], matrix: dict, chkpt_stops: dict | None = None) -> bool:
     """Run one phase's trial matrix under artifacts/<campaign>/<phase>/: `matrix` ({dataset: {arm: [coords]}}, the
     phase's planned (dataset, arm, coord) combos in campaign order; see _phase_metadata) x `seeds`, seed-major
     then dataset, arm, coord. `arms` / `coords` are the (name, overrides) members the matrix draws on. Every
     artifact of the phase -- its campaign_metadata.json, time.pkl, manifest.log, the coord dirs, the stats
     trees -- lives under its dir. Completed trials are skipped, so a relaunch resumes/extends the phase.
-    Returns False when the run was interrupted (Ctrl-C / SIGTERM), True otherwise."""
+    `chkpt_stops` ({(dataset, arm, coord): checkpoint index}, the trainval phase) trains every combo on the
+    trainval partition and stops it at its index (TrainConfig.chkpt_stop) instead of running to sample_volume.
+    Returns 'complete' once every planned trial of the phase is complete, 'incomplete' when the run finished but
+    some trial failed for good (the campaign stops at this phase -- see run_campaign), 'interrupted' on Ctrl-C /
+    SIGTERM."""
     dpath_phase = _dpath_phase(campaign, phase)
     dpath_phase.mkdir(parents=True, exist_ok=True)
     save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
@@ -660,6 +669,9 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
     arm_payloads, coord_payloads = dict(arms), dict(coords)
     metadata, fpath_meta = _phase_metadata(campaign, dpath_phase, list(arm_payloads), list(coord_payloads), datasets, seeds, matrix)
     combos = [(dataset, arm, coord) for dataset in datasets for arm in arm_payloads for coord in matrix[dataset][arm]]
+
+    def injections(dataset, arm, coord):
+        return {"train_pt": "trainval", "chkpt_stop": chkpt_stops[(dataset, arm, coord)]} if chkpt_stops is not None else {}
 
     cfg_hardware = cfg_snapshot["hardware"]
     max_retries = cfg_hardware["max_retries"]  # consecutive no-progress trial retries before giving up
@@ -670,7 +682,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
     # to be representative -- config validation is seed-independent beyond requiring a non-null seed.
     for dataset, arm, coord in combos:
         cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord, {**arm_payloads[arm], **coord_payloads[coord]},
-                                         seeds[0], dataset, 0)
+                                         seeds[0], dataset, 0, injections=injections(dataset, arm, coord))
         try:
             get_config_train(cfg_dict=cfg_dict)
         except Exception as e:
@@ -723,7 +735,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
             _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord])
 
             cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord, {**arm_payloads[arm], **coord_payloads[coord]},
-                                             seed, dataset, idx_seed, idx_trial, n_trials_total)
+                                             seed, dataset, idx_seed, idx_trial, n_trials_total, injections=injections(dataset, arm, coord))
 
             if dpath_trial.exists():
                 print(f"[{idx_trial}/{n_trials_total}] RESUME: {trial_id}")
@@ -761,7 +773,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
                         render_proc.terminate()
                     _render_phase_tables(campaign, phase)
                     PrintLog.manifest(dpath_phase, trials, in_progress=None)
-                    return False
+                    return "interrupted"
                 except Exception as e:
                     _log_crash(dpath_trial, e)
                     kind = _classify_crash(e)
@@ -815,8 +827,17 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
             render_proc.wait()
         except KeyboardInterrupt:
             render_proc.terminate()
-            return False
-    return True
+            return "interrupted"
+
+    n_failed = sum(
+        not _check_trial_completion(dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed))
+        for dataset, arm, coord, seed in trials
+    )
+    if n_failed:
+        print(f"Campaign: '{campaign}' {phase} incomplete -- {n_failed} trial(s) failed (see its manifest.log); "
+              f"the next phase is not started. Relaunch to resume them.", flush=True)
+        return "incomplete"
+    return "complete"
 
 def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dict[tuple[str, str], str]:
     """{(dataset, arm): coord}: the coord each arm goes into the qual phase with, per dataset. Picks are frozen
@@ -824,47 +845,64 @@ def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dic
     screening results have since moved (added seeds/coords) -- and a (dataset, arm) without a recorded pick
     (the first qual launch, or an arm/dataset added later) is picked fresh from the screening tree: the coord
     with the highest across-trial mean Native mAP composite All score at its selected checkpoint
-    (report.pick_best_coords). An arm with no completed screening trial on a dataset has no pick there and
-    sits out the qual phase on that dataset (announced)."""
+    (report.pick_best_coords; every arm has one, the screening phase having completed in full)."""
     fpath_meta = _dpath_phase(campaign, "qual") / "campaign_metadata.json"
     recorded = load_json(fpath_meta)["matrix"] if fpath_meta.exists() else {}
     ArtifactManager.dpath_phase = _dpath_phase(campaign, "screening")
     fresh = pick_best_coords()  # {(arm, dataset): coord}
-    picks = {}
-    for dataset in datasets:
-        for arm in arm_names:
-            if dataset in recorded and arm in recorded[dataset] and recorded[dataset][arm]:
-                picks[(dataset, arm)] = recorded[dataset][arm][0]
-            elif (arm, dataset) in fresh:
-                picks[(dataset, arm)] = fresh[(arm, dataset)]
-            else:
-                print(f"qual: no completed screening trial for arm '{arm}' on dataset '{dataset}' -- it sits out the qual phase there", flush=True)
-    return picks
+    return {
+        (dataset, arm): recorded[dataset][arm][0] if dataset in recorded and arm in recorded[dataset] else fresh[(arm, dataset)]
+        for dataset in datasets
+        for arm in arm_names
+    }
+
+def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
+    """Give a later phase its own copy of the campaign's frozen config snapshot (the screening phase's
+    cfg_baseline.json), so every phase tree is self-contained for the regen tools. Write-once."""
+    dpath_phase.mkdir(parents=True, exist_ok=True)
+    fpath = dpath_phase / "cfg_baseline.json"
+    if not fpath.exists():
+        save_json(cfg_snapshot, fpath)
 
 def _copy_qual_picks(campaign: str, picks: dict[tuple[str, str], str], cfg_snapshot: dict) -> None:
-    """Seed the qual tree from the screening tree: the campaign's frozen config snapshot (so the qual tree is
-    self-contained for the regen tools), then for each pick its coord dir wholesale -- every screening seed's
-    trial, config/overrides/coord_metadata and coord_stats -- so the qual tree reads as if the coord had run
-    there from the start; the qual phase then tops it up to n_trials_qual seeds. Copy-once: an existing qual
-    coord dir (a relaunch) is left as is."""
+    """Seed the qual tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),
+    then for each pick its coord dir wholesale -- every screening seed's trial, config/overrides/coord_metadata
+    and coord_stats -- so the qual tree reads as if the coord had run there from the start; the qual phase then
+    tops it up to n_trials_qual seeds. Copy-once: an existing qual coord dir (a relaunch) is left as is."""
     dpath_qual = _dpath_phase(campaign, "qual")
-    dpath_qual.mkdir(parents=True, exist_ok=True)
-    fpath_cfg = dpath_qual / "cfg_baseline.json"
-    if not fpath_cfg.exists():
-        save_json(cfg_snapshot, fpath_cfg)
+    _write_phase_snapshot(dpath_qual, cfg_snapshot)
     for (dataset, arm), coord in picks.items():
         rel = Path("datasets") / dataset / "arms" / arm / "coords" / coord
         if not (dpath_qual / rel).exists():
             shutil.copytree(_dpath_phase(campaign, "screening") / rel, dpath_qual / rel)
 
-def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None, datasets: list[str],
+def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], int]:
+    """{(dataset, arm, coord): checkpoint index} over the qual phase's matrix: the checkpoint each pick is trained
+    up to in the trainval phase -- its qual-selected one, the argmax of the pick's across-trial mean Native mAP
+    composite All curve over its qual trials (report.update_chkpt_selection's best_chkpt.map.native, read from the
+    qual coord's coord_metadata.json; final once every qual trial of the pick is in)."""
+    return {
+        (dataset, arm, coord): load_json(
+            _dpath_phase(campaign, "qual") / "datasets" / dataset / "arms" / arm / "coords" / coord / "coord_metadata.json"
+        )["best_chkpt"]["map"]["native"]["idx"]
+        for dataset, arms in matrix.items()
+        for arm, coords in arms.items()
+        for coord in coords
+    }
+
+def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None, trainval: bool, datasets: list[str],
                  ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> bool:
     """Run the campaign: the screening phase -- every arm x coord on every dataset for n_trials_screen seeds,
     under artifacts/<campaign>/screening/ -- then, unless n_trials_qual is null, the qual phase under
     artifacts/<campaign>/qual/: each arm's best screening coord per dataset (_qual_picks), its screening trials
     copied over (_copy_qual_picks) and topped up to n_trials_qual seeds, so the qual tree reads as if
-    n_trials_qual trials had run for the pick. Returns False when the run was interrupted (Ctrl-C / SIGTERM) --
-    the campaign queue stops on it -- True otherwise."""
+    n_trials_qual trials had run for the pick -- then, with `trainval`, the trainval phase under
+    artifacts/<campaign>/trainval/: every pick again over the qual seeds, each run on the trainval partition and
+    stopped at the pick's qual-selected checkpoint (_trainval_stops) with its weights saved there (train.py); no
+    evals. A phase whose trials don't all complete (a trial failed for good) ends the campaign there: the next
+    phase is not started until a relaunch has resumed the failed trials. Returns False when the run was
+    interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise (the campaign is over,
+    complete or not)."""
     # Validate the planned matrix before any side effects: every arm / coord name must be unique, and
     # no override key may be claimed by both an arm and a coord.
     arms, coords = _expand_matrix(ablation_arms, hpo_coords)
@@ -883,17 +921,27 @@ def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None,
         _del_base_eval_cache()
 
     matrix = {dataset: {arm: [name for name, _ in coords] for arm in arm_names} for dataset in datasets}
-    if not _run_phase(campaign, "screening", cfg_snapshot, arms, coords, datasets, _iter_seeds(n_trials_screen), matrix):
-        return False
-    if n_trials_qual is None:
-        return True
+    outcome = _run_phase(campaign, "screening", cfg_snapshot, arms, coords, datasets, _iter_seeds(n_trials_screen), matrix)
+    if outcome != "complete" or n_trials_qual is None:
+        return outcome != "interrupted"
 
     picks = _qual_picks(campaign, datasets, arm_names)
     _copy_qual_picks(campaign, picks, cfg_snapshot)
     picked = set(picks.values())
-    matrix = {dataset: {arm: [picks[(dataset, arm)]] if (dataset, arm) in picks else [] for arm in arm_names} for dataset in datasets}
-    return _run_phase(campaign, "qual", cfg_snapshot, arms, [(name, payload) for name, payload in coords if name in picked],
-                      datasets, _iter_seeds(n_trials_qual), matrix)
+    coords_qual = [(name, payload) for name, payload in coords if name in picked]
+    matrix = {dataset: {arm: [picks[(dataset, arm)]] for arm in arm_names} for dataset in datasets}
+    seeds_qual = _iter_seeds(n_trials_qual)
+    outcome = _run_phase(campaign, "qual", cfg_snapshot, arms, coords_qual, datasets, seeds_qual, matrix)
+    if outcome != "complete" or not trainval:
+        return outcome != "interrupted"
+
+    # trainval: the qual matrix once more, on the trainval partition -- one run per qual seed, each stopped at the
+    # pick's qual-selected checkpoint. The LR schedule keeps its full n_epochs horizon (warmup a fraction of it,
+    # cosine over all of it), so checkpoint k sees the LR it saw in train; only the epochs are longer.
+    _write_phase_snapshot(_dpath_phase(campaign, "trainval"), cfg_snapshot)
+    outcome = _run_phase(campaign, "trainval", cfg_snapshot, arms, coords_qual, datasets, seeds_qual, matrix,
+                         chkpt_stops=_trainval_stops(campaign, matrix))
+    return outcome != "interrupted"
 
 
 def _load_campaign_config(name: str) -> CampaignConfig:
@@ -929,6 +977,7 @@ def _launch_camp(name: str) -> bool:
         campaign=campaign,
         n_trials_screen=cfg.n_trials_screen,
         n_trials_qual=cfg.n_trials_qual,
+        trainval=cfg.trainval,
         datasets=cfg.datasets,
         ablation_arms=cfg.ablation_arms,
         hpo_coords=cfg.hpo_coords,

@@ -700,6 +700,7 @@ def _make_campaign_config_dummy(**overrides):
     config = {
         "n_trials_screen": 1,
         "n_trials_qual": 5,
+        "trainval": False,
         "datasets": ["cub"],
         "ablation_arms": [[{"loss.targ": "sp", "name": "sp"}]],
         "hpo_coords": [[{"name": "base"}]],
@@ -718,3 +719,21 @@ def test_campaign_config_rejects_screen_exceeding_qual() -> None:
 def test_campaign_config_accepts_equal_or_null_qual() -> None:
     assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=3)).n_trials_qual == 3
     assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=None)).n_trials_qual is None
+
+
+def test_campaign_config_trainval_requires_qual() -> None:
+    # the trainval phase trains the qual picks up to their qual-selected checkpoints: nothing to train without qual
+    with pytest.raises(ValueError, match="trainval"):
+        CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=None))
+    assert CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=5)).trainval is True
+
+
+def test_train_config_rejects_chkpt_stop_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    # chkpt_stop is a checkpoint index, 1..n_chkpts (the dummy's n_chkpts is 10); null runs to sample_volume
+    patch_hw(monkeypatch)
+
+    for chkpt_stop in (0, 11):
+        with pytest.raises(ValueError, match="chkpt_stop"):
+            TrainConfig(**make_train_config_dummy(chkpt_stop=chkpt_stop))
+    assert TrainConfig(**make_train_config_dummy(chkpt_stop=10)).chkpt_stop == 10
+    assert TrainConfig(**make_train_config_dummy()).chkpt_stop is None

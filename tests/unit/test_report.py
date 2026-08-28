@@ -492,16 +492,14 @@ def test_pick_best_coords_by_native_map_all(tmp_path, monkeypatch) -> None:
 def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     # the phase's planned matrix -- not arms x coords -- is what the sweep gates and table rows key off: in a
     # qual-shaped tree each arm has one planned coord (sp: c0, mp: c1; "c2" is a campaign coord planned nowhere
-    # here), so a seed's cycles close once THOSE have completed, and the tables carry only those rows. An arm
-    # planned with no coord (hp) is vacuously complete and, having no dir, renders nothing.
-    matrix = {"cub": {"sp": ["c0"], "mp": ["c1"], "hp": []}}
-    _write_meta(tmp_path, ["sp", "mp", "hp"], ["c0", "c1", "c2"], ["cub"], matrix)
+    # here), so a seed's cycles close once THOSE have completed, and the tables carry only those rows
+    matrix = {"cub": {"sp": ["c0"], "mp": ["c1"]}}
+    _write_meta(tmp_path, ["sp", "mp"], ["c0", "c1", "c2"], ["cub"], matrix)
     scores = (("0.10", "0.10"), ("0.30", "0.30"))
     _write_trial_evals(_dpath_coord(tmp_path, "cub", "sp", "c0") / "42", scores)
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     assert report.arm_sweep_complete(42, "cub", "sp")
-    assert report.arm_sweep_complete(42, "cub", "hp")  # no planned coord -> nothing to wait for
     assert not report.dataset_sweep_complete(42, "cub")  # mp/c1 still to come
     _write_trial_evals(_dpath_coord(tmp_path, "cub", "mp", "c1") / "42", scores)
     assert report.dataset_sweep_complete(42, "cub")
@@ -514,12 +512,10 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
     report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF)
-    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_OFF)
     report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_stats", "map", "native")] == ["Coord", "c0 (1)"]
-    assert not (tmp_path / "datasets" / "cub" / "arms" / "hp").exists()
     assert [r[:2] for r in _captured(grids, "arm_coords", "map", "native")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
     assert [r[0] for r in _captured(grids, "arms", "map", "native")] == ["Arm", "sp (1)", "mp (1)"]
     grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]

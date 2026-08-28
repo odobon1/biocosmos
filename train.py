@@ -79,6 +79,15 @@ def pass_epoch_span(cfg, idx_pass):
     samps_end = min(idx_pass * cfg.samps_per_pass, cfg.sample_volume)
     return samps_start // cfg.samps_per_epoch + 1, math.ceil(samps_end / cfg.samps_per_epoch)
 
+def samps_stop(cfg):
+    """The sample count training runs to: sample_volume, or -- under cfg.chkpt_stop (the trainval phase) -- that
+    checkpoint index's threshold, chkpt_stop * chkpt_interval. The last index runs to sample_volume itself, which
+    covers the skipped last mid-train threshold the way the final eval does. The LR schedule is untouched (built
+    over sample_volume), so a stopped run sees the same LR at every checkpoint as a full one."""
+    if cfg.chkpt_stop is None or cfg.chkpt_stop == cfg.n_chkpts:
+        return cfg.sample_volume
+    return cfg.chkpt_stop * cfg.chkpt_interval
+
 
 class TrainPipeline:
     """DDP rank discipline: every undecorated method is entered by ALL ranks and may run
@@ -138,6 +147,7 @@ class TrainPipeline:
         self.init_opt_and_lr_sched()
         self.n_batches_seen = 0
         self.chkpt_thresh = self.cfg.chkpt_interval
+        self.samps_stop = samps_stop(self.cfg)
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
 
         self.n_samps_seen = 0
@@ -638,7 +648,7 @@ class TrainPipeline:
                         self.timer_train.start()
                         pbar.refresh()
 
-                    if self.n_samps_seen >= self.cfg.sample_volume:
+                    if self.n_samps_seen >= self.samps_stop:
                         break
 
                 # EPOCH DONE
@@ -665,6 +675,9 @@ class TrainPipeline:
                     epoch_last,
                     self.cfg.n_epochs,
                 )
+
+                if self.n_samps_seen >= self.samps_stop:
+                    break  # chkpt_stop reached mid-pass (trainval phase): no further passes
 
             # FINAL EVAL
 
@@ -732,23 +745,28 @@ def run_training(cfg):
         local_rank=local_gpu_rank,
     )
     train_pipe.train()
-    cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
-    # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
-    # rewrites their evals/_best/, so the aggregates below see the current selection
-    update_chkpt_selection(cfg_stats.spread_type)
-    update_metric_stats(cfg_stats.spread_type)
-    # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
-    # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
-    # (dataset_stats), and the whole matrix (campaign_stats) -- so it is never rendered from a mix of
-    # coords reselected against different trial counts
-    if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
-        update_arm_stats(cfg.dataset, cfg.arm, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                         cfg_stats.supp_scores)
-    if dataset_sweep_complete(cfg.seed, cfg.dataset):
-        update_dataset_stats(cfg.dataset, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+    if cfg.phase == "trainval":
+        # the trainval phase's product: the weights at the qual-selected checkpoint (chkpt_stop); it runs no evals,
+        # so there is nothing to select or aggregate
+        ArtifactManager.save_model(train_pipe.modelw)
+    else:
+        cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
+        # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
+        # rewrites their evals/_best/, so the aggregates below see the current selection
+        update_chkpt_selection(cfg_stats.spread_type)
+        update_metric_stats(cfg_stats.spread_type)
+        # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
+        # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
+        # (dataset_stats), and the whole matrix (campaign_stats) -- so it is never rendered from a mix of
+        # coords reselected against different trial counts
+        if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
+            update_arm_stats(cfg.dataset, cfg.arm, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                              cfg_stats.supp_scores)
-    if seed_sweep_complete(cfg.seed):
-        update_campaign_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
-                              cfg_stats.overrides)
+        if dataset_sweep_complete(cfg.seed, cfg.dataset):
+            update_dataset_stats(cfg.dataset, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                                 cfg_stats.supp_scores)
+        if seed_sweep_complete(cfg.seed):
+            update_campaign_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
+                                  cfg_stats.overrides)
 
     cleanup_ddp()

@@ -1,6 +1,8 @@
-n_trials_screen: 1
-n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
 datasets: [cub]
+
+n_trials_screen: 1
+n_trials_qual: 3  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
+trainval: true  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
 
 ablation_arms:
   - - {loss2.mix: 0.3, name: phylo}
@@ -8,6 +10,7 @@ ablation_arms:
     - {loss.targ: sp, name: sp}
 
 hpo_coords:
-  - - {name: base}
+  - - {opt.lr.init: [2.0e-6, 2.0e-5, 2.0e-4]}
+  - - {loss.logits.temp.init: [0.0, 0.1, 0.2]}
 
 suffix: null  # {null, [str]}; no suffix if set to null

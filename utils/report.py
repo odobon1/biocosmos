@@ -201,7 +201,7 @@ def _metadata():
     """The phase's campaign_metadata.json: 'arms' / 'coords' / 'datasets' in campaign order, 'seeds', and
     'matrix' ({dataset: {arm: [coords]}}) -- the phase's planned (dataset, arm, coord) combos, which every
     sweep gate and table row here keys off (every arm x coord in the screening phase, each arm's picked
-    coord -- or none -- in the qual phase)."""
+    coord in the qual phase)."""
     return load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
 
 def _matrix_arm_coords(metadata, datasets):

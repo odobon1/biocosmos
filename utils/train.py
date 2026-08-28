@@ -563,6 +563,14 @@ class ArtifactManager:
         torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
 
     @staticmethod
+    @rank0
+    def save_model(modelw):
+        """The trial's product weights: the full state of the unwrapped model (encoders + logit scalars) as
+        <trial>/model.pt -- the trainval phase's deliverable, taken at its chkpt_stop; loads back into
+        VLMWrapper.build(cfg)'s model via load_state_dict."""
+        torch.save(modelw._unwrapped_model.state_dict(), ArtifactManager.dpath_trial / "model.pt")
+
+    @staticmethod
     def save_rng_states(rank):
         rng_state = {
             "rng_cpu": torch.get_rng_state(),

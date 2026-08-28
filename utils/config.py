@@ -84,6 +84,7 @@ def _default_train_aug_cfg() -> dict:
 class TrainConfig:
 
     campaign: str
+    phase: str  # the campaign phase whose tree the trial writes to: 'screening' | 'qual' (campaign_runner)
     arm: str
     coord: str
     seed: int | None
@@ -544,6 +545,30 @@ def load_stats_config_dict() -> dict:
 
 def get_config_stats():
     return StatsConfig(**load_stats_config_dict())
+
+
+@dataclass
+class CampaignConfig:
+    """config/camps/<name>.yaml contents -- one campaign's trial matrix (see campaign_runner): its arms
+    (ablation_arms) x coords (hpo_coords) x datasets, run for n_trials_screen seeds each in the screening phase,
+    then each arm's best coord per dataset topped up to n_trials_qual seeds in the qual phase (null: no qual
+    phase). suffix is appended to the campaign name (null: none)."""
+
+    n_trials_screen: int
+    n_trials_qual: int | None
+    datasets: list
+    ablation_arms: list
+    hpo_coords: list
+    suffix: str | None
+
+    def __post_init__(self):
+
+        if self.n_trials_qual is not None and self.n_trials_screen > self.n_trials_qual:
+            raise ValueError(
+                f"n_trials_screen ({self.n_trials_screen}) exceeds n_trials_qual ({self.n_trials_qual}): the qual phase "
+                f"tops each pick up FROM its n_trials_screen screening trials TO n_trials_qual, so n_trials_qual must be "
+                f">= n_trials_screen (or null to skip the qual phase)"
+            )
 
 
 @dataclass

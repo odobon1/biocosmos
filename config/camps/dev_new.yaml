@@ -1,4 +1,5 @@
-n_trials: 1
+n_trials_screen: 1
+n_trials_qual: 5
 datasets: [cub]
 
 ablation_arms:

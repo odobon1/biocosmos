@@ -17,8 +17,8 @@ from utils.ddp import rank0
 import pdb
 
 
-CLUSTER = "pace"  # PACE
-# CLUSTER = "hpg"  # HiPerGator
+# CLUSTER = "pace"  # PACE
+CLUSTER = "hpg"  # HiPerGator
 
 
 dpath_root = Path(os.getcwd())
@@ -291,8 +291,8 @@ class PrintLog:
         PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
 
     @staticmethod
-    def manifest(dpath_campaign: Path, trials: List[tuple], in_progress: Optional[tuple]) -> None:
-        """Write <dpath_campaign>/manifest.log: a human-readable snapshot bucketing every planned trial
+    def manifest(dpath_phase: Path, trials: List[tuple], in_progress: Optional[tuple]) -> None:
+        """Write <dpath_phase>/manifest.log: a human-readable snapshot bucketing every planned trial
         into Failed / Completed / In Progress / Queued. Regenerated at campaign kickoff and at each trial's
         start and finish so it tracks progress. `trials` is the full planned set of (dataset, arm, coord, seed)
         tuples in launch order; `in_progress` is the trial currently running (None when nothing is). A trial
@@ -319,7 +319,7 @@ class PrintLog:
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
             dataset, arm, coord, seed = trial
-            dpath_trial = dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
+            dpath_trial = dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
             trial_id = f"{dataset}/{arm}/{coord}/{seed}"
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
@@ -346,7 +346,7 @@ class PrintLog:
             else:
                 lines.extend(buckets[title])
             lines.append("")
-        (dpath_campaign / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        (dpath_phase / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
     @staticmethod
     @rank0
@@ -613,6 +613,7 @@ class PrintLog:
             "",
             PrintLog._dash_aligned_lines((
                 ("Campaign", cfg_train.campaign),
+                ("Phase",    cfg_train.phase),
                 ("Arm",      cfg_train.arm),
                 ("Coord",    cfg_train.coord),
                 ("Dataset",  cfg_train.dataset),

@@ -36,6 +36,7 @@ def _full_loss_cfg(crit="bce", targ="mp"):
 @dataclass
 class _FakeCoordCfg:
     campaign: str = "c"
+    phase: str = "screening"
     arm: str = "sp"
     coord: str = "base"
     seed: int = 42
@@ -72,7 +73,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
 
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
-    assert "loss" in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert "loss" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
     assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},

@@ -1,4 +1,5 @@
-n_trials: 1
+n_trials_screen: 1
+n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
 datasets: [cub]
 
 ablation_arms:

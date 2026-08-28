@@ -16,12 +16,16 @@ _MAP_LABELS = ["All", "ID", "OOD", "I2T", "I2I", "T2I"]
 _PRIM_MAP_LABELS = _MAP_LABELS + ["ID I2T", "ID I2I", "ID T2I", "OOD I2T", "OOD I2I", "OOD T2I"]
 
 
-def _dpath_coord(dpath_campaign, dataset, arm, coord):
-    return dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord
+def _dpath_coord(dpath_phase, dataset, arm, coord):
+    return dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord
 
 
-def _write_meta(dpath_campaign, arms, coords, datasets) -> None:
-    (dpath_campaign / "campaign_metadata.json").write_text(json.dumps({"arms": arms, "coords": coords, "datasets": datasets}))
+def _write_meta(dpath_phase, arms, coords, datasets, matrix=None) -> None:
+    """The phase's campaign_metadata.json; `matrix` ({dataset: {arm: [coords]}}, the planned combos) defaults to
+    every coord under every arm on every dataset -- the screening phase's shape."""
+    if matrix is None:
+        matrix = {dataset: {arm: list(coords) for arm in arms} for dataset in datasets}
+    (dpath_phase / "campaign_metadata.json").write_text(json.dumps({"arms": arms, "coords": coords, "datasets": datasets, "matrix": matrix}))
 
 
 def _captured(grids, *tail):
@@ -176,7 +180,7 @@ def test_sweep_completion_levels(tmp_path, monkeypatch) -> None:
     # coords (arm_stats), the dataset's arms x coords (dataset_stats), the whole matrix
     # (campaign_stats) -- since each trial completion reselects only its own coord's checkpoint. A
     # trial short of its final eval doesn't count.
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     _write_meta(tmp_path, ["sp", "mp"], ["c0", "c1"], ["cub", "lepid"])
     scores = (("0.10", "0.10"), ("0.30", "0.30"))
     for arm in ("sp", "mp"):
@@ -322,7 +326,7 @@ def test_update_arm_stats_writes_pngs(tmp_path, monkeypatch) -> None:
     _write_group_metrics(dpath_best, _scores_grp(_comp(0.50)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0", "c1"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_arm_stats("cub", "hp", "std", True, False, True, _SUPP_OFF)
     report.update_arm_stats("cub", "mp", "std", True, False, True, _SUPP_OFF)
@@ -348,7 +352,7 @@ def test_update_arm_stats_rows_and_curves(tmp_path, monkeypatch) -> None:
     _write_meta(tmp_path, ["hp"], ["a", "b", "c"], ["cub"])
 
     grids, plotted = [], []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
@@ -367,12 +371,12 @@ def test_update_arm_stats_rows_and_curves(tmp_path, monkeypatch) -> None:
     assert curves[idx_win][0] == ("b",)
 
 
-def _write_chkpt_means(dpath_campaign, dataset, arm, coord, means, idx_best) -> None:
+def _write_chkpt_means(dpath_phase, dataset, arm, coord, means, idx_best) -> None:
     """The coord's across-trial mean curve on `dataset`, the same artifact update_chkpt_selection
     writes, for every criterion x group."""
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
-            dpath_group = _dpath_coord(dpath_campaign, dataset, arm, coord) / "coord_stats" / criterion / group_key
+            dpath_group = _dpath_coord(dpath_phase, dataset, arm, coord) / "coord_stats" / criterion / group_key
             dpath_group.mkdir(parents=True, exist_ok=True)
             save_pickle(
                 {
@@ -396,7 +400,7 @@ def test_update_dataset_stats_writes_pngs(tmp_path, monkeypatch) -> None:
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
 
     grids = []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     render = report._render_stats_table
 
     def _spy(grid, n_keys, title, fpath, bold_high, heatmap):
@@ -440,7 +444,7 @@ def test_update_dataset_stats_arms_use_best_coord_per_arm(tmp_path, monkeypatch)
     _write_meta(tmp_path, ["a", "b", "c"], ["c0", "c1"], ["cub"])
 
     grids, plotted = [], []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
@@ -464,6 +468,66 @@ def test_update_dataset_stats_arms_use_best_coord_per_arm(tmp_path, monkeypatch)
     assert [row for row, _, _ in curves] == [("a", "c0"), ("a", "c1"), ("b", "c0"), ("b", "c1"), ("c", "c0"), ("c", "c1")]
 
 
+def test_pick_best_coords_by_native_map_all(tmp_path, monkeypatch) -> None:
+    # the qual phase's selection: per (arm, dataset), the planned coord with the highest across-trial mean Native
+    # mAP composite All -- criterion map, group native: a's c1 has the higher acc and the higher native_macro
+    # mAP, but c0 wins on native comp.map.all (60 > 40); ties go to the first coord in campaign order (b: 50 =
+    # 50 -> c0); a coord is a candidate only where it has completed trials (a on bryo: c1 alone); an arm with
+    # none there (b on bryo) or anywhere (planned "c") gets no entry
+    vals = {  # (arm, coord, dataset) -> (map all, acc i2t)
+        ("a", "c0", "cub"): (0.60, "0.20"), ("a", "c1", "cub"): (0.40, "0.80"),
+        ("b", "c0", "cub"): (0.50, "0.10"), ("b", "c1", "cub"): (0.50, "0.90"),
+        ("a", "c1", "bryo"): (0.30, "0.10"),
+    }
+    for (arm, coord, dataset), (all_v, acc_v) in vals.items():
+        dpath_best = _dpath_coord(tmp_path, dataset, arm, coord) / "42" / "evals" / "_best"
+        dpath_best.mkdir(parents=True)
+        _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v, acc_v)), macro=_scores_grp(_full_comp(0.99 if coord == "c1" else 0.01)))
+    _write_meta(tmp_path, ["a", "b", "c"], ["c0", "c1"], ["cub", "bryo"])
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    assert report.pick_best_coords() == {("a", "cub"): "c0", ("b", "cub"): "c0", ("a", "bryo"): "c1"}
+
+
+def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
+    # the phase's planned matrix -- not arms x coords -- is what the sweep gates and table rows key off: in a
+    # qual-shaped tree each arm has one planned coord (sp: c0, mp: c1; "c2" is a campaign coord planned nowhere
+    # here), so a seed's cycles close once THOSE have completed, and the tables carry only those rows. An arm
+    # planned with no coord (hp) is vacuously complete and, having no dir, renders nothing.
+    matrix = {"cub": {"sp": ["c0"], "mp": ["c1"], "hp": []}}
+    _write_meta(tmp_path, ["sp", "mp", "hp"], ["c0", "c1", "c2"], ["cub"], matrix)
+    scores = (("0.10", "0.10"), ("0.30", "0.30"))
+    _write_trial_evals(_dpath_coord(tmp_path, "cub", "sp", "c0") / "42", scores)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    assert report.arm_sweep_complete(42, "cub", "sp")
+    assert report.arm_sweep_complete(42, "cub", "hp")  # no planned coord -> nothing to wait for
+    assert not report.dataset_sweep_complete(42, "cub")  # mp/c1 still to come
+    _write_trial_evals(_dpath_coord(tmp_path, "cub", "mp", "c1") / "42", scores)
+    assert report.dataset_sweep_complete(42, "cub")
+    assert report.seed_sweep_complete(42)
+
+    for arm, coord, base in (("sp", "c0", 0.50), ("mp", "c1", 0.40)):
+        _write_group_metrics(_dpath_coord(tmp_path, "cub", arm, coord) / "42" / "evals" / "_best", _scores_grp(_comp(base)))
+    grids = []
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
+
+    report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF)
+    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
+    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+
+    assert [r[0] for r in _captured(grids, "arm_stats", "map", "native")] == ["Coord", "c0 (1)"]
+    assert not (tmp_path / "datasets" / "cub" / "arms" / "hp").exists()
+    assert [r[:2] for r in _captured(grids, "arm_coords", "map", "native")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
+    assert [r[0] for r in _captured(grids, "arms", "map", "native")] == ["Arm", "sp (1)", "mp (1)"]
+    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
+    assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
+    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx").active.iter_rows()]
+    assert grid[4][:2] == ["sp (1)", "50.00"] and grid[5][:2] == ["mp (1)", "40.00"]
+
+
 def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch) -> None:
     # ordered=True: each png orders its rows by its own metric's means over ITS dataset's trials
     # only. The bryo data makes cub's local orders the opposite of the cross-dataset ones: cub-local
@@ -482,7 +546,7 @@ def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch
     _write_meta(tmp_path, ["a", "b", "c"], ["c0"], ["cub", "bryo"])
 
     grids = []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
 
     report.update_dataset_stats("cub", "std", False, True, False, _SUPP_OFF)
@@ -512,7 +576,7 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
 
@@ -529,7 +593,8 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
     # always-on cross-dataset mean table (one row per arm) at the bottom. "mp" (no completed
     # trials anywhere) gets no rows; "hp" completed only in cub, so the Bryozoa table still gets its
     # blank "-" row. mean cells are point values (no spread), unlike the per-dataset "± spread".
-    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    # (the banner names the campaign, the phase dir's parent -- here tmp_path stands in for the phase dir)
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[1][:7] == [None] * 7  # blank row below the campaign banner
     assert grid[2][0] == "CUB"
     assert grid[3][:7] == ["Arm", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
@@ -582,7 +647,7 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
     # hp's cub trials have acc i2t 56.00/66.00 -> mean 61.00 (± 7.07 in the per-dataset table).
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
     agrid = [[c.value for c in row] for row in wb["Composite I2T Accuracy"].iter_rows()]
-    assert agrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    assert agrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert agrid[2][0] == "CUB"
     assert agrid[3][:2] == ["Arm", "I2T"]
     assert agrid[4][:2] == ["hp (2)", "61.00 ± 7.07"]
@@ -600,7 +665,7 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
     # 3rd sheet: the hardware analog, same layout/row order with the hw readings as columns (the
     # Mean table appends the crash totals); values asserted in test_update_campaign_stats_hw_sheet
     hgrid = [[c.value for c in row] for row in wb["Hardware Performance"].iter_rows()]
-    assert hgrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    assert hgrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert hgrid[2][0] == "CUB"
     assert hgrid[3][:6] == ["Arm", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
     assert hgrid[4][0] == "hp (2)"
@@ -625,7 +690,7 @@ def test_update_campaign_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0", "c1"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_PRIM, False)
 
@@ -685,7 +750,7 @@ def test_update_campaign_stats_bold_high(tmp_path, monkeypatch) -> None:
         _write_group_metrics(dpath_best, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp", "sp"], ["c0"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", True, False, False, _SUPP_OFF, False)
 
@@ -720,7 +785,7 @@ def test_update_campaign_stats_per_group_files(tmp_path, monkeypatch) -> None:
     )
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
 
@@ -753,21 +818,21 @@ def test_update_campaign_stats_criterion_sourcing(tmp_path, monkeypatch) -> None
     )
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
 
     wb_map = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_map["Composite I2T Accuracy"].iter_rows()]
-    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[4][:2] == ["hp (1)", "50.00"]   # mAP at the map-best checkpoint
     assert agrid[4][:2] == ["hp (1)", "56.00"]  # acc at the map-best checkpoint
 
     wb_acc = load_workbook(tmp_path / "campaign_stats" / "arms" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_acc["Composite I2T Accuracy"].iter_rows()]
-    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; Acc-selection)"
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; Acc-selection)"
     assert grid[4][:2] == ["hp (1)", "30.00"]   # mAP at the acc-best checkpoint
     assert agrid[4][:2] == ["hp (1)", "36.00"]  # acc at the acc-best checkpoint
 
@@ -792,7 +857,7 @@ def test_update_campaign_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -
             _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v, acc_v)))
     _write_meta(tmp_path, ["a", "b"], ["c0"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, True, False, _SUPP_OFF, False)
 
@@ -845,7 +910,7 @@ def test_update_campaign_stats_heatmap(tmp_path, monkeypatch) -> None:
         _write_group_metrics(dpath_best, _scores_grp(_full_comp(all_v)))
     _write_meta(tmp_path, ["a", "b", "c", "d"], ["c0"], ["cub"])  # "d" has no trials
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, True, _SUPP_OFF, False)
 
@@ -880,7 +945,7 @@ def test_update_campaign_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     _write_group_metrics(dpath_best, _prim_scores_grp())
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_PRIM, False)
 
@@ -924,7 +989,7 @@ def test_update_arm_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
 
     grids = []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
 
     report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_PRIM)
@@ -966,7 +1031,7 @@ def test_update_campaign_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
         _write_group_metrics(dpath_best, _nshot_scores_grp(*nshot))
     _write_meta(tmp_path, ["hp"], ["c0"], ["bryo", "cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, {"primitive": True, "n_shot": True}, False)
 
@@ -1020,7 +1085,7 @@ def test_update_arm_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
 
     grids = []
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap: grids.append((fpath, grid)))
 
     report.update_arm_stats("cub", "hp", "std", False, False, False, {"primitive": False, "n_shot": True})
@@ -1061,7 +1126,7 @@ def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
             (dpath_coord / "config.json").write_text(json.dumps({**meta, "opt": {"lr": {"init": lr}}}))
     _write_meta(tmp_path, ["hp", "mp"], ["lo", "hi"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", True, False, True, _SUPP_OFF, True)
 
@@ -1071,7 +1136,7 @@ def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     merged = {str(m) for m in ws.merged_cells.ranges}
     # bands: Arm Overrides (2 params) at A..B + separator C, Coord Overrides (1 param) at D + separator E;
     # the score blocks start at F. 4 rows (hp/lo, hp/hi, mp/lo, mp/hi): CUB table rows 5..8, Mean banner row 10
-    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"  # campaign banner stays top-left
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"  # campaign banner stays top-left
     assert grid[2][5] == "CUB"
     assert grid[3][5:7] == ["Arm", "Coord"]
     assert grid[9][5] == "Mean"
@@ -1135,7 +1200,7 @@ def test_update_campaign_stats_overrides_all_uniform_omits_bands(tmp_path, monke
         (dpath_coord / "config.json").write_text(json.dumps({"loss": {"targ": "mp"}, "opt": {"lr": {"init": 1.0e-5}}}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, True)
 
@@ -1174,7 +1239,7 @@ def test_update_campaign_stats_arms_workbook_picks_best_coord_per_dataset(tmp_pa
         (dpath_coord / "coord_metadata.json").write_text(json.dumps({"n_crashes": crashes[(dataset, coord)]}))
     _write_meta(tmp_path, ["a"], ["c0", "c1"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
 
@@ -1248,7 +1313,7 @@ def test_update_campaign_stats_hw_sheet(tmp_path, monkeypatch) -> None:
         (dpath_coord / "coord_metadata.json").write_text(json.dumps({"n_crashes": crashes}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_campaign", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_campaign_stats("std", True, False, True, _SUPP_OFF, True)
 
@@ -1260,7 +1325,7 @@ def test_update_campaign_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     # overrides band at A..B + separator C; aggregate block at D -- dataset tables 6 wide (D..I),
     # the Mean table 9 (D..L, crash columns appended), so the block spans D..L and seed 42 starts
     # one separator later at N
-    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.name} (Native; mAP-selection)"
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[12][0] == "Arm Overrides"
     assert "A13:B13" in merged
     assert grid[13][:2] == ["loss2.mix", "loss.targ"]

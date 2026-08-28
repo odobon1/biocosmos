@@ -4,8 +4,11 @@ Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint
 tables + convergence plots at every cross-coord level -- per arm (arms/<arm>/arm_stats/), per dataset
 (datasets/<dataset>/dataset_stats/{arm_coords,arms}/) -- each {map,acc}/<group>/{metrics,convergence}.png,
 the campaign workbooks (campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx), and per-trial
-learning-curve plots. Everything here renders from artifacts already on disk and reads its paths from
-ArtifactManager; trial/checkpoint state I/O lives in utils/train.py.
+learning-curve plots -- all under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
+ArtifactManager.dpath_phase). The phase's campaign_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
+planned (dataset, arm, coord) set every sweep gate and table row here keys off: every arm x coord in the
+screening phase, each arm's picked coord in the qual phase. Everything here renders from artifacts already
+on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O lives in utils/train.py.
 """
 
 import math
@@ -170,7 +173,7 @@ def update_metric_stats(spread_type):
 
 def _dpath_coord(dataset, arm, coord):
     """The coord dir holding (arm, coord)'s trials on `dataset`: datasets/<dataset>/arms/<arm>/coords/<coord>."""
-    return ArtifactManager.dpath_campaign / "datasets" / dataset / "arms" / arm / "coords" / coord
+    return ArtifactManager.dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord
 
 def _coord_label(dpath_coord):
     """'<arm>/<coord>' of a coord dir (datasets/<dataset>/arms/<arm>/coords/<coord>), for plot titles."""
@@ -194,33 +197,43 @@ def _chkpt_dpaths(dpath_trial):
 def _trial_complete(dataset, arm, coord, seed):
     return _chkpt_dpaths(_dpath_coord(dataset, arm, coord) / str(seed)) is not None
 
+def _metadata():
+    """The phase's campaign_metadata.json: 'arms' / 'coords' / 'datasets' in campaign order, 'seeds', and
+    'matrix' ({dataset: {arm: [coords]}}) -- the phase's planned (dataset, arm, coord) combos, which every
+    sweep gate and table row here keys off (every arm x coord in the screening phase, each arm's picked
+    coord -- or none -- in the qual phase)."""
+    return load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
+
+def _matrix_arm_coords(metadata, datasets):
+    """The planned (arm, coord) pairs over `datasets` (their union), in campaign order."""
+    matrix = metadata["matrix"]
+    return [(arm, coord) for arm in metadata["arms"] for coord in metadata["coords"]
+            if any(coord in matrix[dataset][arm] for dataset in datasets)]
+
 def arm_sweep_complete(seed, dataset, arm):
-    """True once `seed` has a completed trial in EVERY coord of `arm` on `dataset` -- the arm's cycle of
-    the seed sweep. The arm's arm_stats/ re-render only at these points (train.py): every trial
+    """True once `seed` has a completed trial in EVERY planned coord of `arm` on `dataset` -- the arm's cycle
+    of the seed sweep. The arm's arm_stats/ re-render only at these points (train.py): every trial
     completion reselects only its own coord's checkpoint, so mid-cycle the arm's tables would mix
     coords reselected against different trial counts."""
-    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
-    return all(_trial_complete(dataset, arm, coord, seed) for coord in metadata["coords"])
+    return all(_trial_complete(dataset, arm, coord, seed) for coord in _metadata()["matrix"][dataset][arm])
 
 def dataset_sweep_complete(seed, dataset):
-    """True once `seed` has a completed trial in EVERY (arm, coord) on `dataset` -- the dataset's cycle
-    of the seed sweep; gates the dataset_stats/ re-render the way arm_sweep_complete gates arm_stats/."""
-    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
+    """True once `seed` has a completed trial in EVERY planned (arm, coord) on `dataset` -- the dataset's
+    cycle of the seed sweep; gates the dataset_stats/ re-render the way arm_sweep_complete gates arm_stats/."""
     return all(
         _trial_complete(dataset, arm, coord, seed)
-        for arm in metadata["arms"]
-        for coord in metadata["coords"]
+        for arm, coords in _metadata()["matrix"][dataset].items()
+        for coord in coords
     )
 
 def seed_sweep_complete(seed):
-    """True once `seed` has a completed trial in EVERY (dataset, arm, coord) of the campaign -- i.e. one
+    """True once `seed` has a completed trial in EVERY planned (dataset, arm, coord) of the phase -- i.e. one
     full pass of the matrix; gates the campaign_stats/ workbooks' re-render."""
-    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
     return all(
         _trial_complete(dataset, arm, coord, seed)
-        for dataset in metadata["datasets"]
-        for arm in metadata["arms"]
-        for coord in metadata["coords"]
+        for dataset, arms in _metadata()["matrix"].items()
+        for arm, coords in arms.items()
+        for coord in coords
     )
 
 def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath):
@@ -473,30 +486,29 @@ def _order_rows(rows, xmeans, label):
     # filter out rows with no completed trials before ordering, so every mean is numeric
     return sorted(rows, key=lambda row: xmeans[(row, label)], reverse=True)
 
-def _best_coords(arms, coords, datasets, comps_by, criterion):
+def _best_coords(arm_coords, datasets, comps_by, criterion):
     """best[(arm, dataset)]: the arm's best coord on that dataset for one criterion x eval group -- the
     coord with the highest across-trial mean of the criterion's comp score (BEST_CRITERIA: map ->
     comp.map.all, acc -> comp.acc.i2t; the same figure the convergence plots pick their winner by)
-    among the arm's coords with completed trials there (comps_by[((arm, coord), dataset)] non-empty),
-    ties to the first in campaign order; no entry when none has any."""
+    among the arm's planned coords (arm_coords: (arm, coord) pairs in campaign order) with completed
+    trials there (comps_by[((arm, coord), dataset)] non-empty), ties to the first; no entry when none
+    has any."""
     score_key, metric = BEST_CRITERIA[criterion]
-    best = {}
-    for arm in arms:
+    means = {}  # (arm, dataset) -> [(coord, mean)], campaign order
+    for arm, coord in arm_coords:
         for dataset in datasets:
-            means = [
-                (coord, np.mean([float(comp[score_key][metric]) for comp in comps.values()]))
-                for coord in coords if (comps := comps_by[((arm, coord), dataset)])
-            ]
-            if means:
-                best[(arm, dataset)] = max(means, key=lambda cm: cm[1])[0]  # max keeps the first of equals
-    return best
+            comps = comps_by[((arm, coord), dataset)]
+            if comps:
+                mean = np.mean([float(comp[score_key][metric]) for comp in comps.values()])
+                means.setdefault((arm, dataset), []).append((coord, mean))
+    return {key: max(cms, key=lambda cm: cm[1])[0] for key, cms in means.items()}  # max keeps the first of equals
 
-def _arm_rows(arms, coords, datasets, comps_by, criterion):
+def _arm_rows(arms, arm_coords, datasets, comps_by, criterion):
     """The best-coord-per-arm row set for one criterion x eval group: (rows, comps_arms, best) -- rows
-    the (arm,) keys of the arms with a best coord (_best_coords) in some dataset, campaign order;
-    comps_arms[((arm,), dataset)] the best coord's score maps there ({} where the arm has none); and
+    the (arm,) keys of the arms with a best coord (_best_coords over arm_coords) in some dataset, campaign
+    order; comps_arms[((arm,), dataset)] the best coord's score maps there ({} where the arm has none); and
     best itself."""
-    best = _best_coords(arms, coords, datasets, comps_by, criterion)
+    best = _best_coords(arm_coords, datasets, comps_by, criterion)
     rows = [(arm,) for arm in arms if any((arm, dataset) in best for dataset in datasets)]
     comps_arms = {
         ((arm,), dataset): comps_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
@@ -504,6 +516,16 @@ def _arm_rows(arms, coords, datasets, comps_by, criterion):
         for dataset in datasets
     }
     return rows, comps_arms, best
+
+def pick_best_coords():
+    """{(arm, dataset): coord} over the current phase tree: each arm's best planned coord per dataset by Native
+    mAP composite All -- criterion 'map', eval group 'native' (_best_coords: the highest across-trial mean at
+    the selected checkpoint among the arm's coords with completed trials there, ties to the first in campaign
+    order); no entry where none has any. The qual phase's selection (campaign_runner._qual_picks)."""
+    metadata = _metadata()
+    arm_coords = _matrix_arm_coords(metadata, metadata["datasets"])
+    comps_by = _collect_comps(arm_coords, metadata["datasets"], "map")["native"]
+    return _best_coords(arm_coords, metadata["datasets"], comps_by, "map")
 
 def _curve(dataset, arm, coord, criterion, group_key):
     """(means, idx_best) of the coord's across-trial mean curve on `dataset` for one criterion x eval
@@ -643,15 +665,15 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels
 def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
     datasets/<dataset>/arms/<arm>/arm_stats/{map,acc}/<group>/{metrics,convergence}.png (see
-    _render_stats_pngs) -- one 'Coord' row per coord of the arm with >= 1 completed trial in this
-    dataset (coords without local trials are omitted: no blank rows in the pngs), titled
+    _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
+    completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
     '<score name> -- <arm>, <dataset> (<group>)'. An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at the end of the arm's seed cycle (train.py,
     arm_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
-    dpath_arm = ArtifactManager.dpath_campaign / "datasets" / dataset / "arms" / arm
+    dpath_arm = ArtifactManager.dpath_phase / "datasets" / dataset / "arms" / arm
     if not dpath_arm.exists():
         return
-    coords = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")["coords"]
+    coords = _metadata()["matrix"][dataset][arm]
     arm_coords = [(arm, coord) for coord in coords]
     comps_all = {criterion: _collect_comps(arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _best files, all criteria and groups
@@ -671,20 +693,20 @@ def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, sup
 def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `dataset`'s cross-arm tables/plots:
     datasets/<dataset>/dataset_stats/{arm_coords,arms}/{map,acc}/<group>/{metrics,convergence}.png (see
-    _render_stats_pngs). arm_coords/ has one ('Arm', 'Coord') row per (arm, coord) with >= 1
-    completed trial in this dataset. arms/ has one 'Arm' row per arm, each at its BEST coord for this
+    _render_stats_pngs). arm_coords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
+    matrix) with >= 1 completed trial in this dataset. arms/ has one 'Arm' row per arm, each at its BEST coord for this
     dataset -- per criterion x group, the coord with the highest across-trial mean of the criterion's
     comp score among the arm's coords with completed trials here, ties to the first in campaign order
     (_best_coords) -- so both its table row and its convergence curve are that coord's; arms with no
     completed trial here are omitted. A dataset with no dir (no trial launched on it) is skipped.
     Rendered at the end of the dataset's seed cycle (train.py, dataset_sweep_complete) and
     unconditionally by the runner on exit / tools.regen_stats."""
-    dpath_dataset = ArtifactManager.dpath_campaign / "datasets" / dataset
+    dpath_dataset = ArtifactManager.dpath_phase / "datasets" / dataset
     if not dpath_dataset.exists():
         return
-    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
-    arms, coords = metadata["arms"], metadata["coords"]
-    arm_coords = [(arm, coord) for arm in arms for coord in coords]
+    metadata = _metadata()
+    arms = metadata["arms"]
+    arm_coords = _matrix_arm_coords(metadata, (dataset,))
     comps_all = {criterion: _collect_comps(arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _best files, all criteria and groups
     # together, so row presence is criterion- and group-independent
@@ -699,7 +721,7 @@ def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp
         return rows_ac, comps_all[criterion][group_key], curves
 
     def rowset_arms(criterion, group_key):
-        rows, comps_arms, best = _arm_rows(arms, coords, (dataset,), comps_all[criterion][group_key], criterion)
+        rows, comps_arms, best = _arm_rows(arms, arm_coords, (dataset,), comps_all[criterion][group_key], criterion)
         curves = [((arm,), *_curve(dataset, arm, best[(arm, dataset)], criterion, group_key)) for (arm,) in rows]
         return rows, comps_arms, curves
 
@@ -711,8 +733,8 @@ def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp
 @rank0
 def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
     """Write the campaign's workbooks, one per selection criterion x eval group under
-    artifacts/<campaign>/campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
-    workbooks have one row per (arm, coord), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
+    artifacts/<campaign>/<phase>/campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
+    workbooks have one row per planned (arm, coord) (the phase's matrix), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
     one row per arm keyed by 'Arm' alone, each arm shown at its BEST coord per dataset -- the coord
     with the highest across-trial mean of the workbook's criterion's comp score among the arm's coords
     with completed trials in that dataset, ties to the first in campaign order (_best_coords; a
@@ -781,9 +803,9 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
     hug each column's longest header/data cell (banner/label text overflows); blank separator columns
     get a small ~square width. Regenerated at the end of each full seed sweep of the matrix (train.py,
     seed_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
-    metadata = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
-    arms, coords, datasets = metadata["arms"], metadata["coords"], metadata["datasets"]
-    arm_coords = [(arm, coord) for arm in arms for coord in coords]
+    metadata = _metadata()
+    arms, datasets = metadata["arms"], metadata["datasets"]
+    arm_coords = _matrix_arm_coords(metadata, datasets)
 
     comps_all = {criterion: _collect_comps(arm_coords, datasets, criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _best files, all criteria and groups
@@ -938,7 +960,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
         hardware sheet's readings aren't scores)."""
         widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
-        campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_campaign.name} ({group_name})")
+        campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_phase.parent.name} ({group_name})")  # <campaign>/<phase>/
         campaign.font = bold
         campaign.alignment = left
 
@@ -1052,7 +1074,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
 
-    dpath_stats = ArtifactManager.dpath_campaign / "campaign_stats"
+    dpath_stats = ArtifactManager.dpath_phase / "campaign_stats"
     band_specs_ac = [("Arm Overrides", band_keys("arm", rows_ac)), ("Coord Overrides", band_keys("coord", rows_ac))] if overrides else []
     band_specs_arms = [("Arm Overrides", band_keys("arm", rows_arms))] if overrides else []
     crash_totals_ac = {
@@ -1070,7 +1092,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
                            hw_by, crash_totals_ac, band_specs_ac, banner)
             # arms: each arm at its best coord per dataset under this criterion x group (_arm_rows' rows
             # are rows_arms: which arms have trials doesn't depend on the criterion or group)
-            rows, comps_arms, best = _arm_rows(arms, coords, datasets, comps_by, criterion)
+            rows, comps_arms, best = _arm_rows(arms, arm_coords, datasets, comps_by, criterion)
             hw_arms = {
                 ((arm,), dataset): hw_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
                 for (arm,) in rows

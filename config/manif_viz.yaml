@@ -1,7 +1,7 @@
 # Manifold-viz subsystem settings -- whether it runs at all (n_seeds) and how it behaves.
 
 # Which seeds get manifold viz, as a window over each arm/coord/dataset group's seed sweep: a trial is selected iff
-# n_seeds_offset <= idx_seed < n_seeds_offset + n_seeds (the sweep's length is the camp config's n_trials). A window
+# n_seeds_offset <= idx_seed < n_seeds_offset + n_seeds (the sweep's length is the camp config's n_trials_screen). A window
 # the sweep doesn't reach yet is not an error and draws no warning -- those trials simply get no viz, and raising the
 # campaign's seed count later brings them into the window as they run.
 n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whole subsystem -- nothing computed,

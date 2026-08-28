@@ -52,7 +52,7 @@ def main() -> None:
         raise ValueError("NUM_AUGS must be greater than 0")
 
     cfg_dict = load_train_config_dict()
-    cfg_dict.update({"campaign": "tool", "arm": "tool", "coord": "tool", "seed": None, "dataset": DATASET})
+    cfg_dict.update({"campaign": "tool", "phase": "screening", "arm": "tool", "coord": "tool", "seed": None, "dataset": DATASET})
     cfg = get_config_train(cfg_dict)
 
     split = load_split(cfg.dataset, cfg.split)

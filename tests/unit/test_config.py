@@ -1,6 +1,6 @@
 import pytest
 
-from utils.config import GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
+from utils.config import CampaignConfig, GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import apply_model_specific_opt_defaults
 from utils.config import apply_dataset_specific_defaults
@@ -9,6 +9,7 @@ from utils.config import apply_dataset_specific_defaults
 def make_train_config_dummy(**overrides):
     config = {
         "campaign": "campaign",
+        "phase": "screening",
         "arm": "exp",
         "coord": "base",
         "seed": 7,
@@ -693,3 +694,27 @@ def test_stats_config_rejects_invalid_spread_type() -> None:
 def test_stats_config_rejects_unknown_supp_scores_keys() -> None:
     with pytest.raises(ValueError, match="supp_scores"):
         StatsConfig(**_make_stats_config_dummy(supp_scores={"primitive": False, "nshot": False}))
+
+
+def _make_campaign_config_dummy(**overrides):
+    config = {
+        "n_trials_screen": 1,
+        "n_trials_qual": 5,
+        "datasets": ["cub"],
+        "ablation_arms": [[{"loss.targ": "sp", "name": "sp"}]],
+        "hpo_coords": [[{"name": "base"}]],
+        "suffix": None,
+    }
+    config.update(overrides)
+    return config
+
+
+def test_campaign_config_rejects_screen_exceeding_qual() -> None:
+    # the qual phase tops each pick up FROM its screening trials TO n_trials_qual, so it can't be fewer
+    with pytest.raises(ValueError, match="n_trials_screen"):
+        CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=2))
+
+
+def test_campaign_config_accepts_equal_or_null_qual() -> None:
+    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=3)).n_trials_qual == 3
+    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=None)).n_trials_qual is None

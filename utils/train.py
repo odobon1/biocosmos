@@ -180,7 +180,7 @@ class TrialData:
 
 class ArtifactManager:
 
-    dpath_campaign = None
+    dpath_phase = None
     dpath_coord = None
     dpath_trial = None
     fpath_metadata_trial = None
@@ -193,8 +193,8 @@ class ArtifactManager:
     @staticmethod
     def set_paths(cfg_train):
 
-        ArtifactManager.dpath_campaign = paths["artifacts"] / cfg_train.campaign
-        ArtifactManager.dpath_coord = (ArtifactManager.dpath_campaign / "datasets" / cfg_train.dataset / "arms" / cfg_train.arm
+        ArtifactManager.dpath_phase = paths["artifacts"] / cfg_train.campaign / cfg_train.phase
+        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "datasets" / cfg_train.dataset / "arms" / cfg_train.arm
                                        / "coords" / cfg_train.coord)
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
@@ -234,8 +234,8 @@ class ArtifactManager:
             minutes, seconds = divmod(seconds, 60)
             return f"{days}-{hours:02}:{minutes:02}:{seconds:02}"
         
-        fpath_pkl = ArtifactManager.dpath_campaign / "time.pkl"
-        fpath_json = ArtifactManager.dpath_campaign / "campaign_metadata.json"
+        fpath_pkl = ArtifactManager.dpath_phase / "time.pkl"
+        fpath_json = ArtifactManager.dpath_phase / "campaign_metadata.json"
 
         time_data = load_pickle(fpath_pkl)
 
@@ -249,7 +249,7 @@ class ArtifactManager:
         time_data["elapsed"] = time_elapsed
         save_pickle(time_data, fpath_pkl)
         
-        metadata_camp = load_json(ArtifactManager.dpath_campaign / "campaign_metadata.json")
+        metadata_camp = load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
         metadata_camp["duration"] = format_duration(time_elapsed)
         save_json(metadata_camp, fpath_json)
 
@@ -258,7 +258,7 @@ class ArtifactManager:
     def update_campaign_memory(mem):
         # campaign-level memory = running max across every trial's snapshots (== max across
         # trial-level values, maintained incrementally so it survives an OOM-killed trial)
-        fpath_meta = ArtifactManager.dpath_campaign / "campaign_metadata.json"
+        fpath_meta = ArtifactManager.dpath_phase / "campaign_metadata.json"
         metadata_camp = load_json(fpath_meta)
         metadata_camp["memory"] = merge_mem(metadata_camp["memory"], format_mem(mem))
         save_json(metadata_camp, fpath_meta)
@@ -272,6 +272,7 @@ class ArtifactManager:
             is the inert signal (the stats overrides tables render absent params as '-')."""
 
             del metadata["campaign"]
+            del metadata["phase"]
             del metadata["arm"]
             del metadata["coord"]
             del metadata["seed"]

@@ -363,7 +363,7 @@ class TrainPipeline:
             self.data.eval_metrics,
             self.eval_pipe,
             header=header,
-            banner_suffix=f"[{self.cfg.idx_trial}/{self.cfg.n_trials_total}] ({self.cfg.campaign}/{self.cfg.dataset}/{self.cfg.arm}/{self.cfg.coord}/{self.cfg.seed})",
+            banner_suffix=f"[{self.cfg.idx_trial}/{self.cfg.n_trials_total}] ({self.cfg.campaign}/{self.cfg.phase}/{self.cfg.dataset}/{self.cfg.arm}/{self.cfg.coord}/{self.cfg.seed})",
             n_samps_seen=self.n_samps_seen,
             time_eval=self.data.time_eval,
             time_eval_avg=self.time_tracker.mean("eval"),

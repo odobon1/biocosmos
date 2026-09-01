@@ -1309,7 +1309,7 @@ def plot_composite_metrics(
     ax0.set_ylabel("mAP Composite", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
     if has_eval:
-        ax0.legend(loc="lower left", ncol=len(ax0.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        ax0.legend(loc="lower right", ncol=len(ax0.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax0.grid(True)
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1330,7 +1330,7 @@ def plot_composite_metrics(
     ax1.set_ylabel("mAP Primitive", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
     if has_eval:
-        ax1.legend(loc="lower left", ncol=len(ax1.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        ax1.legend(loc="lower right", ncol=len(ax1.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1341,7 +1341,7 @@ def plot_composite_metrics(
         for key in reversed(bucket_comp_keys):
             maybe_plot(ax2, x_eval, comp_nshot, key, key)
         if comp_nshot:
-            ax2.legend(loc="lower left", ncol=len(ax2.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+            ax2.legend(loc="lower right", ncol=len(ax2.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax2.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
     ax2.grid(True)
@@ -1364,7 +1364,7 @@ def plot_composite_metrics(
     ax3.set_ylabel("I2T Acc.", fontsize=fontsize_axes, fontweight="bold")
     ax3.set_ylim(0, 1)
     if has_eval:
-        ax3.legend(loc="lower left", ncol=len(ax3.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        ax3.legend(loc="lower right", ncol=len(ax3.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1374,7 +1374,7 @@ def plot_composite_metrics(
         for key in reversed(bucket_comp_keys):
             maybe_plot(ax4, x_eval, comp_nshot_acc, key, key)
         if comp_nshot_acc:
-            ax4.legend(loc="lower left", ncol=len(ax4.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+            ax4.legend(loc="lower right", ncol=len(ax4.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax4.set_ylabel("n-shot Acc.\n(ID I2T)", fontsize=fontsize_axes, fontweight="bold")
     ax4.set_ylim(0, 1)
     ax4.grid(True)
@@ -1393,7 +1393,7 @@ def plot_composite_metrics(
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")
-    ax5.legend(loc="upper center", ncol=len(ax5.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+    ax5.legend(loc="lower left", ncol=len(ax5.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
     ax5.grid(True)
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 

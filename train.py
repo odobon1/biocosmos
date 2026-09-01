@@ -131,8 +131,9 @@ class TrainPipeline:
         # manifold viz runs for a window of each arm/coord/dataset group's seed sweep: the manif_viz.n_seeds
         # seeds starting at manif_viz.n_seeds_offset. A window the sweep hasn't reached selects nothing (no
         # error, no warning) -- raising the campaign's seed count later pulls those trials into it.
+        # Viz is derived from eval embeddings, so the no-eval trainval phase never runs it (pooled included).
         seed_off = self.cfg.manif_viz["n_seeds_offset"]
-        self._manif_viz = seed_off <= self.cfg.idx_seed < seed_off + self.cfg.manif_viz["n_seeds"]
+        self._manif_viz = self.eval_enabled and seed_off <= self.cfg.idx_seed < seed_off + self.cfg.manif_viz["n_seeds"]
         # pooled shared-frame viz (manif_viz.pooled.enabled): fit one pooled projection over all
         # thresholds at end-of-trial (compute_pooled_projections). Every viz trial caches its per-eval
         # embeddings regardless -- the post-trial UMAP fits read them too.
@@ -530,6 +531,11 @@ class TrainPipeline:
                     self._resume_state = None
 
             for _ in range(self.cfg.n_passes - self.idx_epoch):
+                # a resume can land past samps_stop (crash between the last checkpoint and process exit);
+                # the in-loop stop checks sit after a batch trains, so guard here or the resumed trial
+                # trains one extra batch past its stop and re-saves the drifted state every attempt
+                if self.n_samps_seen >= self.samps_stop:
+                    break
                 self.timer_train.start()
                 self.idx_epoch += 1
 

@@ -1823,33 +1823,37 @@ def test_run_campaign_qual_equal_counts_only_copies(tmp_path, monkeypatch) -> No
     assert (dpath_qual / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").exists()
 
 
-def test_run_campaign_qual_freezes_picks_on_relaunch(tmp_path, monkeypatch) -> None:
-    # picks are frozen in qual/campaign_metadata.json at the qual phase's first launch: a relaunch keeps them even
-    # when the (stubbed) selection now says otherwise -- only the arm added on the relaunch is picked fresh -- and
-    # tops the seeds up (n_trials_qual 2 -> 3) without re-copying
+def test_run_campaign_qual_adds_new_best_pick_on_relaunch(tmp_path, monkeypatch) -> None:
+    # recorded picks are kept across relaunches (their qual trials stay, no re-copy), and a relaunch whose
+    # screening best has moved adds the new best alongside them: sp gains cos as a second pick (copied from
+    # screening, topped up over the qual seeds) while keeping geo1 and its trials; the arm added on the
+    # relaunch is picked fresh; the seeds also top up (n_trials_qual 2 -> 3)
     scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
-    assert cr.run_campaign(campaign="cmp_frozen", n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
+    assert cr.run_campaign(campaign="cmp_addpick", n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
                            ablation_arms=[[{"loss.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     assert scheduled[2:] == [("qual", "cub", "sp", "loss.sim-geo1", 43)]
-    dpath_qual = tmp_path / "cmp_frozen" / "qual"
+    dpath_qual = tmp_path / "cmp_addpick" / "qual"
     (dpath_qual / "datasets" / "cub" / "arms" / "sp" / "coords" / "loss.sim-geo1" / "marker").write_text("kept")  # survives: no re-copy
 
     del scheduled[:]
     monkeypatch.setattr(cr, "pick_best_coords", lambda: {("sp", "cub"): "loss.sim-cos", ("hp", "cub"): "loss.sim-cos"})
-    assert cr.run_campaign(campaign="cmp_frozen", n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=("cub",),
+    assert cr.run_campaign(campaign="cmp_addpick", n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=("cub",),
                            ablation_arms=_ARMS_SP_HP, hpo_coords=_COORDS_SIM)
 
     # screening: only the new arm's two coords run (sp's are complete); qual: sp keeps geo1 (seed 44 only -- 43 is
-    # done), hp comes in fresh on cos (seeds 43, 44)
+    # done) and adds cos (screening seed 42 copied over, seeds 43, 44 run), hp comes in fresh on cos (seeds 43, 44)
     assert scheduled == [
         ("screening", "cub", "hp", "loss.sim-cos", 42), ("screening", "cub", "hp", "loss.sim-geo1", 42),
-        ("qual", "cub", "hp", "loss.sim-cos", 43), ("qual", "cub", "sp", "loss.sim-geo1", 44), ("qual", "cub", "hp", "loss.sim-cos", 44),
+        ("qual", "cub", "sp", "loss.sim-cos", 43), ("qual", "cub", "hp", "loss.sim-cos", 43),
+        ("qual", "cub", "sp", "loss.sim-geo1", 44), ("qual", "cub", "sp", "loss.sim-cos", 44), ("qual", "cub", "hp", "loss.sim-cos", 44),
     ]
     meta = json.loads((dpath_qual / "campaign_metadata.json").read_text())
-    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1"], "hp": ["loss.sim-cos"]}}
+    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1", "loss.sim-cos"], "hp": ["loss.sim-cos"]}}
     assert meta["coords"] == ["loss.sim-cos", "loss.sim-geo1"] and meta["seeds"] == [42, 43, 44]
     assert (dpath_qual / "datasets" / "cub" / "arms" / "sp" / "coords" / "loss.sim-geo1" / "marker").read_text() == "kept"
-    assert not (dpath_qual / "datasets" / "cub" / "arms" / "sp" / "coords" / "loss.sim-cos").exists()
+    # sp's added pick came over from screening with its completed seed-42 trial
+    dpath_cos = dpath_qual / "datasets" / "cub" / "arms" / "sp" / "coords" / "loss.sim-cos"
+    assert json.loads((dpath_cos / "42" / "trial_metadata.json").read_text())["complete"] is True
 
 
 def test_run_campaign_stops_after_incomplete_phase(tmp_path, monkeypatch, capsys) -> None:

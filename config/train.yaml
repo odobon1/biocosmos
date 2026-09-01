@@ -77,7 +77,7 @@ loss:  # Primary loss
     bce:  # BCE-specific weighting params; Inert iff (loss.crit: infonce)
       dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
   logits:
-    scalar_lr_factor: 100.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
+    scalar_lr_factor: 10.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
     # opt.lr.init (e.g. 10.0 -> x10 backbone LR); ratio held through warmup + cosine decay; scalars are
     # weight-decay-decoupled; (1.0) Backbone LR
     temp:  # temperature (tau)
@@ -126,7 +126,7 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
     bce:
       dsmr: false  # {true, false}
   logits:
-    scalar_lr_factor: 100.0  # (0.0, inf)
+    scalar_lr_factor: 10.0  # (0.0, inf)
     temp:
       init: null  # {null, [float]}
       freeze: false  # {true, false}
@@ -173,7 +173,7 @@ opt:  # Optimization
   eps: 1.0e-6  # CLIP paper recommends 1.0e-6 (ViT)
 
 dev:
-  debug_mode: true  # {true, false}
+  debug_mode: false  # {true, false}
   debug:  # Config overrides applied iff (dev.debug_mode: true)
     n_epochs: 1
     chain_floor: null
@@ -193,7 +193,7 @@ dev:
     sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Y
     # curve panels)
   logging: true
-  plot_every: chkpt  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
+  plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
   # (trial) Only at the final checkpoint
   continue_campaign: true  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
   # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign

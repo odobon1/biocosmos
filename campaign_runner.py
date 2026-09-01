@@ -616,7 +616,7 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
     """Load (or, on the phase's first launch, create) the phase's campaign_metadata.json and record its planned
     matrix; returns (metadata, its path). `matrix` is {dataset: {arm: [coords]}} -- the phase's planned (dataset,
     arm, coord) combos in campaign order: every coord under every arm for the screening phase, each arm's picked
-    coord for the qual and trainval phases -- the shape the stats code keys its sweep gates and table rows off. The
+    coord(s) for the qual and trainval phases -- the shape the stats code keys its sweep gates and table rows off. The
     GPU count must match the phase's first launch, and the planned matrix may only grow across launches
     (_check_no_removals)."""
     n_gpus = torch.cuda.device_count()
@@ -839,22 +839,27 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
         return "incomplete"
     return "complete"
 
-def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dict[tuple[str, str], str]:
-    """{(dataset, arm): coord}: the coord each arm goes into the qual phase with, per dataset. Picks are frozen
-    in the qual phase's campaign_metadata.json matrix at its first launch -- a relaunch reuses them even if the
-    screening results have since moved (added seeds/coords) -- and a (dataset, arm) without a recorded pick
-    (the first qual launch, or an arm/dataset added later) is picked fresh from the screening tree: the coord
-    with the highest across-trial mean Native mAP composite All score at its selected checkpoint
-    (report.pick_best_coords; every arm has one, the screening phase having completed in full)."""
+def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dict[tuple[str, str], list[str]]:
+    """{(dataset, arm): coords}: the coords each arm goes into the qual phase with, per dataset -- the picks
+    recorded in the qual phase's campaign_metadata.json matrix (prior launches' picks, kept across relaunches)
+    plus, when not already among them, the current screening best: the coord with the highest across-trial
+    mean Native mAP composite All score at its selected checkpoint (report.pick_best_coords; every arm has
+    one, the screening phase having completed in full). Pick lists only grow: a relaunch whose screening
+    results have moved (added coords/seeds) adds the new best alongside the recorded picks, whose qual trials
+    are kept, and a (dataset, arm) without a record (the first qual launch, or an arm/dataset added later)
+    starts from just the screening best."""
     fpath_meta = _dpath_phase(campaign, "qual") / "campaign_metadata.json"
     recorded = load_json(fpath_meta)["matrix"] if fpath_meta.exists() else {}
     ArtifactManager.dpath_phase = _dpath_phase(campaign, "screening")
     fresh = pick_best_coords()  # {(arm, dataset): coord}
-    return {
-        (dataset, arm): recorded[dataset][arm][0] if dataset in recorded and arm in recorded[dataset] else fresh[(arm, dataset)]
-        for dataset in datasets
-        for arm in arm_names
-    }
+    picks = {}
+    for dataset in datasets:
+        for arm in arm_names:
+            coords = list(recorded[dataset][arm]) if dataset in recorded and arm in recorded[dataset] else []
+            if fresh[(arm, dataset)] not in coords:
+                coords.append(fresh[(arm, dataset)])
+            picks[(dataset, arm)] = coords
+    return picks
 
 def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
     """Give a later phase its own copy of the campaign's frozen config snapshot (the screening phase's
@@ -864,17 +869,19 @@ def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
     if not fpath.exists():
         save_json(cfg_snapshot, fpath)
 
-def _copy_qual_picks(campaign: str, picks: dict[tuple[str, str], str], cfg_snapshot: dict) -> None:
+def _copy_qual_picks(campaign: str, picks: dict[tuple[str, str], list[str]], cfg_snapshot: dict) -> None:
     """Seed the qual tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),
     then for each pick its coord dir wholesale -- every screening seed's trial, config/overrides/coord_metadata
     and coord_stats -- so the qual tree reads as if the coord had run there from the start; the qual phase then
-    tops it up to n_trials_qual seeds. Copy-once: an existing qual coord dir (a relaunch) is left as is."""
+    tops it up to n_trials_qual seeds. Copy-once per coord: an existing qual coord dir (a relaunch) is left as
+    is, so only a newly added pick's dir comes over."""
     dpath_qual = _dpath_phase(campaign, "qual")
     _write_phase_snapshot(dpath_qual, cfg_snapshot)
-    for (dataset, arm), coord in picks.items():
-        rel = Path("datasets") / dataset / "arms" / arm / "coords" / coord
-        if not (dpath_qual / rel).exists():
-            shutil.copytree(_dpath_phase(campaign, "screening") / rel, dpath_qual / rel)
+    for (dataset, arm), coords in picks.items():
+        for coord in coords:
+            rel = Path("datasets") / dataset / "arms" / arm / "coords" / coord
+            if not (dpath_qual / rel).exists():
+                shutil.copytree(_dpath_phase(campaign, "screening") / rel, dpath_qual / rel)
 
 def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], int]:
     """{(dataset, arm, coord): checkpoint index} over the qual phase's matrix: the checkpoint each pick is trained
@@ -894,9 +901,10 @@ def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None,
                  ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> bool:
     """Run the campaign: the screening phase -- every arm x coord on every dataset for n_trials_screen seeds,
     under artifacts/<campaign>/screening/ -- then, unless n_trials_qual is null, the qual phase under
-    artifacts/<campaign>/qual/: each arm's best screening coord per dataset (_qual_picks), its screening trials
-    copied over (_copy_qual_picks) and topped up to n_trials_qual seeds, so the qual tree reads as if
-    n_trials_qual trials had run for the pick -- then, with `trainval`, the trainval phase under
+    artifacts/<campaign>/qual/: each arm's qual picks per dataset -- its recorded picks plus the current
+    screening best when that's new (_qual_picks) -- each pick's screening trials copied over (_copy_qual_picks)
+    and topped up to n_trials_qual seeds, so the qual tree reads as if
+    n_trials_qual trials had run for each pick -- then, with `trainval`, the trainval phase under
     artifacts/<campaign>/trainval/: every pick again over the qual seeds, each run on the trainval partition and
     stopped at the pick's qual-selected checkpoint (_trainval_stops) with its weights saved there (train.py); no
     evals. A phase whose trials don't all complete (a trial failed for good) ends the campaign there: the next
@@ -927,9 +935,9 @@ def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None,
 
     picks = _qual_picks(campaign, datasets, arm_names)
     _copy_qual_picks(campaign, picks, cfg_snapshot)
-    picked = set(picks.values())
+    picked = {coord for pick_coords in picks.values() for coord in pick_coords}
     coords_qual = [(name, payload) for name, payload in coords if name in picked]
-    matrix = {dataset: {arm: [picks[(dataset, arm)]] for arm in arm_names} for dataset in datasets}
+    matrix = {dataset: {arm: picks[(dataset, arm)] for arm in arm_names} for dataset in datasets}
     seeds_qual = _iter_seeds(n_trials_qual)
     outcome = _run_phase(campaign, "qual", cfg_snapshot, arms, coords_qual, datasets, seeds_qual, matrix)
     if outcome != "complete" or not trainval:

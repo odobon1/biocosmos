@@ -7,7 +7,7 @@ the campaign workbooks (campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx)
 learning-curve plots -- all under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
 ArtifactManager.dpath_phase). The phase's campaign_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
 planned (dataset, arm, coord) set every sweep gate and table row here keys off: every arm x coord in the
-screening phase, each arm's picked coord in the qual phase. Everything here renders from artifacts already
+screening phase, each arm's picked coord(s) in the qual phase. Everything here renders from artifacts already
 on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O lives in utils/train.py.
 """
 
@@ -201,7 +201,7 @@ def _metadata():
     """The phase's campaign_metadata.json: 'arms' / 'coords' / 'datasets' in campaign order, 'seeds', and
     'matrix' ({dataset: {arm: [coords]}}) -- the phase's planned (dataset, arm, coord) combos, which every
     sweep gate and table row here keys off (every arm x coord in the screening phase, each arm's picked
-    coord in the qual phase)."""
+    coord(s) in the qual phase)."""
     return load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
 
 def _matrix_arm_coords(metadata, datasets):

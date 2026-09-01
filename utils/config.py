@@ -579,7 +579,7 @@ class CampaignConfig:
 
         if self.trainval and self.n_trials_qual is None:
             raise ValueError(
-                "trainval: true requires a qual phase (n_trials_qual set): the trainval phase trains each arm's qual pick "
+                "trainval: true requires a qual phase (n_trials_qual set): the trainval phase trains each qual pick "
                 "up to its qual-selected checkpoint"
             )
 

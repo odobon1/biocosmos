@@ -276,7 +276,7 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def create_logs(dpath_logs):
+    def create_logs(dpath_logs, eval_logs):
         PrintLog.logging = True
         dpath_batch_logs = dpath_logs / "batch"
         dpath_batch_logs.mkdir(parents=True, exist_ok=True)
@@ -285,10 +285,11 @@ class PrintLog:
         PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
         PrintLog.log_batch_similarity = open(dpath_batch_logs / "sim_targ.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
-        PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
         PrintLog.log_text_train = open(dpath_logs / "text_train.log", "a", buffering=1)
-        PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
+        if eval_logs:  # the trainval phase runs no evals: nothing ever writes these
+            PrintLog.log_eval = open(dpath_logs / "eval.log", "a", buffering=1)
+            PrintLog.log_text_eval = open(dpath_logs / "text_eval.log", "a", buffering=1)
 
     @staticmethod
     def manifest(dpath_phase: Path, trials: List[tuple], in_progress: Optional[tuple]) -> None:
@@ -319,7 +320,7 @@ class PrintLog:
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
             dataset, arm, coord, seed = trial
-            dpath_trial = dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
+            dpath_trial = dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "_seeds" / str(seed)
             trial_id = f"{dataset}/{arm}/{coord}/{seed}"
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None

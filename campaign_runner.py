@@ -154,7 +154,7 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     creation (campaign at kickoff, coord/trial by the subprocess), so a bump is a plain
     read-increment-save; the coord/trial files are guarded because a crash can precede the
     subprocess writing them, whereas campaign_metadata.json always exists by the time any trial runs."""
-    dpath_coord = dpath_trial.parent
+    dpath_coord = dpath_trial.parents[1]
     for fpath in (
         dpath_trial / "trial_metadata.json",
         dpath_coord / "coord_metadata.json",
@@ -166,13 +166,13 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
             save_json(metadata, fpath)
 
 def _dpath_campaign(campaign: str) -> Path:
-    """The campaign's root dir, artifacts/<campaign>/ -- holds the phase dirs (screening/, qual/); the name-dedupe
+    """The campaign's root dir, artifacts/<campaign>/ -- holds the phase dirs (_screen/, qual/); the name-dedupe
     check keys off it."""
     return paths["artifacts"] / campaign
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
-    """A phase's dir, artifacts/<campaign>/<phase>/ ('screening' | 'qual' | 'trainval'): the root of every artifact the runner and
-    that phase's trials write (datasets/, campaign_stats/, campaign_metadata.json, cfg_baseline.json, manifest.log,
+    """A phase's dir, artifacts/<campaign>/<phase>/ ('_screen' | 'qual' | 'trainval'): the root of every artifact the runner and
+    that phase's trials write (_datasets/, campaign_stats/, campaign_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
     return _dpath_campaign(campaign) / phase
 
@@ -189,7 +189,7 @@ def _get_commit_hash() -> str:
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
-    On first launch five config sources are bundled into a single `artifacts/<campaign>/screening/cfg_baseline.json` (the qual phase carries a copy, _copy_qual_picks)
+    On first launch five config sources are bundled into a single `artifacts/<campaign>/_screen/cfg_baseline.json` (the qual phase carries a copy, _copy_qual_picks)
     under the keys `train`, `hardware`, `manif_viz`, `model_specific`, `dataset_specific`. The `train`
     snapshot is derived from `config/train.yaml` (with `debug_mode` overrides folded in); the other four are
     `config/hardware.yaml`, `config/manif_viz.yaml`, `config/model_specific.yaml`, and
@@ -202,7 +202,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
     never alter that campaign -- all of its trials, original or added later, train against the same
     frozen config."""
-    fpath = _dpath_phase(campaign, "screening") / "cfg_baseline.json"
+    fpath = _dpath_phase(campaign, "_screen") / "cfg_baseline.json"
     if fpath.exists():
         return load_json(fpath)
 
@@ -722,8 +722,8 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
         for dataset, arm, coord in combos:
             idx_trial += 1
 
-            dpath_coord = dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord
-            dpath_trial = dpath_coord / str(seed)
+            dpath_coord = dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord
+            dpath_trial = dpath_coord / "_seeds" / str(seed)
             trial_id = f"{dataset}/{arm}/{coord}/{seed}"
             if _check_trial_completion(dpath_trial):
                 print(f"[{idx_trial}/{n_trials_total}] SKIP (completed): {trial_id}")
@@ -731,7 +731,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
 
             # the coord dir (and with it the arm dir) is created here, at trial launch, not at campaign
             # kickoff -- a planned arm/coord whose trials never start leaves no
-            # artifacts/<campaign>/<phase>/datasets/<dataset>/arms/ entry
+            # artifacts/<campaign>/<phase>/_datasets/<dataset>/_arms/ entry
             _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord])
 
             cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord, {**arm_payloads[arm], **coord_payloads[coord]},
@@ -817,7 +817,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
             if _trial_has_manif_cache(dpath_trial):
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.wait()
-                render_proc = _spawn_render(f"{campaign}/{phase}/datasets/{dataset}/arms/{arm}/coords/{coord}/{seed}")
+                render_proc = _spawn_render(f"{campaign}/{phase}/_datasets/{dataset}/_arms/{arm}/_coords/{coord}/_seeds/{seed}")
 
     _render_phase_tables(campaign, phase)
 
@@ -830,7 +830,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
             return "interrupted"
 
     n_failed = sum(
-        not _check_trial_completion(dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed))
+        not _check_trial_completion(dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "_seeds" / str(seed))
         for dataset, arm, coord, seed in trials
     )
     if n_failed:
@@ -850,7 +850,7 @@ def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dic
     starts from just the screening best."""
     fpath_meta = _dpath_phase(campaign, "qual") / "campaign_metadata.json"
     recorded = load_json(fpath_meta)["matrix"] if fpath_meta.exists() else {}
-    ArtifactManager.dpath_phase = _dpath_phase(campaign, "screening")
+    ArtifactManager.dpath_phase = _dpath_phase(campaign, "_screen")
     fresh = pick_best_coords()  # {(arm, dataset): coord}
     picks = {}
     for dataset in datasets:
@@ -879,9 +879,9 @@ def _copy_qual_picks(campaign: str, picks: dict[tuple[str, str], list[str]], cfg
     _write_phase_snapshot(dpath_qual, cfg_snapshot)
     for (dataset, arm), coords in picks.items():
         for coord in coords:
-            rel = Path("datasets") / dataset / "arms" / arm / "coords" / coord
+            rel = Path("_datasets") / dataset / "_arms" / arm / "_coords" / coord
             if not (dpath_qual / rel).exists():
-                shutil.copytree(_dpath_phase(campaign, "screening") / rel, dpath_qual / rel)
+                shutil.copytree(_dpath_phase(campaign, "_screen") / rel, dpath_qual / rel)
 
 def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], int]:
     """{(dataset, arm, coord): checkpoint index} over the qual phase's matrix: the checkpoint each pick is trained
@@ -890,7 +890,7 @@ def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], i
     qual coord's coord_metadata.json; final once every qual trial of the pick is in)."""
     return {
         (dataset, arm, coord): load_json(
-            _dpath_phase(campaign, "qual") / "datasets" / dataset / "arms" / arm / "coords" / coord / "coord_metadata.json"
+            _dpath_phase(campaign, "qual") / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "coord_metadata.json"
         )["best_chkpt"]["map"]["native"]["idx"]
         for dataset, arms in matrix.items()
         for arm, coords in arms.items()
@@ -900,7 +900,7 @@ def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], i
 def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None, trainval: bool, datasets: list[str],
                  ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> bool:
     """Run the campaign: the screening phase -- every arm x coord on every dataset for n_trials_screen seeds,
-    under artifacts/<campaign>/screening/ -- then, unless n_trials_qual is null, the qual phase under
+    under artifacts/<campaign>/_screen/ -- then, unless n_trials_qual is null, the qual phase under
     artifacts/<campaign>/qual/: each arm's qual picks per dataset -- its recorded picks plus the current
     screening best when that's new (_qual_picks) -- each pick's screening trials copied over (_copy_qual_picks)
     and topped up to n_trials_qual seeds, so the qual tree reads as if
@@ -923,13 +923,13 @@ def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None,
 
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
-    first_launch = not (_dpath_phase(campaign, "screening") / "campaign_metadata.json").exists()
+    first_launch = not (_dpath_phase(campaign, "_screen") / "campaign_metadata.json").exists()
     cfg_snapshot = _load_or_create_campaign_config(campaign)
     if first_launch and cfg_snapshot["train"]["dev"]["del_base_eval_cache"]["campaign"]:
         _del_base_eval_cache()
 
     matrix = {dataset: {arm: [name for name, _ in coords] for arm in arm_names} for dataset in datasets}
-    outcome = _run_phase(campaign, "screening", cfg_snapshot, arms, coords, datasets, _iter_seeds(n_trials_screen), matrix)
+    outcome = _run_phase(campaign, "_screen", cfg_snapshot, arms, coords, datasets, _iter_seeds(n_trials_screen), matrix)
     if outcome != "complete" or n_trials_qual is None:
         return outcome != "interrupted"
 

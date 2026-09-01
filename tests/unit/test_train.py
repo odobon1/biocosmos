@@ -37,7 +37,7 @@ def _full_loss_cfg(crit="bce", targ="mp"):
 @dataclass
 class _FakeCoordCfg:
     campaign: str = "c"
-    phase: str = "screening"
+    phase: str = "_screen"
     arm: str = "sp"
     coord: str = "base"
     seed: int = 42

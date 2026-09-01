@@ -84,7 +84,7 @@ def _default_train_aug_cfg() -> dict:
 class TrainConfig:
 
     campaign: str
-    phase: str  # the campaign phase whose tree the trial writes to: 'screening' | 'qual' | 'trainval' (campaign_runner)
+    phase: str  # the campaign phase whose tree the trial writes to: '_screen' | 'qual' | 'trainval' (campaign_runner)
     arm: str
     coord: str
     seed: int | None

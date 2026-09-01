@@ -22,7 +22,7 @@ from utils.ddp import rank0
 import pdb
 
 
-# checkpoint-selection criteria: criterion (also the evals/_best/ + stats subdir name) ->
+# checkpoint-selection criteria: criterion (also the evals/_selected/ + stats subdir name) ->
 # the scores.comp.<key>.<metric> it maximizes
 BEST_CRITERIA = {"map": ("map", "all"), "acc": ("acc", "i2t")}
 
@@ -194,13 +194,13 @@ class ArtifactManager:
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_phase = paths["artifacts"] / cfg_train.campaign / cfg_train.phase
-        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "datasets" / cfg_train.dataset / "arms" / cfg_train.arm
-                                       / "coords" / cfg_train.coord)
+        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / cfg_train.dataset / "_arms" / cfg_train.arm
+                                       / "_coords" / cfg_train.coord)
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / "_seeds" / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_eval_final = ArtifactManager.dpath_trial / "evals" / f"eval{cfg_train.n_chkpts}"
@@ -220,7 +220,7 @@ class ArtifactManager:
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
-        for subdir in ("logs", "chkpts/in_progress", "learning_curves"):
+        for subdir in ("logs", "chkpts/in_progress"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
     @staticmethod

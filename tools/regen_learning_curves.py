@@ -1,8 +1,8 @@
 """
 python -m tools.regen_learning_curves <campaign>
 
-Re-render every trial's learning-curve plots (learning_curves/{native,native_macro,joint,joint_macro}.png), in
-every phase of the campaign (screening/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
+Re-render every trial's learning-curve plots (learning_curves/{native,native_macro,joint,joint_macro}.png; the trainval phase's single learning_curve.png), in
+every phase of the campaign (_screen/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code -- no train/eval rerun -- so styling/layout edits take effect for an
 already-run campaign. Each trial's config is rebuilt exactly as on the campaign launch path (the phase's frozen
 cfg_baseline.json snapshot + the coord's overrides.json, arm + coord overrides merged) to recover samps_per_epoch
@@ -22,7 +22,7 @@ from utils.utils import load_json, load_split, paths
 
 
 def regen_learning_curves(campaign):
-    for phase in ("screening", "qual", "trainval"):
+    for phase in ("_screen", "qual", "trainval"):
         ArtifactManager.dpath_phase = paths["artifacts"] / campaign / phase
         if not ArtifactManager.dpath_phase.exists():  # phase not configured (n_trials_qual null / trainval false), or not reached yet
             continue
@@ -32,10 +32,10 @@ def regen_learning_curves(campaign):
         for dataset, arms in metadata["matrix"].items():
             for arm, coords in arms.items():
                 for coord in coords:
-                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "datasets" / dataset / "arms" / arm
-                                                   / "coords" / coord)
+                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
+                                                   / "_coords" / coord)
                     for seed in metadata["seeds"]:
-                        dpath_trial = ArtifactManager.dpath_coord / str(seed)
+                        dpath_trial = ArtifactManager.dpath_coord / "_seeds" / str(seed)
                         fpath_data = dpath_trial / "data_trial.pkl"
                         if not fpath_data.exists():
                             continue
@@ -69,7 +69,7 @@ def regen_learning_curves(campaign):
                             else []
                         )
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch)
-                        print(f"regenerated: {dpath_trial / 'learning_curves'}")
+                        print(f"regenerated: {dpath_trial / ('learning_curve.png' if phase == 'trainval' else 'learning_curves')}")
 
 
 def main():

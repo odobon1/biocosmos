@@ -10,12 +10,12 @@ the first pass, since they have no sharded GPU implementation and this process i
 t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
 
 python -m tools.regen_manif_viz <campaign>
-python -m tools.regen_manif_viz <campaign>/<phase>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed> [evo_only|no_evo] [snapshot]
+python -m tools.regen_manif_viz <campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed> [evo_only|no_evo] [snapshot]
 
-<campaign>  e.g. dev40 -- re-render every trial in the campaign, phase by phase (screening/, and qual/ when it
+<campaign>  e.g. dev40 -- re-render every trial in the campaign, phase by phase (_screen/, and qual/ when it
             exists) from each phase's campaign_metadata.json matrix x seeds; trials that never ran are skipped
-<campaign>/<phase>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>  e.g.
-            dev40/screening/datasets/cub/arms/mp/coords/LR-1.0e-5/42 -- one trial. This is the form the campaign
+<campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>  e.g.
+            dev40/_screen/_datasets/cub/_arms/mp/_coords/LR-1.0e-5/_seeds/42 -- one trial. This is the form the campaign
             render worker spawns per completed trial.
 evo_only    re-render only the cross-eval evolving GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolving GIFs
@@ -36,12 +36,12 @@ from utils.utils import load_json, paths
 
 def _viz_context(dpath_trial):
     # dataset/split from the trial metadata, arm/coord from the path
-    # (<campaign>/<phase>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>).
+    # (<campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>).
     # Training manifold viz is only produced for eval-enabled trials (train_pt="train").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
-        arm=dpath_trial.parents[2].name,
-        coord=dpath_trial.parent.name,
+        arm=dpath_trial.parents[3].name,
+        coord=dpath_trial.parents[1].name,
         dataset=meta["dataset"],
         split=meta["split"],
     )
@@ -79,7 +79,7 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None
     """Re-render every trial in a campaign, sweeping each phase's planned matrix from its campaign_metadata.json
     the way the other regen_* tools do. Trials that never ran (or never reached an eval) have no
     trial_metadata.json and are skipped rather than erroring, so this works on a partially-run campaign."""
-    for phase in ("screening", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
+    for phase in ("_screen", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
         dpath_phase = paths["artifacts"] / campaign / phase
         if not dpath_phase.exists():  # no qual phase: n_trials_qual null, or not reached yet
             continue
@@ -88,7 +88,7 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None
             for arm, coords in arms.items():
                 for coord in coords:
                     for seed in metadata["seeds"]:
-                        dpath_trial = dpath_phase / "datasets" / dataset / "arms" / arm / "coords" / coord / str(seed)
+                        dpath_trial = dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "_seeds" / str(seed)
                         if not (dpath_trial / "trial_metadata.json").exists():
                             continue
                         # a campaign sweep is a long foreground job, so it reports per trial -- unlike the
@@ -102,7 +102,7 @@ def main():
     flags = {a for a in args if a in ("evo_only", "no_evo", "snapshot")}
     targets = [a for a in args if a not in flags]
     if len(targets) != 1:
-        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/<phase>/datasets/<dataset>/arms/<arm>/coords/<coord>/<seed>] "
+        sys.exit("usage: python -m tools.regen_manif_viz <campaign>[/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>] "
                  "[evo_only|no_evo] [snapshot]")
     target = targets[0].strip("/")
     evo_only, skip_evo = "evo_only" in flags, "no_evo" in flags
@@ -114,7 +114,7 @@ def main():
         render_trial(paths["artifacts"] / target, evo_only, skip_evo, cfg_manif_viz)
     else:
         if "snapshot" in flags:
-            cfg_manif_viz = load_json(paths["artifacts"] / target / "screening" / "cfg_baseline.json")["manif_viz"]
+            cfg_manif_viz = load_json(paths["artifacts"] / target / "_screen" / "cfg_baseline.json")["manif_viz"]
         render_campaign(target, evo_only, skip_evo, cfg_manif_viz)
 
 

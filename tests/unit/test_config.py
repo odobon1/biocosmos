@@ -9,7 +9,7 @@ from utils.config import apply_dataset_specific_defaults
 def make_train_config_dummy(**overrides):
     config = {
         "campaign": "campaign",
-        "phase": "screening",
+        "phase": "_screen",
         "arm": "exp",
         "coord": "base",
         "seed": 7,

@@ -727,7 +727,7 @@ def run_training(cfg):
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_coord(cfg)
     if cfg.dev["logging"]:
-        PrintLog.create_logs(ArtifactManager.dpath_trial / "logs")
+        PrintLog.create_logs(ArtifactManager.dpath_trial / "logs", cfg.train_pt != "trainval")
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
@@ -758,7 +758,7 @@ def run_training(cfg):
     else:
         cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
-        # rewrites their evals/_best/, so the aggregates below see the current selection
+        # rewrites their evals/_selected/, so the aggregates below see the current selection
         update_chkpt_selection(cfg_stats.spread_type)
         update_metric_stats(cfg_stats.spread_type)
         # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a

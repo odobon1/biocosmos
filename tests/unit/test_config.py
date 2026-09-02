@@ -26,7 +26,7 @@ def make_train_config_dummy(**overrides):
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "loss": {"crit": "bce", "sim": "cos", "targ": "sp", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
-        "loss2": {"crit": "bce", "sim": "cos", "targ": "sp", "mix": 0.0, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        "loss2": {"crit": "bce", "sim": "cos", "targ": "sp", "mix": 0.0, "mix_unit": None, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
             "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "wd": 0.0,
@@ -214,7 +214,7 @@ def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytes
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg_shuf=True,
-        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
+        loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "mix_unit": None, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
     ))
 
     assert cfg.htarg_shuf is True
@@ -644,6 +644,16 @@ def test_train_config_rejects_unknown_center(monkeypatch: pytest.MonkeyPatch) ->
     cfg_dict = make_train_config_dummy()
     cfg_dict["loss"]["logits"]["bce"]["center"] = "grad_proje"
     with pytest.raises(ValueError, match="Unknown Loss 1 logits.bce.center"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_unknown_mix_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a typo would otherwise silently run as the null (plain) blend
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss2"]["mix_unit"] = "unit"
+    with pytest.raises(ValueError, match="Unknown Loss 2 mix_unit"):
         TrainConfig(**cfg_dict)
 
 

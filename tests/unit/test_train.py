@@ -57,7 +57,7 @@ class _FakeCoordCfg:
         "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
     })
     loss: dict = field(default_factory=_full_loss_cfg)
-    loss2: dict = field(default_factory=lambda: {"mix": 0.0, "mix_unit_scale": False, **_full_loss_cfg(targ="phylo")})
+    loss2: dict = field(default_factory=lambda: {"mix": 0.0, "mix_unit": None, **_full_loss_cfg(targ="phylo")})
     opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
 
     def __post_init__(self):
@@ -156,7 +156,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
     assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
-    # all weight factors off -> whole wting block inert; loss2 unit-scale cancels its norm scalars
+    # all weight factors off -> whole wting block inert; loss2 mix_unit: unscaled cancels its norm scalars
     (tmp_path / "s3").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s3")
     cfg = _FakeCoordCfg()
@@ -164,13 +164,26 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
     cfg.loss["wting"]["bce"]["dsmr"] = False
     cfg.loss2["mix"] = 0.3
-    cfg.loss2["mix_unit_scale"] = True
+    cfg.loss2["mix_unit"] = "unscaled"
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss"]
-    assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit_scale"] is True
+    assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit"] == "unscaled"
     cls_imb2 = config["loss2"]["wting"]["cls_imb"]
     assert "norm" not in cls_imb2  # its rescale is cancelled by unit-scaling
+
+    # the *_scaled modes multiply the blend back by the losses' detached magnitudes, through which
+    # the per-batch norm scalar survives -> norm stays live
+    for i, mix_unit in enumerate(("mix_scaled", "raw_scaled"), start=5):
+        (tmp_path / f"s{i}").mkdir()
+        monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / f"s{i}")
+        cfg = _FakeCoordCfg()
+        cfg.loss2["mix"] = 0.3
+        cfg.loss2["mix_unit"] = mix_unit
+        ArtifactManager.save_metadata_coord(cfg)
+        config = json.loads((tmp_path / f"s{i}" / "config.json").read_text())
+        assert config["loss2"]["mix_unit"] == mix_unit
+        assert config["loss2"]["wting"]["cls_imb"]["norm"] is True
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

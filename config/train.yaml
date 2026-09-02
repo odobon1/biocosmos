@@ -70,7 +70,7 @@ loss:  # Primary loss
         beta: 0.9999  # [0.0, 1.0)
       norm: false  # {true, false}; Rescale the batch's class-imbalance weights to mean 1.0 (weighted loss
       # retains the unweighted scale batch-by-batch rather than in expectation, at the cost of a
-      # batch-composition-dependent normalizer); Inert iff (loss2.mix_unit_scale: true AND loss2.mix: >0.0)
+      # batch-composition-dependent normalizer); Inert iff (loss2.mix_unit: unscaled AND loss2.mix: >0.0)
     focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
       gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
@@ -102,8 +102,12 @@ loss:  # Primary loss
 
 loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
   mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
-  mix_unit_scale: false  # {true, false}; (true) Rescale each loss to unit magnitude before blending (a bif_bce
-  # participant rescales by L/2, its gradient-scale-equivalent value, keeping mix the true gradient ratio)
+  mix_unit: null  # {null, unscaled, mix_scaled, raw_scaled}; (unscaled) Rescale each loss to unit magnitude before
+  # blending (a bif_bce participant rescales by L/2, its gradient-scale-equivalent value, keeping mix the true gradient
+  # ratio); (mix_scaled) As unscaled, then rescale the blend by the plain blend's magnitude (1 - mix) * L1 + mix * L2
+  # (bif_bce: L/2), so mix stays the true gradient ratio while the loss/gradients keep a plain blend's scale and drift
+  # rather than a constant unit reading; (raw_scaled) As mix_scaled but by the unweighted sum L1 + L2 (bif_bce: L/2):
+  # same gradient ratio, a mix-independent reading (curves across a mix sweep share one scale); (null) Plain blend
   crit: bce  # {infonce, bce, bif_bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {sp, mp, tax, phylo}

@@ -23,7 +23,7 @@ CFG_PARAM_ALIASES = {
     "loss.logits.temp.init": "Tau",
     "loss.logits.bce.bias.init": "Bias",
     "loss2.mix": "Mix",
-    "loss2.mix_unit_scale": "UnitMix",
+    "loss2.mix_unit": "UnitMix",
     "loss2.targ": "Targ2",
     "loss2.wting.bce.dsmr": "DSMR2",
     "loss2.logits.temp.init": "Tau2",
@@ -240,6 +240,8 @@ class TrainConfig:
 
         if not 0.0 <= self.loss2["mix"] <= 1.0:
             raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
+        if self.loss2["mix_unit"] not in (None, "unscaled", "mix_scaled", "raw_scaled"):
+            raise ValueError(f"Unknown Loss 2 mix_unit: '{self.loss2['mix_unit']}', must be one of {{null, unscaled, mix_scaled, raw_scaled}}")
 
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)

@@ -316,9 +316,10 @@ class ArtifactManager:
             # pruned from the working config at load), and the scalar
             # cancellation noted in train.yaml: the unit-scale blend (loss / loss.detach()) cancels
             # any per-batch scalar factor on a loss, making cls_imb.norm's rescale inert under
-            # unit-scaling. loss2 is already gone when mix = 0.0, under which mix_unit_scale never
-            # applies.
-            unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit_scale"]
+            # mix_unit: unscaled only -- the *_scaled modes multiply the blend back by the losses'
+            # detached magnitudes, through which the per-batch norm scalar survives. loss2 is already gone
+            # when mix = 0.0, under which mix_unit never applies.
+            unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit"] == "unscaled"
             for key in ("loss", "loss2"):
                 if key not in metadata:
                     continue

@@ -43,7 +43,7 @@ from utils.config import (
 )
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
-from utils.report import update_arm_stats, update_dataset_stats, update_campaign_stats, pick_best_coords
+from utils.report import update_arm_stats, update_dataset_stats, update_phase_stats, pick_best_coords
 from utils.train import ArtifactManager
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
@@ -128,7 +128,7 @@ def _classify_crash(exc: Exception) -> str:
     return "other"
 
 def _render_phase_tables(campaign: str, phase: str) -> None:
-    """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, campaign_stats) of
+    """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, phase_stats) of
     the phase from whatever is on disk, over its recorded matrix. Trials render each level only when a seed
     completes across that level's cycle (train.py), so a phase that ends mid-cycle -- one interrupted, or with
     a (dataset, arm, coord) that never succeeds -- would otherwise leave them a cycle behind. Checkpoint
@@ -138,13 +138,13 @@ def _render_phase_tables(campaign: str, phase: str) -> None:
         return
     cfg_stats = get_config_stats()
     ArtifactManager.dpath_phase = _dpath_phase(campaign, phase)
-    matrix = load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")["matrix"]
+    matrix = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")["matrix"]
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
             update_arm_stats(dataset, arm, *style)
         update_dataset_stats(dataset, *style)
-    update_campaign_stats(*style, cfg_stats.overrides)
+    update_phase_stats(*style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
@@ -153,12 +153,12 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     wipes the trial dir (which resets that trial's own counts). Each file seeds the zeroed dict at
     creation (campaign at kickoff, coord/trial by the subprocess), so a bump is a plain
     read-increment-save; the coord/trial files are guarded because a crash can precede the
-    subprocess writing them, whereas campaign_metadata.json always exists by the time any trial runs."""
+    subprocess writing them, whereas phase_metadata.json always exists by the time any trial runs."""
     dpath_coord = dpath_trial.parents[1]
     for fpath in (
         dpath_trial / "trial_metadata.json",
         dpath_coord / "coord_metadata.json",
-        dpath_phase / "campaign_metadata.json",
+        dpath_phase / "phase_metadata.json",
     ):
         if fpath.exists():
             metadata = load_json(fpath)
@@ -172,7 +172,7 @@ def _dpath_campaign(campaign: str) -> Path:
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
     """A phase's dir, artifacts/<campaign>/<phase>/ ('_screen' | 'qual' | 'trainval'): the root of every artifact the runner and
-    that phase's trials write (_datasets/, campaign_stats/, campaign_metadata.json, cfg_baseline.json, manifest.log,
+    that phase's trials write (_datasets/, phase_stats/, phase_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
     return _dpath_campaign(campaign) / phase
 
@@ -365,19 +365,24 @@ def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict) 
 def _iter_seeds(n_trials: int) -> list[int]:
     return list(range(SEED0, SEED0 + n_trials))
 
-def _check_no_removals(campaign: str, prev_meta: dict, arm_names: list[str], coord_names: list[str], datasets: list[str], seeds: list[int]) -> None:
+def _matrix_items(matrix: dict) -> dict[str, list]:
+    """The distinct datasets / arms / coords a {dataset: {arm: [coords]}} matrix plans, each in first-seen order."""
+    return {
+        "datasets": list(matrix),
+        "arms": list(dict.fromkeys(arm for arms in matrix.values() for arm in arms)),
+        "coords": list(dict.fromkeys(coord for arms in matrix.values() for coords in arms.values() for coord in coords)),
+    }
+
+def _check_no_removals(campaign: str, prev_meta: dict, matrix: dict, seeds: list[int]) -> None:
     """A campaign's matrix may grow across runs (add arms/coords/datasets/seeds) but never shrink.
     Compare the planned matrix against the one persisted from a prior run and raise if any
     previously-run arm, coord, dataset, or seed is missing -- dropping one would orphan its
     already-computed trials and silently remove them from the campaign."""
+    prev_items, curr_items = _matrix_items(prev_meta["matrix"]), _matrix_items(matrix)
+    prev_items["seeds"], curr_items["seeds"] = prev_meta["seeds"], seeds
     removed = []
-    for kind, prev_vals, curr_vals in (
-        ("arms", prev_meta["arms"], arm_names),
-        ("coords", prev_meta["coords"], coord_names),
-        ("datasets", prev_meta["datasets"], datasets),
-        ("seeds", prev_meta["seeds"], seeds),
-    ):
-        missing = [v for v in prev_vals if v not in set(curr_vals)]
+    for kind in ("arms", "coords", "datasets", "seeds"):
+        missing = [v for v in prev_items[kind] if v not in set(curr_items[kind])]
         if missing:
             removed.append(f"  {kind} removed: {missing}")
     if removed:
@@ -611,9 +616,8 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coord_names: list[str], datasets: list[str],
-                    seeds: list[int], matrix: dict) -> tuple[dict, Path]:
-    """Load (or, on the phase's first launch, create) the phase's campaign_metadata.json and record its planned
+def _phase_metadata(campaign: str, dpath_phase: Path, seeds: list[int], matrix: dict) -> tuple[dict, Path]:
+    """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its planned
     matrix; returns (metadata, its path). `matrix` is {dataset: {arm: [coords]}} -- the phase's planned (dataset,
     arm, coord) combos in campaign order: every coord under every arm for the screening phase, each arm's picked
     coord(s) for the qual and trainval phases -- the shape the stats code keys its sweep gates and table rows off. The
@@ -621,7 +625,7 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
     (_check_no_removals)."""
     n_gpus = torch.cuda.device_count()
     slurm_alloc = get_slurm_alloc()
-    fpath_meta = dpath_phase / "campaign_metadata.json"
+    fpath_meta = dpath_phase / "phase_metadata.json"
     if fpath_meta.exists():
         metadata = load_json(fpath_meta)
         if metadata["n_gpus"] != n_gpus:
@@ -630,7 +634,7 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
                 f"{metadata['n_gpus']} GPUs but current environment has {n_gpus}."
             )
         # campaign matrix is additive across runs: items may be added but never removed
-        _check_no_removals(campaign, metadata, arm_names, coord_names, datasets, seeds)
+        _check_no_removals(campaign, metadata, matrix, seeds)
     else:
         metadata = {
             "duration": "0-00:00:00",
@@ -642,9 +646,6 @@ def _phase_metadata(campaign: str, dpath_phase: Path, arm_names: list[str], coor
             "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # running totals of crashes across all trials, bucketed by cause (see _classify_crash / _bump_crash_counts)
         }
     # record the (possibly grown) planned matrix so the next run can detect removals
-    metadata["arms"] = arm_names
-    metadata["coords"] = coord_names
-    metadata["datasets"] = list(datasets)
     metadata["seeds"] = seeds
     metadata["matrix"] = matrix
     save_json(metadata, fpath_meta)
@@ -655,7 +656,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
     """Run one phase's trial matrix under artifacts/<campaign>/<phase>/: `matrix` ({dataset: {arm: [coords]}}, the
     phase's planned (dataset, arm, coord) combos in campaign order; see _phase_metadata) x `seeds`, seed-major
     then dataset, arm, coord. `arms` / `coords` are the (name, overrides) members the matrix draws on. Every
-    artifact of the phase -- its campaign_metadata.json, time.pkl, manifest.log, the coord dirs, the stats
+    artifact of the phase -- its phase_metadata.json, time.pkl, manifest.log, the coord dirs, the stats
     trees -- lives under its dir. Completed trials are skipped, so a relaunch resumes/extends the phase.
     `chkpt_stops` ({(dataset, arm, coord): checkpoint index}, the trainval phase) trains every combo on the
     trainval partition and stops it at its index (TrainConfig.chkpt_stop) instead of running to sample_volume.
@@ -667,7 +668,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
     save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
 
     arm_payloads, coord_payloads = dict(arms), dict(coords)
-    metadata, fpath_meta = _phase_metadata(campaign, dpath_phase, list(arm_payloads), list(coord_payloads), datasets, seeds, matrix)
+    metadata, fpath_meta = _phase_metadata(campaign, dpath_phase, seeds, matrix)
     combos = [(dataset, arm, coord) for dataset in datasets for arm in arm_payloads for coord in matrix[dataset][arm]]
 
     def injections(dataset, arm, coord):
@@ -841,14 +842,14 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, arms: list[tuple[s
 
 def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dict[tuple[str, str], list[str]]:
     """{(dataset, arm): coords}: the coords each arm goes into the qual phase with, per dataset -- the picks
-    recorded in the qual phase's campaign_metadata.json matrix (prior launches' picks, kept across relaunches)
+    recorded in the qual phase's phase_metadata.json matrix (prior launches' picks, kept across relaunches)
     plus, when not already among them, the current screening best: the coord with the highest across-trial
     mean Native mAP composite All score at its selected checkpoint (report.pick_best_coords; every arm has
     one, the screening phase having completed in full). Pick lists only grow: a relaunch whose screening
     results have moved (added coords/seeds) adds the new best alongside the recorded picks, whose qual trials
     are kept, and a (dataset, arm) without a record (the first qual launch, or an arm/dataset added later)
     starts from just the screening best."""
-    fpath_meta = _dpath_phase(campaign, "qual") / "campaign_metadata.json"
+    fpath_meta = _dpath_phase(campaign, "qual") / "phase_metadata.json"
     recorded = load_json(fpath_meta)["matrix"] if fpath_meta.exists() else {}
     ArtifactManager.dpath_phase = _dpath_phase(campaign, "_screen")
     fresh = pick_best_coords()  # {(arm, dataset): coord}
@@ -923,7 +924,7 @@ def run_campaign(campaign: str, n_trials_screen: int, n_trials_qual: int | None,
 
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
-    first_launch = not (_dpath_phase(campaign, "_screen") / "campaign_metadata.json").exists()
+    first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
     cfg_snapshot = _load_or_create_campaign_config(campaign)
     if first_launch and cfg_snapshot["train"]["dev"]["del_base_eval_cache"]["campaign"]:
         _del_base_eval_cache()

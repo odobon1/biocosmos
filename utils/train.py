@@ -235,7 +235,7 @@ class ArtifactManager:
             return f"{days}-{hours:02}:{minutes:02}:{seconds:02}"
         
         fpath_pkl = ArtifactManager.dpath_phase / "time.pkl"
-        fpath_json = ArtifactManager.dpath_phase / "campaign_metadata.json"
+        fpath_json = ArtifactManager.dpath_phase / "phase_metadata.json"
 
         time_data = load_pickle(fpath_pkl)
 
@@ -249,7 +249,7 @@ class ArtifactManager:
         time_data["elapsed"] = time_elapsed
         save_pickle(time_data, fpath_pkl)
         
-        metadata_camp = load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
+        metadata_camp = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
         metadata_camp["duration"] = format_duration(time_elapsed)
         save_json(metadata_camp, fpath_json)
 
@@ -258,7 +258,7 @@ class ArtifactManager:
     def update_campaign_memory(mem):
         # campaign-level memory = running max across every trial's snapshots (== max across
         # trial-level values, maintained incrementally so it survives an OOM-killed trial)
-        fpath_meta = ArtifactManager.dpath_phase / "campaign_metadata.json"
+        fpath_meta = ArtifactManager.dpath_phase / "phase_metadata.json"
         metadata_camp = load_json(fpath_meta)
         metadata_camp["memory"] = merge_mem(metadata_camp["memory"], format_mem(mem))
         save_json(metadata_camp, fpath_meta)

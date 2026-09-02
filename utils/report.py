@@ -3,9 +3,10 @@ Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint
 (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/coord_stats/), the per-eval-group composite-score summary
 tables + convergence plots at every cross-coord level -- per arm (_arms/<arm>/arm_stats/), per dataset
 (_datasets/<dataset>/dataset_stats/{arm_coords,arms}/) -- each {map,acc}/<group>/{metrics,convergence}.png,
-the campaign workbooks (campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx), and per-trial
+the phase workbooks (phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx), the test workbooks
+(artifacts/<campaign>/test/map/test_<group>.xlsx, from the score files test.py writes), and per-trial
 learning-curve plots -- all under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
-ArtifactManager.dpath_phase). The phase's campaign_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
+ArtifactManager.dpath_phase). The phase's phase_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
 planned (dataset, arm, coord) set every sweep gate and table row here keys off: every arm x coord in the
 screening phase, each arm's picked coord(s) in the qual phase. Everything here renders from artifacts already
 on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O lives in utils/train.py.
@@ -197,41 +198,44 @@ def _chkpt_dpaths(dpath_trial):
 def _trial_complete(dataset, arm, coord, seed):
     return _chkpt_dpaths(_dpath_coord(dataset, arm, coord) / "_seeds" / str(seed)) is not None
 
-def _metadata():
-    """The phase's campaign_metadata.json: 'arms' / 'coords' / 'datasets' in campaign order, 'seeds', and
-    'matrix' ({dataset: {arm: [coords]}}) -- the phase's planned (dataset, arm, coord) combos, which every
-    sweep gate and table row here keys off (every arm x coord in the screening phase, each arm's picked
-    coord(s) in the qual phase)."""
-    return load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
+def _matrix():
+    """The phase's planned matrix, phase_metadata.json's 'matrix' ({dataset: {arm: [coords]}}, datasets and arms in
+    campaign order): the (dataset, arm, coord) combos every sweep gate and table row here keys off (every arm x
+    coord in the screening phase, each arm's picked coord(s) in the qual phase)."""
+    return load_json(ArtifactManager.dpath_phase / "phase_metadata.json")["matrix"]
 
-def _matrix_arm_coords(metadata, datasets):
-    """The planned (arm, coord) pairs over `datasets` (their union), in campaign order."""
-    matrix = metadata["matrix"]
-    return [(arm, coord) for arm in metadata["arms"] for coord in metadata["coords"]
-            if any(coord in matrix[dataset][arm] for dataset in datasets)]
+def _matrix_arms(matrix, datasets):
+    """The planned arms over `datasets`, in campaign order."""
+    return list(dict.fromkeys(arm for dataset in datasets for arm in matrix[dataset]))
+
+def _matrix_arm_coords(matrix, datasets):
+    """The planned (arm, coord) pairs over `datasets` (their union): arms in campaign order, each arm's coords in
+    first-seen order across `datasets`' lists."""
+    return [(arm, coord) for arm in _matrix_arms(matrix, datasets)
+            for coord in dict.fromkeys(coord for dataset in datasets for coord in matrix[dataset][arm])]
 
 def arm_sweep_complete(seed, dataset, arm):
     """True once `seed` has a completed trial in EVERY planned coord of `arm` on `dataset` -- the arm's cycle
     of the seed sweep. The arm's arm_stats/ re-render only at these points (train.py): every trial
     completion reselects only its own coord's checkpoint, so mid-cycle the arm's tables would mix
     coords reselected against different trial counts."""
-    return all(_trial_complete(dataset, arm, coord, seed) for coord in _metadata()["matrix"][dataset][arm])
+    return all(_trial_complete(dataset, arm, coord, seed) for coord in _matrix()[dataset][arm])
 
 def dataset_sweep_complete(seed, dataset):
     """True once `seed` has a completed trial in EVERY planned (arm, coord) on `dataset` -- the dataset's
     cycle of the seed sweep; gates the dataset_stats/ re-render the way arm_sweep_complete gates arm_stats/."""
     return all(
         _trial_complete(dataset, arm, coord, seed)
-        for arm, coords in _metadata()["matrix"][dataset].items()
+        for arm, coords in _matrix()[dataset].items()
         for coord in coords
     )
 
 def seed_sweep_complete(seed):
     """True once `seed` has a completed trial in EVERY planned (dataset, arm, coord) of the phase -- i.e. one
-    full pass of the matrix; gates the campaign_stats/ workbooks' re-render."""
+    full pass of the matrix; gates the phase_stats/ workbooks' re-render."""
     return all(
         _trial_complete(dataset, arm, coord, seed)
-        for dataset, arms in _metadata()["matrix"].items()
+        for dataset, arms in _matrix().items()
         for arm, coords in arms.items()
         for coord in coords
     )
@@ -339,40 +343,59 @@ def update_chkpt_selection(spread_type):
     metadata["best_chkpt"] = best_chkpt
     save_json(metadata, fpath_meta)
 
+def _score_cells(score_maps, labels, spread_type):
+    """One data cell per label, aggregated across `score_maps` (one score dict per completed trial),
+    each read by its label's lowercased key: '-' (0 trials, or none carrying the score), 'XX.XX'
+    (1 trial, mean), or 'XX.XX ± XX.XX' (>1 trial, mean ± spread)."""
+    cells = []
+    for label in labels:
+        key = label.lower()
+        # an n-shot bucket with no classes in this dataset's eval partition is absent from its files
+        nums = np.array([float(score_map[key]) for score_map in score_maps if key in score_map]) * 100
+        if len(nums) == 0:
+            cells.append("-")
+        elif len(nums) == 1:
+            cells.append(f"{nums[0]:.2f}")
+        else:
+            cells.append(f"{nums.mean():.2f} ± {_spread(nums, spread_type):.2f}")
+    return cells
+
 def _stats_table_grid(headers, labels, rows, spread_type):
     """Build a composite-score table's cell grid from [(row key, [score dict per completed trial]),
     ...]: a header row of the row-key column names in `headers` (e.g. ('Arm', 'Coord')) + one column
     per label in `labels`, then one row per entry -- its key's cells (the trial count appended to the
-    last one: '<coord> (n_trials)') + each label's cell (read from the score dicts by its lowercased
-    key): '-' (0 trials, or none carrying the score), 'XX.XX' (1 trial, mean), or 'XX.XX ± XX.XX'
-    (>1 trial, mean ± spread)."""
+    last one: '<coord> (n_trials)') + each label's _score_cells cell."""
     grid = [[*headers, *labels]]
     for row_key, score_maps in rows:
-        row = [*row_key[:-1], f"{row_key[-1]} ({len(score_maps)})"]
-        for label in labels:
-            key = label.lower()
-            # an n-shot bucket with no classes in this dataset's eval partition is absent from its files
-            nums = np.array([float(score_map[key]) for score_map in score_maps if key in score_map]) * 100
-            if len(nums) == 0:
-                row.append("-")
-            elif len(nums) == 1:
-                row.append(f"{nums[0]:.2f}")
-            else:
-                row.append(f"{nums.mean():.2f} ± {_spread(nums, spread_type):.2f}")
-        grid.append(row)
+        grid.append([*row_key[:-1], f"{row_key[-1]} ({len(score_maps)})", *_score_cells(score_maps, labels, spread_type)])
     return grid
+
+def _comp_entry(scores_grp):
+    """One trial's {'map': ..., 'acc': ..., 'nshot': [...]} entry from a metrics file's per-group
+    scores subtree -- 'map'/'acc' flat label->score dicts merging the comp scores with the
+    per-partition primitives ('id i2t' ... 'ood t2i') and the ID partition's n-shot bucket scores
+    (keyed by lowercased bucket name), so table labels map to keys by lowercasing; 'nshot' the
+    trial's bucket names in the file's (split) order. The eval writes the 'n-shot' dicts only for
+    buckets with classes in the eval partition (the dev split drops some), so a bucket can be
+    absent from a dataset's files."""
+    nshot_map = scores_grp["id"]["map"].get("n-shot", {})
+    nshot_acc = scores_grp["id"]["acc"].get("n-shot", {})
+    return {
+        "map": {**scores_grp["comp"]["map"],
+                **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")},
+                **{b.lower(): v for b, v in nshot_map.items()}},
+        "acc": {**scores_grp["comp"]["acc"],
+                **{f"{p} i2t": scores_grp[p]["acc"]["i2t"] for p in ("id", "ood")},
+                **{b.lower(): v for b, v in nshot_acc.items()}},
+        "nshot": [b.lower() for b in {**nshot_map, **nshot_acc}],
+    }
 
 def _collect_comps(arm_coords, datasets, criterion):
     """Per eval group, each (arm, coord) x dataset's completed-trial score maps, keyed by trial seed
     (the trial dir name; empty dict -> no trials yet): comps_all[group_key][((arm, coord), dataset)]
-    [seed] is a {'map': ..., 'acc': ..., 'nshot': [...]} entry -- 'map'/'acc' flat label->score
-    dicts merging the comp scores with the per-partition primitives ('id i2t' ... 'ood t2i') and
-    the ID partition's n-shot bucket scores (keyed by lowercased bucket name), so table labels map
-    to keys by lowercasing; 'nshot' the trial's bucket names in the file's (split) order. The eval
-    writes the 'n-shot' dicts only for buckets with classes in the eval partition (the dev split
-    drops some), so a bucket can be absent from a dataset's files. Each group reads its own
-    best-checkpoint metrics file for the given selection criterion (evals/_selected/<criterion>/),
-    whose presence is also the completion signal, same as update_metric_stats."""
+    [seed] is a _comp_entry. Each group reads its own best-checkpoint metrics file for the given
+    selection criterion (evals/_selected/<criterion>/), whose presence is also the completion
+    signal, same as update_metric_stats."""
     comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
     for arm, coord in arm_coords:
         for dataset in datasets:
@@ -383,18 +406,7 @@ def _collect_comps(arm_coords, datasets, criterion):
                     for group_key in _EVAL_GROUPS:
                         fpath_metrics = dpath_trial / f"evals/_selected/{criterion}/{group_key}.json"
                         if fpath_metrics.exists():
-                            scores_grp = load_json(fpath_metrics)["scores"]
-                            nshot_map = scores_grp["id"]["map"].get("n-shot", {})
-                            nshot_acc = scores_grp["id"]["acc"].get("n-shot", {})
-                            comps[group_key][dpath_trial.name] = {
-                                "map": {**scores_grp["comp"]["map"],
-                                        **{f"{p} {m}": scores_grp[p]["map"][m] for p in ("id", "ood") for m in ("i2t", "i2i", "t2i")},
-                                        **{b.lower(): v for b, v in nshot_map.items()}},
-                                "acc": {**scores_grp["comp"]["acc"],
-                                        **{f"{p} i2t": scores_grp[p]["acc"]["i2t"] for p in ("id", "ood")},
-                                        **{b.lower(): v for b, v in nshot_acc.items()}},
-                                "nshot": [b.lower() for b in {**nshot_map, **nshot_acc}],
-                            }
+                            comps[group_key][dpath_trial.name] = _comp_entry(load_json(fpath_metrics)["scores"])
             for group_key in _EVAL_GROUPS:
                 comps_all[group_key][((arm, coord), dataset)] = comps[group_key]
     return comps_all
@@ -527,10 +539,11 @@ def pick_best_coords():
     mAP composite All -- criterion 'map', eval group 'native' (_best_coords: the highest across-trial mean at
     the selected checkpoint among the arm's coords with completed trials there, ties to the first in campaign
     order); no entry where none has any. The qual phase's selection (campaign_runner._qual_picks)."""
-    metadata = _metadata()
-    arm_coords = _matrix_arm_coords(metadata, metadata["datasets"])
-    comps_by = _collect_comps(arm_coords, metadata["datasets"], "map")["native"]
-    return _best_coords(arm_coords, metadata["datasets"], comps_by, "map")
+    matrix = _matrix()
+    datasets = list(matrix)
+    arm_coords = _matrix_arm_coords(matrix, datasets)
+    comps_by = _collect_comps(arm_coords, datasets, "map")["native"]
+    return _best_coords(arm_coords, datasets, comps_by, "map")
 
 def _curve(dataset, arm, coord, criterion, group_key):
     """(means, idx_best) of the coord's across-trial mean curve on `dataset` for one criterion x eval
@@ -635,7 +648,7 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels
     metric's mean over THIS dataset's completed trials (map tables by the mAP 'All' column, acc tables
     by the acc 'I2T' column) -- localized per dataset and per group, independent of the cross-dataset
     order used in the workbooks -- heatmap shades score cells white->#ff5533 over a fixed
-    0.00->100.00 (as in update_campaign_stats). Convergence plots overlay every row's curve on one
+    0.00->100.00 (as in update_phase_stats). Convergence plots overlay every row's curve on one
     log-scaled checkpoint axis, all grey, with the winner -- the highest mean at its OWN selected
     checkpoint, ties to the first row -- black on top, its selection marked (_plot_convergence); no
     plot when there are no curves."""
@@ -677,7 +690,7 @@ def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, sup
     dpath_arm = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
     if not dpath_arm.exists():
         return
-    coords = _metadata()["matrix"][dataset][arm]
+    coords = _matrix()[dataset][arm]
     arm_coords = [(arm, coord) for coord in coords]
     comps_all = {criterion: _collect_comps(arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
@@ -709,9 +722,9 @@ def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp
     dpath_dataset = ArtifactManager.dpath_phase / "_datasets" / dataset
     if not dpath_dataset.exists():
         return
-    metadata = _metadata()
-    arms = metadata["arms"]
-    arm_coords = _matrix_arm_coords(metadata, (dataset,))
+    matrix = _matrix()
+    arms = list(matrix[dataset])
+    arm_coords = _matrix_arm_coords(matrix, (dataset,))
     comps_all = {criterion: _collect_comps(arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
     # together, so row presence is criterion- and group-independent
@@ -736,10 +749,162 @@ def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp
         _render_stats_pngs(dpath_stats / "arms", ("Arm",), rowset_arms, dataset, subject, labels,
                            spread_type, bold_high, ordered, heatmap)
 
+def _override_value(config, key):
+    """Effective value of dot-path `key` in a row's config.json dict; '-' when a segment is absent --
+    the signal that the param is inert under that configuration (save_metadata_coord prunes it)."""
+    node = config
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return "-"
+        node = node[part]
+    return str(node)
+
+def _band_keys(side, rows, declared, config_by):
+    """The params declared on `side` ('arm' / 'coord') across `rows`' overrides.json dicts
+    (declared[row]), first-seen order (campaign order); a param whose effective value
+    (config_by[row], _override_value) is identical across every row differentiates nothing -- drop
+    the column (and with it the whole band when no column survives)."""
+    keys = []
+    for row in rows:
+        for key in declared[row][side]:
+            if key not in keys:
+                keys.append(key)
+    return [key for key in keys if len({_override_value(config_by[row], key) for row in rows}) > 1]
+
+def _band_grids(band_specs, rows, config_by):
+    """[(title, grid)] for the bands ([(title, keys)]) with surviving params: a header of param
+    names only -- no key columns; the rows align with (and are labeled by) the aggregate Mean
+    table's rows."""
+    return [(title, [list(keys)] + [[_override_value(config_by[row], key) for key in keys] for row in rows])
+            for title, keys in band_specs if keys]
+
+def _map_groups(supp_scores, nshot_names):
+    """The mAP sheets' merged group headers, [(group_title, n_group_cols), ...]: with supplemental
+    columns enabled, banners split into title + 'Composite Scores' + one group header per enabled
+    supplemental group; None (composite columns only) keeps full-width title banners, as the
+    accuracy sheet always does."""
+    groups = [("Composite Scores", 6)]
+    if supp_scores["primitive"]:
+        groups.append(("Primitive Scores", 6))
+    if supp_scores["n_shot"] and nshot_names:
+        groups.append(("N-Shot Scores", len(nshot_names)))
+    return groups if len(groups) > 1 else None
+
+def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, styled=True):
+    """Lay one workbook sheet out from its blocks ((label, [(title, cell grid), ...]) -- the
+    aggregate block labeled None, then the per-seed blocks), side by side one blank separator
+    column apart, under the campaign banner cell '<repo-parent-dir> - <campaign> (<banner>)'.
+    groups: None -> each table's banner is its title merged across the full table width;
+    else [(group_title, n_group_cols), ...] -> the title sits over the block's n_keys key
+    columns (merged across them when there are several), followed by one grey merged
+    group-header cell per group (e.g. 'Composite Scores' over the composite columns,
+    'Primitive Scores' over the primitive columns). bands ([(title, grid)], each grid a header
+    + one-value-row-per-key grid in the sheet's row order; [] for none) render as the config
+    column bands at the left, one blank separator column after each, with the score blocks all
+    shifted right past them -- vertically aligned with the aggregate block's bottom Mean table
+    so the Mean's key columns label their rows; band cells likewise get no winner-bold/heatmap
+    styling. styled=False skips the winner-bold/heatmap styling of data cells altogether (the
+    hardware sheet's readings aren't scores)."""
+    bold = Font(bold=True)
+    center = Alignment(horizontal="center", vertical="center")
+    left = Alignment(horizontal="left", vertical="center")
+    header_fill = PatternFill("solid", fgColor="EAEAEA")
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
+
+    campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_phase.parent.name} ({banner})")  # <campaign>/<phase>/
+    campaign.font = bold
+    campaign.alignment = left
+
+    offset = sum(len(g[0]) + 1 for _, g in bands)  # left bands + their separator columns
+    col0 = 1 + offset  # blocks side by side, one blank separator column apart
+    for block_label, tables in blocks:
+        if block_label is not None:
+            label_cell = ws.cell(row=1, column=col0, value=block_label)  # campaign-banner row, atop the block
+            label_cell.font = bold
+            label_cell.alignment = left
+        # banner row + blank row above the tables; dataset tables lead in every block, so they
+        # sit in the same rows across blocks (only the aggregate has the trailing Mean table)
+        row = 3
+        for title_text, grid in tables:
+            n_cols = len(grid[0])  # key columns + one col per label (the hw Mean table carries extra crash columns)
+            title = ws.cell(row=row, column=col0, value=title_text)
+            title.font = bold
+            title.alignment = left
+            for c in range(col0, col0 + n_cols):  # border every cell of the banner so the merged ranges' edges all render
+                ws.cell(row=row, column=c).border = border
+            if groups is None:
+                ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + n_cols - 1)
+            else:
+                widths[col0] = max(widths.get(col0, 0), len(title_text))  # the title must fit its (key) column(s)
+                if n_keys > 1:
+                    ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + n_keys - 1)
+                gcol = col0 + n_keys
+                for group_title, n_group in groups:
+                    for c in range(gcol, gcol + n_group):  # fill every cell so the merged range renders grey
+                        ws.cell(row=row, column=c).fill = header_fill
+                    gcell = ws.cell(row=row, column=gcol, value=group_title)
+                    gcell.font = bold
+                    gcell.alignment = center
+                    ws.merge_cells(start_row=row, start_column=gcol, end_row=row, end_column=gcol + n_group - 1)
+                    gcol += n_group
+            row += 1
+
+            styles = _col_styles(grid, bold_high and styled, n_keys)
+            for r, grid_row in enumerate(grid):
+                for c, val in enumerate(grid_row):
+                    cell = ws.cell(row=row, column=col0 + c, value=val)
+                    cell.alignment = left if c < n_keys and r > 0 else center  # key cells left-aligned
+                    cell.border = border
+                    widths[col0 + c] = max(widths.get(col0 + c, 0), len(val))
+                    if r == 0 or c < n_keys:
+                        cell.font = bold
+                        cell.fill = header_fill
+                        continue
+                    means, winners = styles[c]
+                    if r in winners:
+                        cell.font = bold
+                    if heatmap and styled and r in means:
+                        cell.fill = PatternFill("solid", fgColor=_heat_hex(means[r]))
+                row += 1
+            row += 1  # blank spacer row between tables
+        # widest table decides the block's width (the hw Mean table carries extra crash columns)
+        col0 += max(len(grid[0]) for _, grid in tables) + 1
+
+    # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
+    band_row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
+    band_col = 1
+    for band_title, band_grid in bands:
+        b_cols = len(band_grid[0])
+        title = ws.cell(row=band_row, column=band_col, value=band_title)
+        title.font = bold
+        title.alignment = left
+        for c in range(band_col, band_col + b_cols):
+            ws.cell(row=band_row, column=c).border = border
+        ws.merge_cells(start_row=band_row, start_column=band_col, end_row=band_row, end_column=band_col + b_cols - 1)
+        row = band_row + 1
+        for r, grid_row in enumerate(band_grid):
+            for c, val in enumerate(grid_row):
+                cell = ws.cell(row=row, column=band_col + c, value=val)
+                cell.alignment = center
+                cell.border = border
+                widths[band_col + c] = max(widths.get(band_col + c, 0), len(val))
+                if r == 0:  # header row (param names)
+                    cell.font = bold
+                    cell.fill = header_fill
+            row += 1
+        band_col += b_cols + 1
+
+    for c in range(1, max(widths) + 1):
+        # snug fit to each column's longest cell; blank separator columns get a small ~square width
+        ws.column_dimensions[get_column_letter(c)].width = widths[c] + 2 if c in widths else 3
+
 @rank0
-def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
-    """Write the campaign's workbooks, one per selection criterion x eval group under
-    artifacts/<campaign>/<phase>/campaign_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
+def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
+    """Write the phase's workbooks, one per selection criterion x eval group under
+    artifacts/<campaign>/<phase>/phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
     workbooks have one row per planned (arm, coord) (the phase's matrix), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
     one row per arm keyed by 'Arm' alone, each arm shown at its BEST coord per dataset -- the coord
     with the highest across-trial mean of the workbook's criterion's comp score among the arm's coords
@@ -773,7 +938,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
     are omitted entirely. When bold_high is True, the highest-mean cell in each score column is
     bolded (ties included; '-' cells ignored). When ordered is True, each sheet's rows are ordered by
     its own metric's Mean-table first score column -- 'All' for mAP, 'I2T' for accuracy -- descending;
-    when False, rows keep the fixed campaign_metadata order (arms, then coords within each arm).
+    when False, rows keep the fixed matrix order (arms, then coords within each arm).
     Within a sheet one row order is shared across all tables, but the two sheets' orders may differ.
     heatmap shades each score cell white->#ff5533 by value over a fixed 0.00->100.00 (False leaves
     cells unshaded). '-' cells are never shaded. To the right of this aggregate block sit per-seed
@@ -811,9 +976,10 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
     hug each column's longest header/data cell (banner/label text overflows); blank separator columns
     get a small ~square width. Regenerated at the end of each full seed sweep of the matrix (train.py,
     seed_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
-    metadata = _metadata()
-    arms, datasets = metadata["arms"], metadata["datasets"]
-    arm_coords = _matrix_arm_coords(metadata, datasets)
+    matrix = _matrix()
+    datasets = list(matrix)
+    arms = _matrix_arms(matrix, datasets)
+    arm_coords = _matrix_arm_coords(matrix, datasets)
 
     comps_all = {criterion: _collect_comps(arm_coords, datasets, criterion) for criterion in BEST_CRITERIA}
     # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
@@ -826,6 +992,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
     seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
     hw_by, crashes_by = _collect_hw(arm_coords, datasets)
 
+    config_ac, config_arms = {}, {}
     if overrides:
         # an (arm, coord) row's overrides.json / config.json are written per dataset
         # (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/) but identical across them, so each row reads its
@@ -833,38 +1000,12 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
         # arm's first (arm, coord) row's (the arm's params are the same in every coord of it)
         rep = {}
         for row in rows_ac:
-            rep[row] = row
             rep.setdefault((row[0],), row)
         dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows_ac}
-        declared = {row: load_json(dpaths[row] / "overrides.json") for row in rows_ac}  # {'arm': {...}, 'coord': {...}}
-        config_by = {row: load_json(dpaths[row] / "config.json") for row in rows_ac}
-
-    def override_value(row, key):
-        # a param absent from the row's config.json is inert under that configuration -> '-'
-        node = config_by[rep[row]]
-        for part in key.split("."):
-            if not isinstance(node, dict) or part not in node:
-                return "-"
-            node = node[part]
-        return str(node)
-
-    def band_keys(side, rows):
-        # the params declared on `side` ('arm' / 'coord') across `rows`, first-seen order (campaign
-        # order); a param whose effective value is identical across every row differentiates nothing
-        # -- drop the column (and with it the whole band when no column survives)
-        keys = []
-        for row in rows:
-            for key in declared[rep[row]][side]:
-                if key not in keys:
-                    keys.append(key)
-        return [key for key in keys if len({override_value(row, key) for row in rows}) > 1]
-
-    def band_grids(band_specs, rows):
-        # [(title, grid)] for the bands ([(title, keys)]) with surviving params: a header of param
-        # names only -- no key columns; the rows align with (and are labeled by) the aggregate Mean
-        # table's rows
-        return [(title, [list(keys)] + [[override_value(row, key) for key in keys] for row in rows])
-                for title, keys in band_specs if keys]
+        declared_ac = {row: load_json(dpaths[row] / "overrides.json") for row in rows_ac}  # {'arm': {...}, 'coord': {...}}
+        config_ac = {row: load_json(dpaths[row] / "config.json") for row in rows_ac}
+        declared_arms = {row: declared_ac[rep[row]] for row in rows_arms}
+        config_arms = {row: config_ac[rep[row]] for row in rows_arms}
 
     def build_blocks(headers, rows, comps_by, score_key, labels):
         """A score sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
@@ -947,145 +1088,31 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
             blocks.append((f"seed {seed}", stables))
         return blocks
 
-    bold = Font(bold=True)
-    center = Alignment(horizontal="center", vertical="center")
-    left = Alignment(horizontal="left", vertical="center")
-    header_fill = PatternFill("solid", fgColor="EAEAEA")
-    thin = Side(style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    def write_sheet(ws, blocks, groups, bands, group_name, n_keys, styled=True):
-        """groups: None -> each table's banner is its title merged across the full table width;
-        else [(group_title, n_group_cols), ...] -> the title sits over the block's n_keys key
-        columns (merged across them when there are several), followed by one grey merged
-        group-header cell per group (e.g. 'Composite Scores' over the composite columns,
-        'Primitive Scores' over the primitive columns). bands ([(title, grid)], each grid a header
-        + one-value-row-per-key grid in the sheet's row order; [] for none) render as the config
-        column bands at the left, one blank separator column after each, with the score blocks all
-        shifted right past them -- vertically aligned with the aggregate block's bottom Mean table
-        so the Mean's key columns label their rows; band cells likewise get no winner-bold/heatmap
-        styling. styled=False skips the winner-bold/heatmap styling of data cells altogether (the
-        hardware sheet's readings aren't scores)."""
-        widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
-
-        campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_phase.parent.name} ({group_name})")  # <campaign>/<phase>/
-        campaign.font = bold
-        campaign.alignment = left
-
-        offset = sum(len(g[0]) + 1 for _, g in bands)  # left bands + their separator columns
-        col0 = 1 + offset  # blocks side by side, one blank separator column apart
-        for block_label, tables in blocks:
-            if block_label is not None:
-                label_cell = ws.cell(row=1, column=col0, value=block_label)  # campaign-banner row, atop the block
-                label_cell.font = bold
-                label_cell.alignment = left
-            # banner row + blank row above the tables; dataset tables lead in every block, so they
-            # sit in the same rows across blocks (only the aggregate has the trailing Mean table)
-            row = 3
-            for title_text, grid in tables:
-                n_cols = len(grid[0])  # key columns + one col per label (the hw Mean table carries extra crash columns)
-                title = ws.cell(row=row, column=col0, value=title_text)
-                title.font = bold
-                title.alignment = left
-                for c in range(col0, col0 + n_cols):  # border every cell of the banner so the merged ranges' edges all render
-                    ws.cell(row=row, column=c).border = border
-                if groups is None:
-                    ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + n_cols - 1)
-                else:
-                    widths[col0] = max(widths.get(col0, 0), len(title_text))  # the title must fit its (key) column(s)
-                    if n_keys > 1:
-                        ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + n_keys - 1)
-                    gcol = col0 + n_keys
-                    for group_title, n_group in groups:
-                        for c in range(gcol, gcol + n_group):  # fill every cell so the merged range renders grey
-                            ws.cell(row=row, column=c).fill = header_fill
-                        gcell = ws.cell(row=row, column=gcol, value=group_title)
-                        gcell.font = bold
-                        gcell.alignment = center
-                        ws.merge_cells(start_row=row, start_column=gcol, end_row=row, end_column=gcol + n_group - 1)
-                        gcol += n_group
-                row += 1
-
-                styles = _col_styles(grid, bold_high and styled, n_keys)
-                for r, grid_row in enumerate(grid):
-                    for c, val in enumerate(grid_row):
-                        cell = ws.cell(row=row, column=col0 + c, value=val)
-                        cell.alignment = left if c < n_keys and r > 0 else center  # key cells left-aligned
-                        cell.border = border
-                        widths[col0 + c] = max(widths.get(col0 + c, 0), len(val))
-                        if r == 0 or c < n_keys:
-                            cell.font = bold
-                            cell.fill = header_fill
-                            continue
-                        means, winners = styles[c]
-                        if r in winners:
-                            cell.font = bold
-                        if heatmap and styled and r in means:
-                            cell.fill = PatternFill("solid", fgColor=_heat_hex(means[r]))
-                    row += 1
-                row += 1  # blank spacer row between tables
-            # widest table decides the block's width (the hw Mean table carries extra crash columns)
-            col0 += max(len(grid[0]) for _, grid in tables) + 1
-
-        # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
-        band_row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
-        band_col = 1
-        for band_title, band_grid in bands:
-            b_cols = len(band_grid[0])
-            title = ws.cell(row=band_row, column=band_col, value=band_title)
-            title.font = bold
-            title.alignment = left
-            for c in range(band_col, band_col + b_cols):
-                ws.cell(row=band_row, column=c).border = border
-            ws.merge_cells(start_row=band_row, start_column=band_col, end_row=band_row, end_column=band_col + b_cols - 1)
-            row = band_row + 1
-            for r, grid_row in enumerate(band_grid):
-                for c, val in enumerate(grid_row):
-                    cell = ws.cell(row=row, column=band_col + c, value=val)
-                    cell.alignment = center
-                    cell.border = border
-                    widths[band_col + c] = max(widths.get(band_col + c, 0), len(val))
-                    if r == 0:  # header row (param names)
-                        cell.font = bold
-                        cell.fill = header_fill
-                row += 1
-            band_col += b_cols + 1
-
-        for c in range(1, max(widths) + 1):
-            # snug fit to each column's longest cell; blank separator columns get a small ~square width
-            ws.column_dimensions[get_column_letter(c)].width = widths[c] + 2 if c in widths else 3
-
     nshot_names = _nshot_names(comps_all)
     map_labels, acc_labels = _score_labels(supp_scores, nshot_names)
-    # with supplemental columns, mAP-sheet banners split into title + 'Composite Scores' + one
-    # group header per enabled supplemental group; the accuracy sheet keeps full-width title banners
-    map_groups = [("Composite Scores", 6)]
-    if supp_scores["primitive"]:
-        map_groups.append(("Primitive Scores", 6))
-    if supp_scores["n_shot"] and nshot_names:
-        map_groups.append(("N-Shot Scores", len(nshot_names)))
-    if len(map_groups) == 1:
-        map_groups = None
+    map_groups = _map_groups(supp_scores, nshot_names)
 
-    def write_workbook(fpath, headers, rows, comps_by, hw_by, crash_totals, band_specs, banner):
+    def write_workbook(fpath, headers, rows, comps_by, hw_by, crash_totals, band_specs, config_by, banner):
         wb = Workbook()
         ws_map = wb.active
         ws_map.title = "Composite mAP"
         map_blocks, map_rows = build_blocks(headers, rows, comps_by, "map", map_labels)
-        write_sheet(ws_map, map_blocks, map_groups, band_grids(band_specs, map_rows), banner, len(headers))
+        _write_sheet(ws_map, map_blocks, map_groups, _band_grids(band_specs, map_rows, config_by), banner, len(headers),
+                     bold_high, heatmap)
         acc_blocks, acc_rows = build_blocks(headers, rows, comps_by, "acc", acc_labels)
-        write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, band_grids(band_specs, acc_rows), banner,
-                    len(headers))
+        _write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
+                     banner, len(headers), bold_high, heatmap)
         # the hardware sheet shares the mAP sheet's row order (and so its overrides bands)
-        write_sheet(wb.create_sheet("Hardware Performance"), build_hw_blocks(headers, map_rows, hw_by, crash_totals), None,
-                    band_grids(band_specs, map_rows), banner, len(headers), styled=False)
+        _write_sheet(wb.create_sheet("Hardware Performance"), build_hw_blocks(headers, map_rows, hw_by, crash_totals), None,
+                     _band_grids(band_specs, map_rows, config_by), banner, len(headers), bold_high, heatmap, styled=False)
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
 
-    dpath_stats = ArtifactManager.dpath_phase / "campaign_stats"
+    dpath_stats = ArtifactManager.dpath_phase / "phase_stats"
     write_arms = ArtifactManager.dpath_phase.name != "qual"  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
-    band_specs_ac = [("Arm Overrides", band_keys("arm", rows_ac)), ("Coord Overrides", band_keys("coord", rows_ac))] if overrides else []
-    band_specs_arms = [("Arm Overrides", band_keys("arm", rows_arms))] if overrides else []
+    band_specs_ac = [("Arm Overrides", _band_keys("arm", rows_ac, declared_ac, config_ac)),
+                     ("Coord Overrides", _band_keys("coord", rows_ac, declared_ac, config_ac))] if overrides else []
+    band_specs_arms = [("Arm Overrides", _band_keys("arm", rows_arms, declared_arms, config_arms))] if overrides else []
     crash_totals_ac = {
         row: {kind: sum(crashes_by[(row, dataset)][kind] for dataset in datasets) for kind in _CRASH_KINDS}
         for row in rows_ac
@@ -1098,7 +1125,7 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
             comps_by = comps_all[criterion][group_key]
             banner = f"{group_name}; {selection_name}"
             write_workbook(dpath_stats / "arm_coords" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows_ac, comps_by,
-                           hw_by, crash_totals_ac, band_specs_ac, banner)
+                           hw_by, crash_totals_ac, band_specs_ac, config_ac, banner)
             if not write_arms:
                 continue
             # arms: each arm at its best coord per dataset under this criterion x group (_arm_rows' rows
@@ -1116,7 +1143,133 @@ def update_campaign_stats(spread_type, bold_high, ordered, heatmap, supp_scores,
                 for (arm,) in rows
             }
             write_workbook(dpath_stats / "arms" / criterion / f"{group_key}.xlsx", ("Arm",), rows, comps_arms,
-                           hw_arms, crash_totals_arms, band_specs_arms, banner)
+                           hw_arms, crash_totals_arms, band_specs_arms, config_arms, banner)
+
+
+def _collect_test_scores(arm_coords, datasets):
+    """(comps_all, chkpts) over the test tree (ArtifactManager.dpath_phase): per eval group, each
+    (arm, coord) x dataset's scored-trial score maps keyed by trial seed (the seed dir name; empty
+    dict -> no scored trials yet) -- comps_all[group_key][((arm, coord), dataset)][seed] is a
+    _comp_entry read from the trial's _seeds/<seed>/<group_key>.json (test.py writes all groups
+    together, so any group's presence marks the trial scored) -- and chkpts[((arm, coord), dataset)]
+    the files' 'chkpt' field: the checkpoint index the combo's trainval models were saved at
+    (identical across its seeds); no entry where the combo has no scored trials."""
+    comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
+    chkpts = {}
+    for arm, coord in arm_coords:
+        for dataset in datasets:
+            dpath_coord = _dpath_coord(dataset, arm, coord)
+            comps = {group_key: {} for group_key in _EVAL_GROUPS}
+            if (dpath_coord / "_seeds").exists():
+                for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
+                    for group_key in _EVAL_GROUPS:
+                        fpath_scores = dpath_trial / f"{group_key}.json"
+                        if fpath_scores.exists():
+                            data = load_json(fpath_scores)
+                            comps[group_key][dpath_trial.name] = _comp_entry(data["scores"])
+                            chkpts[((arm, coord), dataset)] = data["chkpt"]
+            for group_key in _EVAL_GROUPS:
+                comps_all[group_key][((arm, coord), dataset)] = comps[group_key]
+    return comps_all, chkpts
+
+def _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, score_key, labels, spread_type, ordered):
+    """A test score sheet's blocks, laid out like update_phase_stats' build_blocks (aggregate
+    block of per-dataset tables + bottom 'Mean' cross-dataset summary, then one per-seed block of
+    the per-dataset tables alone) with a third 'Chkpt' key column after 'Arm'/'Coord': the
+    checkpoint index the combo's trainval models were saved at -- a per-(row, dataset) value, so the
+    dataset tables (aggregate and seed blocks alike) carry it and the cross-dataset Mean table shows
+    '-'. Rows are shared across all blocks -- when ordered, pinned to the aggregate Mean-table's
+    first score column (labels[0]), descending. Also returns the sheet's row order."""
+    xmeans = _cross_dataset_means(rows, datasets, comps_by, score_key, labels)
+    rows = _order_rows(rows, xmeans, labels[0]) if ordered else rows
+    headers = ("Arm", "Coord", "Chkpt")
+
+    def chkpt_cell(row, dataset):
+        return str(chkpts[(row, dataset)]) if (row, dataset) in chkpts else "-"
+
+    tables = []
+    for dataset in datasets:
+        grid = [[*headers, *labels]]
+        for row in rows:
+            score_maps = [comp[score_key] for comp in comps_by[(row, dataset)].values()]
+            grid.append([row[0], f"{row[1]} ({len(score_maps)})", chkpt_cell(row, dataset),
+                         *_score_cells(score_maps, labels, spread_type)])
+        tables.append((DATASET_ALIAS2NAME[dataset], grid))
+    xgrid = [[*headers, *labels]]
+    for row in rows:
+        xgrid.append([*row, "-"] + ["-" if xmeans[(row, label)] is None else f"{xmeans[(row, label)]:.2f}" for label in labels])
+    tables.append(("Mean", xgrid))
+    blocks = [(None, tables)]
+
+    for seed in seeds:
+        stables = []
+        for dataset in datasets:
+            grid = [[*headers, *labels]]
+            for row in rows:
+                comp = comps_by[(row, dataset)].get(seed)
+                grid.append([*row, chkpt_cell(row, dataset)]
+                            + ["-" if comp is None or label.lower() not in comp[score_key]
+                               else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
+                               for label in labels])
+            stables.append((DATASET_ALIAS2NAME[dataset], grid))
+        blocks.append((f"seed {seed}", stables))
+    return blocks, rows
+
+@rank0
+def update_test_stats(spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
+    """Write the test workbooks, one per eval group at artifacts/<campaign>/test/map/test_<group>.xlsx
+    (ArtifactManager.dpath_phase = the test dir; the map/ folder mirrors the phase workbooks'
+    <kind>/<criterion>/ layout for consistency -- test has no selection-criterion dimension, every
+    trainval model already sitting at its qual-selected best-mAP checkpoint, so map/ is the only
+    folder). Each workbook is laid out like the qual phase's phase_stats/arm_coords/ ones --
+    'Composite mAP' + 'Composite I2T Accuracy' sheets of stacked per-dataset tables + bottom Mean
+    summary, per-seed blocks, and the 'Arm Overrides' / 'Coord Overrides' config bands (read from
+    the test tree's coord config.json/overrides.json copies), with all of stats.yaml's styling
+    (spread_type/bold_high/ordered/heatmap/supp_scores/overrides) applied the same way -- except
+    that a third 'Chkpt' key column carries each (row, dataset)'s saved-checkpoint index
+    (_build_test_blocks) and there is no 'Hardware Performance' sheet (the readings describe
+    training trials; test runs none). Rows and scores come from the test tree's per-trial score
+    files (_collect_test_scores) over the recorded matrix, same row-presence rule as the phase
+    workbooks: a planned (arm, coord) appears once it has >= 1 scored trial in some dataset."""
+    matrix = _matrix()
+    datasets = list(matrix)
+    arm_coords = _matrix_arm_coords(matrix, datasets)
+    comps_all, chkpts = _collect_test_scores(arm_coords, datasets)
+    comps_ref = next(iter(comps_all.values()))
+    rows = [row for row in arm_coords if any(comps_ref[(row, dataset)] for dataset in datasets)]
+    seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
+
+    band_specs, config_by = [], {}
+    if overrides:
+        # a row's config.json/overrides.json copies are per dataset but identical across them, so
+        # each row reads its from the first dataset it has scored trials in
+        dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows}
+        declared = {row: load_json(dpaths[row] / "overrides.json") for row in rows}  # {'arm': {...}, 'coord': {...}}
+        config_by = {row: load_json(dpaths[row] / "config.json") for row in rows}
+        band_specs = [("Arm Overrides", _band_keys("arm", rows, declared, config_by)),
+                      ("Coord Overrides", _band_keys("coord", rows, declared, config_by))]
+
+    nshot_names = _nshot_names({"test": comps_all})
+    map_labels, acc_labels = _score_labels(supp_scores, nshot_names)
+    map_groups = _map_groups(supp_scores, nshot_names)
+
+    for group_key, group_name in _EVAL_GROUPS.items():
+        comps_by = comps_all[group_key]
+        banner = f"{group_name}; test"
+        wb = Workbook()
+        ws_map = wb.active
+        ws_map.title = "Composite mAP"
+        map_blocks, map_rows = _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, "map", map_labels,
+                                                  spread_type, ordered)
+        _write_sheet(ws_map, map_blocks, map_groups, _band_grids(band_specs, map_rows, config_by), banner, 3,
+                     bold_high, heatmap)
+        acc_blocks, acc_rows = _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, "acc", acc_labels,
+                                                  spread_type, ordered)
+        _write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
+                     banner, 3, bold_high, heatmap)
+        fpath = ArtifactManager.dpath_phase / "map" / f"test_{group_key}.xlsx"
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(fpath)
 
 
 @rank0

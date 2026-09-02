@@ -13,7 +13,7 @@ python -m tools.regen_manif_viz <campaign>
 python -m tools.regen_manif_viz <campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed> [evo_only|no_evo] [snapshot]
 
 <campaign>  e.g. dev40 -- re-render every trial in the campaign, phase by phase (_screen/, and qual/ when it
-            exists) from each phase's campaign_metadata.json matrix x seeds; trials that never ran are skipped
+            exists) from each phase's phase_metadata.json matrix x seeds; trials that never ran are skipped
 <campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>  e.g.
             dev40/_screen/_datasets/cub/_arms/mp/_coords/LR-1.0e-5/_seeds/42 -- one trial. This is the form the campaign
             render worker spawns per completed trial.
@@ -76,14 +76,14 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manif_viz=None
             render_evolution(dpath_evals, dpath_trial / "viz_pooled", cfg_manif_viz, viz_context, orient=False, fname="projections_pooled.npz")
 
 def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manif_viz=None):
-    """Re-render every trial in a campaign, sweeping each phase's planned matrix from its campaign_metadata.json
+    """Re-render every trial in a campaign, sweeping each phase's planned matrix from its phase_metadata.json
     the way the other regen_* tools do. Trials that never ran (or never reached an eval) have no
     trial_metadata.json and are skipped rather than erroring, so this works on a partially-run campaign."""
     for phase in ("_screen", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
         dpath_phase = paths["artifacts"] / campaign / phase
         if not dpath_phase.exists():  # no qual phase: n_trials_qual null, or not reached yet
             continue
-        metadata = load_json(dpath_phase / "campaign_metadata.json")
+        metadata = load_json(dpath_phase / "phase_metadata.json")
         for dataset, arms in metadata["matrix"].items():
             for arm, coords in arms.items():
                 for coord in coords:

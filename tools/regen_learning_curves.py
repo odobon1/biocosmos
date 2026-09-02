@@ -27,7 +27,7 @@ def regen_learning_curves(campaign):
         if not ArtifactManager.dpath_phase.exists():  # phase not configured (n_trials_qual null / trainval false), or not reached yet
             continue
         cfg_snapshot = load_json(ArtifactManager.dpath_phase / "cfg_baseline.json")
-        metadata = load_json(ArtifactManager.dpath_phase / "campaign_metadata.json")
+        metadata = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
 
         for dataset, arms in metadata["matrix"].items():
             for arm, coords in arms.items():

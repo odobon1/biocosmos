@@ -50,12 +50,12 @@ def compute_class_means_from_query_metric(
     class_values[active_classes] = class_value_sums[active_classes] / class_value_counts[active_classes]
     return class_values
 
-def list_eval_partitions(split: Any) -> List[str]:
+def list_eval_partitions(split: Any, eval_pt: str = "val") -> List[str]:
     partitions = []
     seen_partition_ids = set()
 
     for partition in ("id", "ood"):
-        data_index = split.get_data(f"val_{partition}")
+        data_index = split.get_data(f"{eval_pt}_{partition}")
         data_index_id = id(data_index)
         if data_index_id in seen_partition_ids:
             continue
@@ -100,11 +100,12 @@ def gather_object_list(items: List[Any]) -> List[Any]:
 class PartitionEvaluationPipeline:
 
     def __init__(
-            self, 
-            partition: str, 
-            config: TrainConfig, 
+            self,
+            partition: str,
+            config: TrainConfig,
             text_template: List[List[str]],
             img_pp: Callable,
+            eval_pt: str = "val",
         ) -> None:
 
         assert all(len(text_template_cat) == 1 for text_template_cat in text_template), \
@@ -113,6 +114,7 @@ class PartitionEvaluationPipeline:
         index_data, cid2enc, enc2cid = spawn_partition_data(
             config,
             partition,
+            eval_pt,
         )
 
         self.index_data = index_data
@@ -150,6 +152,7 @@ class PartitionEvaluationPipeline:
                 config.dataset,
                 config.split,
                 self.cid2enc,
+                eval_pt,
             )
         else:
             self.nshot_bucket_names = []
@@ -664,19 +667,21 @@ class EvaluationPipeline:
         text_template: List[List[str]],
         img_pp: Callable,
         header_tag: Optional[str] = None,
+        eval_pt: str = "val",
     ):
 
         self.header_tag = header_tag
 
         self.split = load_split(config.dataset, config.split)
         self.nshot_bucket_names = list(self.split.nshot["names"])
-        self.partitions = list_eval_partitions(self.split)
+        self.partitions = list_eval_partitions(self.split, eval_pt)
         self.partition_pipes = {
             partition: PartitionEvaluationPipeline(
                 partition=partition,
                 config=config,
                 text_template=text_template,
                 img_pp=img_pp,
+                eval_pt=eval_pt,
             )
             for partition in self.partitions
         }
@@ -828,12 +833,15 @@ def build_class_enc_to_train_nshot_bucket(
     dataset: str,
     split: str,
     cid2enc: Dict[str, int],
+    eval_pt: str = "val",
 ) -> Dict[int, str]:
     """
-    Build class_enc -> bucket_name using the n-shot bucket set for the validation partition.
+    Build class_enc -> bucket_name using the n-shot bucket view matching the eval tier: "val" reads
+    the "train/val" buckets (val_id classes by their train-set shot counts), "test" the
+    "trainval/test" buckets (test_id classes by their trainval shot counts).
     """
 
-    bucket_key = "train/val"
+    bucket_key = {"val": "train/val", "test": "trainval/test"}[eval_pt]
     split = load_split(dataset, split)
     class_enc_to_bucket = {}
 

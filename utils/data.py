@@ -591,18 +591,20 @@ def build_cid2enc(index_data, enc2cid):
         cid2enc[enc2cid[class_enc]] = class_enc
     return cid2enc
 
-def spawn_partition_data(config: TrainConfig, partition: str):
+def spawn_partition_data(config: TrainConfig, partition: str, eval_pt: str = "val"):
     """
 
     Args:
     - split_type --- [str] --- "train" / "id" / "ood"
     - split --- [str] --- Name of the split directory e.g. "A" / "B" / etc.
+    - eval_pt --- [str] --- Eval tier an "id"/"ood" partition resolves against: "val" (val_id/val_ood) or
+      "test" (test_id/test_ood); inert for the train partitions
     """
     split = load_split(config.dataset, config.split)
     if partition in ("train", "trainval"):
         index_data = split.get_data(partition)
     else:
-        index_data = split.get_data(f"val_{partition}")
+        index_data = split.get_data(f"{eval_pt}_{partition}")
     cid2enc = build_cid2enc(index_data, split.enc2cid)
     return index_data, cid2enc, split.enc2cid
 

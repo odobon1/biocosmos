@@ -208,9 +208,8 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     ]
     assert scheduled[4][1] == "lepid" and scheduled[8][0] == 43
 
-    meta = json.loads((tmp_path / "cmp_b" / "_screen" / "campaign_metadata.json").read_text())
-    assert meta["arms"] == ["sp", "hp"]
-    assert meta["coords"] == ["LR-2.0e-5", "LR-2.0e-6"]
+    meta = json.loads((tmp_path / "cmp_b" / "_screen" / "phase_metadata.json").read_text())
+    assert meta["matrix"] == {d: {a: ["LR-2.0e-5", "LR-2.0e-6"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
 
 
 def test_run_campaign_raises_on_arm_coord_key_collision_before_side_effects(tmp_path, monkeypatch) -> None:
@@ -330,7 +329,7 @@ def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str) -> list[Pa
             fpaths.append(dpath_dataset / "_arms" / arm / "arm_stats" / criterion / group / "metrics.png")
             for kind in ("arm_coords", "arms"):
                 fpaths.append(dpath_dataset / "dataset_stats" / kind / criterion / group / "metrics.png")
-                fpaths.append(dpath_phase / "campaign_stats" / kind / criterion / f"{group}.xlsx")
+                fpaths.append(dpath_phase / "phase_stats" / kind / criterion / f"{group}.xlsx")
     return fpaths
 
 
@@ -474,7 +473,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
     # all three crashes are tallied at the campaign level, bucketed by cause (that file is never rewritten
     # by the mock); the mock rewrites trial_metadata fresh each attempt, so the trial-level counter
     # reflects only the last one (an 'other' crash)
-    with open(tmp_path / "cmp_fail" / "_screen" / "campaign_metadata.json") as f:
+    with open(tmp_path / "cmp_fail" / "_screen" / "phase_metadata.json") as f:
         assert json.load(f)["n_crashes"] == {"ram": 1, "vram": 1, "other": 1}
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": 1}
@@ -486,15 +485,15 @@ def test_bump_crash_counts_reaches_coord_metadata(tmp_path) -> None:
     dpath_phase = tmp_path / "cmp" / "_screen"
     dpath_trial = dpath_phase / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "base" / "_seeds" / "42"
     dpath_trial.mkdir(parents=True)
-    (dpath_phase / "campaign_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
+    (dpath_phase / "phase_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
 
     cr._bump_crash_counts(dpath_trial, dpath_phase, "vram")
-    assert json.loads((dpath_phase / "campaign_metadata.json").read_text())["n_crashes"] == {"ram": 0, "vram": 1, "other": 0}
+    assert json.loads((dpath_phase / "phase_metadata.json").read_text())["n_crashes"] == {"ram": 0, "vram": 1, "other": 0}
 
     (dpath_trial.parents[1] / "coord_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 0, "vram": 0, "other": 0}}))
     cr._bump_crash_counts(dpath_trial, dpath_phase, "ram")
     assert json.loads((dpath_trial.parents[1] / "coord_metadata.json").read_text())["n_crashes"] == {"ram": 1, "vram": 0, "other": 0}
-    assert json.loads((dpath_phase / "campaign_metadata.json").read_text())["n_crashes"] == {"ram": 1, "vram": 1, "other": 0}
+    assert json.loads((dpath_phase / "phase_metadata.json").read_text())["n_crashes"] == {"ram": 1, "vram": 1, "other": 0}
 
 
 def test_run_campaign_invalid_config_fails_at_kickoff(tmp_path, monkeypatch) -> None:
@@ -571,7 +570,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         assert json.load(f)["complete"] is True
     assert not fpath_ckpt.parent.exists()  # chkpts/in_progress removed on success
     assert not (dpath_trial / "error.log").exists()
-    with open(tmp_path / "cmp_flaky" / "_screen" / "campaign_metadata.json") as f:
+    with open(tmp_path / "cmp_flaky" / "_screen" / "phase_metadata.json") as f:
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": n_flakes}  # each recovered flake is counted at the campaign level
 
 
@@ -1270,11 +1269,8 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         hpo_coords=_BASE_COORD,
     )
 
-    with open(tmp_path / "cmp_grow" / "_screen" / "campaign_metadata.json") as f:
+    with open(tmp_path / "cmp_grow" / "_screen" / "phase_metadata.json") as f:
         meta = json.load(f)
-    assert meta["arms"] == ["sp"]
-    assert meta["coords"] == ["base"]
-    assert meta["datasets"] == ["cub"]
     assert meta["seeds"] == [42]
     assert meta["matrix"] == {"cub": {"sp": ["base"]}}  # the screening phase plans every coord under every arm
     assert scheduled == [("sp", "base", "cub", 42)]
@@ -1292,11 +1288,8 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         hpo_coords=[[{"name": "base"}, {"loss.sim": "geo1"}]],
     )
 
-    with open(tmp_path / "cmp_grow" / "_screen" / "campaign_metadata.json") as f:
+    with open(tmp_path / "cmp_grow" / "_screen" / "phase_metadata.json") as f:
         meta = json.load(f)
-    assert meta["arms"] == ["sp", "hp"]
-    assert meta["coords"] == ["base", "loss.sim-geo1"]
-    assert meta["datasets"] == ["cub", "lepid"]
     assert meta["seeds"] == [42, 43]
     assert meta["matrix"] == {d: {a: ["base", "loss.sim-geo1"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
 
@@ -1324,13 +1317,13 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
         text=True,
         check=True,
     ).stdout.strip()
-    meta = json.loads((tmp_path / "cmp_commit" / "_screen" / "campaign_metadata.json").read_text())
+    meta = json.loads((tmp_path / "cmp_commit" / "_screen" / "phase_metadata.json").read_text())
     assert meta["commit"] == head
 
 
 def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
     # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
-    # side effect -- no campaign dir / time.pkl / campaign_metadata.json is created
+    # side effect -- no campaign dir / time.pkl / phase_metadata.json is created
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     with pytest.raises(ValueError, match="Duplicate ablation_arms name"):
@@ -1350,7 +1343,7 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
 
 def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path, monkeypatch) -> None:
     # mirrors production: between launches a trial (utils/train.py update_campaign_time) rewrites
-    # campaign_metadata.json with only 'duration' changed; the matrix keys must survive for the
+    # phase_metadata.json with only 'duration' changed; the matrix keys must survive for the
     # relaunch's removal check to read them, and the trial-written duration must survive the relaunch
     _setup_completing_campaign(tmp_path, monkeypatch)
 
@@ -1362,7 +1355,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         hpo_coords=_BASE_COORD,
     )
 
-    fpath_meta = tmp_path / "cmp_roundtrip" / "_screen" / "campaign_metadata.json"
+    fpath_meta = tmp_path / "cmp_roundtrip" / "_screen" / "phase_metadata.json"
     meta = json.loads(fpath_meta.read_text())
     meta["duration"] = "0-01:23:45"  # whole-dict rewrite, duration only (what update_campaign_time does)
     fpath_meta.write_text(json.dumps(meta))
@@ -1378,7 +1371,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
 
     meta = json.loads(fpath_meta.read_text())
     assert meta["duration"] == "0-01:23:45"
-    assert meta["datasets"] == ["cub", "lepid"]
+    assert list(meta["matrix"]) == ["cub", "lepid"]
 
 
 def test_run_campaign_raises_on_removed_arm(tmp_path, monkeypatch) -> None:
@@ -1512,7 +1505,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
         hpo_coords=_BASE_COORD,
     )
 
-    meta = json.loads((tmp_path / "cmp_ic_rt" / "_screen" / "campaign_metadata.json").read_text())
+    meta = json.loads((tmp_path / "cmp_ic_rt" / "_screen" / "phase_metadata.json").read_text())
     # staged dataset gets round(seconds, 2); datasets not in this campaign stay null
     assert meta["runtime_img_cache"] == {"bryo": None, "cub": 1.23}
 
@@ -1783,23 +1776,23 @@ def test_run_campaign_qual_copies_picks_and_tops_up_seeds(tmp_path, monkeypatch)
     assert (dpath_qual / "_datasets" / "cub" / "_arms" / "hp" / "_coords" / "loss.sim-cos" / "_seeds" / "44").exists()
     assert not (dpath_qual / "_datasets" / "cub" / "_arms" / "hp" / "_coords" / "loss.sim-geo1").exists()
     assert (dpath_qual / "cfg_baseline.json").exists()
-    meta = json.loads((dpath_qual / "campaign_metadata.json").read_text())
+    meta = json.loads((dpath_qual / "phase_metadata.json").read_text())
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1"], "hp": ["loss.sim-cos"]}}
-    assert meta["arms"] == ["sp", "hp"] and meta["coords"] == ["loss.sim-cos", "loss.sim-geo1"] and meta["seeds"] == [42, 43, 44]
+    assert meta["seeds"] == [42, 43, 44]
     # the qual manifest: the copied trial counts as completed there, the unpicked coords are not planned
     text = (dpath_qual / "manifest.log").read_text(encoding="utf-8")
     assert "cub/sp/loss.sim-geo1/42 ---" in text and "cub/sp/loss.sim-cos" not in text
-    # the qual phase's own stats tree renders on the way out -- minus the arms/ dirs (campaign_stats
+    # the qual phase's own stats tree renders on the way out -- minus the arms/ dirs (phase_stats
     # workbooks and dataset_stats pngs), which would just duplicate arm_coords/ over the picks
-    assert (dpath_qual / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").exists()
-    assert not (dpath_qual / "campaign_stats" / "arms").exists()
+    assert (dpath_qual / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
+    assert not (dpath_qual / "phase_stats" / "arms").exists()
     assert (dpath_qual / "_datasets" / "cub" / "dataset_stats" / "arm_coords").exists()
     assert not (dpath_qual / "_datasets" / "cub" / "dataset_stats" / "arms").exists()
     # screening: both coords, still just seed 42
     dpath_screen = tmp_path / "cmp_qual" / "_screen" / "_datasets" / "cub" / "_arms" / "sp" / "_coords"
     assert (dpath_screen / "loss.sim-cos" / "_seeds" / "42").exists() and (dpath_screen / "loss.sim-geo1" / "_seeds" / "42").exists()
     assert not (dpath_screen / "loss.sim-geo1" / "_seeds" / "43").exists()
-    assert json.loads((tmp_path / "cmp_qual" / "_screen" / "campaign_metadata.json").read_text())["seeds"] == [42]
+    assert json.loads((tmp_path / "cmp_qual" / "_screen" / "phase_metadata.json").read_text())["seeds"] == [42]
 
 
 def test_run_campaign_qual_null_skips_qual(tmp_path, monkeypatch) -> None:
@@ -1823,8 +1816,8 @@ def test_run_campaign_qual_equal_counts_only_copies(tmp_path, monkeypatch) -> No
     assert [t[0] for t in scheduled] == ["_screen", "_screen"]
     dpath_qual = tmp_path / "cmp_eq" / "qual"
     assert (dpath_qual / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-cos" / "_seeds" / "42" / "trial_metadata.json").exists()
-    assert json.loads((dpath_qual / "campaign_metadata.json").read_text())["seeds"] == [42]
-    assert (dpath_qual / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").exists()
+    assert json.loads((dpath_qual / "phase_metadata.json").read_text())["seeds"] == [42]
+    assert (dpath_qual / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
 
 
 def test_run_campaign_qual_adds_new_best_pick_on_relaunch(tmp_path, monkeypatch) -> None:
@@ -1851,9 +1844,9 @@ def test_run_campaign_qual_adds_new_best_pick_on_relaunch(tmp_path, monkeypatch)
         ("qual", "cub", "sp", "loss.sim-cos", 43), ("qual", "cub", "hp", "loss.sim-cos", 43),
         ("qual", "cub", "sp", "loss.sim-geo1", 44), ("qual", "cub", "sp", "loss.sim-cos", 44), ("qual", "cub", "hp", "loss.sim-cos", 44),
     ]
-    meta = json.loads((dpath_qual / "campaign_metadata.json").read_text())
+    meta = json.loads((dpath_qual / "phase_metadata.json").read_text())
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1", "loss.sim-cos"], "hp": ["loss.sim-cos"]}}
-    assert meta["coords"] == ["loss.sim-cos", "loss.sim-geo1"] and meta["seeds"] == [42, 43, 44]
+    assert meta["seeds"] == [42, 43, 44]
     assert (dpath_qual / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-geo1" / "marker").read_text() == "kept"
     # sp's added pick came over from screening with its completed seed-42 trial
     dpath_cos = dpath_qual / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-cos"

@@ -21,11 +21,11 @@ def _dpath_coord(dpath_phase, dataset, arm, coord):
 
 
 def _write_meta(dpath_phase, arms, coords, datasets, matrix=None) -> None:
-    """The phase's campaign_metadata.json; `matrix` ({dataset: {arm: [coords]}}, the planned combos) defaults to
-    every coord under every arm on every dataset -- the screening phase's shape."""
+    """The phase's phase_metadata.json, its `matrix` ({dataset: {arm: [coords]}}, the planned combos) defaulting
+    to every coord under every arm on every dataset -- the screening phase's shape."""
     if matrix is None:
         matrix = {dataset: {arm: list(coords) for arm in arms} for dataset in datasets}
-    (dpath_phase / "campaign_metadata.json").write_text(json.dumps({"arms": arms, "coords": coords, "datasets": datasets, "matrix": matrix}))
+    (dpath_phase / "phase_metadata.json").write_text(json.dumps({"matrix": matrix}))
 
 
 def _captured(grids, *tail):
@@ -187,7 +187,7 @@ def test_update_chkpt_selection_excludes_base_and_unfinished_trials(tmp_path, mo
 def test_sweep_completion_levels(tmp_path, monkeypatch) -> None:
     # each stats level re-renders only once a seed has completed across its own cycle -- the arm's
     # coords (arm_stats), the dataset's arms x coords (dataset_stats), the whole matrix
-    # (campaign_stats) -- since each trial completion reselects only its own coord's checkpoint. A
+    # (phase_stats) -- since each trial completion reselects only its own coord's checkpoint. A
     # trial short of its final eval doesn't count.
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     _write_meta(tmp_path, ["sp", "mp"], ["c0", "c1"], ["cub", "lepid"])
@@ -326,7 +326,7 @@ def test_stats_table_grid_single_acc_column() -> None:
 
 def test_update_arm_stats_writes_pngs(tmp_path, monkeypatch) -> None:
     # the arm's arm_stats/ tables + convergence plots for one dataset, with one 'Coord' row per coord of
-    # the arm with >= 1 completed trial there -- "c1" is planned in campaign_metadata.json but has no
+    # the arm with >= 1 completed trial there -- "c1" is planned in phase_metadata.json but has no
     # trials, so it gets no row; an arm with no dir on the dataset (planned "mp", never launched) is
     # skipped outright. bold_high=True + heatmap=True exercise the real matplotlib styling paths
     # (winner bold + heatmap shading) end-to-end.
@@ -540,14 +540,14 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
 
     report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF)
     report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_stats", "map", "native")] == ["Coord", "c0 (1)"]
     assert [r[:2] for r in _captured(grids, "arm_coords", "map", "native")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
     assert [r[0] for r in _captured(grids, "arms", "map", "native")] == ["Arm", "sp (1)", "mp (1)"]
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
     assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active.iter_rows()]
     assert grid[4][:2] == ["sp (1)", "50.00"] and grid[5][:2] == ["mp (1)", "40.00"]
 
 
@@ -587,7 +587,7 @@ def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch
     assert [r[0] for r in _captured(grids, "arms", "acc", "native")[1:]] == ["b (1)", "a (1)"]
 
 
-def test_update_campaign_stats_qual_phase_skips_arms_workbooks(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_qual_phase_skips_arms_workbooks(tmp_path, monkeypatch) -> None:
     # the qual matrix reduces each arm to its pick(s), so its arms/ workbooks would just duplicate
     # arm_coords/ -- only the _screen phase gets them (keyed off the phase dir's name)
     dpath_phase = tmp_path / "qual"
@@ -599,16 +599,16 @@ def test_update_campaign_stats_qual_phase_skips_arms_workbooks(tmp_path, monkeyp
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
-    assert (dpath_phase / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").exists()
-    assert not (dpath_phase / "campaign_stats" / "arms").exists()
+    assert (dpath_phase / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
+    assert not (dpath_phase / "phase_stats" / "arms").exists()
 
 
-def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_writes_stacked_tables(tmp_path, monkeypatch) -> None:
     # (the arms workbook, whose single-key layout the shared writer renders exactly like the arm_coords
-    # one minus a key column -- see test_update_campaign_stats_arm_coords_layout for that one)
-    # two datasets -> two stacked tables sharing the same rows (in campaign_metadata order). "hp" has 2
+    # one minus a key column -- see test_update_phase_stats_arm_coords_layout for that one)
+    # two datasets -> two stacked tables sharing the same rows (in phase_metadata order). "hp" has 2
     # cub trials (mean ± spread) and none in bryo -> a blank "-" row in the Bryozoa table; "mp" has no
     # completed trials anywhere -> no rows at all until its first trial completes.
     for seed, base in (("42", 0.50), ("43", 0.60)):
@@ -619,9 +619,9 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
-    fpath_xlsx = tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx"
+    fpath_xlsx = tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx"
     assert fpath_xlsx.exists()
     wb = load_workbook(fpath_xlsx)
     ws = wb.active
@@ -704,7 +704,7 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
     assert agrid[4][6:8] == ["hp", "66.00"]   # seed 43 CUB
     assert agrid[8][3:5] == ["hp", "-"]       # seed 42 Bryozoa
     # 3rd sheet: the hardware analog, same layout/row order with the hw readings as columns (the
-    # Mean table appends the crash totals); values asserted in test_update_campaign_stats_hw_sheet
+    # Mean table appends the crash totals); values asserted in test_update_phase_stats_hw_sheet
     hgrid = [[c.value for c in row] for row in wb["Hardware Performance"].iter_rows()]
     assert hgrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert hgrid[2][0] == "CUB"
@@ -720,7 +720,7 @@ def test_update_campaign_stats_writes_stacked_tables(tmp_path, monkeypatch) -> N
     assert hgrid[4][10] == "hp"
 
 
-def test_update_campaign_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
     # the arm_coords workbooks key every table by two columns, 'Arm' + 'Coord' (the trial count on the
     # coord cell), one row per (arm, coord) with a completed trial somewhere, in campaign order (arms,
     # then coords within each); every block sits one column further right accordingly, and the mAP
@@ -733,9 +733,9 @@ def test_update_campaign_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_PRIM, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_PRIM, False)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -781,7 +781,7 @@ def test_update_campaign_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
     assert hgrid[0][11] == "seed 42"
 
 
-def test_update_campaign_stats_bold_high(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_bold_high(tmp_path, monkeypatch) -> None:
     # bold_high=True: the highest-mean cell in each score column is bolded. "hp" (base 0.60)
     # outranks "mp" (base 0.50) in every column, so hp's cells bold and mp's do not; "sp" completed
     # only in bryo, so its CUB row is blank "-" -- ignored and never bolded.
@@ -793,9 +793,9 @@ def test_update_campaign_stats_bold_high(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", True, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", True, False, False, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, arm rows
     # 5/6/7 = hp/mp/sp; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
     assert ws.cell(row=3, column=1).value == "CUB"
@@ -806,15 +806,15 @@ def test_update_campaign_stats_bold_high(tmp_path, monkeypatch) -> None:
         assert ws.cell(row=7, column=score_col).value == "-"            # sp: no cub trials
         assert ws.cell(row=7, column=score_col).font.bold is not True   # "-" never bolds
     # same in the arm_coords workbook, one column over
-    ws = load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active
     assert ws.cell(row=4, column=2).value == "Coord"
     for score_col in range(3, 9):
         assert ws.cell(row=5, column=score_col).font.bold is True
         assert ws.cell(row=6, column=score_col).font.bold is not True
 
 
-def test_update_campaign_stats_per_group_files(tmp_path, monkeypatch) -> None:
-    # one workbook per eval group under campaign_stats/{arm_coords,arms}/<criterion>/, each reading its
+def test_update_phase_stats_per_group_files(tmp_path, monkeypatch) -> None:
+    # one workbook per eval group under phase_stats/{arm_coords,arms}/<criterion>/, each reading its
     # own comp map: native_macro.xlsx <- the best-checkpoint native_macro.json, not the (different)
     # standard values
     dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
@@ -828,9 +828,9 @@ def test_update_campaign_stats_per_group_files(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
-    dpath_stats = tmp_path / "campaign_stats"
+    dpath_stats = tmp_path / "phase_stats"
     for kind in ("arm_coords", "arms"):
         for criterion in ("map", "acc"):
             assert sorted(p.name for p in (dpath_stats / kind / criterion).glob("*.xlsx")) == [
@@ -846,7 +846,7 @@ def test_update_campaign_stats_per_group_files(tmp_path, monkeypatch) -> None:
     assert [ws_ac.cell(row=5, column=c).value for c in (1, 2, 3)] == ["hp", "c0 (1)", "30.00"]
 
 
-def test_update_campaign_stats_criterion_sourcing(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_criterion_sourcing(tmp_path, monkeypatch) -> None:
     # one workbook set per selection criterion: BOTH sheets of <kind>/<criterion>/ source
     # that criterion's best checkpoints -- the map/ workbook's accuracy sheet holds the acc scores
     # AT the best-mAP checkpoint (not the best-acc ones), and vice versa; banners name the selection
@@ -861,16 +861,16 @@ def test_update_campaign_stats_criterion_sourcing(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
-    wb_map = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb_map = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_map["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[4][:2] == ["hp (1)", "50.00"]   # mAP at the map-best checkpoint
     assert agrid[4][:2] == ["hp (1)", "56.00"]  # acc at the map-best checkpoint
 
-    wb_acc = load_workbook(tmp_path / "campaign_stats" / "arms" / "acc" / "native.xlsx")
+    wb_acc = load_workbook(tmp_path / "phase_stats" / "arms" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_acc["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; Acc-selection)"
@@ -886,7 +886,7 @@ def _full_comp(all_v: float, acc_v: str = "0.10") -> dict:
     }
 
 
-def test_update_campaign_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -> None:
     # ordered=True: each sheet orders its rows by its own metric's Mean-table first column, so the
     # two sheets may disagree. Campaign order is [a, b]; mAP mean-All gives a=mean(20,40)=30.00 <
     # b=mean(40,40)=40.00 -> mAP sheet flips to [b, a], while acc mean-I2T gives a=80.00 > b=20.00
@@ -900,9 +900,9 @@ def test_update_campaign_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, True, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, True, False, _SUPP_OFF, False)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     # campaign banner + blank row, then the dataset tables (Mean at the bottom); rows ordered
     # by the mean table's "All" column -> b before a
@@ -929,7 +929,7 @@ def test_update_campaign_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -
     assert agrid[15][:2] == ["b", "20.00"]
     assert agrid[4][3:5] == ["a", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
     # the arm_coords workbook orders its (arm, coord) rows the same way
-    wb_ac = load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx")
+    wb_ac = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_ac.active.iter_rows()]
     assert grid[4][:3] == ["b", "c0 (1)", "40.00"]
     assert grid[5][:3] == ["a", "c0 (1)", "20.00"]
@@ -941,7 +941,7 @@ def _fill_rgb(ws, row, col):
     return None if fill.patternType is None else fill.fgColor.rgb[-6:]
 
 
-def test_update_campaign_stats_heatmap(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_heatmap(tmp_path, monkeypatch) -> None:
     # heatmap=True: value/100 maps to white->#ff5533 over a fixed range, regardless of the column's
     # other cells; 20/50/80 -> #ffddd6 / #ffaa99 / #ff775c. One dataset, so the Mean "All" column
     # mirrors the values and is shaded too; "d" (no completed trials anywhere) gets no row at all.
@@ -953,9 +953,9 @@ def test_update_campaign_stats_heatmap(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, True, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
     # arm rows 5/6/7 = a/b/c
     assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
@@ -966,7 +966,7 @@ def test_update_campaign_stats_heatmap(tmp_path, monkeypatch) -> None:
     assert _fill_rgb(ws, 11, 2) == "FFDDD6"
     assert _fill_rgb(ws, 13, 2) == "FF775C"
     # key cells never shade (the arm_coords workbook's coord column included)
-    ws = load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active
     assert _fill_rgb(ws, 5, 2) == "EAEAEA" and _fill_rgb(ws, 5, 3) == "FFDDD6"
 
 
@@ -978,7 +978,7 @@ def _prim_scores_grp() -> dict:
     return grp
 
 
-def test_update_campaign_stats_supp_primitive(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     # supp_scores.primitive appends the per-partition primitive score columns: ID/OOD x I2T/I2I/T2I
     # on the mAP sheet, ID I2T / OOD I2T on the accuracy sheet -- in every table, incl. the seed blocks
     dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
@@ -988,9 +988,9 @@ def test_update_campaign_stats_supp_primitive(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_PRIM, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_PRIM, False)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # mAP banners split: unmerged title + grey merged 'Composite Scores'/'Primitive Scores' group headers
@@ -1059,7 +1059,7 @@ _NSHOT_FULL = ({"few-shot": "0.31", "med-shot": "0.32", "many-shot": "0.33"},
 _NSHOT_NO_FEW = ({"med-shot": "0.52", "many-shot": "0.53"}, {"med-shot": "0.62", "many-shot": "0.63"})
 
 
-def test_update_campaign_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     # supp_scores.n_shot appends one column per ID-partition n-shot bucket to the right of every
     # table (after the primitive columns when both are on): the bucket's composite mAP on the mAP
     # sheet (under an 'N-Shot Scores' group header), its I2T accuracy on the accuracy sheet. Bucket
@@ -1074,9 +1074,9 @@ def test_update_campaign_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, {"primitive": True, "n_shot": True}, False)
+    report.update_phase_stats("std", False, False, False, {"primitive": True, "n_shot": True}, False)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -1107,9 +1107,9 @@ def test_update_campaign_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     assert agrid[12][4:7] == ["41.00", "52.00", "53.00"]
 
     # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
-    report.update_campaign_stats("std", False, False, False, {"primitive": False, "n_shot": True}, False)
+    report.update_phase_stats("std", False, False, False, {"primitive": False, "n_shot": True}, False)
 
-    ws = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx").active
+    ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
     assert grid[2][7] == "N-Shot Scores"
@@ -1139,7 +1139,7 @@ def test_update_arm_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     assert grid_acc[1][2:] == ["41.00", "42.00", "43.00"]
 
 
-def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     # overrides=True renders the config bands in left column bands the score blocks shift right past,
     # aligned with the aggregate block's bottom Mean table (whose key columns label their rows): "Arm
     # Overrides" with one column per param declared in ablation_arms (union of the rows' overrides.json
@@ -1169,9 +1169,9 @@ def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", True, False, True, _SUPP_OFF, True)
+    report.update_phase_stats("std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -1215,7 +1215,7 @@ def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
 
     # the arms workbook: the Arm Overrides band alone (A..B + separator C, score blocks at D), one row
     # per arm at its best coord (lo for both)
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert not any(v == "Coord Overrides" for r in grid for v in r)
     assert grid[2][3] == "CUB"
@@ -1229,7 +1229,7 @@ def test_update_campaign_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[0][11] == "seed 42"
 
 
-def test_update_campaign_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypatch) -> None:
     # every overridden param resolves to the same value for every row -> no column survives on either
     # side, so both bands are omitted entirely and the score blocks sit leftmost
     for arm, base in (("hp", 0.50), ("mp", 0.40)):
@@ -1243,16 +1243,16 @@ def test_update_campaign_stats_overrides_all_uniform_omits_bands(tmp_path, monke
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, True)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, True)
 
     for kind in ("arm_coords", "arms"):
-        wb = load_workbook(tmp_path / "campaign_stats" / kind / "map" / "native.xlsx")
+        wb = load_workbook(tmp_path / "phase_stats" / kind / "map" / "native.xlsx")
         grid = [[c.value for c in r] for r in wb.active.iter_rows()]
         assert not any(v in ("Arm Overrides", "Coord Overrides") for r in grid for v in r)
         assert grid[2][0] == "CUB"  # score blocks leftmost: no band, no separator column
 
 
-def test_update_campaign_stats_arms_workbook_picks_best_coord_per_dataset(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_arms_workbook_picks_best_coord_per_dataset(tmp_path, monkeypatch) -> None:
     # the arms workbooks show each arm at its best coord PER DATASET (the workbook's criterion's comp
     # score, highest across-trial mean): on cub a's c0 (60 > 40), on bryo a's c1 (30 > 20). The Mean
     # table then averages those per-dataset bests (45.00), the seed blocks carry the best coord's
@@ -1282,9 +1282,9 @@ def test_update_campaign_stats_arms_workbook_picks_best_coord_per_dataset(tmp_pa
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert grid[3][:2] == ["Arm", "All"]
     assert grid[4][:2] == ["a (1)", "60.00"]   # CUB: c0
@@ -1299,10 +1299,10 @@ def test_update_campaign_stats_arms_workbook_picks_best_coord_per_dataset(tmp_pa
     assert hgrid[12][:2] == ["a", "250"]
     assert hgrid[12][6:9] == ["1", "2", "0"]   # crash totals: cub c0's + bryo c1's
     # the arm_coords workbook keeps every coord as its own row, so nothing is picked there
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
     assert grid[4][:3] == ["a", "c0 (1)", "60.00"] and grid[5][:3] == ["a", "c1 (1)", "40.00"]
     # acc-selection workbook: the pick flips per dataset
-    wb_acc = load_workbook(tmp_path / "campaign_stats" / "arms" / "acc" / "native.xlsx")
+    wb_acc = load_workbook(tmp_path / "phase_stats" / "arms" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
     assert grid[4][:2] == ["a (1)", "40.00"]  # cub: c1 (acc 80) -> its mAP 40
     assert grid[8][:2] == ["a (1)", "20.00"]  # bryo: c0 (acc 70) -> its mAP 20
@@ -1313,7 +1313,7 @@ def test_update_campaign_stats_arms_workbook_picks_best_coord_per_dataset(tmp_pa
     assert hgrid[12][6:9] == ["12", "12", "12"]  # cub c1's 5/5/5 + bryo c0's 7/7/7
 
 
-def test_update_campaign_stats_hw_sheet(tmp_path, monkeypatch) -> None:
+def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     # the always-on 3rd sheet, "Hardware Performance", mirrors the score sheets' layout (campaign
     # banner, per-dataset tables + Mean table, per-seed blocks, overrides bands, mAP-sheet row order)
     # with per-trial readings from trial_metadata.json as columns, meaned over the same trials as the
@@ -1356,9 +1356,9 @@ def test_update_campaign_stats_hw_sheet(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_campaign_stats("std", True, False, True, _SUPP_OFF, True)
+    report.update_phase_stats("std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "campaign_stats" / "arms" / "map" / "native.xlsx")
+    wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
     ws = wb["Hardware Performance"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
@@ -1420,9 +1420,122 @@ def test_update_campaign_stats_hw_sheet(tmp_path, monkeypatch) -> None:
         assert sgrid[12][3] == "Mean"
         assert not any(v in ("Hardware Performance", "Time Trial") for r in sgrid for v in r)
     # the arm_coords workbook's crash totals are per (arm, coord) row -- the same sums here, one key column over
-    hgrid = [[c.value for c in r] for r in load_workbook(tmp_path / "campaign_stats" / "arm_coords" / "map" / "native.xlsx")["Hardware Performance"].iter_rows()]
+    hgrid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")["Hardware Performance"].iter_rows()]
     assert hgrid[14][3:5] == ["hp", "c0"] and hgrid[14][10:13] == ["2", "1", "0"]
     assert hgrid[15][3:5] == ["mp", "c0"] and hgrid[15][10:13] == ["0", "0", "3"]
+
+
+def _write_test_scores(dpath_trial, scores_grp, chkpt, macro=None) -> None:
+    """A test-scored trial's per-group score files (_seeds/<seed>/<group>.json), the shape test.py
+    writes: {'chkpt': saved checkpoint index, 'scores': the group's scores}; the same subtree stands
+    in for both standard groups (and `macro` for the macro ones)."""
+    macro = scores_grp if macro is None else macro
+    dpath_trial.mkdir(parents=True, exist_ok=True)
+    for group_key, grp in (("native", scores_grp), ("native_macro", macro), ("joint", scores_grp), ("joint_macro", macro)):
+        (dpath_trial / f"{group_key}.json").write_text(json.dumps({"chkpt": chkpt, "scores": grp}))
+
+
+def test_update_test_stats_writes_stacked_tables_with_chkpt_column(tmp_path, monkeypatch) -> None:
+    # one workbook per eval group at <test dir>/map/test_<group>.xlsx, laid out like the campaign
+    # arm_coords workbooks -- score sheets of stacked per-dataset tables + Mean table + per-seed
+    # blocks -- but with a third 'Chkpt' key column (the combo's saved-checkpoint index) and no
+    # 'Hardware Performance' sheet. hp/c0 has 2 scored cub trials (chkpt 7) and none in bryo (blank
+    # row, '-' chkpt); mp has none anywhere -> no rows. The Mean table shows '-' for chkpt (a
+    # per-dataset value).
+    for seed, base in (("42", 0.50), ("43", 0.60)):
+        _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / seed, _scores_grp(_comp(base)), 7)
+    _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
+
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    report.update_test_stats("std", False, False, False, _SUPP_OFF, False)
+
+    for group_key in _GROUP_KEYS:
+        assert (tmp_path / "map" / f"test_{group_key}.xlsx").exists()
+    wb = load_workbook(tmp_path / "map" / "test_native.xlsx")
+    assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy"]  # no hardware sheet: test runs no training
+    ws = wb.active
+    grid = [[c.value for c in row] for row in ws.iter_rows()]
+    assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; test)"
+    assert grid[2][0] == "CUB"
+    assert grid[3][:9] == ["Arm", "Coord", "Chkpt", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[4][:4] == ["hp", "c0 (2)", "7", "55.00 ± 7.07"]
+    assert grid[6][0] == "Bryozoa"
+    assert grid[8][:4] == ["hp", "c0 (0)", "-", "-"]  # no bryo trials: blank row, no chkpt either
+    assert grid[10][0] == "Mean"
+    assert grid[12][:9] == ["hp", "c0", "-", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]
+    assert not any(v in ("mp", "mp (0)") for r in grid for v in r)  # no completed trials anywhere -> no rows
+    # the chkpt cell is a key column: header-styled (bold, grey, left-aligned), never score-styled
+    assert ws.cell(row=5, column=3).font.bold is True
+    assert ws.cell(row=5, column=3).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=5, column=3).alignment.horizontal == "left"
+    # per-seed blocks one separator past the 9-wide aggregate block, chkpt carried (same value per seed)
+    assert grid[0][10] == "seed 42"
+    assert grid[0][20] == "seed 43"
+    assert grid[2][10] == "CUB"
+    assert grid[4][10:19] == ["hp", "c0", "7", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"]
+    assert grid[8][10:13] == ["hp", "c0", "-"]  # seed 42 bryo: no trial
+    assert grid[4][20:24] == ["hp", "c0", "7", "60.00"]
+    assert all(r[9] is None and r[19] is None for r in grid)  # separator columns stay empty
+    assert not any(r[10] == "Mean" for r in grid)  # seed blocks have no Mean table
+    # accuracy sheet: same layout over the single I2T column (4-wide tables, seed 42 block at col F)
+    agrid = [[c.value for c in row] for row in wb["Composite I2T Accuracy"].iter_rows()]
+    assert agrid[3][:4] == ["Arm", "Coord", "Chkpt", "I2T"]
+    assert agrid[4][:4] == ["hp", "c0 (2)", "7", "61.00 ± 7.07"]
+    assert agrid[12][:4] == ["hp", "c0", "-", "61.00"]
+    assert agrid[0][5] == "seed 42"
+    assert agrid[4][5:9] == ["hp", "c0", "7", "56.00"]
+
+
+def test_update_test_stats_chkpt_per_dataset(tmp_path, monkeypatch) -> None:
+    # a coord's qual-selected checkpoint differs per dataset, so each dataset table (aggregate and
+    # seed blocks alike) carries its own value; the cross-dataset Mean table has no single one -> '-'
+    _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42", _scores_grp(_comp(0.50)), 3)
+    _write_test_scores(_dpath_coord(tmp_path, "bryo", "hp", "c0") / "_seeds" / "42", _scores_grp(_comp(0.60)), 9)
+    _write_meta(tmp_path, ["hp"], ["c0"], ["cub", "bryo"])
+
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    report.update_test_stats("std", False, False, False, _SUPP_OFF, False)
+
+    grid = [[c.value for c in row] for row in load_workbook(tmp_path / "map" / "test_native.xlsx").active.iter_rows()]
+    assert grid[2][0] == "CUB"
+    assert grid[4][:4] == ["hp", "c0 (1)", "3", "50.00"]
+    assert grid[6][0] == "Bryozoa"
+    assert grid[8][:4] == ["hp", "c0 (1)", "9", "60.00"]
+    assert grid[10][0] == "Mean"
+    assert grid[12][:4] == ["hp", "c0", "-", "55.00"]
+    assert grid[4][10:13] == ["hp", "c0", "3"] and grid[8][10:13] == ["hp", "c0", "9"]  # seed 42 block
+
+
+def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
+    # overrides=True renders the Arm/Coord Overrides bands from the test tree's config.json /
+    # overrides.json copies, exactly like the phase workbooks: one column per differing declared
+    # param, aligned with the aggregate Mean table's rows, score blocks shifted right past them
+    for arm, targ, base in (("hp", "phylo", 0.50), ("mp", "mp", 0.40)):
+        dpath_coord = _dpath_coord(tmp_path, "cub", arm, "c0")
+        _write_test_scores(dpath_coord / "_seeds" / "42", _scores_grp(_comp(base)), 5)
+        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.targ": targ}, "coord": {"opt.lr.init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"targ": targ}, "opt": {"lr": {"init": 1.0e-5}}}))
+    _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
+
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    report.update_test_stats("std", False, False, False, _SUPP_OFF, True)
+
+    grid = [[c.value for c in row] for row in load_workbook(tmp_path / "map" / "test_native.xlsx").active.iter_rows()]
+    # the arm band's one differing param at col A + separator B; opt.lr.init is uniform -> the coord
+    # band is omitted; score blocks start at C, band rows aligned with the Mean banner (row 8)
+    assert grid[2][2] == "CUB"
+    assert grid[3][2:6] == ["Arm", "Coord", "Chkpt", "All"]
+    assert grid[4][2:6] == ["hp", "c0 (1)", "5", "50.00"]
+    assert grid[5][2:6] == ["mp", "c0 (1)", "5", "40.00"]
+    assert grid[7][0] == "Arm Overrides" and grid[7][2] == "Mean"
+    assert grid[8][0] == "loss.targ" and grid[8][2:5] == ["Arm", "Coord", "Chkpt"]
+    assert grid[9][0] == "phylo" and grid[9][2:5] == ["hp", "c0", "-"]
+    assert grid[10][0] == "mp" and grid[10][2:5] == ["mp", "c0", "-"]
+    assert not any(v == "Coord Overrides" for r in grid for v in r)
+    assert all(r[1] is None for r in grid)  # band separator column stays empty
 
 
 def test_fold_hist_columns_halves_on_overflow() -> None:

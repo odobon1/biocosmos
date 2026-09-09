@@ -1555,47 +1555,43 @@ def test_run_campaign_use_img_cache_override_checked_at_startup(tmp_path, monkey
     assert launched == []
 
 
-def _run_launch_camp(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
-    """Run cr._launch_camp() with stubbed config loading and a no-op run_campaign; returns the
-    campaign name run_campaign was launched with (the yaml name comes along for its live re-reads)."""
+def _resolve_campaign(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
+    """cr._resolve_campaign('dev') with stubbed config loading; returns the campaign name it resolves to."""
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: CampaignConfig(
         suffix=suffix, n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=["cub"], ablation_arms=[[{"name": "s"}]], hpo_coords=_BASE_COORD,
     ))
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": continue_campaign}})
-    launched = []
-    monkeypatch.setattr(cr, "run_campaign", lambda campaign, name: launched.append((campaign, name)))
-    cr._launch_camp("dev")
-    assert launched[0][1] == "dev"
-    return launched[0][0]
+    return cr._resolve_campaign("dev")
 
 
-def test_launch_camp_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
+def test_resolve_campaign_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev").mkdir()
-    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=True) == "dev"
+    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=True) == "dev"
 
 
-def test_launch_camp_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
-    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False) == "dev"
+def test_resolve_campaign_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
+    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False) == "dev"
 
 
-def test_launch_camp_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
+def test_resolve_campaign_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev").mkdir()
     (tmp_path / "dev2").mkdir()
-    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
+    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
 
 
-def test_launch_camp_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
+def test_resolve_campaign_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev_foobar").mkdir()
-    assert _run_launch_camp(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
+    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
 
 
 def _wire_queue(tmp_path, monkeypatch) -> Path:
-    """Point the runner at a real config dir (camp_queue.yaml + camps/ live under it) and
-    neutralize pytest's own argv; returns the config dir."""
+    """Point the runner at a real config dir (camp_queue.yaml + camps/ live under it) and an empty artifacts dir,
+    resume campaigns by name (dev.continue_campaign) and neutralize pytest's own argv; returns the config dir."""
     dpath_config = tmp_path / "config"
     (dpath_config / "camps").mkdir(parents=True)
-    monkeypatch.setattr(cr, "paths", {"config": dpath_config})
+    monkeypatch.setattr(cr, "paths", {"config": dpath_config, "artifacts": tmp_path / "artifacts"})
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": True}})
     monkeypatch.setattr(cr.sys, "argv", ["campaign_runner"])
     return dpath_config
 
@@ -1612,18 +1608,20 @@ def _add_camp_config(dpath_config: Path, *names: str, text: str = _VALID_CAMP_YA
         (dpath_config / "camps" / f"{name}.yaml").write_text(text)
 
 
-def _stub_run_queue_entry(dpath_config, monkeypatch, on_run=None) -> list[str]:
-    """Stub cr._run_queue_entry to just record dispatched specs (returning True); `on_run(spec)`
-    can rewrite camp_queue.yaml mid-run to simulate live edits. Returns the record list."""
+def _stub_runs(monkeypatch, on_run=None, plan_changed=lambda run: False) -> list[str]:
+    """Stub cr.run_campaign to just record the campaigns launched (returning True) and cr._plan_changed with
+    `plan_changed(run)` (nothing changed, by default); `on_run(campaign)` can rewrite camp_queue.yaml mid-run to
+    simulate live edits. Returns the record list."""
     ran = []
 
-    def _fake_run_queue_entry(spec: str) -> bool:
-        ran.append(spec)
+    def _fake_run_campaign(campaign: str, name: str) -> bool:
+        ran.append(campaign)
         if on_run is not None:
-            on_run(spec)
+            on_run(campaign)
         return True
 
-    monkeypatch.setattr(cr, "_run_queue_entry", _fake_run_queue_entry)
+    monkeypatch.setattr(cr, "run_campaign", _fake_run_campaign)
+    monkeypatch.setattr(cr, "_plan_changed", plan_changed)
     return ran
 
 
@@ -1633,13 +1631,13 @@ def test_main_runs_queue_in_order_and_picks_up_added_entries(tmp_path, monkeypat
     _write_queue(dpath_config, ["camp.a", "camp.b"])
 
     # camp.c is appended while camp.a runs -- the re-read after each campaign picks it up
-    def _append_during_a(spec: str) -> None:
-        if spec == "camp.a":
+    def _append_during_a(campaign: str) -> None:
+        if campaign == "a":
             _write_queue(dpath_config, ["camp.a", "camp.b", "camp.c"])
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch, on_run=_append_during_a)
+    ran = _stub_runs(monkeypatch, on_run=_append_during_a)
     cr.main()
-    assert ran == ["camp.a", "camp.b", "camp.c"]
+    assert ran == ["a", "b", "c"]
 
 
 def test_main_picks_up_entries_inserted_at_any_position(tmp_path, monkeypatch) -> None:
@@ -1649,13 +1647,13 @@ def test_main_picks_up_entries_inserted_at_any_position(tmp_path, monkeypatch) -
 
     # while camp.a runs, camp.c is inserted at the front and camp.d in the middle: already-run
     # entries are consumed by occurrence, so the insertions run next, in file order
-    def _insert_during_a(spec: str) -> None:
-        if spec == "camp.a":
+    def _insert_during_a(campaign: str) -> None:
+        if campaign == "a":
             _write_queue(dpath_config, ["camp.c", "camp.a", "camp.d", "camp.b"])
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch, on_run=_insert_during_a)
+    ran = _stub_runs(monkeypatch, on_run=_insert_during_a)
     cr.main()
-    assert ran == ["camp.a", "camp.c", "camp.d", "camp.b"]
+    assert ran == ["a", "c", "d", "b"]
 
 
 def test_main_duplicate_entry_queues_a_second_run(tmp_path, monkeypatch) -> None:
@@ -1663,9 +1661,9 @@ def test_main_duplicate_entry_queues_a_second_run(tmp_path, monkeypatch) -> None
     _add_camp_config(dpath_config, "a")
     _write_queue(dpath_config, ["camp.a", "camp.a"])
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    ran = _stub_runs(monkeypatch)
     cr.main()
-    assert ran == ["camp.a", "camp.a"]
+    assert ran == ["a", "a"]
 
 
 @pytest.mark.parametrize("interrupt", ["returns_false", "raises"])
@@ -1678,24 +1676,148 @@ def test_main_interrupted_campaign_stops_the_queue(tmp_path, monkeypatch, interr
 
     ran = []
 
-    def _fake_run_queue_entry(spec: str) -> bool:
-        ran.append(spec)
+    def _fake_run_campaign(campaign: str, name: str) -> bool:
+        ran.append(campaign)
         if interrupt == "raises":
             raise KeyboardInterrupt
         return False
 
-    monkeypatch.setattr(cr, "_run_queue_entry", _fake_run_queue_entry)
+    monkeypatch.setattr(cr, "run_campaign", _fake_run_campaign)
     cr.main()
-    assert ran == ["camp.a"]
+    assert ran == ["a"]
 
 
 def test_main_empty_queue_exits_immediately(tmp_path, monkeypatch) -> None:
     dpath_config = _wire_queue(tmp_path, monkeypatch)
     (dpath_config / "camp_queue.yaml").write_text("campaigns:\n")  # blank list parses to None
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    ran = _stub_runs(monkeypatch)
     cr.main()
     assert ran == []
+
+
+def test_main_relaunches_a_run_campaign_whose_plan_changed_before_the_next_entry(tmp_path, monkeypatch) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a", "b", "c")
+    _write_queue(dpath_config, ["camp.a", "camp.b", "camp.c"])
+    # a's dir already exists and dev.continue_campaign is off, so a runs as 'a2': the relaunch must resume that same
+    # dir rather than resolve the name afresh (which, a2's dir existing by then, would start 'a3')
+    (tmp_path / "artifacts" / "a").mkdir(parents=True)
+    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": False}})
+
+    # a's yaml changes its plan while b runs: a is relaunched once b is over, before c is launched
+    edited = set()
+
+    def _on_run(campaign: str) -> None:
+        (tmp_path / "artifacts" / campaign).mkdir(exist_ok=True)  # the run creates its dir, as run_campaign would
+        if campaign == "b":
+            edited.add("a2")
+
+    def _plan_changed(run) -> bool:
+        if run.campaign not in edited:
+            return False
+        edited.remove(run.campaign)
+        return True
+
+    ran = _stub_runs(monkeypatch, on_run=_on_run, plan_changed=_plan_changed)
+    cr.main()
+    assert ran == ["a2", "b", "a2", "c"]
+
+
+_PLAN_SPEC = dict(
+    n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
+    ablation_arms=[[{"loss.targ": "sp", "name": "sp"}, {"loss.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD,
+)
+
+
+@pytest.mark.parametrize("edit, expected", [
+    ({}, False),
+    ({"hpo_coords": [[{"name": "base"}, {"loss.sim": "geo1"}]]}, True),
+    ({"n_trials_screen": 2}, True),
+    ({"datasets": ("cub", "lepid")}, True),
+    ({"ablation_arms": [[{"loss.targ": "sp", "name": "sp"}]]}, True),
+    ({"n_trials_qual": 1}, True),
+], ids=["unchanged", "coord_added", "seed_added", "dataset_added", "arm_removed", "qual_switched_on"])
+def test_plan_changed_compares_the_yaml_to_the_recorded_plans(tmp_path, monkeypatch, edit, expected) -> None:
+    """Once a campaign has run, an edit of its yaml that changes a reachable phase's plan -- an item added or removed,
+    a seed added, a phase switched on (no record yet) -- reads as changed; the unedited yaml doesn't."""
+    _setup_completing_campaign(tmp_path, monkeypatch)
+    _set_camp(monkeypatch, **_PLAN_SPEC)
+    cr.run_campaign("cmp_plan", "camp")
+    # the qual plan picks each arm's screening best (report.pick_best_coords reads real stats)
+    monkeypatch.setattr(cr, "pick_best_coords", lambda: {("sp", "cub"): "base", ("hp", "cub"): "base"})
+
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, **edit})
+    assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan", "camp")) is expected
+
+
+def test_plan_changed_tolerates_an_invalid_yaml(tmp_path, monkeypatch, capsys) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 2})
+    cr.run_campaign("cmp_plan_bad", "camp")
+
+    # a lowered seed count is refused as at a launch: reported, and the campaign not relaunched
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 1})
+    capsys.readouterr()
+    assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan_bad", "camp")) is False
+    assert "camp_queue: 'camp.camp' config invalid -- not relaunched until it is fixed" in capsys.readouterr().out
+
+
+def test_plan_changed_stops_at_an_incomplete_earlier_phase(tmp_path, monkeypatch) -> None:
+    """A campaign stuck at a screening trial that failed for good is relaunched for a screening addition, not for a
+    qual phase it can't reach yet -- else the queue would relaunch it over and over."""
+    _setup_completing_campaign(tmp_path, monkeypatch)
+    run_trial = cr._run_trial_subprocess
+
+    def _fail_hp(cfg_dict, spare_render_pid=None):
+        if cfg_dict["arm"] != "hp":
+            return run_trial(cfg_dict, spare_render_pid)
+        d = _dpath_trial(tmp_path, cfg_dict)
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "trial_metadata.json", "w") as f:
+            json.dump({"dataset": "cub", "complete": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fail_hp)
+    _set_camp(monkeypatch, **_PLAN_SPEC)
+    cr.run_campaign("cmp_plan_fail", "camp")
+    run = cr._Run("camp.camp", "cmp_plan_fail", "camp")
+    assert cr._plan_changed(run) is False
+
+    monkeypatch.setattr(cr, "pick_best_coords", lambda: pytest.fail("no pick from an incomplete screening phase"))
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_qual": 1})
+    assert cr._plan_changed(run) is False
+
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "hpo_coords": [[{"name": "base"}, {"loss.sim": "geo1"}]]})
+    assert cr._plan_changed(run) is True
+
+
+def test_main_runs_the_trials_added_to_a_finished_campaign_after_the_running_one(tmp_path, monkeypatch) -> None:
+    """End to end: a runs, then b; while b runs, a's yaml gains a coord. Once b is over, a is relaunched for the added
+    trial -- its recorded matrix grows -- and the queue drains."""
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _write_queue(dpath_config, ["camp.a", "camp.b"])
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)  # artifacts under tmp_path itself
+    monkeypatch.setattr(cr, "paths", {**cr.paths, "config": dpath_config})
+
+    def _camp(name: str, coords: list) -> CampaignConfig:
+        return CampaignConfig(suffix=None, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
+                              ablation_arms=[[{"loss.targ": "sp", "name": f"sp_{name}"}]], hpo_coords=coords)
+
+    cfgs = {name: _camp(name, _BASE_COORD) for name in ("a", "b")}
+    monkeypatch.setattr(cr, "_load_campaign_config", lambda name: cfgs[name])
+    run_trial = cr._run_trial_subprocess
+
+    def _edit_a_during_b(cfg_dict, spare_render_pid=None):
+        run_trial(cfg_dict, spare_render_pid)
+        if cfg_dict["campaign"] == "b":
+            cfgs["a"] = _camp("a", [[{"name": "base"}, {"loss.sim": "geo1"}]])
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _edit_a_during_b)
+    cr.main()
+    assert scheduled == [("sp_a", "base", "cub", 42), ("sp_b", "base", "cub", 42), ("sp_a", "loss.sim-geo1", "cub", 42)]
+    with open(tmp_path / "a" / "_screen" / "phase_metadata.json") as f:
+        assert json.load(f)["matrix"] == {"cub": {"sp_a": ["base", "loss.sim-geo1"]}}
 
 
 def test_main_rejects_arguments(tmp_path, monkeypatch) -> None:
@@ -1709,7 +1831,7 @@ def test_main_invalid_next_entry_fails_before_running_anything(tmp_path, monkeyp
     dpath_config = _wire_queue(tmp_path, monkeypatch)
     _write_queue(dpath_config, ["bogus.a"])
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    ran = _stub_runs(monkeypatch)
     with pytest.raises(SystemExit, match="camp.<name>"):
         cr.main()
     assert ran == []
@@ -1722,10 +1844,10 @@ def test_main_invalid_pending_entry_warns_then_fails_when_reached(tmp_path, monk
     _add_camp_config(dpath_config, "a")
     _write_queue(dpath_config, ["camp.a", "camp.missing"])
 
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    ran = _stub_runs(monkeypatch)
     with pytest.raises(SystemExit, match="missing"):
         cr.main()
-    assert ran == ["camp.a"]
+    assert ran == ["a"]
     assert "pending entry 'camp.missing' is invalid" in capsys.readouterr().out
 
 
@@ -1740,10 +1862,10 @@ def test_load_campaign_config_rejects_screen_exceeding_qual(tmp_path, monkeypatc
     assert cr._load_campaign_config("a").n_trials_qual is None
 
     _write_queue(dpath_config, ["camp.a", "camp.bad"])
-    ran = _stub_run_queue_entry(dpath_config, monkeypatch)
+    ran = _stub_runs(monkeypatch)
     with pytest.raises(ValueError, match="n_trials_screen"):
         cr.main()
-    assert ran == ["camp.a"]
+    assert ran == ["a"]
     assert "pending entry 'camp.bad' is invalid" in capsys.readouterr().out
 
 

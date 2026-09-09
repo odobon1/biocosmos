@@ -7,7 +7,9 @@ runs, in order -- camp.<name> runs the campaign defined by config/camps/<name>.y
 file is re-read after every campaign, so entries may be added (at any position) while one runs;
 the runner exits once every listed entry has been run. A campaign's own yaml is re-read before every
 trial (_Camp), so its matrix can be edited -- arms, coords, datasets added or removed, seeds added -- while
-it runs, as well as between launches (run_campaign).
+it runs, as well as between launches (run_campaign), and after it has run: at every campaign's end, the
+campaigns already run are checked for an edit that changed their plan (_plan_changed) and relaunched before
+the queue moves on (main).
 """
 
 from pathlib import Path
@@ -811,7 +813,8 @@ class _Camp:
     dropped (n_trials_screen / n_trials_qual lowered) -- a removed seed would orphan its trial in every coord,
     whereas arms, coords and datasets may be removed (_prune_removed). A read that fails is printed and the last good
     read returned -- a file mid-edit (unparseable, an invalid field, a duplicate name, a bad override) never takes
-    the running campaign down -- except the run's first, which raises."""
+    the running campaign down -- except the run's first, which raises. The queue reads a campaign already run the
+    same way, to tell whether an edit has changed its plan (_plan_changed)."""
 
     def __init__(self, campaign: str, name: str, cfg_snapshot: dict):
         self.campaign = campaign
@@ -1148,10 +1151,11 @@ def _dedupe_campaign_name(campaign: str) -> str:
         n += 1
     return f"{campaign}{n}"
 
-def _launch_camp(name: str) -> bool:
-    """Run the campaign defined by config/camps/<name>.yaml: resolve the campaign name (suffix +
-    dev.continue_campaign dedupe -- read once here, so a later edit of `suffix` doesn't rename a running
-    campaign) and hand the yaml over to run_campaign, which reads it live; returns its completed flag."""
+def _resolve_campaign(name: str) -> str:
+    """The artifacts dir the campaign config/camps/<name>.yaml runs under: `<name>_<suffix>` (`<name>` with suffix
+    null), deduped against the existing dirs unless dev.continue_campaign (_dedupe_campaign_name). Resolved once, at
+    the queue entry's launch (main) -- a later edit of `suffix` doesn't rename a running campaign, and the queue's
+    relaunches of the campaign resume this same dir."""
     cfg = _load_campaign_config(name)
     campaign = f"{name}_{cfg.suffix}" if cfg.suffix is not None else name
     if not load_train_config_dict()["dev"]["continue_campaign"]:
@@ -1159,7 +1163,38 @@ def _launch_camp(name: str) -> bool:
         if deduped != campaign:
             print(f"campaign '{campaign}' already exists -- starting '{deduped}' (dev.continue_campaign: false)", flush=True)
             campaign = deduped
-    return run_campaign(campaign, name)
+    return campaign
+
+class _Run(NamedTuple):
+    """One queue entry's campaign, as launched: `spec` the entry (camp.<name>), `campaign` the artifacts dir it
+    resolved to (_resolve_campaign), `name` that of its yaml, config/camps/<name>.yaml."""
+    spec: str
+    campaign: str
+    name: str
+
+def _plan_changed(run: _Run) -> bool:
+    """Whether the campaign's yaml, as it reads now, plans some phase differently from the plan that phase's
+    phase_metadata.json records -- an arm, coord, dataset or seed added or removed since the campaign last ran, or a
+    phase switched on (no record yet) -- over the phases the campaign can reach: a phase switched off, or an earlier
+    phase left incomplete (a trial failed for good), ends the walk (_plan_phases), so a campaign stuck at a failure
+    isn't relaunched for a phase it can't reach. The yaml is read as at a launch (_Camp.read: expanded, validated, no
+    seeds dropped); one that doesn't read -- mid-edit -- is reported and counts as unchanged."""
+    try:
+        cfg, arms, coords = _Camp(run.campaign, run.name, _load_or_create_campaign_config(run.campaign)).read()
+    except (SystemExit, yaml.YAMLError, TypeError, ValueError) as e:
+        print(f"camp_queue: '{run.spec}' config invalid -- not relaunched until it is fixed: {e}", flush=True)
+        return False
+    for phase in _PHASES:
+        plans = _plan_phases(run.campaign, phase, cfg, arms, coords)
+        if plans is None:
+            return False
+        fpath_meta = _dpath_phase(run.campaign, phase) / "phase_metadata.json"
+        if not fpath_meta.exists():
+            return True
+        metadata = load_json(fpath_meta)
+        if (metadata["seeds"], metadata["matrix"]) != (plans[-1].seeds, plans[-1].matrix):
+            return True
+    return False
 
 def _load_queue() -> list[str]:
     """The `campaigns` list from config/camp_queue.yaml (a blank list parses to None -> [])."""
@@ -1194,26 +1229,32 @@ def _next_queue_entry(executed: list[str]) -> str | None:
     _validate_queue_entry(pending[0])
     return pending[0]
 
-def _run_queue_entry(spec: str) -> bool:
-    """Dispatch one validated queue entry; returns run_campaign's completed flag."""
-    _, _, name = spec.partition(".")
-    return _launch_camp(name)
-
 def main() -> None:
     if sys.argv[1:]:
         raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/camp_queue.yaml)")
-    executed: list[str] = []
-    while (spec := _next_queue_entry(executed)) is not None:
-        print(f"camp_queue: launching '{spec}'", flush=True)
+    runs: list[_Run] = []
+    while True:
+        # a campaign already run whose yaml has since changed its plan is relaunched -- the earliest such first --
+        # before the queue's next entry is launched
+        run = next((r for r in runs if _plan_changed(r)), None)
+        if run is None:
+            spec = _next_queue_entry([r.spec for r in runs])
+            if spec is None:
+                break
+            print(f"camp_queue: launching '{spec}'", flush=True)
+            _, _, name = spec.partition(".")
+            run = _Run(spec, _resolve_campaign(name), name)
+            runs.append(run)
+        else:
+            print(f"camp_queue: relaunching '{run.spec}' -- its plan changed since it ran", flush=True)
         try:
-            completed = _run_queue_entry(spec)
+            completed = run_campaign(run.campaign, run.name)
         except KeyboardInterrupt:
             completed = False
         if not completed:
-            print(f"camp_queue: '{spec}' interrupted -- exiting queue", flush=True)
+            print(f"camp_queue: '{run.spec}' interrupted -- exiting queue", flush=True)
             return
-        executed.append(spec)
-    print(f"camp_queue: drained -- {len(executed)} campaign(s) run", flush=True)
+    print(f"camp_queue: drained -- {len(runs)} campaign(s) run", flush=True)
 
 
 if __name__ == "__main__":

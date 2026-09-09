@@ -9,8 +9,8 @@ def import_loss_module():
     fake_phylo = types.ModuleType("utils.phylo")
 
     class DummyPhyloVCV:
-        def __init__(self, dataset: str, split: str, train_pt: str,
-                     batch_size: int, htarg_shuf: bool = False, seed: int | None = None) -> None:
+        def __init__(self, dataset: str, split: str, train_pt: str, batch_size: int, kernel: str, beta: float,
+                     shuffle: bool = False, seed: int | None = None) -> None:
             self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):
@@ -88,7 +88,7 @@ def test_compute_targs_tax_normalizes_by_tree_depth() -> None:
 
 def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     loss_mod = import_loss_module()
-    loss_mod.configure_phylo_targs(split="D10", train_pt="train", batch_size=4, htarg_shuf=False, seed=None)
+    loss_mod.configure_phylo_targs(split="D10", train_pt="train", batch_size=4, kernel="laplace", beta=1.0, shuffle=False, seed=None)
 
     targs = loss_mod.compute_targs_phylo([{"cid": "a", "dataset": "cub"}, {"cid": "b", "dataset": "cub"}])
 

@@ -19,16 +19,21 @@ def get_tree(dataset: str) -> Tree:
 
 class PhyloVCV:
     """
-    Phylo target matrix from the dataset's tree: Y = exp(-d / avg_dist), where
-    d(a, b) = sqrt(patristic distance) -- the standard deviation of the Brownian-motion
-    contrast X_a - X_b, a root-independent tree metric -- and avg_dist normalizes d to
-    units of the average sampled pair's distance (_avg_dist). Built once at startup
-    (VCV -> distances -> targets); batches index into it (get_targs_batch /
-    make_targ_block_fn).
+    Phylo target matrix from the dataset's tree: a unit-diagonal kernel on the tree's Brownian-motion
+    VCV C (C_ab = depth of MRCA(a, b), C_aa = tip depth = root-to-tip length), selected by `kernel`.
+    'bm': the Brownian kernel itself, cosine-normalized -- C_ab / sqrt(C_aa * C_bb), the shared
+    root-path length over the tips' own depths (root-dependent). 'laplace' / 'ou': Y = exp(-beta * d / avg_dist)
+    over a root-independent tree metric d -- 'laplace': d(a, b) = sqrt(patristic distance), the standard
+    deviation of the Brownian-motion contrast X_a - X_b (the Laplace / exponential kernel on the Brownian
+    feature embedding); 'ou': d(a, b) = patristic distance (the stationary Ornstein-Uhlenbeck tree
+    covariance, exponential in the path length itself) -- with avg_dist normalizing d to units of the
+    average sampled pair's distance (_avg_dist) and beta the sharpness, the decay rate in those units
+    (the beta = 1 kernel raised to the power beta; inert under 'bm'). Built once at startup
+    (VCV -> targets); batches index into it (get_targs_batch / make_targ_block_fn).
     """
 
-    def __init__(self, dataset: str, split: str, train_pt: str, batch_size: int,
-                 htarg_shuf: bool = False, seed: int | None = None) -> None:
+    def __init__(self, dataset: str, split: str, train_pt: str, batch_size: int, kernel: str, beta: float,
+                 shuffle: bool = False, seed: int | None = None) -> None:
 
         self.tree: Tree = get_tree(dataset)
         root: Clade = self.tree.root
@@ -49,15 +54,26 @@ class PhyloVCV:
         self._cid_to_idx: Dict[str, int] = {cid: i for i, cid in enumerate(self._cids)}
 
         vcv = self.build_vcv_matrix()
-
-        # sqrt-patristic distance: d(a, b) = sqrt(depth(a) + depth(b) - 2 * depth(MRCA(a, b)))
         tip_depths = np.diag(vcv)
-        dists = np.sqrt(tip_depths[:, None] + tip_depths[None, :] - 2.0 * vcv)
 
-        avg_dist = self._avg_dist(dists, dataset, split, train_pt, batch_size)
-        self.targs = np.exp(-dists / avg_dist)  # unit diagonal, (0, 1] range
+        if kernel == "bm":
+            # Brownian kernel, cosine-normalized: C_ab / sqrt(C_aa * C_bb), the shared root-path length over
+            # the tips' own depths; [0, 1] range, 0 for pairs splitting at the root
+            tip_sds = np.sqrt(tip_depths)
+            self.targs = vcv / np.outer(tip_sds, tip_sds)
+            np.fill_diagonal(self.targs, 1.0)  # exact unit diagonal (x / (sqrt(x) * sqrt(x)) can round off an ulp)
+        else:
+            # patristic distance: depth(a) + depth(b) - 2 * depth(MRCA(a, b)); the kernel picks the tree metric
+            patristic = tip_depths[:, None] + tip_depths[None, :] - 2.0 * vcv
+            if kernel == "laplace":
+                dists = np.sqrt(patristic)
+            elif kernel == "ou":
+                dists = patristic
 
-        if htarg_shuf:
+            avg_dist = self._avg_dist(dists, dataset, split, train_pt, batch_size)
+            self.targs = np.exp(-beta * dists / avg_dist)  # unit diagonal, (0, 1] range
+
+        if shuffle:
             # Scramble which species maps to which position in the (already-built) target
             # matrix. targs itself is untouched, so the full set of pairwise phylo distances is
             # preserved; only the cid -> matrix-index correspondence is randomized. The permutation
@@ -132,7 +148,7 @@ class PhyloVCV:
         idxs = [self._cid_to_idx[cid] for cid in cids_b]
         targs = self.targs[np.ix_(idxs, idxs)]  # pt[B, B]; advanced indexing returns a writeable copy
 
-        # same-cid pairs are fully positive (1.0). targs' diagonal is 1.0 (exp(0)) by construction;
+        # same-cid pairs are fully positive (1.0). targs' diagonal is 1.0 by construction;
         # same-species samples are pinned to it explicitly rather than relying on that.
         cids_arr = np.asarray(cids_b, dtype=object)
         targs[cids_arr[:, None] == cids_arr[None, :]] = 1.0

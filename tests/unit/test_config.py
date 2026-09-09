@@ -21,7 +21,7 @@ def make_train_config_dummy(**overrides):
         "batch_size": 8,
         "chain_floor": None,
         "dv_batching": False,
-        "htarg_shuf": False,
+        "htarg": {"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": False},
         "dev": {"logging": False, "plot_every": "trial"},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
@@ -202,33 +202,47 @@ def test_train_config_rejects_unknown_plot_every(monkeypatch: pytest.MonkeyPatch
         TrainConfig(**cfg_dict)
 
 
-def test_train_config_rejects_htarg_shuf_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_rejects_htarg_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="requires an active phylo target"):
-        TrainConfig(**make_train_config_dummy(htarg_shuf=True))
+        TrainConfig(**make_train_config_dummy(htarg={"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": True}))
 
 
-def test_train_config_accepts_htarg_shuf_with_secondary_phylo(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_accepts_htarg_shuffle_with_secondary_phylo(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(
-        htarg_shuf=True,
+        htarg={"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": True},
         loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "mix": 0.3, "mix_unit": None, "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
     ))
 
-    assert cfg.htarg_shuf is True
+    assert cfg.htarg["shuffle"] is True
 
 
-def test_train_config_rejects_htarg_shuf_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_rejects_htarg_shuffle_with_null_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="requires a non-null seed"):
         TrainConfig(**make_train_config_dummy(
-            htarg_shuf=True,
+            htarg={"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": True},
             seed=None,
             loss={"crit": "bce", "sim": "cos", "targ": "phylo", "logits": {"scalar_lr_factor": 1.0, "temp": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         ))
+
+
+def test_train_config_rejects_unknown_htarg_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"Unknown htarg\.kernel"):
+        TrainConfig(**make_train_config_dummy(htarg={"kernel": "rbf", "exp": {"beta": 1.0}, "shuffle": False}))
+
+
+def test_train_config_rejects_nonpositive_htarg_beta(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"htarg\.exp\.beta must be a positive number"):
+        TrainConfig(**make_train_config_dummy(htarg={"kernel": "laplace", "exp": {"beta": 0.0}, "shuffle": False}))
 
 
 def test_train_config_populates_runtime_fields(monkeypatch: pytest.MonkeyPatch) -> None:

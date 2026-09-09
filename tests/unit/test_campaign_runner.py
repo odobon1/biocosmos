@@ -661,7 +661,7 @@ def test_expand_combo_groups_universal_value_aliases() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"htarg_shuf": True, "chain_floor": None},
+                {"htarg.shuffle": True, "chain_floor": None},
                 {"dv_batching": False},
                 {"loss2.mix": 0.0},
                 {"loss2.mix": 1.0},
@@ -670,7 +670,7 @@ def test_expand_combo_groups_universal_value_aliases() -> None:
         "ablation_arms",
     )
     assert [name for name, _ in members] == [
-        "htarg_shuf-T_chain_floor-N",
+        "htarg.shuffle-T_chain_floor-N",
         "dv_batching-F",
         "Mix-0.0",
         "Mix-1.0",

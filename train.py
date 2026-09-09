@@ -720,7 +720,8 @@ def run_training(cfg):
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
     apply_backend_flags(cfg.hw)
-    configure_phylo_targs(cfg.split, cfg.train_pt, cfg.batch_size, cfg.htarg_shuf, cfg.seed)
+    configure_phylo_targs(cfg.split, cfg.train_pt, cfg.batch_size,
+                          cfg.htarg["kernel"], cfg.htarg["exp"]["beta"], cfg.htarg["shuffle"], cfg.seed)
 
     ArtifactManager.set_paths(cfg)
     ArtifactManager.create_trial_dirs()

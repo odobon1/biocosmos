@@ -26,8 +26,8 @@ def import_loss_module():
 
     class DummyPhyloVCV:
         """Constant soft target (0.25); block builder agrees with the full matrix by construction."""
-        def __init__(self, dataset: str, split: str, train_pt: str,
-                     batch_size: int, htarg_shuf: bool = False, seed: int | None = None) -> None:
+        def __init__(self, dataset: str, split: str, train_pt: str, batch_size: int, kernel: str, beta: float,
+                     shuffle: bool = False, seed: int | None = None) -> None:
             self.dataset = dataset
 
         def get_targs_batch(self, targ_data_b):
@@ -46,7 +46,7 @@ def import_loss_module():
 
 L = import_loss_module()
 # phylo-target params for get_phylo_vcv's constructor call (DummyPhyloVCV ignores them)
-L.configure_phylo_targs(split="D10", train_pt="train", batch_size=4, htarg_shuf=False, seed=None)
+L.configure_phylo_targs(split="D10", train_pt="train", batch_size=4, kernel="laplace", beta=1.0, shuffle=False, seed=None)
 
 
 def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",

@@ -101,7 +101,7 @@ class TrainConfig:
     arch: dict
     dropout: dict
     freeze: dict
-    htarg_shuf: bool
+    htarg: dict
     loss: dict
     loss2: dict
     text_template: dict
@@ -208,15 +208,22 @@ class TrainConfig:
                 "(projection-head dropout needs a projection head)"
             )
 
-        if self.htarg_shuf:
+        if self.htarg["kernel"] not in ("bm", "laplace", "ou"):
+            raise ValueError(f"Unknown htarg.kernel: '{self.htarg['kernel']}', must be one of {{bm, laplace, ou}}")
+
+        htarg_beta = self.htarg["exp"]["beta"]
+        if isinstance(htarg_beta, bool) or not isinstance(htarg_beta, (int, float)) or htarg_beta <= 0:
+            raise ValueError(f"htarg.exp.beta must be a positive number, got {htarg_beta!r}")
+
+        if self.htarg["shuffle"]:
             phylo_active = self.loss["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss2["mix"] != 0.0)
             if not phylo_active:
                 raise ValueError(
-                    "htarg_shuf=True requires an active phylo target: "
+                    "htarg.shuffle=True requires an active phylo target: "
                     "loss.targ must be 'phylo', or loss2.targ must be 'phylo' with loss2.mix != 0.0"
                 )
             if self.seed is None:
-                raise ValueError("htarg_shuf=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
+                raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
         if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
             raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")

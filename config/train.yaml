@@ -39,7 +39,17 @@ freeze:
   image: false  # {true, false}
   text: false  # {true, false}
 
-htarg_shuf: false  # {true, false}
+htarg:  # Hierarchical target params
+  kernel: laplace  # {bm, laplace, ou}; Phylo target kernel on the tree's Brownian-motion VCV C (C_ab = depth of MRCA(a, b),
+  # C_aa = tip depth); (bm) Brownian kernel, cosine-normalized: C_ab / sqrt(C_aa * C_bb), the shared root-path length over
+  # the tips' own depths (root-dependent; 0 for pairs splitting at the root); (laplace | ou) Y = exp(-beta * d / avg_dist)
+  # over a root-independent tree metric d, avg_dist its batch-pair-probability-weighted mean: (laplace) d = sqrt(patristic
+  # distance), the Brownian contrast SD (Laplace / exponential kernel on the Brownian embedding); (ou) d = patristic
+  # distance (stationary Ornstein-Uhlenbeck tree covariance); Inert iff (loss.targ != phylo AND loss2.targ != phylo)
+  exp:  # Exp-decay kernel params; Inert iff (htarg.kernel: bm, or no phylo target active)
+    beta: 1.0  # (0.0, inf); Sharpness: Y = exp(-beta * d / avg_dist), i.e. the beta: 1.0 kernel raised to the power beta;
+    # larger --> faster decay (sharper targets); (1.0) The average sampled pair sits at e^-1
+  shuffle: false  # {true, false}
 
 loss:  # Primary loss
   crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces

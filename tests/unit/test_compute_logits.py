@@ -1,5 +1,5 @@
 """
-Contract tests for VLMWrapper.compute_logits's `center` modes (loss.logits.bce.center).
+Contract tests for VLMWrapper.compute_logits's `center` modes (loss1.logits.bce.center).
 
 - None --------- plain scale + bias.
 - "sim" -------- forward centering of the scaled sims (changes the operating point); dL/dsim zero-sum.

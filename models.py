@@ -251,8 +251,8 @@ class VLMWrapper(abc.ABC):
         if config.hw.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        if hasattr(config, "loss"):
-            cfg_logits = config.loss["logits"]
+        if hasattr(config, "loss1"):
+            cfg_logits = config.loss1["logits"]
             if cfg_logits["temp"]["init"] is not None:  # temp.init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
@@ -273,7 +273,7 @@ class VLMWrapper(abc.ABC):
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
-        if hasattr(config, "loss2") and config.loss2["mix"] != 0.0:
+        if hasattr(config, "loss") and config.loss["mix"] != 0.0:
             cfg_logits2 = config.loss2["logits"]
             if cfg_logits2["temp"]["init"] is None:  # (temp.init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
@@ -575,7 +575,17 @@ class VLMWrapper(abc.ABC):
             if t.requires_grad:
                 t.retain_grad()
 
-        mix = self.cfg.loss2["mix"]
+        mix = self.cfg.loss["mix"]
+        unitless = self.cfg.loss["unitless"]
+        if unitless:
+            # rescale each loss by its detached magnitude (loss / loss.detach()). Under a blend this
+            # equalizes the two losses' magnitudes so `mix` controls their true gradient-contribution
+            # ratio: Adam cancels a global loss scale but NOT the relative scale between the blended
+            # losses, which can differ by orders of magnitude and drift over training. A lone loss just
+            # reads a constant 1.0. A bifurcated loss reads 2x its gradient scale (un-halved branch sum,
+            # 1x grads), so its normalizer is L/2 -- the gradient-scale-equivalent value -- keeping the
+            # ratio true across bif/non-bif blends (a lone bif loss reads 2.0).
+            loss1 = loss1 / (loss1.detach() / (2.0 if self.crit1.bifurcated else 1.0)).clamp_min(1e-12)
         if mix != 0.0:
             loss2, loss2_raw, logits2, sims2, targs2 = self._loss_for_crit_full_batch(
                 embs_img_b,
@@ -589,47 +599,24 @@ class VLMWrapper(abc.ABC):
                 if t.requires_grad:
                     t.retain_grad()
 
-            mix_unit = self.cfg.loss2["mix_unit"]
-            if mix_unit is not None:
-                # equalize the two losses' magnitudes so `mix` controls their true gradient-contribution
-                # ratio. Adam cancels a global loss scale but NOT the relative scale between the blended
-                # losses, which can differ by orders of magnitude and drift over training.
-                # A bifurcated loss reads 2x its gradient scale (un-halved branch sum, 1x grads), so its
-                # normalizer is L/2 -- the gradient-scale-equivalent value -- keeping the ratio true
-                # across bif/non-bif blends.
-                mag1 = (loss1.detach() / (2.0 if self.crit1.bifurcated else 1.0)).clamp_min(1e-12)
-                mag2 = (loss2.detach() / (2.0 if self.crit2.bifurcated else 1.0)).clamp_min(1e-12)
-                loss1 = loss1 / mag1
-                loss2 = loss2 / mag2
+            if unitless:
+                loss2 = loss2 / (loss2.detach() / (2.0 if self.crit2.bifurcated else 1.0)).clamp_min(1e-12)
 
             loss = (1.0 - mix) * loss1 + mix * loss2
             loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
-
-            if mix_unit == "mix_scaled":
-                # restore the plain blend's magnitude (1 - mix) * mag1 + mix * mag2 (detached): `mix`
-                # stays the true gradient ratio, but the loss/gradient scale -- and its drift over
-                # training -- is a plain blend's rather than a constant unit reading. Built from the
-                # same L/2-equivalent values, so a bif participant still reads 2x and swapping
-                # bce <-> bif_bce leaves every gradient unchanged
-                loss = loss * ((1.0 - mix) * mag1 + mix * mag2)
-            elif mix_unit == "raw_scaled":
-                # restore the unweighted sum mag1 + mag2 instead: same gradients up to a global scale,
-                # but the reading is L1 + L2 (bif_bce: L/2) whatever `mix` is, so curves across a mix
-                # sweep share one scale
-                loss = loss * (mag1 + mag2)
 
             # each branch's sim/target matrices are tracked separately (learning-curve strips split
             # the two losses' stats); sims{1,2}[0]/logits{1,2}[0]: branch values are identical, so
             # the first branch carries the stats
             batch_stats = {
-                **sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss)),
+                **sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss1)),
                 **sim_targ_batch_stats(sims2[0], targs2, idx=2, logits=stat_logits(logits2, self.cfg.loss2)),
             } if diag["sim_targ_stats"] else None
 
             return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats, (sims1, sims2)
 
         # sims1[0]: branch values are identical, so the first branch carries the sim stats
-        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss)) if diag["sim_targ_stats"] else None
+        batch_stats = sim_targ_batch_stats(sims1[0], targs1, idx=1, logits=stat_logits(logits1, self.cfg.loss1)) if diag["sim_targ_stats"] else None
         return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats, (sims1, None)
 
     def _gather_batch(
@@ -799,8 +786,8 @@ class VLMWrapper(abc.ABC):
 
             rank = dist.get_rank() if self.world_size > 1 else 0
             loss, loss_raw, batch_stats, grad_sum_sims = chunked_bce_loss_backward(
-                img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss2["mix"],
-                self.cfg.loss2["mix_unit"], self.compute_logits, chunk, mixed_prec, device,
+                img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss["mix"],
+                self.cfg.loss["unitless"], self.compute_logits, chunk, mixed_prec, device,
                 rank, self.world_size, sim_grad_sums=diag["sim_grad_sums"],
                 sim_targ_stats=diag["sim_targ_stats"]
             )
@@ -902,7 +889,7 @@ class VLMWrapper(abc.ABC):
             _, loss_raw, _, sims1, targs1 = self._loss_for_crit_full_batch(
                 embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit1, secondary=False,
             )
-            mix = self.cfg.loss2["mix"]
+            mix = self.cfg.loss["mix"]
             if mix != 0.0:
                 _, loss2_raw, _, _, targs2 = self._loss_for_crit_full_batch(
                     embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit2, secondary=True,

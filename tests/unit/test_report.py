@@ -1145,14 +1145,14 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     # Overrides" with one column per param declared in ablation_arms (union of the rows' overrides.json
     # 'arm' keys, first-seen order) and, in the arm_coords workbooks, "Coord Overrides" likewise for
     # hpo_coords. Values resolve from each row's config.json -- "-" when the param is absent there
-    # (inert under that config: mp has loss2.mix 0.0, so clean_metadata dropped its loss2 subtree).
-    # loss.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
+    # (inert under that config: mp has loss.mix 0.0, so clean_metadata dropped its loss2 subtree).
+    # loss1.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
     # differentiate nothing). Config cells get no winner-bold/heatmap styling despite
     # bold_high/heatmap on. The arms workbooks get the arm band only: an arm's coord is picked per
     # dataset, so it has no single coord config to show.
     arms = {
-        "hp": ({"loss2.mix": 0.3, "loss2.targ": "phylo"}, {"loss": {"targ": "mp"}, "loss2": {"mix": 0.3, "targ": "phylo"}}),
-        "mp": ({"loss.targ": "mp"}, {"loss": {"targ": "mp"}}),
+        "hp": ({"loss.mix": 0.3, "loss2.targ": "phylo"}, {"loss": {"mix": 0.3}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}),
+        "mp": ({"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}),
     }
     coords = {"lo": 1.0e-5, "hi": 1.0e-4}
     base = 0.50
@@ -1183,9 +1183,9 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[9][5] == "Mean"
     assert grid[9][0] == "Arm Overrides" and grid[9][3] == "Coord Overrides"
     assert "A10:B10" in merged and "D10:D10" not in merged  # a 1-wide band title is not merged
-    assert grid[10][:2] == ["loss2.mix", "loss2.targ"]
+    assert grid[10][:2] == ["loss.mix", "loss2.targ"]
     assert grid[10][3] == "opt.lr.init"
-    assert not any(v == "loss.targ" for r in grid for v in r)
+    assert not any(v == "loss1.targ" for r in grid for v in r)
     assert grid[10][5:7] == ["Arm", "Coord"]  # Mean header shares the row
     assert grid[11][:2] == ["0.3", "phylo"] and grid[11][3] == "1e-05" and grid[11][5:7] == ["hp", "lo"]
     assert grid[12][:2] == ["0.3", "phylo"] and grid[12][3] == "0.0001" and grid[12][5:7] == ["hp", "hi"]
@@ -1208,7 +1208,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert agrid[2][5] == "CUB"
     assert agrid[9][5] == "Mean"
     assert agrid[9][0] == "Arm Overrides" and agrid[9][3] == "Coord Overrides"
-    assert agrid[10][:2] == ["loss2.mix", "loss2.targ"] and agrid[10][3] == "opt.lr.init"
+    assert agrid[10][:2] == ["loss.mix", "loss2.targ"] and agrid[10][3] == "opt.lr.init"
     assert agrid[11][:2] == ["0.3", "phylo"]
     assert agrid[13][:2] == ["-", "-"]
     assert agrid[0][9] == "seed 42"
@@ -1222,7 +1222,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[4][3:5] == ["hp (1)", "50.00"]
     assert grid[5][3:5] == ["mp (1)", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][3] == "Mean"
-    assert grid[8][:2] == ["loss2.mix", "loss2.targ"] and grid[8][3] == "Arm"
+    assert grid[8][:2] == ["loss.mix", "loss2.targ"] and grid[8][3] == "Arm"
     assert grid[9][:2] == ["0.3", "phylo"] and grid[9][3] == "hp"
     assert grid[10][:2] == ["-", "-"] and grid[10][3] == "mp"
     assert all(r[2] is None for r in grid)
@@ -1237,8 +1237,8 @@ def test_update_phase_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypa
         dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
-        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.targ": "mp"}, "coord": {"opt.lr.init": 1.0e-5}}))
-        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"targ": "mp"}, "opt": {"lr": {"init": 1.0e-5}}}))
+        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss1.targ": "mp"}, "coord": {"opt.lr.init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss1": {"targ": "mp"}, "opt": {"lr": {"init": 1.0e-5}}}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
@@ -1344,9 +1344,9 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     # the per-dataset coord files: overrides/config identical across a coord's datasets, the
     # crash counters per dataset (hp's 2/1/0 total is split across cub and bryo)
     for arm, dataset, overrides, meta, crashes in (
-        ("hp", "cub", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 1, "vram": 1, "other": 0}),
-        ("hp", "bryo", {"loss2.mix": 0.3}, {"loss2": {"mix": 0.3}}, {"ram": 1, "vram": 0, "other": 0}),
-        ("mp", "cub", {"loss.targ": "mp"}, {"loss": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
+        ("hp", "cub", {"loss.mix": 0.3}, {"loss": {"mix": 0.3}}, {"ram": 1, "vram": 1, "other": 0}),
+        ("hp", "bryo", {"loss.mix": 0.3}, {"loss": {"mix": 0.3}}, {"ram": 1, "vram": 0, "other": 0}),
+        ("mp", "cub", {"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
         dpath_coord = _dpath_coord(tmp_path, dataset, arm, "c0")
         (dpath_coord / "overrides.json").write_text(json.dumps({"arm": overrides, "coord": {}}))
@@ -1369,7 +1369,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[12][0] == "Arm Overrides"
     assert "A13:B13" in merged
-    assert grid[13][:2] == ["loss2.mix", "loss.targ"]
+    assert grid[13][:2] == ["loss.mix", "loss1.targ"]
     assert grid[14][:2] == ["0.3", "-"]
     assert grid[15][:2] == ["-", "mp"]
     # CUB table: merged title banner, Arm + hw header, '<arm> (n)' labels; hp means its 2
@@ -1515,8 +1515,8 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     for arm, targ, base in (("hp", "phylo", 0.50), ("mp", "mp", 0.40)):
         dpath_coord = _dpath_coord(tmp_path, "cub", arm, "c0")
         _write_test_scores(dpath_coord / "_seeds" / "42", _scores_grp(_comp(base)), 5)
-        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.targ": targ}, "coord": {"opt.lr.init": 1.0e-5}}))
-        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"targ": targ}, "opt": {"lr": {"init": 1.0e-5}}}))
+        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss1.targ": targ}, "coord": {"opt.lr.init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss1": {"targ": targ}, "opt": {"lr": {"init": 1.0e-5}}}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
@@ -1531,7 +1531,7 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[4][2:6] == ["hp", "c0 (1)", "5", "50.00"]
     assert grid[5][2:6] == ["mp", "c0 (1)", "5", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][2] == "Mean"
-    assert grid[8][0] == "loss.targ" and grid[8][2:5] == ["Arm", "Coord", "Chkpt"]
+    assert grid[8][0] == "loss1.targ" and grid[8][2:5] == ["Arm", "Coord", "Chkpt"]
     assert grid[9][0] == "phylo" and grid[9][2:5] == ["hp", "c0", "-"]
     assert grid[10][0] == "mp" and grid[10][2:5] == ["mp", "c0", "-"]
     assert not any(v == "Coord Overrides" for r in grid for v in r)

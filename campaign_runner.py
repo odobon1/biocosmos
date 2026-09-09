@@ -261,7 +261,7 @@ def _alias_pair(k: str, v) -> str:
 
 def _derive_item_name(item: dict) -> str:
     """Name an unnamed `ablation_arms` / `hpo_coords` item by its overrides: _alias_pair components
-    joined by '_', e.g. {'loss.targ': 'mp', 'batch_size': 2048} -> 'Targ-MP_BS-2k'."""
+    joined by '_', e.g. {'loss1.targ': 'mp', 'batch_size': 2048} -> 'Targ-MP_BS-2k'."""
     return "_".join(_alias_pair(k, v) for k, v in item.items())
 
 def _item_name(item: dict) -> str | None:
@@ -294,7 +294,7 @@ def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tup
 
     The list is a list of combo groups; each combo group is a list of partial members (a dict of
     dotted-key overrides plus an optional 'name'; an item without one is named from its overrides
-    via _derive_item_name, e.g. {'loss.targ': 'mp'} -> 'Targ-MP'). An override value given as a
+    via _derive_item_name, e.g. {'loss1.targ': 'mp'} -> 'Targ-MP'). An override value given as a
     list is a combo list: the item is first expanded into one partial member per combination of its
     list values, named per _expand_combo_lists. The members are the Cartesian product across combo
     groups: one partial member is drawn from each combo group and merged into one member, its name

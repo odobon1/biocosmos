@@ -301,26 +301,24 @@ class ArtifactManager:
                 del metadata["arch"]["siglip"]
                 del metadata["dropout"]["siglip"]
 
-            if metadata["loss2"]["mix"] == 0.0:
+            if metadata["loss"]["mix"] == 0.0:
                 del metadata["loss2"]
 
             # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
             # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's logit params
             # are always fresh learnable Parameters, so loss2.logits is never pruned.
-            if not is_siglip and metadata["loss"]["logits"]["bce"]["bias"]["init"] is None:
-                del metadata["loss"]["logits"]["bce"]["bias"]
+            if not is_siglip and metadata["loss1"]["logits"]["bce"]["bias"]["init"] is None:
+                del metadata["loss1"]["logits"]["bce"]["bias"]
 
             # per-loss weighting: drop params the loss type never reads (the bce sub-block is
             # BCE-only -- absent from InfoNCE's 1D weighting),
             # params their own toggle disables (cls_imb.type null; focal.gamma 0.0 is already
             # pruned from the working config at load), and the scalar
-            # cancellation noted in train.yaml: the unit-scale blend (loss / loss.detach()) cancels
+            # cancellation noted in train.yaml: the unitless rescale (loss / loss.detach()) cancels
             # any per-batch scalar factor on a loss, making cls_imb.norm's rescale inert under
-            # mix_unit: unscaled only -- the *_scaled modes multiply the blend back by the losses'
-            # detached magnitudes, through which the per-batch norm scalar survives. loss2 is already gone
-            # when mix = 0.0, under which mix_unit never applies.
-            unit_scaled = "loss2" in metadata and metadata["loss2"]["mix_unit"] == "unscaled"
-            for key in ("loss", "loss2"):
+            # loss.unitless: true (blended or lone)
+            unit_scaled = metadata["loss"]["unitless"]
+            for key in ("loss1", "loss2"):
                 if key not in metadata:
                     continue
                 wting = metadata[key]["wting"]

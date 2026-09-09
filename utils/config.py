@@ -18,12 +18,12 @@ import pdb
 CFG_PARAM_ALIASES = {
     "n_epochs": "E",
     "batch_size": "BS",
-    "loss.targ": "Targ",
-    "loss.wting.bce.dsmr": "DSMR",
-    "loss.logits.temp.init": "Tau",
-    "loss.logits.bce.bias.init": "Bias",
-    "loss2.mix": "Mix",
-    "loss2.mix_unit": "UnitMix",
+    "loss.mix": "Mix",
+    "loss.unitless": "Unitless",
+    "loss1.targ": "Targ",
+    "loss1.wting.bce.dsmr": "DSMR",
+    "loss1.logits.temp.init": "Tau",
+    "loss1.logits.bce.bias.init": "Bias",
     "loss2.targ": "Targ2",
     "loss2.wting.bce.dsmr": "DSMR2",
     "loss2.logits.temp.init": "Tau2",
@@ -41,7 +41,7 @@ CFG_PARAM_VALUE_ALIASES = {
         16_384: "16k",
         32_768: "32k",
     },
-    "loss.targ": {
+    "loss1.targ": {
         "sp": "SP",
         "mp": "MP",
         "phylo": "hp",
@@ -103,6 +103,7 @@ class TrainConfig:
     freeze: dict
     htarg: dict
     loss: dict
+    loss1: dict
     loss2: dict
     text_template: dict
     opt: dict
@@ -181,7 +182,7 @@ class TrainConfig:
         for key, val in (
             ("opt.lr.init", self.opt["lr"]["init"]),
             ("opt.wd", self.opt["wd"]),
-            ("loss.logits.scalar_lr_factor", self.loss["logits"]["scalar_lr_factor"]),
+            ("loss1.logits.scalar_lr_factor", self.loss1["logits"]["scalar_lr_factor"]),
             ("loss2.logits.scalar_lr_factor", self.loss2["logits"]["scalar_lr_factor"]),
         ):
             if isinstance(val, bool) or not isinstance(val, (int, float)):
@@ -216,39 +217,39 @@ class TrainConfig:
             raise ValueError(f"htarg.exp.beta must be a positive number, got {htarg_beta!r}")
 
         if self.htarg["shuffle"]:
-            phylo_active = self.loss["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss2["mix"] != 0.0)
+            phylo_active = self.loss1["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss["mix"] != 0.0)
             if not phylo_active:
                 raise ValueError(
                     "htarg.shuffle=True requires an active phylo target: "
-                    "loss.targ must be 'phylo', or loss2.targ must be 'phylo' with loss2.mix != 0.0"
+                    "loss1.targ must be 'phylo', or loss2.targ must be 'phylo' with loss.mix != 0.0"
                 )
             if self.seed is None:
                 raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
-            raise ValueError(f"Unknown Loss 1 crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")
+        if self.loss1["crit"] not in ("infonce", "bce", "bif_bce"):
+            raise ValueError(f"Unknown Loss 1 crit: '{self.loss1['crit']}', must be one of {{infonce, bce, bif_bce}}")
         if self.loss2["crit"] not in ("infonce", "bce", "bif_bce"):
             raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce, bce, bif_bce}}")
         
-        if self.loss["sim"] not in ("cos", "geo1", "geo2"):
-            raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
+        if self.loss1["sim"] not in ("cos", "geo1", "geo2"):
+            raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss1['sim']}', must be one of {{cos, geo1, geo2}}")
         if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
         
-        if self.loss["targ"] not in ("sp", "mp", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss['targ']}', must be one of {{sp, mp, tax, phylo}}")
+        if self.loss1["targ"] not in ("sp", "mp", "tax", "phylo"):
+            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss1['targ']}', must be one of {{sp, mp, tax, phylo}}")
         if self.loss2["targ"] not in ("sp", "mp", "tax", "phylo"):
             raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{sp, mp, tax, phylo}}")
 
-        if self.loss["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
-            raise ValueError(f"Unknown Loss 1 logits.bce.center: '{self.loss['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
+        if self.loss1["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
+            raise ValueError(f"Unknown Loss 1 logits.bce.center: '{self.loss1['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
         if self.loss2["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
             raise ValueError(f"Unknown Loss 2 logits.bce.center: '{self.loss2['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
 
-        if not 0.0 <= self.loss2["mix"] <= 1.0:
-            raise ValueError(f"Secondary loss mix out of bounds: {self.loss2['mix']}, must be between 0.0 and 1.0")
-        if self.loss2["mix_unit"] not in (None, "unscaled", "mix_scaled", "raw_scaled"):
-            raise ValueError(f"Unknown Loss 2 mix_unit: '{self.loss2['mix_unit']}', must be one of {{null, unscaled, mix_scaled, raw_scaled}}")
+        if not 0.0 <= self.loss["mix"] <= 1.0:
+            raise ValueError(f"loss.mix out of bounds: {self.loss['mix']}, must be between 0.0 and 1.0")
+        if not isinstance(self.loss["unitless"], bool):
+            raise ValueError(f"loss.unitless must be a bool, got {self.loss['unitless']!r}")
 
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
@@ -258,7 +259,7 @@ class TrainConfig:
             self.aug.pop("gblur", None)
 
         # focal toggle: gamma 0.0 disables -> block dropped from the working config; downstream keys off presence
-        for cfg_loss in (self.loss, self.loss2):
+        for cfg_loss in (self.loss1, self.loss2):
             if cfg_loss["wting"]["focal"]["gamma"] == 0.0:
                 del cfg_loss["wting"]["focal"]
 
@@ -276,14 +277,14 @@ class TrainConfig:
 
         if self.hw.loss_chunk_size is not None:
             from utils.loss import chunking_supported  # local: avoid importing Bio.Phylo at config load
-            if not chunking_supported(self.loss, self.loss2):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
+            if not chunking_supported(self.loss1, self.loss2, self.loss["mix"]):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
                 self.hw.loss_chunk_size = None
             else:
                 # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
                 # exactly only through the cos-sim mean factorization mean(sim) = mean(img) . mean(txt)
                 # (see utils/loss.py) -- geo sims have no such closed form
-                for name, cfg_l in (("loss", self.loss), ("loss2", self.loss2)):
-                    if name == "loss2" and self.loss2["mix"] == 0.0:
+                for name, cfg_l in (("loss1", self.loss1), ("loss2", self.loss2)):
+                    if name == "loss2" and self.loss["mix"] == 0.0:
                         continue
                     if cfg_l["logits"]["bce"]["center"] == "sim" and cfg_l["sim"] != "cos":
                         raise ValueError(

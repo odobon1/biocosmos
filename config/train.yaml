@@ -45,18 +45,24 @@ htarg:  # Hierarchical target params
   # the tips' own depths (root-dependent; 0 for pairs splitting at the root); (laplace | ou) Y = exp(-beta * d / avg_dist)
   # over a root-independent tree metric d, avg_dist its batch-pair-probability-weighted mean: (laplace) d = sqrt(patristic
   # distance), the Brownian contrast SD (Laplace / exponential kernel on the Brownian embedding); (ou) d = patristic
-  # distance (stationary Ornstein-Uhlenbeck tree covariance); Inert iff (loss.targ != phylo AND loss2.targ != phylo)
+  # distance (stationary Ornstein-Uhlenbeck tree covariance); Inert iff (loss1.targ != phylo AND loss2.targ != phylo)
   exp:  # Exp-decay kernel params; Inert iff (htarg.kernel: bm, or no phylo target active)
     beta: 1.0  # (0.0, inf); Sharpness: Y = exp(-beta * d / avg_dist), i.e. the beta: 1.0 kernel raised to the power beta;
     # larger --> faster decay (sharper targets); (1.0) The average sampled pair sits at e^-1
   shuffle: false  # {true, false}
 
-loss:  # Primary loss
+loss:  # Common loss params
+  mix: 0.0  # [0.0, 1.0]; (0.0) Disable secondary loss
+  unitless: false  # {true, false}; (true) Rescale each active loss by its detached magnitude, L / L.detach() (bif_bce:
+  # by L/2, its gradient-scale-equivalent value): a lone loss reads a constant 1.0 (bif_bce 2.0), and a blend's losses are
+  # equalized to unit magnitude so mix is the true gradient-contribution ratio; (false) Raw losses
+
+loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
   crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
   # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {sp, mp, tax, phylo}
-  infonce:  # Inert iff (loss.crit != infonce)
+  infonce:  # Inert iff (loss1.crit != infonce)
     tsm:  # Target Simplex Mapping
       type: softmax  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
@@ -65,10 +71,10 @@ loss:  # Primary loss
       sm_temp: pinned  # {pinned, pinned1, [float]}
       # (pinned) Use the same learnable logit-scale (log(1 / tau)) as the logits (targs scaled by x2 first)
       # (pinned1) Same as pinned but without the x2 target scaling
-      # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss.infonce.tsm.type: linear)
-  bce:  # Inert iff (loss.crit != bif_bce)
+      # ([float]) Fixed tau_Y (non-learnable), set =2.0 for no target temperature-scaling; inert if (loss1.infonce.tsm.type: linear)
+  bce:  # Inert iff (loss1.crit != bif_bce)
     targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its target
-    # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1); Inert iff (loss.crit != bif_bce)
+    # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1); Inert iff (loss1.crit != bif_bce)
   wting:
     cls_imb:  # Class-imbalance weighting params; Inert iff (cls_imb.type: null)
       type: null  # {null, inv_freq, class_bal}; (inv_freq) Inverse-frequency; (class_bal) Class-balanced;
@@ -80,11 +86,11 @@ loss:  # Primary loss
         beta: 0.9999  # [0.0, 1.0)
       norm: false  # {true, false}; Rescale the batch's class-imbalance weights to mean 1.0 (weighted loss
       # retains the unweighted scale batch-by-batch rather than in expectation, at the cost of a
-      # batch-composition-dependent normalizer); Inert iff (loss2.mix_unit: unscaled AND loss2.mix: >0.0)
+      # batch-composition-dependent normalizer); Inert iff (loss.unitless: true)
     focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
       gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable 
       # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
-    bce:  # BCE-specific weighting params; Inert iff (loss.crit: infonce)
+    bce:  # BCE-specific weighting params; Inert iff (loss1.crit: infonce)
       dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
   logits:
     scalar_lr_factor: 10.0  # (0.0, inf); LR multiplier for this loss's logit scalars (temp/bias) relative to
@@ -105,19 +111,12 @@ loss:  # Primary loss
       # Per-criterion (loss2 has its own flag); Chunked path (hw.loss_chunk_size) reproduces full-batch centering
       # exactly; (sim) under chunking requires sim: cos (config error otherwise -- no closed-form global mean for geo);
       # sensitive to mixed precision
-      bias:  # Inert iff (loss.crit: infonce)
+      bias:  # Inert iff (loss1.crit: infonce)
         init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
         # ([float]) Override init; base: (siglip_vitb16: -12.9324)
         freeze: false  # {true, false}; (true) Non-learnable bias
 
-loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
-  mix: 0.0  # [0.0, 1.0); (0.0) Disable secondary loss
-  mix_unit: null  # {null, unscaled, mix_scaled, raw_scaled}; (unscaled) Rescale each loss to unit magnitude before
-  # blending (a bif_bce participant rescales by L/2, its gradient-scale-equivalent value, keeping mix the true gradient
-  # ratio); (mix_scaled) As unscaled, then rescale the blend by the plain blend's magnitude (1 - mix) * L1 + mix * L2
-  # (bif_bce: L/2), so mix stays the true gradient ratio while the loss/gradients keep a plain blend's scale and drift
-  # rather than a constant unit reading; (raw_scaled) As mix_scaled but by the unweighted sum L1 + L2 (bif_bce: L/2):
-  # same gradient ratio, a mix-independent reading (curves across a mix sweep share one scale); (null) Plain blend
+loss2:  # Secondary loss params; Inert iff (loss.mix: 0.0)
   crit: bce  # {infonce, bce, bif_bce}
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {sp, mp, tax, phylo}
@@ -146,7 +145,7 @@ loss2:  # Secondary loss params; Inert iff (loss2.mix: 0.0)
       freeze: false  # {true, false}
       clamp: false  # {true, false}
     bce:
-      center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum (see loss.logits.bce.center)
+      center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum (see loss1.logits.bce.center)
       bias:
         init: null  # {null, [float]}
         freeze: false  # {true, false}

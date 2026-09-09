@@ -56,8 +56,9 @@ class _FakeCoordCfg:
     dropout: dict = field(default_factory=lambda: {
         "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
     })
-    loss: dict = field(default_factory=_full_loss_cfg)
-    loss2: dict = field(default_factory=lambda: {"mix": 0.0, "mix_unit": None, **_full_loss_cfg(targ="phylo")})
+    loss1: dict = field(default_factory=_full_loss_cfg)
+    loss: dict = field(default_factory=lambda: {"mix": 0.0, "unitless": False})
+    loss2: dict = field(default_factory=lambda: _full_loss_cfg(targ="phylo"))
     opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
 
     def __post_init__(self):
@@ -74,7 +75,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
 
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
-    assert "loss" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert "loss1" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
     assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
@@ -118,72 +119,79 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
     assert "stoch_depth" in config["dropout"]["siglip"]
     assert "loss2" not in config  # mix 0.0
-    assert "infonce" not in config["loss"]  # InfoNCE-only sub-block
-    assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
-    cls_imb = config["loss"]["wting"]["cls_imb"]
+    assert "infonce" not in config["loss1"]  # InfoNCE-only sub-block
+    assert "bce" not in config["loss1"]  # targ_mass_neut is bif_bce-only
+    cls_imb = config["loss1"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
     assert cls_imb["norm"] is True  # no unit-scale -> the rescale sticks
-    assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
+    assert "freeze" in config["loss1"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
     # CLIP + InfoNCE + class_bal: the 1D path reads none of the BCE-only machinery
     (tmp_path / "s2").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s2")
     cfg = _FakeCoordCfg()
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
-    cfg.loss = _full_loss_cfg(crit="infonce")
-    cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
-    cfg.loss["wting"]["cls_imb"]["norm"] = False
+    cfg.loss1 = _full_loss_cfg(crit="infonce")
+    cfg.loss1["wting"]["cls_imb"]["type"] = "class_bal"
+    cfg.loss1["wting"]["cls_imb"]["norm"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
-    assert config["loss"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + mp: block live
-    wting = config["loss"]["wting"]
+    assert config["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + mp: block live
+    wting = config["loss1"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
         "type": "class_bal", "class_bal": {"beta": 0.9999}, "norm": False,
     }
-    assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
+    assert "bias" not in config["loss1"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
 
     # bif_bce: 1D per-anchor weighting, and the BCE-family blocks stay live
     (tmp_path / "s4").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s4")
     cfg = _FakeCoordCfg()
-    cfg.loss = _full_loss_cfg(crit="bif_bce")
+    cfg.loss1 = _full_loss_cfg(crit="bif_bce")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
-    assert "infonce" not in config["loss"]
-    assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
-    assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
+    assert "infonce" not in config["loss1"]
+    assert config["loss1"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
+    assert config["loss1"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
-    # all weight factors off -> whole wting block inert; loss2 mix_unit: unscaled cancels its norm scalars
+    # all weight factors off -> whole wting block inert; unitless cancels loss2's norm scalar
     (tmp_path / "s3").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s3")
     cfg = _FakeCoordCfg()
-    cfg.loss["wting"]["cls_imb"]["type"] = None
-    del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
-    cfg.loss["wting"]["bce"]["dsmr"] = False
-    cfg.loss2["mix"] = 0.3
-    cfg.loss2["mix_unit"] = "unscaled"
+    cfg.loss1["wting"]["cls_imb"]["type"] = None
+    del cfg.loss1["wting"]["focal"]  # config load prunes the block when gamma = 0.0
+    cfg.loss1["wting"]["bce"]["dsmr"] = False
+    cfg.loss["mix"] = 0.3
+    cfg.loss["unitless"] = True
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
-    assert "wting" not in config["loss"]
-    assert config["loss2"]["mix"] == 0.3 and config["loss2"]["mix_unit"] == "unscaled"
+    assert "wting" not in config["loss1"]
+    assert config["loss"] == {"mix": 0.3, "unitless": True}
     cls_imb2 = config["loss2"]["wting"]["cls_imb"]
     assert "norm" not in cls_imb2  # its rescale is cancelled by unit-scaling
 
-    # the *_scaled modes multiply the blend back by the losses' detached magnitudes, through which
-    # the per-batch norm scalar survives -> norm stays live
-    for i, mix_unit in enumerate(("mix_scaled", "raw_scaled"), start=5):
-        (tmp_path / f"s{i}").mkdir()
-        monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / f"s{i}")
-        cfg = _FakeCoordCfg()
-        cfg.loss2["mix"] = 0.3
-        cfg.loss2["mix_unit"] = mix_unit
-        ArtifactManager.save_metadata_coord(cfg)
-        config = json.loads((tmp_path / f"s{i}" / "config.json").read_text())
-        assert config["loss2"]["mix_unit"] == mix_unit
-        assert config["loss2"]["wting"]["cls_imb"]["norm"] is True
+    # raw blend (unitless false) under an active mix: nothing cancels the norm scalar -> norm stays live
+    (tmp_path / "s5").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s5")
+    cfg = _FakeCoordCfg()
+    cfg.loss["mix"] = 0.3
+    ArtifactManager.save_metadata_coord(cfg)
+    config = json.loads((tmp_path / "s5" / "config.json").read_text())
+    assert config["loss"] == {"mix": 0.3, "unitless": False}
+    assert config["loss2"]["wting"]["cls_imb"]["norm"] is True
+
+    # unitless applies to a lone loss too: loss1's norm scalar cancels with no secondary loss mixed in
+    (tmp_path / "s6").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s6")
+    cfg = _FakeCoordCfg()
+    cfg.loss["unitless"] = True
+    ArtifactManager.save_metadata_coord(cfg)
+    config = json.loads((tmp_path / "s6" / "config.json").read_text())
+    assert config["loss"] == {"mix": 0.0, "unitless": True} and "loss2" not in config
+    assert "norm" not in config["loss1"]["wting"]["cls_imb"]
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
@@ -310,7 +318,7 @@ def _fake_pipe(loss_crit, loss2_crit, mix, requires_grad):
         for attr in ("logit_scale", "logit_bias", "logit_scale2", "logit_bias2")
     })
     return SimpleNamespace(
-        cfg=SimpleNamespace(loss={"crit": loss_crit}, loss2={"crit": loss2_crit, "mix": mix}),
+        cfg=SimpleNamespace(loss={"mix": mix}, loss1={"crit": loss_crit}, loss2={"crit": loss2_crit}),
         modelw=SimpleNamespace(_unwrapped_model=model),
     )
 
@@ -359,7 +367,7 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
 
 
 def _fake_targ_pipe(targ1, targ2, mix):
-    return SimpleNamespace(cfg=SimpleNamespace(loss={"targ": targ1}, loss2={"targ": targ2, "mix": mix}))
+    return SimpleNamespace(cfg=SimpleNamespace(loss={"mix": mix}, loss1={"targ": targ1}, loss2={"targ": targ2}))
 
 
 def test_tracked_targ_stats_only_graded_targets_of_active_branches() -> None:

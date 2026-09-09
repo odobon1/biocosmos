@@ -5,8 +5,8 @@ n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best c
 trainval: false  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
 
 ablation_arms:
-  - - {loss2.mix: 0.3, loss2.targ: phylo, htarg.shuffle: true, name: shuffle}
-    - {loss2.mix: 0.3, loss2.targ: phylo, htarg.shuffle: false, name: no-shuffle}
+  - - {loss.mix: 0.3, loss2.targ: phylo, htarg.shuffle: true, name: shuffle}
+    - {loss.mix: 0.3, loss2.targ: phylo, htarg.shuffle: false, name: no-shuffle}
 
 hpo_coords:
   - - {name: base}

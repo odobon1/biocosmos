@@ -73,34 +73,34 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     * `n_trials_qual` — `null`, or the seed count each arm's **best coord** per dataset is topped up to in the **qual** phase (see *Phases* below); must be ≥ `n_trials_screen` (checked when the config is loaded, `CampaignConfig` in `utils/config.py`); `null` skips the qual phase
     * `trainval` — `true`/`false`; when `true`, the campaign ends with the **trainval** phase (see *Phases*): each qual pick retrained on the `trainval` partition (train + both val partitions) up to its qual-selected checkpoint, one run per qual seed, its weights saved; requires a qual phase (`n_trials_qual` set)
     * `datasets` — the datasets to train on, a list of dataset names (e.g. `bryo`, `cub`, `lepid`, `nymph`); every arm × coord is trained on each one
-    * `ablation_arms` — the campaign's **arms** (the ablation dimension: the configurations being compared), and `hpo_coords` — its **coords** (the HPO dimension: the hyperparameter points every arm is swept over). Both are given as a list of **combo groups** and expand the same way. A combo group is a list of partial members (a set of config overrides plus an optional `name`; when `name` is omitted, it is derived from the overrides as `key-value` pairs joined by `_`, with keys and values mapped through the alias tables `CFG_PARAM_ALIASES` / `CFG_PARAM_VALUE_ALIASES` in `utils/config.py` — value aliases are per original key — and anything without an alias passing through verbatim, e.g. `{batch_size: 2_048}` → `BS-2k`, `{loss2.mix: 0.3, loss2.targ: phylo}` → `Mix-0.3_Targ2-hp`; floats below `1e-2` are written in scientific notation with the shortest mantissa, `{opt.lr.init: 2.0e-4}` → `LR-2.0e-4`, larger ones as-is, `0.3`). An override value given as a **list** is a **combo list**: the item expands into one partial member per combination of its list values (several combo lists in one item cross with each other, the last-listed varying fastest), and the chosen `key-value` pairs are always reflected in the name — appended to the item's `name` when one is given (e.g. `{batch_size: [1_024, 2_048], name: hp}` → `hp_BS-1k`, `hp_BS-2k`), or folded into the derived name as usual when not. A list's members are the **Cartesian product** across its combo groups: one partial member is taken from each combo group and merged into a single member, named by joining the parts' names with `_`. With a single combo group, its items become the members directly. The trial matrix then crosses **every arm with every coord**: each (arm, coord) trial applies the arm's overrides and the coord's overrides together, exactly as if the two lists were one — so an override key may not appear in both (see the note on combo groups below). A campaign with no hyperparameter sweep still needs one coord — a single named item with no overrides, e.g. `hpo_coords: [[{name: base}]]`.
+    * `ablation_arms` — the campaign's **arms** (the ablation dimension: the configurations being compared), and `hpo_coords` — its **coords** (the HPO dimension: the hyperparameter points every arm is swept over). Both are given as a list of **combo groups** and expand the same way. A combo group is a list of partial members (a set of config overrides plus an optional `name`; when `name` is omitted, it is derived from the overrides as `key-value` pairs joined by `_`, with keys and values mapped through the alias tables `CFG_PARAM_ALIASES` / `CFG_PARAM_VALUE_ALIASES` in `utils/config.py` — value aliases are per original key — and anything without an alias passing through verbatim, e.g. `{batch_size: 2_048}` → `BS-2k`, `{loss.mix: 0.3, loss2.targ: phylo}` → `Mix-0.3_Targ2-hp`; floats below `1e-2` are written in scientific notation with the shortest mantissa, `{opt.lr.init: 2.0e-4}` → `LR-2.0e-4`, larger ones as-is, `0.3`). An override value given as a **list** is a **combo list**: the item expands into one partial member per combination of its list values (several combo lists in one item cross with each other, the last-listed varying fastest), and the chosen `key-value` pairs are always reflected in the name — appended to the item's `name` when one is given (e.g. `{batch_size: [1_024, 2_048], name: hp}` → `hp_BS-1k`, `hp_BS-2k`), or folded into the derived name as usual when not. A list's members are the **Cartesian product** across its combo groups: one partial member is taken from each combo group and merged into a single member, named by joining the parts' names with `_`. With a single combo group, its items become the members directly. The trial matrix then crosses **every arm with every coord**: each (arm, coord) trial applies the arm's overrides and the coord's overrides together, exactly as if the two lists were one — so an override key may not appear in both (see the note on combo groups below). A campaign with no hyperparameter sweep still needs one coord — a single named item with no overrides, e.g. `hpo_coords: [[{name: base}]]`.
     * `suffix` — appended to the campaign name (`null` for none)
 
    For example, two ablation dimensions crossed into arms, each swept over a grid of coords:
     ```yaml
     ablation_arms:
-      - - {loss.targ: mp}
-        - {loss.targ: sp}
-      - - {loss.sim: cos}
-        - {loss.sim: geo1}
+      - - {loss1.targ: mp}
+        - {loss1.targ: sp}
+      - - {loss1.sim: cos}
+        - {loss1.sim: geo1}
 
     hpo_coords:
       - - {opt.lr.init: [2.0e-6, 2.0e-5]}
-      - - {loss.logits.temp.init: [0.0, 0.1, 0.2]}
+      - - {loss1.logits.temp.init: [0.0, 0.1, 0.2]}
     ```
-   produces four arms — `Targ-MP_loss.sim-cos`, `Targ-MP_loss.sim-geo1`, `Targ-SP_loss.sim-cos`, `Targ-SP_loss.sim-geo1` — each merging one partial member from every arm combo group, and six coords — `LR-2.0e-6_Tau-0.0`, `LR-2.0e-6_Tau-0.1`, `LR-2.0e-6_Tau-0.2`, `LR-2.0e-5_Tau-0.0`, … — i.e. 24 (arm, coord) combinations per dataset and seed. The arm list is equivalent to spelling out its product as a single combo group:
+   produces four arms — `Targ-MP_loss1.sim-cos`, `Targ-MP_loss1.sim-geo1`, `Targ-SP_loss1.sim-cos`, `Targ-SP_loss1.sim-geo1` — each merging one partial member from every arm combo group, and six coords — `LR-2.0e-6_Tau-0.0`, `LR-2.0e-6_Tau-0.1`, `LR-2.0e-6_Tau-0.2`, `LR-2.0e-5_Tau-0.0`, … — i.e. 24 (arm, coord) combinations per dataset and seed. The arm list is equivalent to spelling out its product as a single combo group:
     ```yaml
     ablation_arms:
-      - - {loss.targ: mp, loss.sim: cos,  name: Targ-MP_loss.sim-cos}
-        - {loss.targ: mp, loss.sim: geo1, name: Targ-MP_loss.sim-geo1}
-        - {loss.targ: sp, loss.sim: cos,  name: Targ-SP_loss.sim-cos}
-        - {loss.targ: sp, loss.sim: geo1, name: Targ-SP_loss.sim-geo1}
+      - - {loss1.targ: mp, loss1.sim: cos,  name: Targ-MP_loss1.sim-cos}
+        - {loss1.targ: mp, loss1.sim: geo1, name: Targ-MP_loss1.sim-geo1}
+        - {loss1.targ: sp, loss1.sim: cos,  name: Targ-SP_loss1.sim-cos}
+        - {loss1.targ: sp, loss1.sim: geo1, name: Targ-SP_loss1.sim-geo1}
     ```
    A single combo group expands to its items unchanged:
     ```yaml
     ablation_arms:
-      - - {loss.targ: sp, name: sp}
-        - {loss.targ: mp, name: mp}
+      - - {loss1.targ: sp, name: sp}
+        - {loss1.targ: mp, name: mp}
     ```
    produces the arms `sp` and `mp`.
 
@@ -118,9 +118,9 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
     datasets: [cub, lepid]
 
     ablation_arms:
-      - - {loss.targ: sp,    name: sp}
-        - {loss.targ: mp,    name: mp}
-        - {loss.targ: phylo, name: hp}
+      - - {loss1.targ: sp,    name: sp}
+        - {loss1.targ: mp,    name: mp}
+        - {loss1.targ: phylo, name: hp}
 
     hpo_coords:
       - - {opt.lr.init: [1.0e-5, 2.0e-5]}
@@ -163,7 +163,7 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
 **Note:** A campaign's config is **frozen at first launch**, bundled into a single snapshot. `config/train.yaml` (with `debug_mode` overrides folded in) and its four sibling config files are snapshotted together to `artifacts/<campaign>/_screen/cfg_baseline.json` (the qual phase carries a copy), under the keys `train`, `hardware`, `manif_viz`, `model_specific`, `dataset_specific` (`config/hardware.yaml` → `hardware`, `config/model_specific.yaml` → `model_specific`, `config/manif_viz.yaml` → `manif_viz`, `config/dataset_specific.yaml` → `dataset_specific`). Every trial starts from the `train` snapshot, has the sibling snapshots injected (as `hw`, `model_specific`, `dataset_specific`, `manif_viz`), and layers its arm's and its coord's overrides on top. Model-family `opt` defaults (`opt.wd`/`opt.beta2`) are left `null` in the baseline and resolved per trial from the cached `model_specific` snapshot, so a per-arm/coord `arch.model_type` override still picks up the matching family's defaults; a `null` `n_epochs` / `n_chkpts` is likewise left unresolved and filled per trial from the cached `dataset_specific` snapshot as per the trial's dataset. On any relaunch — resuming, or editing the matrix (arms/coords/datasets/seeds; see the note on editing a campaign below) — the snapshot is read back from disk rather than re-read from the YAML, so edits to any of these config files after a campaign's first launch don't affect it: every trial (original or added later) uses the same frozen config. The one part still computed live per trial is the dataloader/GPU scaling (`n_workers`/`n_gpus`/`n_cpus`/`ram`), derived from the SLURM allocation so a resume adapts to the node; the static `hw` knobs (`mixed_prec`, `act_chkpt`, `loss_chunk_size`, `prefetch_factor`, `max_n_workers_gpu`, `persistent_workers`, `use_img_cache`, `eval`) are frozen and overridable per arm/coord via `hw.*` in `ablation_arms` / `hpo_coords`. `config/stats.yaml` (stats-table/metrics-workbook rendering settings) is deliberately **not** part of the snapshot: it is read live at each stats render (trial completion, and `python -m tools.regen_stats <campaign>`), so edits to it apply to the next re-render of any campaign, frozen or not.
 
-**Note:** Each (arm, coord)'s declared overrides are written to `artifacts/<campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/overrides.json` when its first trial on that dataset launches — a coord's directory (and with it its arm's) is not created until a trial of it actually starts, so a planned-but-never-run arm leaves no `_datasets/<dataset>/_arms/<arm>/` entry (the qual tree's coord dirs are copies of the picks' screening dirs). The file keeps the two sides apart, `{"arm": {...}, "coord": {...}}` (the workbooks' overrides bands read each side separately), and records the overrides **as declared** in `ablation_arms` / `hpo_coords` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss.targ: sp` is listed even if `config/train.yaml` already sets it).
+**Note:** Each (arm, coord)'s declared overrides are written to `artifacts/<campaign>/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/overrides.json` when its first trial on that dataset launches — a coord's directory (and with it its arm's) is not created until a trial of it actually starts, so a planned-but-never-run arm leaves no `_datasets/<dataset>/_arms/<arm>/` entry (the qual tree's coord dirs are copies of the picks' screening dirs). The file keeps the two sides apart, `{"arm": {...}, "coord": {...}}` (the workbooks' overrides bands read each side separately), and records the overrides **as declared** in `ablation_arms` / `hpo_coords` — verbatim, not a diff against the baseline — so a key appears even when its value equals the baseline's (e.g. `loss1.targ: sp` is listed even if `config/train.yaml` already sets it).
 
 **Note:** Combo groups are independent dimensions, so the same override key may not appear in more than one combo group — across `ablation_arms` and `hpo_coords` together, since an arm's and a coord's overrides merge into one trial config — a shared key would have two values fighting to define it, and raises an error at kickoff.
 

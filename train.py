@@ -179,8 +179,8 @@ class TrainPipeline:
 
         # logit scalars (temp/bias) train at lr * their loss's logits.scalar_lr_factor, decay-decoupled
         scalar_factors = {
-            "logit_scale":  self.cfg.loss["logits"]["scalar_lr_factor"],
-            "logit_bias":   self.cfg.loss["logits"]["scalar_lr_factor"],
+            "logit_scale":  self.cfg.loss1["logits"]["scalar_lr_factor"],
+            "logit_bias":   self.cfg.loss1["logits"]["scalar_lr_factor"],
             "logit_scale2": self.cfg.loss2["logits"]["scalar_lr_factor"],
             "logit_bias2":  self.cfg.loss2["logits"]["scalar_lr_factor"],
         }
@@ -253,10 +253,10 @@ class TrainPipeline:
         model = self.modelw._unwrapped_model
         tracked = {}
         for tag, cfg_loss, attr_scale, attr_bias in (
-            ("1", self.cfg.loss, "logit_scale", "logit_bias"),
+            ("1", self.cfg.loss1, "logit_scale", "logit_bias"),
             ("2", self.cfg.loss2, "logit_scale2", "logit_bias2"),
         ):
-            if tag == "2" and self.cfg.loss2["mix"] == 0.0:
+            if tag == "2" and self.cfg.loss["mix"] == 0.0:
                 continue
             if getattr(model, attr_scale).requires_grad:
                 tracked[f"temp{tag}"] = attr_scale
@@ -278,8 +278,8 @@ class TrainPipeline:
         0/1 indicators whose spread says nothing. loss2's only when loss2 is mixed in. Untracked
         branches are dropped before TrialData records them, so they get no learning-curve panel."""
         tracked = set()
-        for tag, cfg_loss in (("1", self.cfg.loss), ("2", self.cfg.loss2)):
-            if tag == "2" and self.cfg.loss2["mix"] == 0.0:
+        for tag, cfg_loss in (("1", self.cfg.loss1), ("2", self.cfg.loss2)):
+            if tag == "2" and self.cfg.loss["mix"] == 0.0:
                 continue
             if cfg_loss["targ"] in ("phylo", "tax"):
                 tracked.add(f"targ{tag}")
@@ -732,8 +732,8 @@ def run_training(cfg):
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
-    modelw.crit1 = Criterion.build(cfg.loss, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
-    modelw.crit2 = Criterion.build(cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size) if cfg.loss2["mix"] != 0.0 else None
+    modelw.crit1 = Criterion.build(cfg.loss1, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
+    modelw.crit2 = Criterion.build(cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size) if cfg.loss["mix"] != 0.0 else None
 
     resume_state = None
     trial_state = None

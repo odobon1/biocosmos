@@ -5,8 +5,8 @@ n_trials_qual: 2  # {null, [int]} >= n_trials_screen; seeds each arm's best coor
 trainval: true  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
 
 ablation_arms:
-  - - {loss.targ: mp, loss.infonce.tsm.type: linear, name: mp}
-    - {loss.targ: sp, loss.infonce.tsm.type: linear, name: sp}
+  - - {loss1.targ: mp, loss1.infonce.tsm.type: linear, name: mp}
+    - {loss1.targ: sp, loss1.infonce.tsm.type: linear, name: sp}
 
 hpo_coords:
   - - {opt.lr.init: [2.0e-5, 6.0e-5]}

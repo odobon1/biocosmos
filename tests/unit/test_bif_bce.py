@@ -1,5 +1,5 @@
 """
-Unit tests for bifurcated BCE (loss.crit: bif_bce) and the unified full-batch loss path.
+Unit tests for bifurcated BCE (loss1.crit: bif_bce) and the unified full-batch loss path.
 
 Contract under test (see BifurcatedBCECriterion / _loss_for_crit_full_batch): with no anchor-wise
 method active (cls_imb: null, dsmr off, targ_mass_neut off; focal is value-symmetric
@@ -69,7 +69,7 @@ class Harness:
     _global_batch_loss = VLMWrapper._global_batch_loss
 
 
-def _make_harness(model, crit1, crit2=None, mix=0.0, mix_unit=None):
+def _make_harness(model, crit1, crit2=None, mix=0.0, unitless=False):
     h = Harness()
     h.model = model
     h.crit1 = crit1
@@ -77,9 +77,9 @@ def _make_harness(model, crit1, crit2=None, mix=0.0, mix_unit=None):
     h.world_size = 1
     # _global_batch_loss reads each branch's crit to decide whether p{tag}_* (sigmoid) stats apply
     h.cfg = SimpleNamespace(
-        loss={"crit": crit1.cfg["crit"]},
-        loss2={"mix": mix, "mix_unit": mix_unit,
-               "crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
+        loss={"mix": mix, "unitless": unitless},
+        loss1={"crit": crit1.cfg["crit"]},
+        loss2={"crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
         dev={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}},
     )
     return h
@@ -197,13 +197,13 @@ def test_targ_mass_neut_noop_under_iw_active_under_sw():
 _GRAD_KEYS = ("img_g", "txt_g", "scale_g", "bias_g", "scale2_g", "bias2_g")
 
 
-def _run_blend(crit1_name, mix, mix_unit, B=16, K=5, D=8):
+def _run_blend(crit1_name, mix, unitless, B=16, K=5, D=8):
     """crit1 (bce / bif_bce) + sp-bce crit2 blended through _global_batch_loss: loss value + every grad."""
     img, txt, class_encs_b = _data(B, K, D)
     crit1 = _make_crit(_cfg(crit1_name), K, B)
     crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
     toy = Toy(with_secondary=True).train()
-    h = _make_harness(toy, crit1, crit2, mix=mix, mix_unit=mix_unit)
+    h = _make_harness(toy, crit1, crit2, mix=mix, unitless=unitless)
     loss, *_ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
     loss.backward()
     return {
@@ -214,51 +214,20 @@ def _run_blend(crit1_name, mix, mix_unit, B=16, K=5, D=8):
     }
 
 
-@pytest.mark.parametrize("mix_unit", ["unscaled", "mix_scaled", "raw_scaled"])
-def test_mix_unit_bif_grads_match_non_bif(mix_unit):
-    # the unit-scale normalizer divides a bifurcated loss by L/2 -- its gradient-scale-equivalent
-    # value -- so swapping a blend participant bce <-> bif_bce leaves every gradient unchanged
-    # (`mix` keeps the true gradient-contribution ratio); the bif participant's normalized value
-    # reads its 2x (blend = (1 - mix) * 2 + mix * 1) where each non-bif participant reads 1.
-    # the *_scaled modes multiply the blend by a magnitude built from the same L/2-equivalent
-    # values, so they are swap-invariant too: the 2x reading and the gradient match carry over
-    mix = 0.3
-    res = {crit1_name: _run_blend(crit1_name, mix, mix_unit) for crit1_name in ("bce", "bif_bce")}
-    if mix_unit == "unscaled":
-        assert res["bce"]["loss"] == pytest.approx(1.0)
+@pytest.mark.parametrize("mix", [0.0, 0.3])  # lone loss1, and a blend
+def test_unitless_bif_grads_match_non_bif(mix):
+    # the unitless normalizer divides a bifurcated loss by L/2 -- its gradient-scale-equivalent
+    # value -- so swapping bce <-> bif_bce leaves every gradient unchanged, lone or blended
+    # (`mix` keeps the true gradient-contribution ratio); the bif loss's normalized value
+    # reads its 2x (blend = (1 - mix) * 2 + mix * 1) where each non-bif loss reads 1.
+    res = {crit1_name: _run_blend(crit1_name, mix, True) for crit1_name in ("bce", "bif_bce")}
+    assert res["bce"]["loss"] == pytest.approx(1.0)
     assert res["bif_bce"]["loss"] == pytest.approx(res["bce"]["loss"] * ((1.0 - mix) * 2.0 + mix * 1.0))
     for gk in _GRAD_KEYS:
+        if res["bce"][gk] is None:  # loss2's logit scalars get no grad at mix 0.0
+            assert res["bif_bce"][gk] is None
+            continue
         torch.testing.assert_close(res["bif_bce"][gk], res["bce"][gk], rtol=1e-5, atol=1e-7)
-
-
-def _plain_values(B=16, K=5, D=8):
-    """(L1, L2): each participant's own weighted loss on _run_blend's data (crit2 through the
-    secondary logit scalars)."""
-    img, txt, class_encs_b = _data(B, K, D)
-    crit1 = _make_crit(_cfg("bce"), K, B)
-    crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
-    h = _make_harness(Toy(with_secondary=True).train(), crit1, crit2)
-    L1, *_ = h._loss_for_crit_full_batch(img, txt, class_encs_b, [None] * B, crit1, secondary=False)
-    L2, *_ = h._loss_for_crit_full_batch(img, txt, class_encs_b, [None] * B, crit2, secondary=True)
-    return L1.item(), L2.item()
-
-
-@pytest.mark.parametrize("mix_unit", ["mix_scaled", "raw_scaled"])
-def test_mix_unit_scaled_modes_restore_magnitude(mix_unit):
-    # a *_scaled mode = the unscaled blend times a detached magnitude: the plain blend's value
-    # (1 - mix) * L1 + mix * L2 for mix_scaled (so the loss reads exactly what the plain blend
-    # would), the unweighted sum L1 + L2 for raw_scaled (a mix-independent reading). Either way
-    # every gradient is the unscaled blend's times that magnitude -- `mix` stays the true gradient
-    # ratio, only the global scale differs
-    mix = 0.3
-    L1, L2 = _plain_values()
-    M = (1.0 - mix) * L1 + mix * L2 if mix_unit == "mix_scaled" else L1 + L2
-    res = {mu: _run_blend("bce", mix, mu) for mu in (None, "unscaled", mix_unit)}
-    if mix_unit == "mix_scaled":
-        assert res[None]["loss"] == pytest.approx(M)
-    assert res[mix_unit]["loss"] == pytest.approx(M)
-    for gk in _GRAD_KEYS:
-        torch.testing.assert_close(res[mix_unit][gk], M * res["unscaled"][gk], rtol=1e-5, atol=1e-7)
 
 
 @pytest.mark.parametrize("crit1_name,crit2_name", [("bif_bce", "bce"), ("bce", "bif_bce")])
@@ -268,7 +237,7 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
     crit1 = _make_crit(_cfg(crit1_name), K, B)
     crit2 = _make_crit(_cfg(crit2_name, targ="sp"), K, B)
     toy = Toy(with_secondary=True).train()
-    h = _make_harness(toy, crit1, crit2, mix=0.3, mix_unit="unscaled")
+    h = _make_harness(toy, crit1, crit2, mix=0.3, unitless=True)
     loss, loss_raw, _, _, (logits1, logits2), _, batch_stats, (sims1, sims2) = h._global_batch_loss(
         img, txt, class_encs_b, [None] * B
     )
@@ -304,7 +273,7 @@ def test_infonce_branch_reports_no_probability_stats():
     crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
     toy = Toy(with_secondary=True).train()
     h = _make_harness(toy, crit1, crit2, mix=0.3)
-    h.cfg.loss["crit"] = "infonce"  # branch 1 only; the criterion object stays BCE for the math
+    h.cfg.loss1["crit"] = "infonce"  # branch 1 only; the criterion object stays BCE for the math
 
     *_, batch_stats, _ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
 

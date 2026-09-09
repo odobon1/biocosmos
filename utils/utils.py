@@ -646,10 +646,10 @@ class PrintLog:
             "",
         ])
 
-        lines.extend(PrintLog._format_loss_block(cfg_train.loss))  # primary loss block
+        lines.extend(PrintLog._format_loss_block(cfg_train.loss1))  # primary loss block
 
-        if cfg_train.loss2["mix"] != 0.0:
-            lines.extend(PrintLog._format_loss_block(cfg_train.loss2, secondary=True))  # secondary loss block (if enabled)
+        if cfg_train.loss["mix"] != 0.0:
+            lines.extend(PrintLog._format_loss_block(cfg_train.loss2, secondary=True, mix=cfg_train.loss["mix"]))  # secondary loss block (if enabled)
 
         lines.extend(PrintLog._format_aug_block(cfg_train.aug))  # image augmentation block
 
@@ -709,8 +709,9 @@ class PrintLog:
 
     @staticmethod
     def _format_loss_block(
-        cfg_loss: dict, 
-        secondary: bool = False
+        cfg_loss: dict,
+        secondary: bool = False,
+        mix: float | None = None,
     ) -> list[str]:
 
         lines = []
@@ -719,7 +720,7 @@ class PrintLog:
             lines.append("=== Loss (Primary) ===")
         else:
             lines.append("=== Loss (Secondary) ===")
-            info.append(("Mix", str(cfg_loss["mix"])))
+            info.append(("Mix", str(mix)))
         
         info.append(("Crit", cfg_loss["crit"]))
         info.append(("Sim", cfg_loss["sim"]))

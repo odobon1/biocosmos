@@ -65,7 +65,7 @@ def test_seed_test_tree_copies_metadata_and_coord_configs(tmp_path) -> None:
     }
     dpath_coord_tv = test_script._dpath_coord(dpath_trainval, "cub", "a1", "c1")
     dpath_coord_tv.mkdir(parents=True)
-    (dpath_coord_tv / "config.json").write_text(json.dumps({"loss": {"targ": "sp"}}))
+    (dpath_coord_tv / "config.json").write_text(json.dumps({"loss1": {"targ": "sp"}}))
     (dpath_coord_tv / "overrides.json").write_text(json.dumps({"arm": {}, "coord": {}}))
 
     test_script._seed_test_tree(dpath_test, dpath_trainval, metadata, [("cub", "a1", "c1")])
@@ -73,5 +73,5 @@ def test_seed_test_tree_copies_metadata_and_coord_configs(tmp_path) -> None:
     written = json.loads((dpath_test / "phase_metadata.json").read_text())
     assert written == {"seeds": [42], "matrix": {"cub": {"a1": ["c1"]}}}
     dpath_coord_test = test_script._dpath_coord(dpath_test, "cub", "a1", "c1")
-    assert json.loads((dpath_coord_test / "config.json").read_text()) == {"loss": {"targ": "sp"}}
+    assert json.loads((dpath_coord_test / "config.json").read_text()) == {"loss1": {"targ": "sp"}}
     assert json.loads((dpath_coord_test / "overrides.json").read_text()) == {"arm": {}, "coord": {}}

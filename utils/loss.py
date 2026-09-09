@@ -243,7 +243,7 @@ class BifurcatedBCECriterion(Criterion):
     into the text tower only. The un-halved branch sum makes the loss value (and loss_raw) 2x the
     non-bifurcated reading, but with identical weighting on both branches every gradient matches
     non-bifurcated 1x: towers live in one branch each, and the logit scale/bias are half-live
-    upstream (compute_logits) so their two branch contributions sum to 1x. A loss2 unit-scale
+    upstream (compute_logits) so their two branch contributions sum to 1x. A unitless (loss.unitless)
     blend accordingly normalizes this loss by L/2 -- its gradient-scale-equivalent value -- so
     `mix` keeps the same gradient ratio as with an equivalent non-bifurcated loss
     (_global_batch_loss).
@@ -356,10 +356,10 @@ def _dsmr_weight_rows(targs, B):
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
 # Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets,
-# cls_imb.norm, a BCE-family secondary-loss mix, and loss2.mix_unit) -- only InfoNCE is excluded
+# cls_imb.norm, a BCE-family secondary-loss mix, and loss.unitless) -- only InfoNCE is excluded
 # (chunking_supported). The reductions that couple across the whole BxB matrix -- the cls_imb.norm
 # weight-mean normalizers (a 2D band sweep for bce; bif_bce's 1D per-anchor vector is O(B) and built
-# outright), bce's global DSMR mass, and the per-loss mix_unit scalars -- are all DETACHED
+# outright), bce's global DSMR mass, and the per-loss unitless scalars -- are all DETACHED
 # constants, so they are precomputed (cheap embedding-free closed forms + no_grad band sweeps,
 # all-reduced to rank-identical values) before the single grad-carrying backward sweep applies them
 # as constants. See _precompute_crit_consts.
@@ -381,15 +381,15 @@ def _dsmr_weight_rows(targs, B):
 # incoming grad, and the two frames' grad means differ under per-anchor row weighting).
 # ------------------------------------------------------------------------------------------------
 
-def chunking_supported(cfg_loss, cfg_loss2):
+def chunking_supported(cfg_loss1, cfg_loss2, mix):
     """
     The tiled loss reproduces every BCE-family config (bce and bif_bce) but not InfoNCE (its
     row/column softmax couples along columns, which a row-block cannot tile). Config treats
     hardware.loss_chunk_size as inert (full BxB path) when this returns False.
     """
-    if cfg_loss["crit"] not in ("bce", "bif_bce"):
+    if cfg_loss1["crit"] not in ("bce", "bif_bce"):
         return False
-    if cfg_loss2["mix"] != 0.0 and cfg_loss2["crit"] not in ("bce", "bif_bce"):
+    if mix != 0.0 and cfg_loss2["crit"] not in ("bce", "bif_bce"):
         return False
     return True
 
@@ -610,8 +610,8 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
     per-anchor weight vector (O(B), built outright -- its cls_imb.norm mean is over B values, and
     row-wise DSMR needs no global mass), so the consts dicts are structurally distinct and a bif
     crit can never reach the 2D _crit_block_weight_bce. L_value (the criterion's full weighted loss,
-    needed for loss2.mix_unit) requires a no_grad tile sweep, run only when mix_unit is active
-    (non-null). All sweeps cover only this rank's row-band [lo, hi); the partial sums are all-reduced so
+    needed for loss.unitless) requires a no_grad tile sweep, run only when unitless is true.
+    All sweeps cover only this rank's row-band [lo, hi); the partial sums are all-reduced so
     every rank derives identical constants.
     `center`/`center_global_det` reproduce the criterion's centered forward in the L sweep (for
     "sim" the detached global sim mean; grad_proj* leave the forward untouched).
@@ -725,7 +725,7 @@ def _gsum_hook(acc):
         acc.add_(g.double().sum())
     return hook
 
-def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, mix_unit,
+def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, unitless,
                               compute_logits, chunk_size, mixed_prec, device, rank, world_size,
                               sim_grad_sums=True, sim_targ_stats=True):
     """
@@ -742,10 +742,9 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     see batch_step_chunked). Exact up to floating-point summation order.
 
     Supports a BCE-family loss mix: loss = (1 - mix)*s1*L1 + mix*s2*L2, where Lk is criterion k's
-    weighted loss and sk follows loss2.mix_unit: 1 (null), 1/nk (unscaled) or M/nk (mix_scaled:
-    M = (1 - mix)*n1 + mix*n2, the plain blend's magnitude; raw_scaled: M = n1 + n2), with
+    weighted loss and sk follows loss.unitless: 1 (false) or 1/nk (true), with
     nk = Lk.detach() (a bifurcated Lk normalizes by Lk/2, its gradient-scale-equivalent value), as
-    in _global_batch_loss (mix == 0 -> just crit1).
+    in _global_batch_loss (mix == 0 -> just s1*L1).
     All cross-tile-coupled normalizers are precomputed detached constants (_precompute_crit_consts),
     so the backward is single-pass.
 
@@ -791,7 +790,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
         with torch.no_grad():
             m_det = torch.dot(img.mean(0), txt.mean(0))
 
-    need_L = mix != 0.0 and mix_unit is not None
+    need_L = unitless
     targ_fns, consts_list, L_values = [], [], []
     for k, (crit, secondary) in enumerate(crits):
         targ_fn = make_targ_block_fn(crit.cfg["targ"], class_encs_b, targ_data_b, B, device)
@@ -803,14 +802,10 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
 
     mix_w = [1.0] if mix == 0.0 else [1.0 - mix, mix]
     if need_L:
-        # mix_unit: /nk with nk = Lk.detach(); a bifurcated loss normalizes by Lk/2, its gradient-scale-
+        # unitless: /nk with nk = Lk.detach(); a bifurcated loss normalizes by Lk/2, its gradient-scale-
         # equivalent value (un-halved branch sum reads 2x on 1x grads -- see _global_batch_loss)
         mags = [(L_values[k] / (2.0 if crits[k][0].bifurcated else 1.0)).clamp_min(1e-12) for k in range(len(crits))]
         coeffs = [mix_w[k] / mags[k] for k in range(len(crits))]
-        if mix_unit in ("mix_scaled", "raw_scaled"):
-            # restore a magnitude: the plain blend's (1 - mix)*n1 + mix*n2 (mix_scaled) or the plain sum n1 + n2 (raw_scaled)
-            M = sum((mix_w[k] if mix_unit == "mix_scaled" else 1.0) * mags[k] for k in range(len(crits)))
-            coeffs = [c * M for c in coeffs]
     else:
         coeffs = list(mix_w)
 

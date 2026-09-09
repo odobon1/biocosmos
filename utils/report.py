@@ -956,7 +956,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     (ablation_arms for the arm band, hpo_coords for the coord band: the union of the rows' overrides.json
     'arm' / 'coord' keys, first-seen order), each cell the row's effective value resolved from its
     config.json (an arms/ row reads its arm's first (arm, coord) row's) -- '-' when the param is
-    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss2.mix
+    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.mix
     0.0). Params whose effective value is identical across every row of the workbook are omitted
     (they differentiate nothing); a band all of whose params are uniform is omitted entirely. These
     tables get no winner-bold/heatmap styling. The third sheet, 'Hardware Performance', mirrors the

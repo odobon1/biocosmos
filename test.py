@@ -93,6 +93,7 @@ def _save_test_scores(dpath_scores, eval_metrics, chkpt):
 
 def main():
     from models import VLMWrapper  # local: models pulls open_clip/transformers, too heavy for module import
+    from utils.loss import configure_phylo_targs  # local: utils.loss pulls torch/biopython (same reason)
 
     if len(sys.argv) != 2:
         raise SystemExit("usage: torchrun --standalone --nproc-per-node=auto -m test <campaign>")
@@ -153,6 +154,10 @@ def main():
         cfg = cfgs[combo]
         cfg.device = device
         apply_backend_flags(cfg.hw)
+        # the wrapper resolves a pos_prevalence bias init at build (overwritten by the checkpoint below),
+        # which under a phylo target needs the run's phylo-target params set, as in train.py
+        configure_phylo_targs(cfg.split, cfg.train_pt, cfg.batch_size,
+                              cfg.htarg["kernel"], cfg.htarg["exp"]["beta"], cfg.htarg["shuffle"], cfg.seed)
         modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
         text_template_eval = get_text_template(cfg.text_template["eval"], dataset=dataset)
         eval_pipe = EvaluationPipeline(cfg, text_template_eval, modelw.img_pp_inf, eval_pt="test")

@@ -246,6 +246,14 @@ class TrainConfig:
         if self.loss2["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
             raise ValueError(f"Unknown Loss 2 logits.bce.center: '{self.loss2['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
 
+        for name, cfg_loss in (("Loss 1", self.loss1), ("Loss 2", self.loss2)):
+            bias_init = cfg_loss["logits"]["bce"]["bias"]["init"]
+            if bias_init == "pos_prevalence":
+                if cfg_loss["crit"] not in ("bce", "bif_bce"):
+                    raise ValueError(f"{name} logits.bce.bias.init: pos_prevalence requires a BCE-family crit (bce, bif_bce), got '{cfg_loss['crit']}'")
+            elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
+                raise ValueError(f"Unknown {name} logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
+
         if not 0.0 <= self.loss["mix"] <= 1.0:
             raise ValueError(f"loss.mix out of bounds: {self.loss['mix']}, must be between 0.0 and 1.0")
         if not isinstance(self.loss["unitless"], bool):

@@ -662,6 +662,39 @@ def test_train_config_rejects_unknown_center(monkeypatch: pytest.MonkeyPatch) ->
         TrainConfig(**cfg_dict)
 
 
+def test_train_config_accepts_pos_prevalence_bias_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss1"]["logits"]["bce"]["bias"]["init"] = "pos_prevalence"
+    cfg_dict["loss2"]["crit"] = "bif_bce"
+    cfg_dict["loss2"]["logits"]["bce"]["bias"]["init"] = "pos_prevalence"
+
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.loss1["logits"]["bce"]["bias"]["init"] == "pos_prevalence"
+    assert cfg.loss2["logits"]["bce"]["bias"]["init"] == "pos_prevalence"
+
+
+def test_train_config_rejects_pos_prevalence_bias_init_with_infonce(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the prevalence is defined by the BCE-family criterion's weighting; the bias is inert under InfoNCE anyway
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss2"]["crit"] = "infonce"
+    cfg_dict["loss2"]["logits"]["bce"]["bias"]["init"] = "pos_prevalence"
+    with pytest.raises(ValueError, match="Loss 2 logits.bce.bias.init: pos_prevalence requires a BCE-family crit"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_unknown_bias_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss1"]["logits"]["bce"]["bias"]["init"] = "pos_prevalance"
+    with pytest.raises(ValueError, match="Unknown Loss 1 logits.bce.bias.init"):
+        TrainConfig(**cfg_dict)
+
+
 def test_train_config_rejects_non_bool_unitless(monkeypatch: pytest.MonkeyPatch) -> None:
     # a string (e.g. a stale mode name) would otherwise be truthy and silently run unitless
     patch_hw(monkeypatch)

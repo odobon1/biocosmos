@@ -112,8 +112,11 @@ loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
       # exactly; (sim) under chunking requires sim: cos (config error otherwise -- no closed-form global mean for geo);
       # sensitive to mixed precision
       bias:  # Inert iff (loss1.crit: infonce)
-        init: null  # {null, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
-        # ([float]) Override init; base: (siglip_vitb16: -12.9324)
+        init: null  # {null, pos_prevalence, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
+        # (pos_prevalence) log(p / (1 - p)), p the expected positive prevalence of this loss's target matrix under its
+        # class-imbalance / DSMR / targ_mass_neut weighting (utils.loss.pos_prevalence; sp: 1/B), so the initial sigmoid
+        # matches the target prior where scaled sims average to zero; requires a BCE-family crit; ([float]) Override init;
+        # base: (siglip_vitb16: -12.9324)
         freeze: false  # {true, false}; (true) Non-learnable bias
 
 loss2:  # Secondary loss params; Inert iff (loss.mix: 0.0)
@@ -147,7 +150,7 @@ loss2:  # Secondary loss params; Inert iff (loss.mix: 0.0)
     bce:
       center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum (see loss1.logits.bce.center)
       bias:
-        init: null  # {null, [float]}
+        init: null  # {null, pos_prevalence, [float]}
         freeze: false  # {true, false}
 
 aug:  # Image augmentation

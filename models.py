@@ -14,12 +14,27 @@ from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Optional
 
 from utils.utils import paths
-from utils.loss import Criterion, chunked_bce_loss_backward, HIST_BINS
+from utils.loss import Criterion, chunked_bce_loss_backward, HIST_BINS, pos_prevalence
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
 from utils.config import TrainConfig
 
 import pdb
+
+
+def resolve_bias_init(cfg_loss, config, tag):
+    """
+    A loss's logits.bce.bias.init as a float (or None): pos_prevalence -> logit of the loss's expected
+    weighted positive prevalence (utils.loss.pos_prevalence), so the initial sigmoid matches the target
+    prior where the scaled sims average to zero.
+    """
+    init = cfg_loss["logits"]["bce"]["bias"]["init"]
+    if init == "pos_prevalence":
+        p = pos_prevalence(cfg_loss, config.dataset, config.split, config.train_pt, config.batch_size)
+        init = math.log(p / (1 - p))
+        if dist.get_rank() == 0:
+            print(f"loss{tag} logit bias init from positive prevalence: p = {p:.4g} -> bias = {init:.4f}")
+    return init
 
 
 #                            open_clip model name            pretrain  quick-gelu
@@ -257,17 +272,18 @@ class VLMWrapper(abc.ABC):
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
                         self.model.logit_scale.fill_(-math.log(cfg_logits["temp"]["init"]))  # tau -> log(1/tau)
-            if cfg_logits["bce"]["bias"]["init"] is None:  # (bias.init: null) in config
+            bias_init = resolve_bias_init(config.loss1, config, "1")
+            if bias_init is None:  # (bias.init: null) in config
                 if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
                     delattr(self.model, "logit_bias")
                     self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
             else:  # bias.init set in config
                 if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
                     with torch.no_grad():
-                        self.model.logit_bias.fill_(cfg_logits["bce"]["bias"]["init"])
+                        self.model.logit_bias.fill_(bias_init)
                 else:  # logit_bias attribute is not a nn.Parameter
                     delattr(self.model, "logit_bias")
-                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(cfg_logits["bce"]["bias"]["init"], device=self.device)))
+                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(bias_init, device=self.device)))
             if cfg_logits["temp"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
                 self.model.logit_scale.requires_grad_(False)
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
@@ -279,10 +295,11 @@ class VLMWrapper(abc.ABC):
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
             else:  # temp.init set in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(-math.log(cfg_logits2["temp"]["init"]), device=self.device)))  # tau -> log(1/tau)
-            if cfg_logits2["bce"]["bias"]["init"] is None:
+            bias_init2 = resolve_bias_init(config.loss2, config, "2")
+            if bias_init2 is None:
                 self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(self.model.logit_bias.detach().item(), device=self.device)))
             else:
-                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(cfg_logits2["bce"]["bias"]["init"], device=self.device)))
+                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(bias_init2, device=self.device)))
             if cfg_logits2["temp"]["freeze"]:
                 self.model.logit_scale2.requires_grad_(False)
             if cfg_logits2["bce"]["bias"]["freeze"]:

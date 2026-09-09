@@ -5,10 +5,11 @@ import abc
 from contextlib import nullcontext
 import math
 
-from utils.rank_encs import compute_rank_dists
+from utils.rank_encs import compute_rank_dists, compute_rank_encs
 from utils.phylo import PhyloVCV
-from utils.imb import build_wting, compute_cls_imb_wts
+from utils.imb import build_wting, compute_cls_imb_wts, _pair_prob_freqs, _compute_wts
 from utils.head import compute_sim
+from utils.utils import load_split
 
 import pdb
 
@@ -338,6 +339,55 @@ def _dsmr_weight_rows(targs, B):
         targs * wt_pos + (1 - targs) * wt_neg
     )
     return W_dsmr
+
+def pos_prevalence(cfg_loss, dataset, split, train_pt, batch_size):
+    """
+    Expected weighted positive prevalence p = sum(W * Y) / sum(W) of a BCE-family loss's B x B target
+    matrix (diagonal included) under uniform batch sampling from the train partition -- the constant
+    sigmoid probability minimizing the expected weighted BCE (for binary and soft targets alike), so
+    logit(p) is the matched logit-bias init (logits.bce.bias.init: pos_prevalence). Computed once at the
+    class level from the pair-probability matrix (_pair_prob_freqs, sums to B), each same-class cell
+    split into the anchor's own slot (target 1 under every targ type) and its other same-class slots
+    (target 0 under sp, 1 otherwise). W holds the loss's weights that are constant given the pair's
+    classes -- class-imbalance (per-anchor / per-pair by the criterion's wting_dim), DSMR and
+    targ_mass_neut with the expected (global / per-anchor-class) target masses in place of the batch's
+    -- not focal (prediction-dependent). Dataset-level constant, identical across DDP ranks.
+    """
+    B = batch_size
+    split_obj = load_split(dataset, split)
+    counts = torch.tensor(split_obj.class_counts[train_pt], dtype=torch.float64)
+    encs = (~torch.isnan(counts)).nonzero(as_tuple=True)[0]  # classes present in the partition
+    K = encs.numel()
+
+    if cfg_loss["targ"] == "sp":
+        Y_rest = torch.zeros(K, K, dtype=torch.float64)  # only the anchor's own slot is positive
+    else:
+        cids = [split_obj.enc2cid[int(enc)] for enc in encs]
+        rank_encs = compute_rank_encs(dataset, cids) if cfg_loss["targ"] == "tax" else [None] * K
+        targ_data_cls = [{"cid": cid, "dataset": dataset, "rank_encs": re} for cid, re in zip(cids, rank_encs)]
+        Y_rest = compute_targets(cfg_loss["targ"], K, encs, targ_data_cls, "cpu").double()  # [K, K]; unit diagonal (same-class slots positive)
+
+    # [2, K, K]: (anchor's own slot -- diagonal, P(anchor class); the other B-1 slots) x class pair
+    P_full = _pair_prob_freqs(counts, encs, B)
+    P_self = torch.diag(counts[encs] / counts.nansum())
+    P = torch.stack((P_self, P_full - P_self))
+    Y = torch.stack((torch.ones(K, K, dtype=torch.float64), Y_rest))
+
+    wting_dim = {"bce": 2, "bif_bce": 1}[cfg_loss["crit"]]
+    if wting_dim == 2:
+        W = _compute_wts(cfg_loss["wting"]["cls_imb"], P_full)  # per-pair; [K, K]
+        if cfg_loss["wting"]["bce"]["dsmr"]:
+            mass_pos = B * (P * Y).sum()  # expected batch target mass: each of the B anchor slots contributes sum(P * Y)
+            W = W * _dsmr_weight(Y, mass_pos, B**2 - mass_pos, B)
+    else:
+        W = _compute_wts(cfg_loss["wting"]["cls_imb"], counts[encs])[:, None]  # per-anchor (row); [K, 1]
+        row_mass = (P * Y).sum(dim=(0, 2)) / P_self.diagonal()  # expected row target mass given the anchor's class; [K]
+        if cfg_loss["wting"]["bce"]["dsmr"]:
+            W = W * _dsmr_weight(Y, row_mass[:, None], B - row_mass[:, None], B)  # _dsmr_weight_rows' B vs B**2 scale: constant factor, cancels in the ratio
+        if cfg_loss["bce"]["targ_mass_neut"]:
+            W = W / row_mass[:, None]
+
+    return ((W * P * Y).sum() / (W * P).sum()).item()
 
 # ------------------------------------------------------------------------------------------------
 # Tiled / chunked global-batch loss (hardware.loss_chunk_size)

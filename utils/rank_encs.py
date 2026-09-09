@@ -1,6 +1,17 @@
 import torch
 from typing import List
 
+from utils.utils import paths, load_pickle
+
+
+def compute_rank_encs(dataset: str, cids: List[str]) -> List[List[int]]:
+    """
+    Per-class taxonomy rank-encoding vectors (the `rank_encs` ImageTextDataset builds per sample) from the
+    dataset's class_data / rank_encs metadata; [K, R] for K class ids.
+    """
+    class_data = load_pickle(paths["metadata"][dataset] / "class_data.pkl")
+    rank_maps = load_pickle(paths["metadata"][dataset] / "rank_encs.pkl")
+    return [[rank_map.get(class_data[cid].get(rank_name), -1) for rank_name, rank_map in rank_maps.items()] for cid in cids]
 
 def compute_rank_dists(targ_data_b: List[List]):
     """

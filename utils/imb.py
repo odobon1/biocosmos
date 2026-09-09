@@ -30,8 +30,7 @@ def build_wting(cfg_wting, dataset, split, train_pt, dim, batch_size):
     elif dim == 2:
         pair_freqs = _pair_prob_freqs(counts, class_encs, batch_size)
         wts = _compute_wts(cfg_wting, pair_freqs)
-        triu_mask = torch.triu(torch.ones_like(wts, dtype=torch.bool))
-        wt_mean = (pair_freqs[triu_mask] * wts[triu_mask]).nansum() / pair_freqs[triu_mask].nansum()
+        wt_mean = (pair_freqs * wts).nansum() / pair_freqs.nansum()
 
     return counts, wt_mean.item()
 

@@ -45,12 +45,11 @@ def test_targets_match_formula(vcv):
         [3.0, 0.0, 7.0],
         [6.0, 7.0, 0.0],
     ]))
-    # avg_dist over the present classes (a, b) only, weighted by their pair probabilities;
-    # diagonal + upper triangle so each unordered class pair is counted once
+    # avg_dist over the present classes (a, b) only, weighted by their pair probabilities over the
+    # full (ordered-pair) matrix: (a, b) and (b, a) are separate cells, as in the BxB batch matrix
     counts = torch.tensor(COUNTS, dtype=torch.float64)
     pair_freqs = _pair_prob_freqs(counts, torch.tensor([0, 1]), BATCH_SIZE).numpy()
-    triu = np.triu(np.ones((2, 2), dtype=bool))
-    avg_dist = (pair_freqs[triu] * dists[:2, :2][triu]).sum() / pair_freqs[triu].sum()
+    avg_dist = (pair_freqs * dists[:2, :2]).sum() / pair_freqs.sum()
     expected = np.exp(-dists / avg_dist)
 
     idxs = [vcv._cid_to_idx[cid] for cid in ("a", "b", "c")]

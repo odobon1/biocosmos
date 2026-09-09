@@ -77,3 +77,12 @@ For multi-step tasks, state a brief plan:
 2. [Step] → verify: [check]
 3. [Step] → verify: [check]
 ```
+
+## 6. GPU-Only Runtime
+
+**This code only ever runs on GPUs (single- and multi-GPU). A CPU-only session is a dev environment, not a runtime target.**
+
+When developing in an environment without GPUs:
+- Never strip, weaken, or CPU-shim GPU/DDP functionality to make code run or tests pass locally: no `cuda` → `cpu` fallbacks in production paths, no `is_available()` guards, no loosened tolerances, no gutted assertions, no inverted or added skips.
+- GPU-dependent tests skipping locally is the expected outcome, not a failure to fix. Leave them skipped.
+- Verification is deliberately less stringent CPU-side: run what runs, and report what couldn't be exercised as unverified-pending-GPU — don't force it green. The full suite (incl. `test_chunked_loss_ddp`) runs later on the multi-GPU nodes.

@@ -334,6 +334,27 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
     assert not (dpath_trial / "chkpts").exists()  # the whole tree goes: it only ever held the resume state
 
 
+def test_run_campaign_gpu_mismatch_raises(tmp_path, monkeypatch) -> None:
+    # a phase's GPU count is frozen into phase_metadata.json at first launch; relaunching from an alloc
+    # with a different GPU count is refused before any trial runs
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
+    _set_camp(
+        monkeypatch,
+        n_trials_screen=1, n_trials_qual=None, trainval=False,
+        datasets=("cub",),
+        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
+    )
+    cr.run_campaign("cmp_gpu", "camp")
+    n_first = len(scheduled)
+
+    n_gpus_real = cr.torch.cuda.device_count()
+    monkeypatch.setattr(cr.torch.cuda, "device_count", lambda: n_gpus_real + 1)
+    with pytest.raises(RuntimeError, match="GPU count mismatch"):
+        cr.run_campaign("cmp_gpu", "camp")
+    assert len(scheduled) == n_first
+
+
 def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str) -> list[Path]:
     groups = ("native", "native_macro", "joint", "joint_macro")
     dpath_dataset = dpath_phase / "_datasets" / dataset

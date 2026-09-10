@@ -1,2 +1,12 @@
 campaigns:
-  - camp.dev
+  # camp4
+  - camp.bce_posneg_phylo_laplace
+  - camp.bce_posneg_phylo_bm
+  - camp.bce_posneg_phylo_ou
+  # camp2
+  - camp.bce_posneg_mp_laplace
+  - camp.bce_posneg_mp_bm
+  - camp.bce_posneg_mp_ou
+  - camp.bce_posneg_sp_laplace
+  - camp.bce_posneg_sp_bm
+  - camp.bce_posneg_sp_ou

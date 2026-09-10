@@ -18,18 +18,20 @@ import pdb
 CFG_PARAM_ALIASES = {
     "n_epochs": "E",
     "batch_size": "BS",
+    "htarg.kernel": "K",
+    "htarg.exp.beta": "Beta",
     "loss.mix": "Mix",
     "loss.unitless": "Unit",
     "loss1.targ": "Targ",
     "loss1.wting.bce.dsmr": "DSMR",
     "loss1.logits.temp.init": "Tau",
     "loss1.logits.bce.bias.init": "Binit",
-    "loss1.logits.bce.bias.center": "Bcent",
+    "loss1.logits.bce.center": "Bcent",
     "loss2.targ": "Targ2",
     "loss2.wting.bce.dsmr": "DSMR2",
     "loss2.logits.temp.init": "Tau2",
     "loss2.logits.bce.bias.init": "B2init",
-    "loss2.logits.bce.bias.center": "B2cent",
+    "loss2.logits.bce.center": "B2cent",
     "opt.lr.init": "LR",
     "opt.wd": "WD",
 }
@@ -43,13 +45,16 @@ CFG_PARAM_VALUE_ALIASES = {
         16_384: "16k",
         32_768: "32k",
     },
+    "loss1.logits.bce.bias.init": {
+        "pos_prevalence": "PP",
+    },
     "loss1.targ": {
         "sp": "SP",
         "mp": "MP",
-        "phylo": "hp",
+        "phylo": "Phylo",
     },
     "loss2.targ": {
-        "phylo": "hp",
+        "phylo": "Phylo",
     },
 }
 

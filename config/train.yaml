@@ -17,7 +17,7 @@ batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_
 dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
 
 arch:  # Architecture
-  model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
+  model_type: siglip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
   clip:  # CLIP-specific; Inert iff (arch.model_type: siglip_*)
     non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
     # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
@@ -40,7 +40,7 @@ freeze:
   text: false  # {true, false}
 
 htarg:  # Hierarchical target params
-  kernel: laplace  # {bm, laplace, ou}; Phylo target kernel on the tree's Brownian-motion VCV C (C_ab = depth of MRCA(a, b),
+  kernel: bm  # {bm, laplace, ou}; Phylo target kernel on the tree's Brownian-motion VCV C (C_ab = depth of MRCA(a, b),
   # C_aa = tip depth); (bm) Brownian kernel, cosine-normalized: C_ab / sqrt(C_aa * C_bb), the shared root-path length over
   # the tips' own depths (root-dependent; 0 for pairs splitting at the root); (laplace | ou) Y = exp(-beta * d / avg_dist)
   # over a root-independent tree metric d, avg_dist its batch-pair-probability-weighted mean: (laplace) d = sqrt(patristic
@@ -58,7 +58,7 @@ loss:  # Common loss params
   # equalized to unit magnitude so mix is the true gradient-contribution ratio; (false) Raw losses
 
 loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
-  crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
+  crit: bce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
   # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
   sim: cos  # {cos, geo1, geo2}
   targ: phylo  # {sp, mp, tax, phylo}
@@ -182,7 +182,7 @@ opt:  # Optimization
   lr:  # Learning rate
     init: 1.0e-5
     decay_factor: null  # {null, [float]}; Cosine scheduler eta_min = lr.init * decay_factor; (null) Decay to 0.0
-    warmup: 0.05  # [0.0, 1.0]; Linear LR warmup duration as a fraction of sample_volume (e.g. 0.02 -> 2% of sample_volume)
+    warmup: 0.02  # [0.0, 1.0]; Linear LR warmup duration as a fraction of sample_volume (e.g. 0.02 -> 2% of sample_volume)
   wd: null  # {null, [float]}; Weight Decay; (null) Resolved from model-specific default hyperparam config
   beta1: 0.9  # CLIP paper recommends 0.9
   beta2: null  # {null, [float]}; (null) Resolved from model-specific default hyperparam config
@@ -200,8 +200,8 @@ dev:
     batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false) Skip that component's
     # compute -- its log fields and learning-curve panels are omitted (loss/LR/logit-scalar curves and evals
     # unaffected)
-      grad_norm_model: false  # {true, false}; Whole-model grad norm (model= in grad_norm.log + its curve panel)
-      delta_norm_model: false  # {true, false}; ||delta theta|| update norm via pre-step param snapshot
+      grad_norm_model: true  # {true, false}; Whole-model grad norm (model= in grad_norm.log + its curve panel)
+      delta_norm_model: true  # {true, false}; ||delta theta|| update norm via pre-step param snapshot
       # (step= in grad_norm.log + its curve panel)
       emb_logit_grads: false  # {true, false}; Retained embedding/logit grads (img=/txt=/logit= in grad_norm.log;
       # no curve panel)
@@ -216,7 +216,7 @@ dev:
       base_chkpt_sel: true  # {true, false}; (true) The base eval (checkpoint 0) is a checkpoint-selection candidate
       # like any other, so a coord can be scored at its untrained model in the stats tables/workbooks, and the
       # convergence plots draw the curves from checkpoint 0; (false) Selection runs over 1..n_chkpts
-  kill_thresh: 0.2  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
+  kill_thresh: 0.1  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
   # base model is killed: at the train-time eval nearest that fraction, rounded up (ceil(kill_thresh * n_chkpts)), if no
   # eval so far has beaten the base eval's Composite-All Native mAP, the trial ends there and counts as complete --
   # scored at its own best checkpoint and shaded yellow in the stats tables (see README); (null) Never kill

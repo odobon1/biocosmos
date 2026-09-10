@@ -1,0 +1,19 @@
+datasets: [cub]
+
+n_trials_screen: 1
+n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
+trainval: false  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
+
+ablation_arms:
+  - - {loss1.targ: phylo, name: Phylo}
+  - - {htarg.kernel: bm, name: BM}
+  - - {loss1.logits.bce.bias.init: [pos_prevalence, null, -9.0, -6.0, -3.0, 0.0], loss1.logits.bce.center: null, loss1.wting.bce.dsmr: false}
+    - {loss1.logits.bce.bias.init: [pos_prevalence, null, -9.0, -6.0, -3.0, 0.0], loss1.logits.bce.center: null, loss1.wting.bce.dsmr: true}
+    - {loss1.logits.bce.bias.init: [pos_prevalence, null, -9.0, -6.0, -3.0, 0.0], loss1.logits.bce.center: sim, loss1.wting.bce.dsmr: false}
+    - {loss1.logits.bce.bias.init: [pos_prevalence, null, -9.0, -6.0, -3.0, 0.0], loss1.logits.bce.center: sim, loss1.wting.bce.dsmr: true}
+
+hpo_coords:
+  - - {opt.lr.init: [6.0e-7, 6.0e-6, 6.0e-5]}
+  - - {loss1.logits.temp.init: [null, 0.1, 1.0]}
+
+suffix: null  # {null, [str]}; no suffix if set to null

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from train import TrainPipeline, pass_epoch_span, samps_stop
+from train import TrainPipeline, kill_chkpt, pass_epoch_span, samps_stop
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
@@ -393,6 +393,21 @@ def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:
     assert samps_stop(cfg) == 300
     cfg.chkpt_stop = 10
     assert samps_stop(cfg) == 1_000
+
+
+def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
+    # dev.kill_thresh is a fraction of the run; the kill check runs at the train-time eval nearest it,
+    # rounded up (ceil(kill_thresh * n_chkpts)); null turns it off
+    cfg = SimpleNamespace(n_chkpts=10, dev={"kill_thresh": None})
+    assert kill_chkpt(cfg) is None
+    cfg.dev["kill_thresh"] = 0.05
+    assert kill_chkpt(cfg) == 1
+    cfg.dev["kill_thresh"] = 0.25
+    assert kill_chkpt(cfg) == 3
+    cfg.dev["kill_thresh"] = 0.3
+    assert kill_chkpt(cfg) == 3
+    cfg.dev["kill_thresh"] = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
+    assert kill_chkpt(cfg) == 7
 
 
 def test_save_model_writes_unwrapped_state_dict(tmp_path, monkeypatch) -> None:

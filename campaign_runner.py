@@ -132,13 +132,14 @@ def _classify_crash(exc: Exception) -> str:
         return "ram"
     return "other"
 
-def _render_phase_tables(campaign: str, phase: str) -> None:
+def _render_phase_tables(campaign: str, phase: str, base_sel: bool) -> None:
     """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, phase_stats) of
     the phase from whatever is on disk, over its recorded matrix. Trials render each level only when a seed
     completes across that level's cycle (train.py), so a phase that ends mid-cycle -- one interrupted, or with
     a (dataset, arm, coord) that never succeeds -- would otherwise leave them a cycle behind. Checkpoint
     selection is NOT redone: every completed trial already reselected its own (dataset, arm, coord) at its own
-    trial end."""
+    trial end. `base_sel` (the frozen train.yaml's dev.reporting.eval.base_chkpt_sel) tells the convergence plots
+    whether the base eval was a selection candidate."""
     if phase == "trainval":  # runs no evals -> nothing to select or aggregate
         return
     cfg_stats = get_config_stats()
@@ -147,8 +148,8 @@ def _render_phase_tables(campaign: str, phase: str) -> None:
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
-            update_arm_stats(dataset, arm, *style)
-        update_dataset_stats(dataset, *style)
+            update_arm_stats(dataset, arm, *style, base_sel)
+        update_dataset_stats(dataset, *style, base_sel)
     update_phase_stats(*style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
@@ -637,7 +638,7 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def _phase_metadata(campaign: str, phase: str, seeds: list[int], matrix: dict) -> tuple[dict, Path]:
+def _phase_metadata(campaign: str, phase: str, seeds: list[int], matrix: dict, base_sel: bool) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
     coord under every arm for the screening phase, each arm's picked coord(s) for the qual and trainval phases -- the
@@ -679,7 +680,7 @@ def _phase_metadata(campaign: str, phase: str, seeds: list[int], matrix: dict) -
     metadata["matrix"] = matrix
     save_json(metadata, fpath_meta)
     if pruned:  # the tables' rows changed: render them over the recorded matrix now rather than a cycle later
-        _render_phase_tables(campaign, phase)
+        _render_phase_tables(campaign, phase, base_sel)
     return metadata, fpath_meta
 
 def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str], coord_names: list[str]) -> dict:
@@ -872,7 +873,8 @@ def _apply_plan(campaign: str, phase: str, cfg_snapshot: dict, plan: _Plan) -> N
         _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
-    metadata, fpath_meta = _phase_metadata(campaign, phase, plan.seeds, plan.matrix)
+    metadata, fpath_meta = _phase_metadata(campaign, phase, plan.seeds, plan.matrix,
+                                           cfg_snapshot["train"]["dev"]["reporting"]["eval"]["base_chkpt_sel"])
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
     # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every arm and
@@ -913,7 +915,8 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM."""
     dpath_phase = _dpath_phase(campaign, phase)
     max_retries = cfg_snapshot["hardware"]["max_retries"]  # consecutive no-progress trial retries before giving up
-    del_base_eval_cache_trial = cfg_snapshot["train"]["dev"]["del_base_eval_cache"]["trial"]
+    del_base_eval_cache = cfg_snapshot["train"]["dev"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
+    base_sel = cfg_snapshot["train"]["dev"]["reporting"]["eval"]["base_chkpt_sel"]  # the base eval as a selection candidate
     render_proc: subprocess.Popen | None = None
     plans = None  # the plans applied: the earlier phases', then this one's (_plan_phases)
     trials: list[tuple] = []
@@ -929,7 +932,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 dpath_phase.mkdir(parents=True, exist_ok=True)
                 save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
-                _phase_metadata(campaign, earlier, plan_earlier.seeds, plan_earlier.matrix)
+                _phase_metadata(campaign, earlier, plan_earlier.seeds, plan_earlier.matrix, base_sel)
             plans = plans_new
             plan = plans[-1]
             _apply_plan(campaign, phase, cfg_snapshot, plan)
@@ -973,7 +976,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         else:
             print(f"[{idx_trial}/{n_trials_total}] {trial_id}")
 
-        if del_base_eval_cache_trial:
+        if del_base_eval_cache == "trial":
             _del_base_eval_cache()
 
         PrintLog.manifest(dpath_phase, trials, in_progress=(dataset, arm, coord, seed))
@@ -1002,7 +1005,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 )
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.terminate()
-                _render_phase_tables(campaign, phase)
+                _render_phase_tables(campaign, phase, base_sel)
                 PrintLog.manifest(dpath_phase, trials, in_progress=None)
                 return "interrupted"
             except Exception as e:
@@ -1054,7 +1057,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
         return outcome
 
-    _render_phase_tables(campaign, phase)
+    _render_phase_tables(campaign, phase, base_sel)
 
     # let the last trial's render finish before the phase exits
     if render_proc is not None:
@@ -1104,7 +1107,7 @@ def run_campaign(campaign: str, name: str) -> bool:
     # is not a new beginning, so the cache the campaign's own trials built survives it
     first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
     cfg_snapshot = _load_or_create_campaign_config(campaign)
-    if first_launch and cfg_snapshot["train"]["dev"]["del_base_eval_cache"]["campaign"]:
+    if first_launch and cfg_snapshot["train"]["dev"]["del_base_eval_cache"] == "campaign":
         _del_base_eval_cache()
 
     camp = _Camp(campaign, name, cfg_snapshot)

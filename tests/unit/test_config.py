@@ -22,7 +22,7 @@ def make_train_config_dummy(**overrides):
         "chain_floor": None,
         "dv_batching": False,
         "htarg": {"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": False},
-        "dev": {"logging": False, "plot_every": "trial"},
+        "dev": {"reporting": {"logging": False, "plot_every": "trial"}, "del_base_eval_cache": None, "kill_thresh": None},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "loss": {"mix": 0.0, "unitless": False},
@@ -197,9 +197,32 @@ def test_train_config_rejects_unknown_plot_every(monkeypatch: pytest.MonkeyPatch
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["dev"]["plot_every"] = "epoch"
-    with pytest.raises(ValueError, match="dev.plot_every must be 'trial' or 'chkpt'"):
+    cfg_dict["dev"]["reporting"]["plot_every"] = "epoch"
+    with pytest.raises(ValueError, match="dev.reporting.plot_every must be 'trial' or 'chkpt'"):
         TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["dev"]["del_base_eval_cache"] = "always"
+    with pytest.raises(ValueError, match="dev.del_base_eval_cache must be null, 'campaign' or 'trial'"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_kill_thresh_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    # dev.kill_thresh is a fraction of the run strictly inside (0, 1); null turns the kill check off
+    patch_hw(monkeypatch)
+
+    for kill_thresh in (0.0, 1.0, -0.1, 1.5):
+        cfg_dict = make_train_config_dummy()
+        cfg_dict["dev"]["kill_thresh"] = kill_thresh
+        with pytest.raises(ValueError, match="dev.kill_thresh must be null or a fraction in"):
+            TrainConfig(**cfg_dict)
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["dev"]["kill_thresh"] = 0.25
+    assert TrainConfig(**cfg_dict).dev["kill_thresh"] == 0.25
 
 
 def test_train_config_rejects_htarg_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:

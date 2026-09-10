@@ -565,10 +565,10 @@ class VLMWrapper(abc.ABC):
         )
         # the gathered embeddings are what batch_step returns to the grad-norm logger; retain so
         # .grad carries the full-batch dL/dembs after backward (same quantity the chunked path
-        # all-reduces into its returned leaves). Each dev.batch_diagnostics component gates only its
+        # all-reduces into its returned leaves). Each dev.reporting.batch_diagnostics component gates only its
         # own retains/stats (emb_logit_grads the embedding+logit retains, sim_grad_sums the sim
         # retains, sim_targ_stats the batch stats) -- the loss/gradient path is untouched
-        diag = self.cfg.dev["batch_diagnostics"]
+        diag = self.cfg.dev["reporting"]["batch_diagnostics"]
         if diag["emb_logit_grads"]:
             if embs_img_b.requires_grad:
                 embs_img_b.retain_grad()
@@ -776,13 +776,13 @@ class VLMWrapper(abc.ABC):
         (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
         embs_img_b / embs_txt_b for grad-norm logging, and -- since the backward already ran and the
         sim matrices are gone -- the sims slot carries the (grad_sum_sim1, grad_sum_sim2) floats
-        accumulated tile-by-tile by chunked_bce_loss_backward. With dev.batch_diagnostics.sim_targ_stats
+        accumulated tile-by-tile by chunked_bce_loss_backward. With dev.reporting.batch_diagnostics.sim_targ_stats
         off batch_stats is None; with .sim_grad_sums off the sims slot carries (None, None).
         """
         chunk = self.cfg.hw.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
         device = self.cfg.device
-        diag = self.cfg.dev["batch_diagnostics"]
+        diag = self.cfg.dev["reporting"]["batch_diagnostics"]
 
         # DDP.forward must run under no_sync too, so the reducer is never armed for this step (we sync
         # gradients manually below); otherwise DDP would expect a matching synced backward. The reducer
@@ -831,7 +831,7 @@ class VLMWrapper(abc.ABC):
                     dist.all_reduce(p.grad)
             # the representation backward has consumed the leaves' band-partial grads; fold them so the
             # returned leaves carry full-batch dL/dembs for grad-norm logging (diagnostics-only, so
-            # skipped when dev.batch_diagnostics.emb_logit_grads is off)
+            # skipped when dev.reporting.batch_diagnostics.emb_logit_grads is off)
             if diag["emb_logit_grads"]:
                 dist.all_reduce(img.grad)
                 dist.all_reduce(txt.grad)

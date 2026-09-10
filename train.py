@@ -88,6 +88,15 @@ def samps_stop(cfg):
         return cfg.sample_volume
     return cfg.chkpt_stop * cfg.chkpt_interval
 
+def kill_chkpt(cfg):
+    """The train-time eval index the kill check runs at (dev.kill_thresh, a fraction of the run, rounded up to
+    the nearest checkpoint: ceil(kill_thresh * n_chkpts)), or None with the check off. An index of n_chkpts
+    lands on the final eval, where there is nothing left to cut short, so it never kills."""
+    if cfg.dev["kill_thresh"] is None:
+        return None
+    # rounded first so float noise (0.7 * 10 = 7.000000000000001) can't push the ceiling one eval late
+    return math.ceil(round(cfg.dev["kill_thresh"] * cfg.n_chkpts, 6))
+
 
 class TrainPipeline:
     """DDP rank discipline: every undecorated method is entered by ALL ranks and may run
@@ -149,6 +158,8 @@ class TrainPipeline:
         self.n_batches_seen = 0
         self.chkpt_thresh = self.cfg.chkpt_interval
         self.samps_stop = samps_stop(self.cfg)
+        self._kill_chkpt = kill_chkpt(self.cfg)
+        self._killed = None  # the train-time eval index the trial was killed at (dev.kill_thresh); None until/unless it is
         self.lr_init_nom = self.cfg.opt["lr"]["init"]
 
         self.n_samps_seen = 0
@@ -159,12 +170,13 @@ class TrainPipeline:
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
         self._logit_scalars_tracked = self._tracked_logit_scalars()
         self._targ_stats_tracked = self._tracked_targ_stats()
-        self._batch_diag = self.cfg.dev["batch_diagnostics"]
+        self._batch_diag = self.cfg.dev["reporting"]["batch_diagnostics"]
         self._params_prev = None  # pre-step parameter snapshot, allocated on the first step
 
         if resume_state is not None:
             self.n_samps_seen = resume_state["n_samps_seen"]
             self.n_batches_seen = resume_state["n_batches_seen"]
+            self._killed = resume_state["killed"]
             self.idx_epoch = max(0, resume_state["idx_epoch"] - 1)
             self.chkpt_thresh = resume_state["chkpt_thresh"]
             self.time_tracker.load_state_dict(resume_state["times"])
@@ -243,6 +255,18 @@ class TrainPipeline:
     def _record_eval(self, eval_metrics, time_eval):
         self.data.eval_metrics = eval_metrics
         self.data.time_eval = time_eval
+
+    def _kill_verdict(self, eval_metrics):
+        """Whether the trial is killed at this train-time eval (dev.kill_thresh): no eval so far, this one
+        included, has beaten the base eval's Composite-All Native mAP. Rank 0 decides from its TrialData eval
+        history (the base eval first, then every recorded train-time eval; restored across resumes) and the
+        verdict is broadcast so every rank leaves the loop together."""
+        verdict = [None]
+        if dist.get_rank() == 0:
+            history = self.data.data["eval"]["scores"]["native"]["comp"]["map"]["all"]
+            verdict[0] = max([*history[1:], eval_metrics["scores"]["native"]["comp"]["map"]["all"]]) <= history[0]
+        dist.broadcast_object_list(verdict, src=0)
+        return verdict[0]
 
     @rank0
     def _tracked_logit_scalars(self):
@@ -401,14 +425,14 @@ class TrainPipeline:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data(ArtifactManager.dpath_model_checkpoint, self.chkpt_thresh // self.cfg.chkpt_interval - 1)
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
 
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
-        if final or self.cfg.dev["plot_every"] == "chkpt":
+        if final or self.cfg.dev["reporting"]["plot_every"] == "chkpt":
             plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch)
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
@@ -454,7 +478,7 @@ class TrainPipeline:
         in opposite directions. Measured against a pre-step snapshot, which is optimizer-agnostic
         (no reliance on AdamW's internals) at the cost of one extra copy of the trainable params;
         the buffers are allocated once and reused, so there's no per-step allocation churn.
-        With dev.batch_diagnostics.delta_norm_model off the snapshot/delta is skipped entirely (returns None)."""
+        With dev.reporting.batch_diagnostics.delta_norm_model off the snapshot/delta is skipped entirely (returns None)."""
         if not self._batch_diag["delta_norm_model"]:
             self.opt.step()
             return None
@@ -476,7 +500,7 @@ class TrainPipeline:
 
             if self._resume_state is None:
                 mem = self._snapshot_memory()  # COLLECTIVE -- every rank must enter
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 
@@ -533,8 +557,9 @@ class TrainPipeline:
             for _ in range(self.cfg.n_passes - self.idx_epoch):
                 # a resume can land past samps_stop (crash between the last checkpoint and process exit);
                 # the in-loop stop checks sit after a batch trains, so guard here or the resumed trial
-                # trains one extra batch past its stop and re-saves the drifted state every attempt
-                if self.n_samps_seen >= self.samps_stop:
+                # trains one extra batch past its stop and re-saves the drifted state every attempt.
+                # Likewise a resume of a killed trial (crash after its kill checkpoint) must not train on.
+                if self._killed is not None or self.n_samps_seen >= self.samps_stop:
                     break
                 self.timer_train.start()
                 self.idx_epoch += 1
@@ -644,9 +669,15 @@ class TrainPipeline:
                                 self.time_tracker.add("eval", time_eval)
                                 self._record_eval(eval_metrics, time_eval)
                                 self._save_mid_eval(threshold_hit, eval_bundles)
+                                # KILL CHECK (dev.kill_thresh): a trial that has not beaten its base eval by
+                                # this checkpoint ends here -- this checkpoint is its final one (plots,
+                                # trial_metadata.json's killed=<idx>) and the final eval below is skipped
+                                if threshold_hit // self.cfg.chkpt_interval == self._kill_chkpt and self._kill_verdict(eval_metrics):
+                                    self._killed = threshold_hit // self.cfg.chkpt_interval
                             self._checkpoint(
-                                header=f"{threshold_hit:,}",
+                                header=f"{threshold_hit:,}" + (" - Killed" if self._killed is not None else ""),
                                 idx_batch=idx_batch,
+                                final=self._killed is not None,
                             )
                             ArtifactManager.save_rng_states(self._local_rank)
                             dist.barrier()
@@ -654,7 +685,7 @@ class TrainPipeline:
                         self.timer_train.start()
                         pbar.refresh()
 
-                    if self.n_samps_seen >= self.samps_stop:
+                    if self._killed is not None or self.n_samps_seen >= self.samps_stop:
                         break
 
                 # EPOCH DONE
@@ -682,12 +713,12 @@ class TrainPipeline:
                     self.cfg.n_epochs,
                 )
 
-                if self.n_samps_seen >= self.samps_stop:
-                    break  # chkpt_stop reached mid-pass (trainval phase): no further passes
+                if self._killed is not None or self.n_samps_seen >= self.samps_stop:
+                    break  # killed, or chkpt_stop reached mid-pass (trainval phase): no further passes
 
-            # FINAL EVAL
+            # FINAL EVAL -- a killed trial's kill checkpoint was its final one: nothing left to evaluate or write
 
-            if self.eval_enabled:
+            if self.eval_enabled and self._killed is None:
                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
@@ -698,12 +729,13 @@ class TrainPipeline:
                 self._save_eval_data(ArtifactManager.dpath_eval_final, self.cfg.n_chkpts)
                 if self._manif_viz:
                     self._viz_eval(eval_bundles, f"eval{self.cfg.n_chkpts}")  # COLLECTIVE compute+cache; rendered post-trial off-process
-            self._checkpoint(
-                header="Final",
-                idx_batch=-1,
-                final=True,
-            )
-            ArtifactManager.save_rng_states(self._local_rank)
+            if self._killed is None:
+                self._checkpoint(
+                    header="Final",
+                    idx_batch=-1,
+                    final=True,
+                )
+                ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
 
             if self._pooled_manif_viz:
@@ -727,7 +759,7 @@ def run_training(cfg):
     ArtifactManager.create_trial_dirs()
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_coord(cfg)
-    if cfg.dev["logging"]:
+    if cfg.dev["reporting"]["logging"]:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs", cfg.train_pt != "trainval")
     PrintLog.init_train(cfg)
 
@@ -760,7 +792,8 @@ def run_training(cfg):
         cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
         # rewrites their evals/_selected/, so the aggregates below see the current selection
-        update_chkpt_selection(cfg_stats.spread_type)
+        base_sel = cfg.dev["reporting"]["eval"]["base_chkpt_sel"]  # the base eval as a selection candidate
+        update_chkpt_selection(cfg_stats.spread_type, base_sel)
         update_metric_stats(cfg_stats.spread_type)
         # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
         # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
@@ -768,10 +801,10 @@ def run_training(cfg):
         # coords reselected against different trial counts
         if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
             update_arm_stats(cfg.dataset, cfg.arm, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                             cfg_stats.supp_scores)
+                             cfg_stats.supp_scores, base_sel)
         if dataset_sweep_complete(cfg.seed, cfg.dataset):
             update_dataset_stats(cfg.dataset, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                                 cfg_stats.supp_scores)
+                                 cfg_stats.supp_scores, base_sel)
         if seed_sweep_complete(cfg.seed):
             update_phase_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
                                   cfg_stats.overrides)

@@ -13,7 +13,6 @@ on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O liv
 """
 
 import math
-import shutil
 
 import matplotlib
 matplotlib.use("Agg")
@@ -87,13 +86,12 @@ _LW_MODALITY = 1.5
 # averaged into one (then every 4, every 8, ...) so the strip keeps a readable cell width instead of
 # collapsing into a smear. Columns therefore oscillate between this and half of it as training runs.
 P_HEATMAP_HORIZONTAL_THRESHOLD = 128
-# density colormaps: blues for the predictions, rising off the white page so empty bins vanish into
-# it -- a cool hue inferno never reaches, so the adjacent strips stay distinct. Deeper and more
-# saturated than matplotlib's Blues, whose muted navy leaves a sparse strip washed out. A thermal
-# ramp for the targets, running black -> purple -> orange -> yellow -> white as density rises, so
-# that strip reads as a dark thermal image rather than an ink-on-paper one.
+# density colormaps: blues for the predictions and purples for the targets, both rising off the
+# white page so empty bins vanish into it. Deeper and more saturated than matplotlib's Blues/Purples,
+# whose muted tops leave a sparse strip washed out. The purple stops are the blue ones hue-rotated
+# at the same saturation and lightness, so the two strips read as one style in two hues.
 _P_CMAP = LinearSegmentedColormap.from_list("p_density", ["#FFFFFF", "#4C7FE8", "#0A1FB0"])
-_Y_CMAP = plt.get_cmap("inferno")
+_Y_CMAP = LinearSegmentedColormap.from_list("y_density", ["#FFFFFF", "#9A4CE8", "#5D0AB0"])
 # most of the mass sits in one bin (a BCE run starts with every pair near 0), so a linear ramp would
 # leave the rest invisible -- sqrt scaling lifts the sparse bins into view
 _HIST_NORM = PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0)
@@ -151,7 +149,7 @@ def update_metric_stats(spread_type):
                 if not fpath_metrics.exists():
                     continue
                 metrics = load_json(fpath_metrics)
-                for key in ("chkpt", "loss_raw", "sim", "targ"):  # non-score fields aren't aggregated
+                for key in ("chkpt", "loss_raw", "sim", "targ", "killed"):  # non-score fields aren't aggregated
                     metrics.pop(key)
                 metric_dicts.append(metrics)
 
@@ -184,16 +182,19 @@ def _chkpt_dpaths(dpath_trial):
     """[evals/base, evals/eval1, .., evals/eval<n_chkpts>] once the trial's FINAL eval is on disk,
     else None -- the trial-completion signal for every coord-level aggregation here. Each eval
     file's chkpt field carries 'k/n_chkpts', so the highest-numbered eval dir says whether k has
-    reached n_chkpts without n_chkpts being threaded in from config. (The old signal, a written
-    evals/_selected/, can't serve any more: _selected/ is now derived from the completed trials rather
-    than written by each trial for itself.)"""
+    reached n_chkpts without n_chkpts being threaded in from config. A killed trial (dev.kill_thresh;
+    trial_metadata.json's killed = the eval index it stopped at) is complete at that eval instead, its
+    list ending at evals/eval<killed>. (The old signal, a written evals/_selected/, can't serve any
+    more: _selected/ is now derived from the completed trials rather than written by each trial for
+    itself.)"""
     dpath_evals = dpath_trial / "evals"
     dpaths_eval = sorted(dpath_evals.glob("eval*"), key=lambda dpath: int(dpath.name[len("eval"):]))
     if not dpaths_eval:
         return None
     chkpt = load_json(dpaths_eval[-1] / f"{next(iter(_EVAL_GROUPS))}.json")["chkpt"]
     idx_eval, n_chkpts = chkpt.split()[0].split("/")
-    return [dpath_evals / "base", *dpaths_eval] if idx_eval == n_chkpts else None
+    complete = idx_eval == n_chkpts or int(idx_eval) == load_json(dpath_trial / "trial_metadata.json")["killed"]
+    return [dpath_evals / "base", *dpaths_eval] if complete else None
 
 def _trial_complete(dataset, arm, coord, seed):
     return _chkpt_dpaths(_dpath_coord(dataset, arm, coord) / "_seeds" / str(seed)) is not None
@@ -259,19 +260,24 @@ def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_nam
     plt.close(fig)
 
 @rank0
-def update_chkpt_selection(spread_type):
+def update_chkpt_selection(spread_type, base_sel):
     """Checkpoint selection, per criterion x eval group, for this coord/dataset: the ONE checkpoint
     index every one of its trials is scored at, argmaxed over the across-trial MEAN curve rather than
     per trial -- argmax(mean(...)), not mean(argmax(...)). Each criterion curves the comp score it
     selects on (BEST_CRITERIA: map -> comp.map.all, acc -> comp.acc.i2t) at every checkpoint of every
-    completed trial (_chkpt_dpaths); index 0 is the base eval, plotted but never a candidate, so the
-    winner is argmax over 1..n_chkpts with the earliest taking ties.
+    completed trial (_chkpt_dpaths); index 0 is the base eval, plotted and a candidate only under
+    base_sel (train.yaml's dev.reporting.eval.base_chkpt_sel), so the winner is argmax over 0..n_chkpts
+    with it and over 1..n_chkpts without, the earliest taking ties either way. Killed trials
+    (dev.kill_thresh: stopped at an earlier eval, so their curves are shorter) shape the mean curve
+    only when every trial of the coord/dataset was killed; either way each is scored at its OWN
+    argmax, since it may have no eval at the coord's index.
 
     The selection MOVES as trials land, so all of this is rewritten from scratch at each trial
     completion, for every completed trial of the coord/dataset -- not just the one that finished:
       - evals/_selected/<criterion>/<group>.json in each trial: a copy of ITS eval<idx_best> file
+        (a killed trial's eval at its own argmax) plus a 'killed' flag, which the tables shade by
       - evals/_best/<criterion>/<group>.json in each trial: a copy of its eval at the trial's OWN
-        argmax (same base-exclusion and tie rules) -- per-trial reference; nothing aggregates it
+        argmax (same base and tie rules) -- per-trial reference; nothing aggregates it
       - coord_stats/<criterion>/<group>/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads',
         'idx_best'}) + chkpt_means.png (mean curve, mean +- spread band, selection marked)
       - coord_metadata.json's best_chkpt[<criterion>][<group>]
@@ -280,37 +286,41 @@ def update_chkpt_selection(spread_type):
     best_chkpt = {criterion: {} for criterion in BEST_CRITERIA}
     for criterion, (score_key, metric) in BEST_CRITERIA.items():
         for group_key, group_name in _EVAL_GROUPS.items():
-            trials = []  # (trial dir, its comp score at each checkpoint), completed trials only
+            trials = []  # (trial dir, its eval dirs, its comp score at each checkpoint, killed), completed trials only
             for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
                 dpaths_chkpt = _chkpt_dpaths(dpath_trial)
                 if dpaths_chkpt is None:
                     continue
-                trials.append((dpath_trial, [
+                trials.append((dpath_trial, dpaths_chkpt, [
                     float(load_json(dpath / f"{group_key}.json")["scores"]["comp"][score_key][metric])
                     for dpath in dpaths_chkpt
-                ]))
+                ], load_json(dpath_trial / "trial_metadata.json")["killed"] is not None))
 
             if not trials:
                 return
 
-            curves = np.array([curve for _, curve in trials])
+            # killed trials stopped short, so their curves are shorter than a full run's: they shape the
+            # coord's selection only when every trial was killed (then all are equally short)
+            live = [trial for trial in trials if not trial[3]] or trials
+            curves = np.array([curve for _, _, curve, _ in live])
             n_trials = len(curves)
             # a lone trial has no ddof=1 spread -> flat (invisible) band
             spreads = np.zeros(curves.shape[1]) if n_trials == 1 else np.array([_spread(col, spread_type) for col in curves.T])
             means = curves.mean(axis=0)
-            idx_best = int(np.argmax(means[1:])) + 1  # base (index 0) is not a candidate; argmax keeps the earliest tie
+            idx_lo = 0 if base_sel else 1  # the base (index 0) is a candidate only under base_sel
+            idx_best = int(np.argmax(means[idx_lo:])) + idx_lo  # argmax keeps the earliest tie
 
-            for dpath_trial, curve in trials:
-                # _selected: the trial's eval at the coord's selected checkpoint (what the stats
-                # read); _best: at the trial's OWN argmax, for reading a single trial on its own
-                idx_trial_best = int(np.argmax(curve[1:])) + 1
-                for name, idx in (("_selected", idx_best), ("_best", idx_trial_best)):
+            for dpath_trial, dpaths_chkpt, curve, killed in trials:
+                # _selected: the trial's eval at the coord's selected checkpoint (what the stats read)
+                # -- a killed trial, which may have no eval there, at its own best instead -- with the
+                # killed flag added for the tables; _best: at the trial's OWN argmax, for reading a
+                # single trial on its own
+                idx_trial_best = int(np.argmax(curve[idx_lo:])) + idx_lo
+                for name, idx in (("_selected", idx_trial_best if killed else idx_best), ("_best", idx_trial_best)):
                     dpath_dest = dpath_trial / "evals" / name / criterion
                     dpath_dest.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(
-                        dpath_trial / "evals" / f"eval{idx}" / f"{group_key}.json",
-                        dpath_dest / f"{group_key}.json",
-                    )
+                    metrics = load_json(dpaths_chkpt[idx] / f"{group_key}.json")
+                    save_json({**metrics, "killed": killed} if name == "_selected" else metrics, dpath_dest / f"{group_key}.json")
 
             best_chkpt[criterion][group_key] = {
                 "idx": idx_best,
@@ -360,15 +370,24 @@ def _score_cells(score_maps, labels, spread_type):
             cells.append(f"{nums.mean():.2f} ± {_spread(nums, spread_type):.2f}")
     return cells
 
-def _stats_table_grid(headers, labels, rows, spread_type):
-    """Build a composite-score table's cell grid from [(row key, [score dict per completed trial]),
-    ...]: a header row of the row-key column names in `headers` (e.g. ('Arm', 'Coord')) + one column
-    per label in `labels`, then one row per entry -- its key's cells (the trial count appended to the
-    last one: '<coord> (n_trials)') + each label's _score_cells cell."""
+def _stats_table_grid(headers, labels, rows, score_key, spread_type):
+    """Build a composite-score table's cell grid from [(row key, [_collect_comps entry per completed
+    trial]), ...]: a header row of the row-key column names in `headers` (e.g. ('Arm', 'Coord')) + one
+    column per label in `labels`, then one row per entry -- its key's cells (the trial count appended
+    to the last one: '<coord> (n_trials)', with the killed count when any: '<coord> (n_trials, n
+    killed)') + each label's _score_cells cell over the entries' `score_key` score maps. Also returns
+    the indices of the grid rows holding a killed trial (dev.kill_thresh), which the renderers shade
+    yellow in place of the heatmap ramp."""
     grid = [[*headers, *labels]]
-    for row_key, score_maps in rows:
-        grid.append([*row_key[:-1], f"{row_key[-1]} ({len(score_maps)})", *_score_cells(score_maps, labels, spread_type)])
-    return grid
+    killed_rows = set()
+    for row_key, comps in rows:
+        n_killed = sum(comp["killed"] for comp in comps)
+        count = f"{len(comps)}, {n_killed} killed" if n_killed else f"{len(comps)}"
+        grid.append([*row_key[:-1], f"{row_key[-1]} ({count})",
+                     *_score_cells([comp[score_key] for comp in comps], labels, spread_type)])
+        if n_killed:
+            killed_rows.add(len(grid) - 1)
+    return grid, killed_rows
 
 def _comp_entry(scores_grp):
     """One trial's {'map': ..., 'acc': ..., 'nshot': [...]} entry from a metrics file's per-group
@@ -393,9 +412,10 @@ def _comp_entry(scores_grp):
 def _collect_comps(arm_coords, datasets, criterion):
     """Per eval group, each (arm, coord) x dataset's completed-trial score maps, keyed by trial seed
     (the trial dir name; empty dict -> no trials yet): comps_all[group_key][((arm, coord), dataset)]
-    [seed] is a _comp_entry. Each group reads its own best-checkpoint metrics file for the given
-    selection criterion (evals/_selected/<criterion>/), whose presence is also the completion
-    signal, same as update_metric_stats."""
+    [seed] is a _comp_entry plus 'killed' (the file's flag: the trial was killed, dev.kill_thresh).
+    Each group reads its own best-checkpoint metrics file for the given selection criterion
+    (evals/_selected/<criterion>/), whose presence is also the completion signal, same as
+    update_metric_stats."""
     comps_all = {group_key: {} for group_key in _EVAL_GROUPS}
     for arm, coord in arm_coords:
         for dataset in datasets:
@@ -406,7 +426,8 @@ def _collect_comps(arm_coords, datasets, criterion):
                     for group_key in _EVAL_GROUPS:
                         fpath_metrics = dpath_trial / f"evals/_selected/{criterion}/{group_key}.json"
                         if fpath_metrics.exists():
-                            comps[group_key][dpath_trial.name] = _comp_entry(load_json(fpath_metrics)["scores"])
+                            metrics = load_json(fpath_metrics)
+                            comps[group_key][dpath_trial.name] = {**_comp_entry(metrics["scores"]), "killed": metrics["killed"]}
             for group_key in _EVAL_GROUPS:
                 comps_all[group_key][((arm, coord), dataset)] = comps[group_key]
     return comps_all
@@ -567,6 +588,10 @@ def _col_styles(grid, bold_high, n_keys):
         styles[c] = (means, winners)
     return styles
 
+# heatmap shade of a table row holding a killed trial (dev.kill_thresh): a sickly yellow in place of the
+# white -> red score ramp, so the scores still read but visibly come from a run cut short
+_KILLED_HEX = "DCE06E"
+
 def _heat_hex(mean):
     """Heatmap cell color as 'RRGGBB': linear white (#ffffff) -> #ff5533 interpolation over a
     fixed 0.00 -> 100.00."""
@@ -575,8 +600,13 @@ def _heat_hex(mean):
     b = round(255 - (255 - 0x33) * frac)
     return f"FF{g:02X}{b:02X}"
 
-def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap):
-    fig, ax = plt.subplots(figsize=(1.2 + 1.5 * (len(grid[0]) - 1), 0.7 + 0.3 * len(grid)))
+def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows):
+    # matplotlib lays table rows out at a fixed 10pt * 1.2 = 1/6in apiece whatever the figure size
+    # (1/4in after the 1.5x scale below), so the axes is made exactly that tall and fills the
+    # figure: the table then spans it edge to edge for any row count and the title's pad is the
+    # whole gap above it, instead of a tall table overflowing the axes and running over the title.
+    fig, ax = plt.subplots(figsize=(1.2 + 1.5 * (len(grid[0]) - 1), 0.25 * len(grid)))
+    fig.subplots_adjust(bottom=0, top=1)
     ax.axis("off")
     ax.set_title(title, fontsize=11, pad=12)
     table = ax.table(cellText=grid, loc="center", cellLoc="center")
@@ -594,30 +624,35 @@ def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap):
         if row in winners:
             cell.set_text_props(fontweight="bold")
         if heatmap and row in means:
-            cell.set_facecolor(f"#{_heat_hex(means[row])}")
+            cell.set_facecolor(f"#{_KILLED_HEX if row in killed_rows else _heat_hex(means[row])}")
     fig.savefig(fpath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
-def _plot_convergence(curves, idx_win, score_name, title, fpath):
+def _plot_convergence(curves, idx_win, score_name, title, fpath, base_sel):
     """[(row key, mean curve, its selected index), ...] overlaid on one log-x axes: every row grey,
     curves[idx_win] redrawn in black on top (legend: its key's cells joined by '/', e.g. 'hp/LR-1.0e-5')
     with its selection marked by a diamond and a red dashed line across the plot at its score.
-    Checkpoint 0 (the base eval) has no place on a log axis and is dropped -- it is not a selection
-    candidate either way, so every curve starts at checkpoint 1."""
+    Checkpoint 0 (the base eval) has no place on a log axis: without base_sel it is not a selection
+    candidate and is dropped, so every curve starts at checkpoint 1; with it the axis is symlog, its
+    linear stretch below 1 holding checkpoint 0 so a base selection can be drawn."""
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_xscale("log")
+    idx_lo = 0 if base_sel else 1
+    if base_sel:
+        ax.set_xscale("symlog", linthresh=1, linscale=0.5, subs=np.arange(2, 10))
+    else:
+        ax.set_xscale("log")
     # plain checkpoint numbers on the log axis, not the default 10^k scientific labels; the minor
     # ticks carry most of them at these ranges (a campaign's n_chkpts is a couple of decades at most)
     ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
     ax.xaxis.set_minor_formatter(FormatStrFormatter("%g"))
-    ax.set_xlim(1, max(len(means) - 1 for _, means, _ in curves))  # no margin below chkpt 1 (log axis)
+    ax.set_xlim(idx_lo, max(len(means) - 1 for _, means, _ in curves))  # no margin below the first checkpoint
     for i, (_, means, _) in enumerate(curves):  # every row grey, one legend entry for the pack
-        ax.plot(np.arange(1, len(means)), means[1:], color="grey", alpha=0.6, linewidth=1,
+        ax.plot(np.arange(idx_lo, len(means)), means[idx_lo:], color="grey", alpha=0.6, linewidth=1,
                 label=f"all ({len(curves)})" if i == 0 else None)
 
     row, means, idx_best = curves[idx_win]
     ax.axhline(means[idx_best], color="red", linestyle="--", linewidth=1)
-    ax.plot(np.arange(1, len(means)), means[1:], color="black", linewidth=1, zorder=4, label="/".join(row))
+    ax.plot(np.arange(idx_lo, len(means)), means[idx_lo:], color="black", linewidth=1, zorder=4, label="/".join(row))
     # diamond + value on the selected point itself
     ax.plot(idx_best, means[idx_best], marker="D", color="black", markersize=3, linestyle="none",
             zorder=5, label=f"selected ({idx_best})")
@@ -631,7 +666,7 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
     fig.savefig(fpath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
-def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels, spread_type, bold_high, ordered, heatmap):
+def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels, spread_type, bold_high, ordered, heatmap, base_sel):
     """Render one score table + one convergence plot per selection criterion x eval group for ONE
     dataset: dpath_stats/{map,acc}/<group>/metrics.png -- map/ the comp mAP table (All/ID/OOD/I2T/I2I/T2I
     score columns), acc/ the comp I2T accuracy table (single I2T column), each plus the enabled
@@ -648,10 +683,11 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels
     metric's mean over THIS dataset's completed trials (map tables by the mAP 'All' column, acc tables
     by the acc 'I2T' column) -- localized per dataset and per group, independent of the cross-dataset
     order used in the workbooks -- heatmap shades score cells white->#ff5533 over a fixed
-    0.00->100.00 (as in update_phase_stats). Convergence plots overlay every row's curve on one
+    0.00->100.00 (as in update_phase_stats), rows holding a killed trial (dev.kill_thresh) in the
+    killed yellow instead. Convergence plots overlay every row's curve on one
     log-scaled checkpoint axis, all grey, with the winner -- the highest mean at its OWN selected
-    checkpoint, ties to the first row -- black on top, its selection marked (_plot_convergence); no
-    plot when there are no curves."""
+    checkpoint, ties to the first row -- black on top, its selection marked (_plot_convergence, from
+    checkpoint 0 under base_sel); no plot when there are no curves."""
     map_labels, acc_labels = labels
     for criterion in BEST_CRITERIA:
         score_labels = {"map": map_labels, "acc": acc_labels}[criterion]
@@ -666,20 +702,22 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, labels
             dpath_group = dpath_stats / criterion / group_key
             dpath_group.mkdir(parents=True, exist_ok=True)
             title_suffix = f" -- {subject} ({group_name})"
-            grid = _stats_table_grid(
+            grid, killed_rows = _stats_table_grid(
                 headers,
                 score_labels,
-                [(row, [comp[criterion] for comp in comps_by[(row, dataset)].values()]) for row in rows],
+                [(row, list(comps_by[(row, dataset)].values())) for row in rows],
+                criterion,
                 spread_type,
             )
-            _render_stats_table(grid, len(headers), f"{score_name}{title_suffix}", dpath_group / "metrics.png", bold_high, heatmap)
+            _render_stats_table(grid, len(headers), f"{score_name}{title_suffix}", dpath_group / "metrics.png", bold_high, heatmap,
+                                killed_rows)
             if curves:
                 idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
                 _plot_convergence(curves, idx_win, score_name, f"{score_name} Convergence{title_suffix}",
-                                  dpath_group / "convergence.png")
+                                  dpath_group / "convergence.png", base_sel)
 
 @rank0
-def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, supp_scores, base_sel):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
     _datasets/<dataset>/_arms/<arm>/arm_stats/{map,acc}/<group>/{metrics,convergence}.png (see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
@@ -704,10 +742,10 @@ def update_arm_stats(dataset, arm, spread_type, bold_high, ordered, heatmap, sup
         return rows, comps_by, curves
 
     _render_stats_pngs(dpath_arm / "arm_stats", ("Coord",), rowset, dataset, f"{arm}, {DATASET_ALIAS2NAME[dataset]}",
-                       _score_labels(supp_scores, _nshot_names(comps_all)), spread_type, bold_high, ordered, heatmap)
+                       _score_labels(supp_scores, _nshot_names(comps_all)), spread_type, bold_high, ordered, heatmap, base_sel)
 
 @rank0
-def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp_scores, base_sel):
     """Render `dataset`'s cross-arm tables/plots:
     _datasets/<dataset>/dataset_stats/{arm_coords,arms}/{map,acc}/<group>/{metrics,convergence}.png (see
     _render_stats_pngs). arm_coords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
@@ -744,10 +782,10 @@ def update_dataset_stats(dataset, spread_type, bold_high, ordered, heatmap, supp
         return rows, comps_arms, curves
 
     _render_stats_pngs(dpath_stats / "arm_coords", ("Arm", "Coord"), rowset_arm_coords, dataset, subject, labels,
-                       spread_type, bold_high, ordered, heatmap)
+                       spread_type, bold_high, ordered, heatmap, base_sel)
     if ArtifactManager.dpath_phase.name != "qual":  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
         _render_stats_pngs(dpath_stats / "arms", ("Arm",), rowset_arms, dataset, subject, labels,
-                           spread_type, bold_high, ordered, heatmap)
+                           spread_type, bold_high, ordered, heatmap, base_sel)
 
 def _override_value(config, key):
     """Effective value of dot-path `key` in a row's config.json dict; '-' when a segment is absent --
@@ -791,8 +829,8 @@ def _map_groups(supp_scores, nshot_names):
     return groups if len(groups) > 1 else None
 
 def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, styled=True):
-    """Lay one workbook sheet out from its blocks ((label, [(title, cell grid), ...]) -- the
-    aggregate block labeled None, then the per-seed blocks), side by side one blank separator
+    """Lay one workbook sheet out from its blocks ((label, [(title, cell grid, killed row indices),
+    ...]) -- the aggregate block labeled None, then the per-seed blocks), side by side one blank separator
     column apart, under the campaign banner cell '<repo-parent-dir> - <campaign> (<banner>)'.
     groups: None -> each table's banner is its title merged across the full table width;
     else [(group_title, n_group_cols), ...] -> the title sits over the block's n_keys key
@@ -804,7 +842,8 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
     shifted right past them -- vertically aligned with the aggregate block's bottom Mean table
     so the Mean's key columns label their rows; band cells likewise get no winner-bold/heatmap
     styling. styled=False skips the winner-bold/heatmap styling of data cells altogether (the
-    hardware sheet's readings aren't scores)."""
+    hardware sheet's readings aren't scores). A table's killed rows (those holding a killed trial,
+    dev.kill_thresh) take the killed yellow in place of the heatmap ramp."""
     bold = Font(bold=True)
     center = Alignment(horizontal="center", vertical="center")
     left = Alignment(horizontal="left", vertical="center")
@@ -828,7 +867,7 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
         # banner row + blank row above the tables; dataset tables lead in every block, so they
         # sit in the same rows across blocks (only the aggregate has the trailing Mean table)
         row = 3
-        for title_text, grid in tables:
+        for title_text, grid, killed_rows in tables:
             n_cols = len(grid[0])  # key columns + one col per label (the hw Mean table carries extra crash columns)
             title = ws.cell(row=row, column=col0, value=title_text)
             title.font = bold
@@ -867,14 +906,14 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
                     if r in winners:
                         cell.font = bold
                     if heatmap and styled and r in means:
-                        cell.fill = PatternFill("solid", fgColor=_heat_hex(means[r]))
+                        cell.fill = PatternFill("solid", fgColor=_KILLED_HEX if r in killed_rows else _heat_hex(means[r]))
                 row += 1
             row += 1  # blank spacer row between tables
         # widest table decides the block's width (the hw Mean table carries extra crash columns)
-        col0 += max(len(grid[0]) for _, grid in tables) + 1
+        col0 += max(len(grid[0]) for _, grid, _ in tables) + 1
 
     # banner row of the aggregate block's bottom Mean table (dataset tables precede it)
-    band_row = 3 + sum(len(grid) + 2 for _, grid in blocks[0][1][:-1])
+    band_row = 3 + sum(len(grid) + 2 for _, grid, _ in blocks[0][1][:-1])
     band_col = 1
     for band_title, band_grid in bands:
         b_cols = len(band_grid[0])
@@ -1015,35 +1054,44 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
         trials alone -- plain key cells (no trial counts), single-trial 'XX.XX' cells, '-'
         where that seed's trial hasn't completed. Rows are shared across all blocks -- when
         ordered, pinned to the aggregate Mean-table's first score column (labels[0]),
-        descending. Also returns the sheet's row order."""
+        descending. Each table carries the indices of its rows holding a killed trial
+        (dev.kill_thresh; in the Mean table, one from any dataset) for _write_sheet's yellow
+        shading. Also returns the sheet's row order."""
         xmeans = _cross_dataset_means(rows, datasets, comps_by, score_key, labels)
         rows = _order_rows(rows, xmeans, labels[0]) if ordered else rows
 
         tables = []
         for dataset in datasets:
-            grid = _stats_table_grid(
+            grid, killed_rows = _stats_table_grid(
                 headers,
                 labels,
-                [(row, [comp[score_key] for comp in comps_by[(row, dataset)].values()]) for row in rows],
+                [(row, list(comps_by[(row, dataset)].values())) for row in rows],
+                score_key,
                 spread_type,
             )
-            tables.append((DATASET_ALIAS2NAME[dataset], grid))
+            tables.append((DATASET_ALIAS2NAME[dataset], grid, killed_rows))
         xgrid = [[*headers, *labels]]
-        for row in rows:
+        xkilled = set()
+        for r, row in enumerate(rows, 1):
             xgrid.append([*row] + ["-" if xmeans[(row, label)] is None else f"{xmeans[(row, label)]:.2f}" for label in labels])
-        tables.append(("Mean", xgrid))
+            if any(comp["killed"] for dataset in datasets for comp in comps_by[(row, dataset)].values()):
+                xkilled.add(r)
+        tables.append(("Mean", xgrid, xkilled))
         blocks = [(None, tables)]
 
         for seed in seeds:
             stables = []
             for dataset in datasets:
                 grid = [[*headers, *labels]]
-                for row in rows:
+                killed_rows = set()
+                for r, row in enumerate(rows, 1):
                     comp = comps_by[(row, dataset)].get(seed)
                     grid.append([*row] + ["-" if comp is None or label.lower() not in comp[score_key]
                                           else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
                                           for label in labels])
-                stables.append((DATASET_ALIAS2NAME[dataset], grid))
+                    if comp is not None and comp["killed"]:
+                        killed_rows.add(r)
+                stables.append((DATASET_ALIAS2NAME[dataset], grid, killed_rows))
             blocks.append((f"seed {seed}", stables))
         return blocks, rows
 
@@ -1066,7 +1114,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
             for row in rows:
                 readings = list(hw_by[(row, dataset)].values())
                 grid.append(hw_row([*row[:-1], f"{row[-1]} ({len(readings)})"], readings))
-            tables.append((DATASET_ALIAS2NAME[dataset], grid))
+            tables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
         xgrid = [[*headers, *_HW_LABELS, *_HW_CRASH_LABELS]]
         for row in rows:
             dataset_means = [
@@ -1074,7 +1122,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 for dataset in datasets if hw_by[(row, dataset)]
             ]
             xgrid.append(hw_row(row, dataset_means) + [str(crash_totals[row][kind]) for kind in _CRASH_KINDS])
-        tables.append(("Mean", xgrid))
+        tables.append(("Mean", xgrid, set()))
         blocks = [(None, tables)]
 
         for seed in seeds:
@@ -1084,7 +1132,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 for row in rows:
                     trial = hw_by[(row, dataset)].get(seed)
                     grid.append(hw_row(row, [] if trial is None else [trial]))
-                stables.append((DATASET_ALIAS2NAME[dataset], grid))
+                stables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
             blocks.append((f"seed {seed}", stables))
         return blocks
 
@@ -1194,11 +1242,11 @@ def _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, score_key, label
             score_maps = [comp[score_key] for comp in comps_by[(row, dataset)].values()]
             grid.append([row[0], f"{row[1]} ({len(score_maps)})", chkpt_cell(row, dataset),
                          *_score_cells(score_maps, labels, spread_type)])
-        tables.append((DATASET_ALIAS2NAME[dataset], grid))
+        tables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
     xgrid = [[*headers, *labels]]
     for row in rows:
         xgrid.append([*row, "-"] + ["-" if xmeans[(row, label)] is None else f"{xmeans[(row, label)]:.2f}" for label in labels])
-    tables.append(("Mean", xgrid))
+    tables.append(("Mean", xgrid, set()))
     blocks = [(None, tables)]
 
     for seed in seeds:
@@ -1211,7 +1259,7 @@ def _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, score_key, label
                             + ["-" if comp is None or label.lower() not in comp[score_key]
                                else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
                                for label in labels])
-            stables.append((DATASET_ALIAS2NAME[dataset], grid))
+            stables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
         blocks.append((f"seed {seed}", stables))
     return blocks, rows
 
@@ -1341,7 +1389,7 @@ def plot_composite_metrics(
     plot_title,
     output_filename,
 ):
-    # a dev.batch_diagnostics component that was off never recorded its series, and its panel(s) and
+    # a dev.reporting.batch_diagnostics component that was off never recorded its series, and its panel(s) and
     # height slot are omitted outright: model grad norm, ||delta theta||, sim-grad sums, the S stats panel
     has_grad_norm = len(data_epoch["grad_norm_model"]) == len(x_train)
     has_delta_norm = len(data_epoch["delta_norm_model"]) == len(x_train)

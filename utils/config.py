@@ -19,15 +19,17 @@ CFG_PARAM_ALIASES = {
     "n_epochs": "E",
     "batch_size": "BS",
     "loss.mix": "Mix",
-    "loss.unitless": "Unitless",
+    "loss.unitless": "Unit",
     "loss1.targ": "Targ",
     "loss1.wting.bce.dsmr": "DSMR",
     "loss1.logits.temp.init": "Tau",
-    "loss1.logits.bce.bias.init": "Bias",
+    "loss1.logits.bce.bias.init": "Binit",
+    "loss1.logits.bce.bias.center": "Bcent",
     "loss2.targ": "Targ2",
     "loss2.wting.bce.dsmr": "DSMR2",
     "loss2.logits.temp.init": "Tau2",
-    "loss2.logits.bce.bias.init": "Bias2",
+    "loss2.logits.bce.bias.init": "B2init",
+    "loss2.logits.bce.bias.center": "B2cent",
     "opt.lr.init": "LR",
     "opt.wd": "WD",
 }
@@ -197,8 +199,15 @@ class TrainConfig:
                 f"opt.lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
             )
 
-        if self.dev["plot_every"] not in ("trial", "chkpt"):
-            raise ValueError(f"dev.plot_every must be 'trial' or 'chkpt', got {self.dev['plot_every']!r}")
+        if self.dev["reporting"]["plot_every"] not in ("trial", "chkpt"):
+            raise ValueError(f"dev.reporting.plot_every must be 'trial' or 'chkpt', got {self.dev['reporting']['plot_every']!r}")
+
+        if self.dev["del_base_eval_cache"] not in (None, "campaign", "trial"):
+            raise ValueError(f"dev.del_base_eval_cache must be null, 'campaign' or 'trial', got {self.dev['del_base_eval_cache']!r}")
+
+        kill_thresh = self.dev["kill_thresh"]
+        if kill_thresh is not None and not 0.0 < kill_thresh < 1.0:
+            raise ValueError(f"dev.kill_thresh must be null or a fraction in (0.0, 1.0), got {kill_thresh!r}")
 
         if self.freeze["image"] and self.freeze["text"]:
             raise ValueError("Image and text encoders are both set to frozen!")

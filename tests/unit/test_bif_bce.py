@@ -80,7 +80,7 @@ def _make_harness(model, crit1, crit2=None, mix=0.0, unitless=False):
         loss={"mix": mix, "unitless": unitless},
         loss1={"crit": crit1.cfg["crit"]},
         loss2={"crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
-        dev={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}},
+        dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}}},
     )
     return h
 

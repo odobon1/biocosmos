@@ -196,26 +196,33 @@ dev:
     n_chkpts: 1
     batch_size: 256
     opt.lr.warmup: 0.0
-  batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false) Skip that component's
-  # compute -- its log fields and learning-curve panels are omitted (loss/LR/logit-scalar curves and evals
-  # unaffected)
-    grad_norm_model: false  # {true, false}; Whole-model grad norm (model= in grad_norm.log + its curve panel)
-    delta_norm_model: false  # {true, false}; ||delta theta|| update norm via pre-step param snapshot
-    # (step= in grad_norm.log + its curve panel)
-    emb_logit_grads: false  # {true, false}; Retained embedding/logit grads (img=/txt=/logit= in grad_norm.log;
-    # no curve panel)
-    sim_grad_sums: true  # {true, false}; Retained sim grads' full-batch sums (the sim-grad-sum curve strips;
-    # no log fields)
-    sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Y
-    # curve panels)
-  logging: true
-  plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
-  # (trial) Only at the final checkpoint
+  reporting:
+    batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false) Skip that component's
+    # compute -- its log fields and learning-curve panels are omitted (loss/LR/logit-scalar curves and evals
+    # unaffected)
+      grad_norm_model: false  # {true, false}; Whole-model grad norm (model= in grad_norm.log + its curve panel)
+      delta_norm_model: false  # {true, false}; ||delta theta|| update norm via pre-step param snapshot
+      # (step= in grad_norm.log + its curve panel)
+      emb_logit_grads: false  # {true, false}; Retained embedding/logit grads (img=/txt=/logit= in grad_norm.log;
+      # no curve panel)
+      sim_grad_sums: true  # {true, false}; Retained sim grads' full-batch sums (the sim-grad-sum curve strips;
+      # no log fields)
+      sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Y
+      # curve panels)
+    logging: true
+    plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
+    # (trial) Only at the final checkpoint
+    eval:
+      base_chkpt_sel: true  # {true, false}; (true) The base eval (checkpoint 0) is a checkpoint-selection candidate
+      # like any other, so a coord can be scored at its untrained model in the stats tables/workbooks, and the
+      # convergence plots draw the curves from checkpoint 0; (false) Selection runs over 1..n_chkpts
+  kill_thresh: 0.2  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
+  # base model is killed: at the train-time eval nearest that fraction, rounded up (ceil(kill_thresh * n_chkpts)), if no
+  # eval so far has beaten the base eval's Composite-All Native mAP, the trial ends there and counts as complete --
+  # scored at its own best checkpoint and shaded yellow in the stats tables (see README); (null) Never kill
   continue_campaign: true  # {true, false}; (true) Resume/extend an existing campaign of the same name; (false) If the
   # campaign name (incl. suffix) already has an artifacts dir, fall back to the first free <name>2, <name>3, ... Campaign
   # runner reads this flag from here (not from cfg_baseline.json)
-  del_base_eval_cache:
-    campaign: true  # {true, false}; (true) Delete base_eval_cache/ once, when the campaign is first created
-    # (relaunches keep the cache the campaign's own trials built)
-    trial: false  # {true, false}; (true) Delete base_eval_cache/ before each trial launch, so every trial re-runs its 
-    # base eval (apples-to-apples wall-clock comparisons)
+  del_base_eval_cache: campaign  # {null, campaign, trial}; (campaign) Delete base_eval_cache/ once, when the campaign
+  # is first created (relaunches keep the cache the campaign's own trials built); (trial) Delete it before each trial
+  # launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons); (null) Never delete it

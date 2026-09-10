@@ -299,7 +299,9 @@ class PrintLog:
         tuples in launch order; `in_progress` is the trial currently running (None when nothing is). A trial
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
-        as 'trial_id --- D-HH:MM:SS', dash-aligned per section; Failed entries additionally carry sample
+        as 'trial_id --- D-HH:MM:SS', dash-aligned per section; a Completed trial that dev.kill_thresh cut
+        short additionally carries ' --- KILLED (eval <k>)', k the eval it stopped at (metadata's killed
+        field); Failed entries additionally carry sample
         progress as ' --- E/N' (epoch index / n_epochs) and the failure type as
         ' --- RAM|VRAM|Other|Mixed' (the aggregate cause over the fatal retry loop's crashes, parsed
         from error.log's 'failure=' marker written by campaign_runner._log_trial_error). A trial that
@@ -325,7 +327,8 @@ class PrintLog:
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
             if metadata_trial is not None and metadata_trial["complete"]:
-                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial)))
+                killed = metadata_trial["killed"]
+                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial) + ("" if killed is None else f" --- KILLED (eval {killed})")))
             elif trial == in_progress:
                 buckets["In Progress"].append(trial_id)
             elif (dpath_trial / "error.log").exists():
@@ -446,7 +449,7 @@ class PrintLog:
                 return float("nan")
             return sum(grads).pow(2).sum().sqrt().item()
 
-        # each enabled dev.batch_diagnostics component contributes its own grad_norm.log fields; with
+        # each enabled dev.reporting.batch_diagnostics component contributes its own grad_norm.log fields; with
         # every component off the line has none and is skipped outright (as is the sim_targ line when
         # sim_targ_stats is off -- batch_stats arrives None)
         fields_grad_norm = []

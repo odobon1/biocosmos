@@ -132,7 +132,7 @@ def build_harness(model_ddp, crit1, crit2, mix, unitless, world_size, device):
         # production loss2 is the full loss config (batch_step's stats read loss2["crit"]); at mix == 0 it is never read
         loss2=crit2.cfg if crit2 is not None else {},
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
-        dev={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}},
+        dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}}},
         device=device,
     )
     return h

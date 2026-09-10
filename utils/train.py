@@ -429,7 +429,8 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, killed, init_flag=False):
+        # killed: the train-time eval index the trial was killed at (dev.kill_thresh), None otherwise
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
         progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}
@@ -444,6 +445,7 @@ class ArtifactManager:
                 "datetime_start": now,
                 "datetime_last_seen": now,
                 "complete": False,
+                "killed": killed,
                 "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # crashes this trial has recovered from, bucketed by cause; bumped by campaign_runner._bump_crash_counts
             }
         else:
@@ -452,6 +454,7 @@ class ArtifactManager:
             metadata_trial["progress"] = progress_data
             metadata_trial["memory"] = merge_mem(metadata_trial["memory"], format_mem(mem))
             metadata_trial["datetime_last_seen"] = now
+            metadata_trial["killed"] = killed
         save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
 
     @staticmethod
@@ -557,6 +560,7 @@ class ArtifactManager:
             "idx_epoch": train_pipe.idx_epoch,
             "idx_batch": idx_batch,
             "chkpt_thresh": train_pipe.chkpt_thresh,
+            "killed": train_pipe._killed,
             "times": train_pipe.time_tracker.state_dict(),
         }
         torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")

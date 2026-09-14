@@ -1144,7 +1144,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
         "\n"
         "✅ Completed:\n"
         "cub/hp/c0/42 --- 1-07:35:23\n"
-        "cub/mp/c0/42 --- 0-00:20:34 --- KILLED (eval 2)\n"
+        "cub/mp/c0/42 --- 0-00:20:34 --- ABANDON SHIP (eval 2)\n"
         "\n"
         "🏃 In Progress:\n"
         "nymph/hp/c0/42\n"

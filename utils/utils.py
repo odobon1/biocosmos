@@ -300,7 +300,7 @@ class PrintLog:
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
         as 'trial_id --- D-HH:MM:SS', dash-aligned per section; a Completed trial that dev.kill_thresh cut
-        short additionally carries ' --- KILLED (eval <k>)', k the eval it stopped at (metadata's killed
+        short additionally carries ' --- ABANDON SHIP (eval <k>)', k the eval it stopped at (metadata's killed
         field); Failed entries additionally carry sample
         progress as ' --- E/N' (epoch index / n_epochs) and the failure type as
         ' --- RAM|VRAM|Other|Mixed' (the aggregate cause over the fatal retry loop's crashes, parsed
@@ -328,7 +328,7 @@ class PrintLog:
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
             if metadata_trial is not None and metadata_trial["complete"]:
                 killed = metadata_trial["killed"]
-                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial) + ("" if killed is None else f" --- KILLED (eval {killed})")))
+                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial) + ("" if killed is None else f" --- ABANDON SHIP (eval {killed})")))
             elif trial == in_progress:
                 buckets["In Progress"].append(trial_id)
             elif (dpath_trial / "error.log").exists():

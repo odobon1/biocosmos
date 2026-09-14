@@ -945,13 +945,15 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     """Write the phase's workbooks, one per selection criterion x eval group under
     artifacts/<campaign>/<phase>/phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
     workbooks have one row per planned (arm, coord) (the phase's matrix), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
-    one row per arm keyed by 'Arm' alone, each arm shown at its BEST coord per dataset -- the coord
-    with the highest across-trial mean of the workbook's criterion's comp score among the arm's coords
-    with completed trials in that dataset, ties to the first in campaign order (_best_coords; a
-    per-(criterion, group) pick, so the workbook's mAP and accuracy sheets show the same coord).
-    The arms/ workbooks are skipped in the qual phase, whose matrix reduces each arm to its pick(s) --
-    there they would just duplicate arm_coords/. Every table below is laid out identically in both,
-    over its own rows.
+    one row per arm, each arm shown at its BEST coord per dataset -- the coord with the highest
+    across-trial mean of the workbook's criterion's comp score among the arm's coords with completed
+    trials in that dataset, ties to the first in campaign order (_best_coords; a per-(criterion, group)
+    pick, so the workbook's mAP and accuracy sheets show the same coord) -- keyed by 'Arm' + 'Coord'
+    too, the Coord cell naming that pick: a per-(arm, dataset) value, so every dataset table (aggregate
+    and seed blocks alike, all three sheets) carries it ('-' where the arm has no completed trial in
+    that dataset) and the cross-dataset Mean table shows '-'. The arms/ workbooks are skipped in the
+    qual phase, whose matrix reduces each arm to its pick(s) -- there they would just duplicate
+    arm_coords/. Every table below is laid out identically in both, over its own rows.
 
     Each workbook has three sheets: 'Composite mAP' (comp map scores, All/ID/OOD/I2T/I2I/T2I score
     columns), 'Composite I2T Accuracy' (comp acc, single I2T column) and 'Hardware Performance' (see
@@ -1046,15 +1048,17 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
         declared_arms = {row: declared_ac[rep[row]] for row in rows_arms}
         config_arms = {row: config_ac[rep[row]] for row in rows_arms}
 
-    def build_blocks(headers, rows, comps_by, score_key, labels):
+    def build_blocks(headers, rows, key_cells, comps_by, score_key, labels):
         """A score sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
         block (label None): one table per campaign dataset, then the always-shown 'Mean'
         cross-dataset summary table at the bottom; then one block per completed seed (label
         'seed <seed>'): the per-dataset tables only (no Mean summary), built from that seed's
         trials alone -- plain key cells (no trial counts), single-trial 'XX.XX' cells, '-'
-        where that seed's trial hasn't completed. Rows are shared across all blocks -- when
-        ordered, pinned to the aggregate Mean-table's first score column (labels[0]),
-        descending. Each table carries the indices of its rows holding a killed trial
+        where that seed's trial hasn't completed. key_cells(row, dataset) -> the row's key cells
+        (one per header) in that dataset's tables, dataset None the Mean table's: the row itself in
+        the arm_coords workbooks, the arm + its best coord there in the arms ones. Rows are shared
+        across all blocks -- when ordered, pinned to the aggregate Mean-table's first score column
+        (labels[0]), descending. Each table carries the indices of its rows holding a killed trial
         (dev.kill_thresh; in the Mean table, one from any dataset) for _write_sheet's yellow
         shading. Also returns the sheet's row order."""
         xmeans = _cross_dataset_means(rows, datasets, comps_by, score_key, labels)
@@ -1065,7 +1069,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
             grid, killed_rows = _stats_table_grid(
                 headers,
                 labels,
-                [(row, list(comps_by[(row, dataset)].values())) for row in rows],
+                [(key_cells(row, dataset), list(comps_by[(row, dataset)].values())) for row in rows],
                 score_key,
                 spread_type,
             )
@@ -1073,7 +1077,8 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
         xgrid = [[*headers, *labels]]
         xkilled = set()
         for r, row in enumerate(rows, 1):
-            xgrid.append([*row] + ["-" if xmeans[(row, label)] is None else f"{xmeans[(row, label)]:.2f}" for label in labels])
+            xgrid.append([*key_cells(row, None)]
+                         + ["-" if xmeans[(row, label)] is None else f"{xmeans[(row, label)]:.2f}" for label in labels])
             if any(comp["killed"] for dataset in datasets for comp in comps_by[(row, dataset)].values()):
                 xkilled.add(r)
         tables.append(("Mean", xgrid, xkilled))
@@ -1086,22 +1091,23 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 killed_rows = set()
                 for r, row in enumerate(rows, 1):
                     comp = comps_by[(row, dataset)].get(seed)
-                    grid.append([*row] + ["-" if comp is None or label.lower() not in comp[score_key]
-                                          else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
-                                          for label in labels])
+                    grid.append([*key_cells(row, dataset)]
+                                + ["-" if comp is None or label.lower() not in comp[score_key]
+                                   else f"{float(comp[score_key][label.lower()]) * 100:.2f}"
+                                   for label in labels])
                     if comp is not None and comp["killed"]:
                         killed_rows.add(r)
                 stables.append((DATASET_ALIAS2NAME[dataset], grid, killed_rows))
             blocks.append((f"seed {seed}", stables))
         return blocks, rows
 
-    def build_hw_blocks(headers, rows, hw_by, crash_totals):
+    def build_hw_blocks(headers, rows, key_cells, hw_by, crash_totals):
         """The 'Hardware Performance' sheet's blocks, structured like build_blocks' (aggregate
-        block of per-dataset tables + Mean table, then per-seed blocks) over the hw readings
-        (hw_by[(row, dataset)][seed]): header key columns + _HW_LABELS (the Mean table appends the
-        _HW_CRASH_LABELS crash totals, crash_totals[row]), cells the rounded mean of the row's
-        per-trial readings ('-' when the row has none there); the Mean table means the per-dataset
-        trial means across datasets."""
+        block of per-dataset tables + Mean table, then per-seed blocks; key_cells as there) over
+        the hw readings (hw_by[(row, dataset)][seed]): header key columns + _HW_LABELS (the Mean
+        table appends the _HW_CRASH_LABELS crash totals, crash_totals[row]), cells the rounded mean
+        of the row's per-trial readings ('-' when the row has none there); the Mean table means the
+        per-dataset trial means across datasets."""
 
         def hw_row(cells, readings):
             if not readings:
@@ -1113,7 +1119,8 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
             grid = [[*headers, *_HW_LABELS]]
             for row in rows:
                 readings = list(hw_by[(row, dataset)].values())
-                grid.append(hw_row([*row[:-1], f"{row[-1]} ({len(readings)})"], readings))
+                cells = key_cells(row, dataset)
+                grid.append(hw_row([*cells[:-1], f"{cells[-1]} ({len(readings)})"], readings))
             tables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
         xgrid = [[*headers, *_HW_LABELS, *_HW_CRASH_LABELS]]
         for row in rows:
@@ -1121,7 +1128,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 {hw_label: np.mean([r[hw_label] for r in hw_by[(row, dataset)].values()]) for hw_label in _HW_LABELS}
                 for dataset in datasets if hw_by[(row, dataset)]
             ]
-            xgrid.append(hw_row(row, dataset_means) + [str(crash_totals[row][kind]) for kind in _CRASH_KINDS])
+            xgrid.append(hw_row(key_cells(row, None), dataset_means) + [str(crash_totals[row][kind]) for kind in _CRASH_KINDS])
         tables.append(("Mean", xgrid, set()))
         blocks = [(None, tables)]
 
@@ -1131,7 +1138,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 grid = [[*headers, *_HW_LABELS]]
                 for row in rows:
                     trial = hw_by[(row, dataset)].get(seed)
-                    grid.append(hw_row(row, [] if trial is None else [trial]))
+                    grid.append(hw_row(key_cells(row, dataset), [] if trial is None else [trial]))
                 stables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
             blocks.append((f"seed {seed}", stables))
         return blocks
@@ -1140,19 +1147,19 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     map_labels, acc_labels = _score_labels(supp_scores, nshot_names)
     map_groups = _map_groups(supp_scores, nshot_names)
 
-    def write_workbook(fpath, headers, rows, comps_by, hw_by, crash_totals, band_specs, config_by, banner):
+    def write_workbook(fpath, headers, rows, key_cells, comps_by, hw_by, crash_totals, band_specs, config_by, banner):
         wb = Workbook()
         ws_map = wb.active
         ws_map.title = "Composite mAP"
-        map_blocks, map_rows = build_blocks(headers, rows, comps_by, "map", map_labels)
+        map_blocks, map_rows = build_blocks(headers, rows, key_cells, comps_by, "map", map_labels)
         _write_sheet(ws_map, map_blocks, map_groups, _band_grids(band_specs, map_rows, config_by), banner, len(headers),
                      bold_high, heatmap)
-        acc_blocks, acc_rows = build_blocks(headers, rows, comps_by, "acc", acc_labels)
+        acc_blocks, acc_rows = build_blocks(headers, rows, key_cells, comps_by, "acc", acc_labels)
         _write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
                      banner, len(headers), bold_high, heatmap)
         # the hardware sheet shares the mAP sheet's row order (and so its overrides bands)
-        _write_sheet(wb.create_sheet("Hardware Performance"), build_hw_blocks(headers, map_rows, hw_by, crash_totals), None,
-                     _band_grids(band_specs, map_rows, config_by), banner, len(headers), bold_high, heatmap, styled=False)
+        _write_sheet(wb.create_sheet("Hardware Performance"), build_hw_blocks(headers, map_rows, key_cells, hw_by, crash_totals),
+                     None, _band_grids(band_specs, map_rows, config_by), banner, len(headers), bold_high, heatmap, styled=False)
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
 
@@ -1172,13 +1179,19 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
         for group_key, group_name in _EVAL_GROUPS.items():
             comps_by = comps_all[criterion][group_key]
             banner = f"{group_name}; {selection_name}"
-            write_workbook(dpath_stats / "arm_coords" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows_ac, comps_by,
-                           hw_by, crash_totals_ac, band_specs_ac, config_ac, banner)
+            write_workbook(dpath_stats / "arm_coords" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows_ac,
+                           lambda row, dataset: row, comps_by, hw_by, crash_totals_ac, band_specs_ac, config_ac, banner)
             if not write_arms:
                 continue
             # arms: each arm at its best coord per dataset under this criterion x group (_arm_rows' rows
-            # are rows_arms: which arms have trials doesn't depend on the criterion or group)
+            # are rows_arms: which arms have trials doesn't depend on the criterion or group), the pick
+            # named in the row's Coord cell -- '-' where the arm has no trials in that dataset, and in the
+            # Mean table (dataset None: no single pick there)
             rows, comps_arms, best = _arm_rows(arms, arm_coords, datasets, comps_by, criterion)
+
+            def key_cells_arms(row, dataset):
+                return (row[0], best[(row[0], dataset)] if (row[0], dataset) in best else "-")
+
             hw_arms = {
                 ((arm,), dataset): hw_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
                 for (arm,) in rows
@@ -1190,8 +1203,8 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                          for kind in _CRASH_KINDS}
                 for (arm,) in rows
             }
-            write_workbook(dpath_stats / "arms" / criterion / f"{group_key}.xlsx", ("Arm",), rows, comps_arms,
-                           hw_arms, crash_totals_arms, band_specs_arms, config_arms, banner)
+            write_workbook(dpath_stats / "arms" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows, key_cells_arms,
+                           comps_arms, hw_arms, crash_totals_arms, band_specs_arms, config_arms, banner)
 
 
 def _collect_test_scores(arm_coords, datasets):

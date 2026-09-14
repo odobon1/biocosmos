@@ -675,7 +675,7 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
     assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
     grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active.iter_rows()]
-    assert grid[4][:2] == ["sp (1)", "50.00"] and grid[5][:2] == ["mp (1)", "40.00"]
+    assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
 
 
 def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch) -> None:
@@ -732,8 +732,9 @@ def test_update_phase_stats_qual_phase_skips_arms_workbooks(tmp_path, monkeypatc
 
 
 def test_update_phase_stats_writes_stacked_tables(tmp_path, monkeypatch) -> None:
-    # (the arms workbook, whose single-key layout the shared writer renders exactly like the arm_coords
-    # one minus a key column -- see test_update_phase_stats_arm_coords_layout for that one)
+    # (the arms workbook, keyed like the arm_coords one by 'Arm' + 'Coord' -- here the arm's best coord
+    # in each dataset, '-' where it has no trials there and in the Mean table -- see
+    # test_update_phase_stats_arm_coords_layout for the (arm, coord)-keyed one)
     # two datasets -> two stacked tables sharing the same rows (in phase_metadata order). "hp" has 2
     # cub trials (mean ± spread) and none in bryo -> a blank "-" row in the Bryozoa table; "mp" has no
     # completed trials anywhere -> no rows at all until its first trial completes.
@@ -762,88 +763,91 @@ def test_update_phase_stats_writes_stacked_tables(tmp_path, monkeypatch) -> None
     # blank "-" row. mean cells are point values (no spread), unlike the per-dataset "± spread".
     # (the banner names the campaign, the phase dir's parent -- here tmp_path stands in for the phase dir)
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
-    assert grid[1][:7] == [None] * 7  # blank row below the campaign banner
+    assert grid[1][:8] == [None] * 8  # blank row below the campaign banner
     assert grid[2][0] == "CUB"
-    assert grid[3][:7] == ["Arm", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[4][:2] == ["hp (2)", "55.00 ± 7.07"]  # hp: 2 trials
-    assert grid[5][:7] == [None] * 7  # spacer row -- no "mp" row
+    assert grid[3][:8] == ["Arm", "Coord", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[4][:3] == ["hp", "c0 (2)", "55.00 ± 7.07"]  # hp: 2 trials, at its cub pick
+    assert grid[5][:8] == [None] * 8  # spacer row -- no "mp" row
     assert grid[6][0] == "Bryozoa"
-    assert grid[7][:7] == ["Arm", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[8][:2] == ["hp (0)", "-"]  # hp's blank entries still added for the trial-less dataset
+    assert grid[7][:8] == ["Arm", "Coord", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[8][:3] == ["hp", "- (0)", "-"]  # hp's blank entries still added for the trial-less dataset: no pick there
     assert grid[10][0] == "Mean"  # cross-dataset mean table sits at the bottom
-    assert grid[11][0] == "Arm"
-    assert grid[12][:7] == ["hp", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]
+    assert grid[11][:2] == ["Arm", "Coord"]
+    assert grid[12][:8] == ["hp", "-", "55.00", "57.00", "56.00", "58.00", "59.00", "60.00"]  # the pick is per dataset: '-'
     assert not any(v in ("mp", "mp (0)") for r in grid for v in r)
     # per-seed blocks to the right, one blank separator column apart; "seed <seed>" labels sit in the
     # campaign-banner row; seed blocks have no Mean table and their dataset tables sit in the same
     # rows as the aggregate block's (dataset tables lead everywhere), with plain key cells (no
     # counts), that seed's raw values, and "-" where the seed's trial hasn't completed
-    assert grid[0][8] == "seed 42"
-    assert grid[0][16] == "seed 43"
-    assert grid[2][8] == "CUB"
-    assert grid[3][8:15] == ["Arm", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[4][8:15] == ["hp", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"]   # seed 42 CUB, aligned with aggregate CUB
-    assert grid[6][8] == "Bryozoa"
-    assert grid[8][8:15] == ["hp", "-", "-", "-", "-", "-", "-"]                           # seed 42 Bryozoa
-    assert grid[4][16:23] == ["hp", "60.00", "62.00", "61.00", "63.00", "64.00", "65.00"]  # seed 43 CUB
-    assert grid[10][8] is None  # seed blocks have no Mean table (bottom band stays blank)
-    assert not any(r[8] == "Mean" for r in grid)  # no trial-mean table in seed blocks
-    assert all(r[7] is None and r[15] is None for r in grid)  # separator columns stay empty
+    assert grid[0][9] == "seed 42"
+    assert grid[0][18] == "seed 43"
+    assert grid[2][9] == "CUB"
+    assert grid[3][9:17] == ["Arm", "Coord", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[4][9:17] == ["hp", "c0", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"]   # seed 42 CUB, aligned with aggregate CUB
+    assert grid[6][9] == "Bryozoa"
+    assert grid[8][9:17] == ["hp", "-", "-", "-", "-", "-", "-", "-"]                           # seed 42 Bryozoa
+    assert grid[4][18:26] == ["hp", "c0", "60.00", "62.00", "61.00", "63.00", "64.00", "65.00"]  # seed 43 CUB
+    assert grid[10][9] is None  # seed blocks have no Mean table (bottom band stays blank)
+    assert not any(r[9] == "Mean" for r in grid)  # no trial-mean table in seed blocks
+    assert all(r[8] is None and r[17] is None for r in grid)  # separator columns stay empty
     # snug column widths: longest header/data cell + 2; empty separator columns get a small fixed width
-    assert ws.column_dimensions["A"].width == len("hp (2)") + 2
-    assert ws.column_dimensions["B"].width == len("55.00 ± 7.07") + 2
-    assert ws.column_dimensions["H"].width == 3
-    # bold_high=False: data cells stay unbolded (only header row + key column bold)
-    assert ws.cell(row=5, column=2).font.bold is not True
+    assert ws.column_dimensions["A"].width == len("Arm") + 2
+    assert ws.column_dimensions["B"].width == len("c0 (2)") + 2
+    assert ws.column_dimensions["C"].width == len("55.00 ± 7.07") + 2
+    assert ws.column_dimensions["I"].width == 3
+    # bold_high=False: data cells stay unbolded (only header row + key columns bold)
+    assert ws.cell(row=5, column=3).font.bold is not True
     # heatmap=False: data cells are left unshaded
-    assert ws.cell(row=5, column=2).fill.patternType is None
+    assert ws.cell(row=5, column=3).fill.patternType is None
     # "All Borders": thin black gridlines on every table cell, incl. all cells of the merged title banner
     assert ws.cell(row=3, column=1).border.top.style == "thin"
     assert ws.cell(row=3, column=1).border.top.color.rgb[-6:] == "000000"
-    assert ws.cell(row=3, column=7).border.right.color.rgb[-6:] == "000000"  # banner's far merged edge
-    assert ws.cell(row=5, column=2).border.left.color.rgb[-6:] == "000000"  # data cell
+    assert ws.cell(row=3, column=8).border.right.color.rgb[-6:] == "000000"  # banner's far merged edge
+    assert ws.cell(row=5, column=3).border.left.color.rgb[-6:] == "000000"  # data cell
     # campaign + table titles are left-aligned in their cells
     assert ws.cell(row=1, column=1).alignment.horizontal == "left"
     assert ws.cell(row=3, column=1).alignment.horizontal == "left"
-    # key cells are left-aligned; the key header and score cells stay centered
-    assert ws.cell(row=5, column=1).alignment.horizontal == "left"  # "hp (2)" (dataset table)
+    # key cells are left-aligned; the key headers and score cells stay centered
+    assert ws.cell(row=5, column=1).alignment.horizontal == "left"  # "hp" (dataset table)
+    assert ws.cell(row=5, column=2).alignment.horizontal == "left"  # "c0 (2)" (dataset table)
     assert ws.cell(row=13, column=1).alignment.horizontal == "left"  # "hp" (Mean table)
     assert ws.cell(row=4, column=1).alignment.horizontal == "center"  # "Arm" header
-    assert ws.cell(row=5, column=2).alignment.horizontal == "center"  # score cell
+    assert ws.cell(row=4, column=2).alignment.horizontal == "center"  # "Coord" header
+    assert ws.cell(row=5, column=3).alignment.horizontal == "center"  # score cell
     # 2nd sheet: the accuracy analog (single I2T column per table), same layout/row order.
     # hp's cub trials have acc i2t 56.00/66.00 -> mean 61.00 (± 7.07 in the per-dataset table).
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
     agrid = [[c.value for c in row] for row in wb["Composite I2T Accuracy"].iter_rows()]
     assert agrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert agrid[2][0] == "CUB"
-    assert agrid[3][:2] == ["Arm", "I2T"]
-    assert agrid[4][:2] == ["hp (2)", "61.00 ± 7.07"]
+    assert agrid[3][:3] == ["Arm", "Coord", "I2T"]
+    assert agrid[4][:3] == ["hp", "c0 (2)", "61.00 ± 7.07"]
     assert agrid[6][0] == "Bryozoa"
-    assert agrid[8][:2] == ["hp (0)", "-"]
+    assert agrid[8][:3] == ["hp", "- (0)", "-"]
     assert agrid[10][0] == "Mean"
-    assert agrid[12][:2] == ["hp", "61.00"]
-    # acc seed blocks (2-wide, so at cols D-E and G-H)
-    assert agrid[0][3] == "seed 42"
-    assert agrid[0][6] == "seed 43"
-    assert agrid[2][3] == "CUB"
-    assert agrid[4][3:5] == ["hp", "56.00"]   # seed 42 CUB, aligned with aggregate CUB
-    assert agrid[4][6:8] == ["hp", "66.00"]   # seed 43 CUB
-    assert agrid[8][3:5] == ["hp", "-"]       # seed 42 Bryozoa
+    assert agrid[12][:3] == ["hp", "-", "61.00"]
+    # acc seed blocks (3-wide, so at cols E-G and I-K)
+    assert agrid[0][4] == "seed 42"
+    assert agrid[0][8] == "seed 43"
+    assert agrid[2][4] == "CUB"
+    assert agrid[4][4:7] == ["hp", "c0", "56.00"]   # seed 42 CUB, aligned with aggregate CUB
+    assert agrid[4][8:11] == ["hp", "c0", "66.00"]  # seed 43 CUB
+    assert agrid[8][4:7] == ["hp", "-", "-"]        # seed 42 Bryozoa
     # 3rd sheet: the hardware analog, same layout/row order with the hw readings as columns (the
     # Mean table appends the crash totals); values asserted in test_update_phase_stats_hw_sheet
     hgrid = [[c.value for c in row] for row in wb["Hardware Performance"].iter_rows()]
     assert hgrid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert hgrid[2][0] == "CUB"
-    assert hgrid[3][:6] == ["Arm", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
-    assert hgrid[4][0] == "hp (2)"
+    assert hgrid[3][:7] == ["Arm", "Coord", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert hgrid[4][:2] == ["hp", "c0 (2)"]
     assert hgrid[6][0] == "Bryozoa"
-    assert hgrid[8][:2] == ["hp (0)", "-"]
+    assert hgrid[8][:3] == ["hp", "- (0)", "-"]
     assert hgrid[10][0] == "Mean"
-    assert hgrid[11][:9] == ["Arm", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
-                             "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
-    assert hgrid[12][0] == "hp"
-    assert hgrid[0][10] == "seed 42"  # one separator past the 9-wide Mean table (the block's widest)
-    assert hgrid[4][10] == "hp"
+    assert hgrid[11][:10] == ["Arm", "Coord", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+                              "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
+    assert hgrid[12][:2] == ["hp", "-"]
+    assert hgrid[0][11] == "seed 42"  # one separator past the 10-wide Mean table (the block's widest)
+    assert hgrid[4][11:13] == ["hp", "c0"]
 
 
 def test_update_phase_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
@@ -923,15 +927,16 @@ def test_update_phase_stats_bold_high(tmp_path, monkeypatch) -> None:
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, arm rows
-    # 5/6/7 = hp/mp/sp; score cols B..G = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
+    # 5/6/7 = hp/mp/sp; score cols C..H = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
     assert ws.cell(row=3, column=1).value == "CUB"
     assert ws.cell(row=4, column=1).value == "Arm"
-    for score_col in range(2, 8):
+    assert ws.cell(row=4, column=2).value == "Coord"
+    for score_col in range(3, 9):
         assert ws.cell(row=5, column=score_col).font.bold is True       # hp wins -> bold
         assert ws.cell(row=6, column=score_col).font.bold is not True   # mp loses -> not bold
         assert ws.cell(row=7, column=score_col).value == "-"            # sp: no cub trials
         assert ws.cell(row=7, column=score_col).font.bold is not True   # "-" never bolds
-    # same in the arm_coords workbook, one column over
+    # same in the arm_coords workbook, keyed the same way
     ws = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active
     assert ws.cell(row=4, column=2).value == "Coord"
     for score_col in range(3, 9):
@@ -963,11 +968,10 @@ def test_update_phase_stats_per_group_files(tmp_path, monkeypatch) -> None:
                 "joint.xlsx", "joint_macro.xlsx", "native.xlsx", "native_macro.xlsx"
             ]
     ws = load_workbook(dpath_stats / "arms" / "map" / "native.xlsx").active
-    assert ws.cell(row=4, column=2).value == "All"
-    assert ws.cell(row=5, column=1).value == "hp (1)"
-    assert ws.cell(row=5, column=2).value == "50.00"
+    assert ws.cell(row=4, column=3).value == "All"
+    assert [ws.cell(row=5, column=c).value for c in (1, 2, 3)] == ["hp", "c0 (1)", "50.00"]
     ws_macro = load_workbook(dpath_stats / "arms" / "map" / "native_macro.xlsx").active
-    assert ws_macro.cell(row=5, column=2).value == "30.00"  # macro, not standard's 50.00
+    assert ws_macro.cell(row=5, column=3).value == "30.00"  # macro, not standard's 50.00
     ws_ac = load_workbook(dpath_stats / "arm_coords" / "map" / "native_macro.xlsx").active
     assert [ws_ac.cell(row=5, column=c).value for c in (1, 2, 3)] == ["hp", "c0 (1)", "30.00"]
 
@@ -993,15 +997,15 @@ def test_update_phase_stats_criterion_sourcing(tmp_path, monkeypatch) -> None:
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_map["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
-    assert grid[4][:2] == ["hp (1)", "50.00"]   # mAP at the map-best checkpoint
-    assert agrid[4][:2] == ["hp (1)", "56.00"]  # acc at the map-best checkpoint
+    assert grid[4][:3] == ["hp", "c0 (1)", "50.00"]   # mAP at the map-best checkpoint
+    assert agrid[4][:3] == ["hp", "c0 (1)", "56.00"]  # acc at the map-best checkpoint
 
     wb_acc = load_workbook(tmp_path / "phase_stats" / "arms" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb_acc["Composite I2T Accuracy"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; Acc-selection)"
-    assert grid[4][:2] == ["hp (1)", "30.00"]   # mAP at the acc-best checkpoint
-    assert agrid[4][:2] == ["hp (1)", "36.00"]  # acc at the acc-best checkpoint
+    assert grid[4][:3] == ["hp", "c0 (1)", "30.00"]   # mAP at the acc-best checkpoint
+    assert agrid[4][:3] == ["hp", "c0 (1)", "36.00"]  # acc at the acc-best checkpoint
 
 
 def _full_comp(all_v: float, acc_v: str = "0.10") -> dict:
@@ -1033,27 +1037,27 @@ def test_update_phase_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -> N
     # campaign banner + blank row, then the dataset tables (Mean at the bottom); rows ordered
     # by the mean table's "All" column -> b before a
     assert grid[2][0] == "CUB"
-    assert grid[3][:7] == ["Arm", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
-    assert grid[4][:2] == ["b (1)", "40.00"]
-    assert grid[5][:2] == ["a (1)", "20.00"]
+    assert grid[3][:8] == ["Arm", "Coord", "All", "ID", "OOD", "I2T", "I2I", "T2I"]
+    assert grid[4][:3] == ["b", "c0 (1)", "40.00"]
+    assert grid[5][:3] == ["a", "c0 (1)", "20.00"]
     assert grid[7][0] == "Bryozoa"
-    assert grid[9][:2] == ["b (1)", "40.00"]
-    assert grid[10][:2] == ["a (1)", "40.00"]
+    assert grid[9][:3] == ["b", "c0 (1)", "40.00"]
+    assert grid[10][:3] == ["a", "c0 (1)", "40.00"]
     assert grid[12][0] == "Mean"
-    assert grid[14][:2] == ["b", "40.00"]
-    assert grid[15][:2] == ["a", "30.00"]
+    assert grid[14][:3] == ["b", "-", "40.00"]
+    assert grid[15][:3] == ["a", "-", "30.00"]
     # the seed block's rows are pinned to the sheet's mean-derived order too (CUB table, aligned rows)
-    assert grid[0][8] == "seed 42"
-    assert [grid[4][8], grid[5][8]] == ["b", "a"]
+    assert grid[0][9] == "seed 42"
+    assert [grid[4][9], grid[5][9]] == ["b", "a"]
     # the accuracy sheet orders by its own acc mean-'I2T' column -> [a, b], unlike the mAP sheet
     agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
-    assert agrid[3][:2] == ["Arm", "I2T"]
-    assert agrid[4][:2] == ["a (1)", "80.00"]
-    assert agrid[5][:2] == ["b (1)", "20.00"]
+    assert agrid[3][:3] == ["Arm", "Coord", "I2T"]
+    assert agrid[4][:3] == ["a", "c0 (1)", "80.00"]
+    assert agrid[5][:3] == ["b", "c0 (1)", "20.00"]
     assert agrid[12][0] == "Mean"
-    assert agrid[14][:2] == ["a", "80.00"]
-    assert agrid[15][:2] == ["b", "20.00"]
-    assert agrid[4][3:5] == ["a", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
+    assert agrid[14][:3] == ["a", "-", "80.00"]
+    assert agrid[15][:3] == ["b", "-", "20.00"]
+    assert agrid[4][4:7] == ["a", "c0", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
     # the arm_coords workbook orders its (arm, coord) rows the same way
     wb_ac = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_ac.active.iter_rows()]
@@ -1082,16 +1086,17 @@ def test_update_phase_stats_heatmap(tmp_path, monkeypatch) -> None:
     report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
-    # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col B,
+    # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col C,
     # arm rows 5/6/7 = a/b/c
     assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
-    assert _fill_rgb(ws, 5, 2) == "FFDDD6"  # 20 -> t=0.20
-    assert _fill_rgb(ws, 6, 2) == "FFAA99"  # 50 -> t=0.50
-    assert _fill_rgb(ws, 7, 2) == "FF775C"  # 80 -> t=0.80
+    assert _fill_rgb(ws, 5, 3) == "FFDDD6"  # 20 -> t=0.20
+    assert _fill_rgb(ws, 6, 3) == "FFAA99"  # 50 -> t=0.50
+    assert _fill_rgb(ws, 7, 3) == "FF775C"  # 80 -> t=0.80
     # the trailing Mean table is shaded too (arm rows 11/12/13)
-    assert _fill_rgb(ws, 11, 2) == "FFDDD6"
-    assert _fill_rgb(ws, 13, 2) == "FF775C"
-    # key cells never shade (the arm_coords workbook's coord column included)
+    assert _fill_rgb(ws, 11, 3) == "FFDDD6"
+    assert _fill_rgb(ws, 13, 3) == "FF775C"
+    # key cells never shade (both workbooks' coord column included)
+    assert _fill_rgb(ws, 5, 2) == "EAEAEA"
     ws = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active
     assert _fill_rgb(ws, 5, 2) == "EAEAEA" and _fill_rgb(ws, 5, 3) == "FFDDD6"
 
@@ -1117,16 +1122,16 @@ def test_update_phase_stats_shades_killed_rows_yellow(tmp_path, monkeypatch) -> 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # CUB table: banner row 3, header row 4, arm rows 5 (a) / 6 (b); Mean table rows 10 (a) / 11 (b)
-    assert grid[4][:2] == ["a (2, 1 killed)", "20.00 ± 0.00"]
-    assert grid[5][:2] == ["b (1)", "80.00"]
-    assert _fill_rgb(ws, 5, 2) == report._KILLED_HEX and _fill_rgb(ws, 5, 7) == report._KILLED_HEX
-    assert _fill_rgb(ws, 6, 2) == "FF775C"
-    assert _fill_rgb(ws, 10, 2) == report._KILLED_HEX and _fill_rgb(ws, 11, 2) == "FF775C"
-    # seed blocks (one blank separator column past the 7-column aggregate block): seed 42 first
-    assert grid[2][8] == "CUB" and grid[4][8] == "a" and grid[4][9] == "20.00"
-    assert _fill_rgb(ws, 5, 10) == "FFDDD6"  # seed 42's a survived: the ramp
-    assert _fill_rgb(ws, 5, 18) == report._KILLED_HEX  # seed 43's a was killed
-    assert _fill_rgb(ws, 6, 18) is None  # seed 43 never ran b: '-' stays unshaded
+    assert grid[4][:3] == ["a", "c0 (2, 1 killed)", "20.00 ± 0.00"]
+    assert grid[5][:3] == ["b", "c0 (1)", "80.00"]
+    assert _fill_rgb(ws, 5, 3) == report._KILLED_HEX and _fill_rgb(ws, 5, 8) == report._KILLED_HEX
+    assert _fill_rgb(ws, 6, 3) == "FF775C"
+    assert _fill_rgb(ws, 10, 3) == report._KILLED_HEX and _fill_rgb(ws, 11, 3) == "FF775C"
+    # seed blocks (one blank separator column past the 8-column aggregate block): seed 42 first
+    assert grid[2][9] == "CUB" and grid[4][9:12] == ["a", "c0", "20.00"]
+    assert _fill_rgb(ws, 5, 12) == "FFDDD6"  # seed 42's a survived: the ramp
+    assert _fill_rgb(ws, 5, 21) == report._KILLED_HEX  # seed 43's a was killed
+    assert _fill_rgb(ws, 6, 21) is None  # seed 43 never ran b: '-' stays unshaded
 
 
 def test_render_stats_table_shades_killed_rows_yellow(tmp_path) -> None:
@@ -1159,33 +1164,35 @@ def test_update_phase_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
-    # mAP banners split: unmerged title + grey merged 'Composite Scores'/'Primitive Scores' group headers
-    assert grid[2][:2] == ["CUB", "Composite Scores"]
-    assert grid[2][7] == "Primitive Scores"
-    assert grid[6][:2] == ["Mean", "Composite Scores"]
-    assert grid[6][7] == "Primitive Scores"
-    assert "B3:G3" in {str(m) for m in ws.merged_cells.ranges} and "H3:M3" in {str(m) for m in ws.merged_cells.ranges}
-    assert ws.cell(row=3, column=2).fill.fgColor.rgb[-6:] == "EAEAEA"  # group headers get the header grey
+    # mAP banners split: title merged over the two key columns + grey merged 'Composite Scores'/'Primitive
+    # Scores' group headers
+    merged = {str(m) for m in ws.merged_cells.ranges}
+    assert grid[2][:3] == ["CUB", None, "Composite Scores"]
+    assert grid[2][8] == "Primitive Scores"
+    assert grid[6][:3] == ["Mean", None, "Composite Scores"]
+    assert grid[6][8] == "Primitive Scores"
+    assert "A3:B3" in merged and "C3:H3" in merged and "I3:N3" in merged
+    assert ws.cell(row=3, column=3).fill.fgColor.rgb[-6:] == "EAEAEA"  # group headers get the header grey
     assert ws.cell(row=3, column=1).fill.patternType is None           # title cell stays unfilled
-    assert grid[3][:13] == ["Arm", *_PRIM_MAP_LABELS]
-    assert grid[4][:13] == ["hp (1)", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00",
+    assert grid[3][:14] == ["Arm", "Coord", *_PRIM_MAP_LABELS]
+    assert grid[4][:14] == ["hp", "c0 (1)", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00",
                             "61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # CUB row
-    assert grid[8][7:13] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # Mean row (bottom)
-    # seed block starts after the 13-wide aggregate + separator; its CUB table row-aligns with the aggregate's
-    assert grid[0][14] == "seed 42"
-    assert grid[2][14:16] == ["CUB", "Composite Scores"]
-    assert grid[2][21] == "Primitive Scores"
-    assert grid[3][14:27] == ["Arm", *_PRIM_MAP_LABELS]
-    assert grid[4][21:27] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
+    assert grid[8][8:14] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]  # Mean row (bottom)
+    # seed block starts after the 14-wide aggregate + separator; its CUB table row-aligns with the aggregate's
+    assert grid[0][15] == "seed 42"
+    assert grid[2][15:18] == ["CUB", None, "Composite Scores"]
+    assert grid[2][23] == "Primitive Scores"
+    assert grid[3][15:29] == ["Arm", "Coord", *_PRIM_MAP_LABELS]
+    assert grid[4][23:29] == ["61.00", "62.00", "63.00", "71.00", "72.00", "73.00"]
     # the accuracy sheet keeps full-width merged title banners (no group headers)
     ws_acc = wb["Composite I2T Accuracy"]
     agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
     assert agrid[2][:2] == ["CUB", None]
-    assert "A3:D3" in {str(m) for m in ws_acc.merged_cells.ranges}
-    assert agrid[3][:4] == ["Arm", "I2T", "ID I2T", "OOD I2T"]
-    assert agrid[4][:4] == ["hp (1)", "56.00", "64.00", "74.00"]  # CUB row
-    assert agrid[8][:4] == ["hp", "56.00", "64.00", "74.00"]  # Mean row (bottom)
-    assert agrid[0][5] == "seed 42"
+    assert "A3:E3" in {str(m) for m in ws_acc.merged_cells.ranges}
+    assert agrid[3][:5] == ["Arm", "Coord", "I2T", "ID I2T", "OOD I2T"]
+    assert agrid[4][:5] == ["hp", "c0 (1)", "56.00", "64.00", "74.00"]  # CUB row
+    assert agrid[8][:5] == ["hp", "-", "56.00", "64.00", "74.00"]  # Mean row (bottom)
+    assert agrid[0][6] == "seed 42"
 
 
 def test_update_arm_stats_supp_primitive(tmp_path, monkeypatch) -> None:
@@ -1245,42 +1252,42 @@ def test_update_phase_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
-    # 16-wide tables: Arm + 6 comp + 6 prim + 3 n-shot; three group headers over the banner
-    assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
-    assert grid[2][7] == "Primitive Scores"
-    assert grid[2][13] == "N-Shot Scores"
-    assert "B3:G3" in merged and "H3:M3" in merged and "N3:P3" in merged
-    assert grid[3][:16] == ["Arm", *_PRIM_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
-    assert grid[4][13:16] == ["-", "52.00", "53.00"]  # Bryozoa: no few-shot bucket
+    # 17-wide tables: Arm + Coord + 6 comp + 6 prim + 3 n-shot; three group headers over the banner
+    assert grid[2][:3] == ["Bryozoa", None, "Composite Scores"]
+    assert grid[2][8] == "Primitive Scores"
+    assert grid[2][14] == "N-Shot Scores"
+    assert "C3:H3" in merged and "I3:N3" in merged and "O3:Q3" in merged
+    assert grid[3][:17] == ["Arm", "Coord", *_PRIM_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
+    assert grid[4][14:17] == ["-", "52.00", "53.00"]  # Bryozoa: no few-shot bucket
     assert grid[6][0] == "CUB"
-    assert grid[8][13:16] == ["31.00", "32.00", "33.00"]
+    assert grid[8][14:17] == ["31.00", "32.00", "33.00"]
     assert grid[10][0] == "Mean"
-    assert grid[11][13:16] == ["few-shot", "med-shot", "many-shot"]
-    assert grid[12][13:16] == ["31.00", "42.00", "43.00"]  # few-shot: cub alone; others mean bryo/cub
-    # seed block (one separator past the 16-wide aggregate) carries the columns too
-    assert grid[0][17] == "seed 42"
-    assert grid[3][30:33] == ["few-shot", "med-shot", "many-shot"]
-    assert grid[4][30:33] == ["-", "52.00", "53.00"]
-    assert grid[8][30:33] == ["31.00", "32.00", "33.00"]
+    assert grid[11][14:17] == ["few-shot", "med-shot", "many-shot"]
+    assert grid[12][14:17] == ["31.00", "42.00", "43.00"]  # few-shot: cub alone; others mean bryo/cub
+    # seed block (one separator past the 17-wide aggregate) carries the columns too
+    assert grid[0][18] == "seed 42"
+    assert grid[3][32:35] == ["few-shot", "med-shot", "many-shot"]
+    assert grid[4][32:35] == ["-", "52.00", "53.00"]
+    assert grid[8][32:35] == ["31.00", "32.00", "33.00"]
     # accuracy sheet: the buckets' I2T accuracies, full-width banner as before
     ws_acc = wb["Composite I2T Accuracy"]
     agrid = [[c.value for c in r] for r in ws_acc.iter_rows()]
-    assert "A3:G3" in {str(m) for m in ws_acc.merged_cells.ranges}
-    assert agrid[3][:7] == ["Arm", "I2T", "ID I2T", "OOD I2T", "few-shot", "med-shot", "many-shot"]
-    assert agrid[4][4:7] == ["-", "62.00", "63.00"]
-    assert agrid[8][4:7] == ["41.00", "42.00", "43.00"]
-    assert agrid[12][4:7] == ["41.00", "52.00", "53.00"]
+    assert "A3:H3" in {str(m) for m in ws_acc.merged_cells.ranges}
+    assert agrid[3][:8] == ["Arm", "Coord", "I2T", "ID I2T", "OOD I2T", "few-shot", "med-shot", "many-shot"]
+    assert agrid[4][5:8] == ["-", "62.00", "63.00"]
+    assert agrid[8][5:8] == ["41.00", "42.00", "43.00"]
+    assert agrid[12][5:8] == ["41.00", "52.00", "53.00"]
 
     # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
     report.update_phase_stats("std", False, False, False, {"primitive": False, "n_shot": True}, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
-    assert grid[2][:2] == ["Bryozoa", "Composite Scores"]
-    assert grid[2][7] == "N-Shot Scores"
-    assert "H3:J3" in {str(m) for m in ws.merged_cells.ranges}
-    assert grid[3][:10] == ["Arm", *_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
-    assert grid[8][7:10] == ["31.00", "32.00", "33.00"]
+    assert grid[2][:3] == ["Bryozoa", None, "Composite Scores"]
+    assert grid[2][8] == "N-Shot Scores"
+    assert "I3:K3" in {str(m) for m in ws.merged_cells.ranges}
+    assert grid[3][:11] == ["Arm", "Coord", *_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
+    assert grid[8][8:11] == ["31.00", "32.00", "33.00"]
 
 
 def test_update_arm_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
@@ -1378,19 +1385,19 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert agrid[0][9] == "seed 42"
 
     # the arms workbook: the Arm Overrides band alone (A..B + separator C, score blocks at D), one row
-    # per arm at its best coord (lo for both)
+    # per arm at its best coord (lo for both, named in the Coord key column; '-' in the Mean table)
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert not any(v == "Coord Overrides" for r in grid for v in r)
     assert grid[2][3] == "CUB"
-    assert grid[4][3:5] == ["hp (1)", "50.00"]
-    assert grid[5][3:5] == ["mp (1)", "40.00"]
+    assert grid[4][3:6] == ["hp", "lo (1)", "50.00"]
+    assert grid[5][3:6] == ["mp", "lo (1)", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][3] == "Mean"
-    assert grid[8][:2] == ["loss.mix", "loss2.targ"] and grid[8][3] == "Arm"
-    assert grid[9][:2] == ["0.3", "phylo"] and grid[9][3] == "hp"
-    assert grid[10][:2] == ["-", "-"] and grid[10][3] == "mp"
+    assert grid[8][:2] == ["loss.mix", "loss2.targ"] and grid[8][3:5] == ["Arm", "Coord"]
+    assert grid[9][:2] == ["0.3", "phylo"] and grid[9][3:5] == ["hp", "-"]
+    assert grid[10][:2] == ["-", "-"] and grid[10][3:5] == ["mp", "-"]
     assert all(r[2] is None for r in grid)
-    assert grid[0][11] == "seed 42"
+    assert grid[0][12] == "seed 42"
 
 
 def test_update_phase_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypatch) -> None:
@@ -1448,33 +1455,34 @@ def test_update_phase_stats_arms_workbook_picks_best_coord_per_dataset(tmp_path,
 
     report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
+    # every table's 'Coord' key cell names the dataset's pick (the Mean table's shows '-': per dataset)
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
-    assert grid[3][:2] == ["Arm", "All"]
-    assert grid[4][:2] == ["a (1)", "60.00"]   # CUB: c0
-    assert grid[8][:2] == ["a (1)", "30.00"]   # Bryozoa: c1
-    assert grid[12][:2] == ["a", "45.00"]      # Mean of the per-dataset bests
-    assert grid[4][8:10] == ["a", "60.00"] and grid[8][8:10] == ["a", "30.00"]  # seed 42 block
+    assert grid[3][:3] == ["Arm", "Coord", "All"]
+    assert grid[4][:3] == ["a", "c0 (1)", "60.00"]   # CUB: c0
+    assert grid[8][:3] == ["a", "c1 (1)", "30.00"]   # Bryozoa: c1
+    assert grid[12][:3] == ["a", "-", "45.00"]       # Mean of the per-dataset bests
+    assert grid[4][9:12] == ["a", "c0", "60.00"] and grid[8][9:12] == ["a", "c1", "30.00"]  # seed 42 block
     agrid = [[c.value for c in r] for r in wb["Composite I2T Accuracy"].iter_rows()]
-    assert agrid[4][:2] == ["a (1)", "20.00"] and agrid[8][:2] == ["a (1)", "10.00"]  # the mAP-picked coords' acc
+    assert agrid[4][:3] == ["a", "c0 (1)", "20.00"] and agrid[8][:3] == ["a", "c1 (1)", "10.00"]  # the mAP-picked coords' acc
     hgrid = [[c.value for c in r] for r in wb["Hardware Performance"].iter_rows()]
-    assert hgrid[4][:2] == ["a (1)", "100"]    # cub c0's trial
-    assert hgrid[8][:2] == ["a (1)", "400"]    # bryo c1's trial
-    assert hgrid[12][:2] == ["a", "250"]
-    assert hgrid[12][6:9] == ["1", "2", "0"]   # crash totals: cub c0's + bryo c1's
+    assert hgrid[4][:3] == ["a", "c0 (1)", "100"]    # cub c0's trial
+    assert hgrid[8][:3] == ["a", "c1 (1)", "400"]    # bryo c1's trial
+    assert hgrid[12][:3] == ["a", "-", "250"]
+    assert hgrid[12][7:10] == ["1", "2", "0"]        # crash totals: cub c0's + bryo c1's
     # the arm_coords workbook keeps every coord as its own row, so nothing is picked there
     grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx").active.iter_rows()]
     assert grid[4][:3] == ["a", "c0 (1)", "60.00"] and grid[5][:3] == ["a", "c1 (1)", "40.00"]
     # acc-selection workbook: the pick flips per dataset
     wb_acc = load_workbook(tmp_path / "phase_stats" / "arms" / "acc" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_acc.active.iter_rows()]
-    assert grid[4][:2] == ["a (1)", "40.00"]  # cub: c1 (acc 80) -> its mAP 40
-    assert grid[8][:2] == ["a (1)", "20.00"]  # bryo: c0 (acc 70) -> its mAP 20
+    assert grid[4][:3] == ["a", "c1 (1)", "40.00"]  # cub: c1 (acc 80) -> its mAP 40
+    assert grid[8][:3] == ["a", "c0 (1)", "20.00"]  # bryo: c0 (acc 70) -> its mAP 20
     agrid = [[c.value for c in r] for r in wb_acc["Composite I2T Accuracy"].iter_rows()]
-    assert agrid[4][:2] == ["a (1)", "80.00"] and agrid[8][:2] == ["a (1)", "70.00"]
+    assert agrid[4][:3] == ["a", "c1 (1)", "80.00"] and agrid[8][:3] == ["a", "c0 (1)", "70.00"]
     hgrid = [[c.value for c in r] for r in wb_acc["Hardware Performance"].iter_rows()]
-    assert hgrid[4][:2] == ["a (1)", "200"] and hgrid[8][:2] == ["a (1)", "300"]
-    assert hgrid[12][6:9] == ["12", "12", "12"]  # cub c1's 5/5/5 + bryo c0's 7/7/7
+    assert hgrid[4][:3] == ["a", "c1 (1)", "200"] and hgrid[8][:3] == ["a", "c0 (1)", "300"]
+    assert hgrid[12][7:10] == ["12", "12", "12"]  # cub c1's 5/5/5 + bryo c0's 7/7/7
 
 
 def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
@@ -1527,56 +1535,59 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     ws = wb["Hardware Performance"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
-    # overrides band at A..B + separator C; aggregate block at D -- dataset tables 6 wide (D..I),
-    # the Mean table 9 (D..L, crash columns appended), so the block spans D..L and seed 42 starts
-    # one separator later at N
+    # overrides band at A..B + separator C; aggregate block at D -- dataset tables 7 wide (D..J),
+    # the Mean table 10 (D..M, crash columns appended), so the block spans D..M and seed 42 starts
+    # one separator later at O
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[12][0] == "Arm Overrides"
     assert "A13:B13" in merged
     assert grid[13][:2] == ["loss.mix", "loss1.targ"]
     assert grid[14][:2] == ["0.3", "-"]
     assert grid[15][:2] == ["-", "mp"]
-    # CUB table: merged title banner, Arm + hw header, '<arm> (n)' labels; hp means its 2
-    # cub trials, mp its 1
+    # CUB table: merged title banner, Arm + Coord (the dataset's pick) + hw header, '<coord> (n)'
+    # labels; hp means its 2 cub trials, mp its 1
     assert grid[2][3] == "CUB"
-    assert "D3:I3" in merged
-    assert grid[3][3:9] == ["Arm", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
-    assert grid[4][3:9] == ["hp (2)", "150", "15", "6", "105", "22"]
-    assert grid[5][3:9] == ["mp (1)", "63", "8", "6", "117", "26"]
-    # Bryozoa table: hp's single trial passes through; mp has no bryo trials -> "-" row
+    assert "D3:J3" in merged
+    assert grid[3][3:10] == ["Arm", "Coord", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM"]
+    assert grid[4][3:10] == ["hp", "c0 (2)", "150", "15", "6", "105", "22"]
+    assert grid[5][3:10] == ["mp", "c0 (1)", "63", "8", "6", "117", "26"]
+    # Bryozoa table: hp's single trial passes through; mp has no bryo trials -> "-" row, no pick
     assert grid[7][3] == "Bryozoa"
-    assert grid[9][3:9] == ["hp (1)", "350", "30", "9", "120", "30"]
-    assert grid[10][3:9] == ["mp (0)", "-", "-", "-", "-", "-"]
+    assert grid[9][3:10] == ["hp", "c0 (1)", "350", "30", "9", "120", "30"]
+    assert grid[10][3:10] == ["mp", "- (0)", "-", "-", "-", "-", "-"]
     # Mean table: cross-dataset means of the per-dataset trial means + the crash-total columns
+    # (the pick is per dataset: '-' in its Coord column)
     assert grid[12][3] == "Mean"
-    assert "D13:L13" in merged
-    assert grid[13][3:12] == ["Arm", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
+    assert "D13:M13" in merged
+    assert grid[13][3:13] == ["Arm", "Coord", "Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM",
                               "Total Crashes RAM", "Total Crashes VRAM", "Total Crashes Other"]
-    assert grid[14][3:12] == ["hp", "250", "23", "8", "113", "26", "2", "1", "0"]
+    assert grid[14][3:13] == ["hp", "-", "250", "23", "8", "113", "26", "2", "1", "0"]
     # mp: single cub trial, values pass straight through the two-level mean before rounding
-    assert grid[15][3:12] == ["mp", "63", "8", "6", "117", "26", "0", "0", "3"]
-    # seed blocks: per-dataset tables only (no Mean), plain labels; seed 42 at N..S, seed 43 at U..Z
-    assert grid[0][13] == "seed 42"
-    assert grid[0][20] == "seed 43"
-    assert grid[2][13] == "CUB"
-    assert grid[4][13:19] == ["hp", "100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
-    assert grid[5][13:19] == ["mp", "63", "8", "6", "117", "26"]     # mp's only trial
-    assert grid[9][13:19] == ["hp", "350", "30", "9", "120", "30"]   # seed 42 Bryozoa
-    assert grid[10][13:19] == ["mp", "-", "-", "-", "-", "-"]        # mp: no bryo trial
-    assert grid[12][13] is None  # no Mean table in seed blocks
-    assert grid[4][20:26] == ["hp", "200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
-    assert grid[5][20:26] == ["mp", "-", "-", "-", "-", "-"]         # mp has no 43 trial
+    assert grid[15][3:13] == ["mp", "-", "63", "8", "6", "117", "26", "0", "0", "3"]
+    # seed blocks: per-dataset tables only (no Mean), plain labels; seed 42 at O..U, seed 43 at W..AC
+    assert grid[0][14] == "seed 42"
+    assert grid[0][22] == "seed 43"
+    assert grid[2][14] == "CUB"
+    assert grid[4][14:21] == ["hp", "c0", "100", "10", "5", "100", "20"]   # seed 42 CUB, hp's 42 trial alone
+    assert grid[5][14:21] == ["mp", "c0", "63", "8", "6", "117", "26"]     # mp's only trial
+    assert grid[9][14:21] == ["hp", "c0", "350", "30", "9", "120", "30"]   # seed 42 Bryozoa
+    assert grid[10][14:21] == ["mp", "-", "-", "-", "-", "-", "-"]         # mp: no bryo trial
+    assert grid[12][14] is None  # no Mean table in seed blocks
+    assert grid[4][22:29] == ["hp", "c0", "200", "20", "7", "110", "24"]   # seed 43 CUB, hp's 43 trial alone
+    assert grid[5][22:29] == ["mp", "c0", "-", "-", "-", "-", "-"]         # mp has no 43 trial (its cub pick still named)
     # separator columns between the band and blocks stay empty
-    assert all(r[2] is None and r[12] is None and r[19] is None for r in grid)
+    assert all(r[2] is None and r[13] is None and r[21] is None for r in grid)
     # header + key cells styled like the score sheets' (key cells left-aligned); value
     # cells get no winner-bold/heatmap styling despite bold_high/heatmap on
-    assert ws.cell(row=4, column=5).font.bold is True
-    assert ws.cell(row=4, column=5).fill.fgColor.rgb[-6:] == "EAEAEA"
+    assert ws.cell(row=4, column=6).font.bold is True
+    assert ws.cell(row=4, column=6).fill.fgColor.rgb[-6:] == "EAEAEA"
     assert ws.cell(row=5, column=4).font.bold is True
     assert ws.cell(row=5, column=4).alignment.horizontal == "left"
-    assert ws.cell(row=6, column=5).font.bold is not True  # hp's 150 would be the Time Trial "winner"
-    assert ws.cell(row=5, column=5).font.bold is not True
-    assert ws.cell(row=5, column=5).fill.patternType is None
+    assert ws.cell(row=5, column=5).font.bold is True  # "c0 (2)": a key cell
+    assert ws.cell(row=5, column=5).alignment.horizontal == "left"
+    assert ws.cell(row=6, column=6).font.bold is not True  # hp's 150 would be the Time Trial "winner"
+    assert ws.cell(row=5, column=6).font.bold is not True
+    assert ws.cell(row=5, column=6).fill.patternType is None
     # the score sheets carry no hardware tables; their overrides bands stay leftmost
     for sheet in ("Composite mAP", "Composite I2T Accuracy"):
         sgrid = [[c.value for c in r] for r in wb[sheet].iter_rows()]

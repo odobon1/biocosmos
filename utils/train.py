@@ -72,11 +72,11 @@ class TrialData:
             "delta_norm_model": [],  # ||delta theta||: the L2 norm of each step's parameter update
             "grad_sum_sim1": [],
             "grad_sum_sim2": [],
-            # learnable logit scalars, temp as tau = exp(-logit_scale); a series stays empty when its
+            # learnable logit scalars, scale as alpha = exp(logit_scale); a series stays empty when its
             # scalar is untracked (TrainPipeline._tracked_logit_scalars) and then gets no curve panel
-            "temp1": [],
+            "scale1": [],
             "bias1": [],
-            "temp2": [],
+            "scale2": [],
             "bias2": [],
             "sim1_min": [],
             "sim1_max": [],

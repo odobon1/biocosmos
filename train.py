@@ -189,7 +189,7 @@ class TrainPipeline:
 
     def init_opt_and_lr_sched(self):
 
-        # logit scalars (temp/bias) train at lr * their loss's logits.scalar_lr_factor, decay-decoupled
+        # logit scalars (scale/bias) train at lr * their loss's logits.scalar_lr_factor, decay-decoupled
         scalar_factors = {
             "logit_scale":  self.cfg.loss1["logits"]["scalar_lr_factor"],
             "logit_bias":   self.cfg.loss1["logits"]["scalar_lr_factor"],
@@ -271,7 +271,7 @@ class TrainPipeline:
     @rank0
     def _tracked_logit_scalars(self):
         """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
-        a loss's temp whenever it's learnable, its bias only when the loss is BCE-family (inert under
+        a loss's scale whenever it's learnable, its bias only when the loss is BCE-family (inert under
         InfoNCE) and learnable; loss2's only when loss2 is active. Frozen scalars (and non-parameter
         buffers) are left out -- a flat line says nothing."""
         model = self.modelw._unwrapped_model
@@ -283,16 +283,16 @@ class TrainPipeline:
             if tag == "2" and self.cfg.loss["mix"] == 0.0:
                 continue
             if getattr(model, attr_scale).requires_grad:
-                tracked[f"temp{tag}"] = attr_scale
+                tracked[f"scale{tag}"] = attr_scale
             if cfg_loss["crit"] in ("bce", "bif_bce") and getattr(model, attr_bias).requires_grad:
                 tracked[f"bias{tag}"] = attr_bias
         return tracked
 
     def _logit_scalar_values(self):
-        # temp series carry tau = exp(-logit_scale) (the quantity temp.init specifies), bias series the raw bias
+        # scale series carry alpha = exp(logit_scale) (the quantity scale.init specifies), bias series the raw bias
         model = self.modelw._unwrapped_model
         return {
-            key: (-getattr(model, attr)).exp().item() if key.startswith("temp") else getattr(model, attr).item()
+            key: getattr(model, attr).exp().item() if key.startswith("scale") else getattr(model, attr).item()
             for key, attr in self._logit_scalars_tracked.items()
         }
 

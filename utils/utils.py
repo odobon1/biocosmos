@@ -266,7 +266,7 @@ class PrintLog:
     logging = False
     log_batch_general = None
     log_batch_grad_norm = None
-    log_batch_temp_bias = None
+    log_batch_scale_bias = None
     log_batch_similarity = None
     log_epoch = None
     log_eval = None
@@ -282,7 +282,7 @@ class PrintLog:
         dpath_batch_logs.mkdir(parents=True, exist_ok=True)
         PrintLog.log_batch_general = open(dpath_batch_logs / "general.log", "a", buffering=1)
         PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
-        PrintLog.log_batch_temp_bias = open(dpath_batch_logs / "temp_bias.log", "a", buffering=1)
+        PrintLog.log_batch_scale_bias = open(dpath_batch_logs / "scale_bias.log", "a", buffering=1)
         PrintLog.log_batch_similarity = open(dpath_batch_logs / "sim_targ.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
@@ -384,7 +384,7 @@ class PrintLog:
             header_epoch = PrintLog._make_epoch_header(epoch_first, epoch_last, n_epochs) + "\n"
             PrintLog.log_batch_general.write(header_epoch)
             PrintLog.log_batch_grad_norm.write(header_epoch)
-            PrintLog.log_batch_temp_bias.write(header_epoch)
+            PrintLog.log_batch_scale_bias.write(header_epoch)
             PrintLog.log_batch_similarity.write(header_epoch)
 
     @staticmethod
@@ -498,7 +498,7 @@ class PrintLog:
                     f"{line_grad_norm}"
                     f"\n"
                 )
-            PrintLog.log_batch_temp_bias.write(
+            PrintLog.log_batch_scale_bias.write(
                 f"{batch_str:<10} "
                 f"{line_logits_param}"
                 f"\n"
@@ -761,9 +761,9 @@ class PrintLog:
             "Logits",
             PrintLog._dash_aligned_lines((
                 ("- Scalar LR Factor", cfg_logits["scalar_lr_factor"]),
-                ("- Temp Init",   cfg_logits["temp"]["init"]),
-                ("- Temp Freeze", cfg_logits["temp"]["freeze"]),
-                ("- Temp Clamp",  cfg_logits["temp"]["clamp"]),
+                ("- Scale Init",   cfg_logits["scale"]["init"]),
+                ("- Scale Freeze", cfg_logits["scale"]["freeze"]),
+                ("- Scale Clamp",  cfg_logits["scale"]["clamp"]),
                 ("- Center",       cfg_logits["bce"]["center"]),
                 ("- Bias Init",    cfg_logits["bce"]["bias"]["init"]),
                 ("- Bias Freeze",  cfg_logits["bce"]["bias"]["freeze"]),
@@ -825,7 +825,7 @@ class PrintLog:
         for handle in (
             PrintLog.log_batch_general,
             PrintLog.log_batch_grad_norm,
-            PrintLog.log_batch_temp_bias,
+            PrintLog.log_batch_scale_bias,
             PrintLog.log_batch_similarity,
             PrintLog.log_epoch,
             PrintLog.log_eval,

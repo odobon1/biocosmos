@@ -126,7 +126,7 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, idx: Optional[i
     - targs --- target matrix on [0, 1]
     - idx ----- loss-branch index; suffixes the key prefixes (sim1_*/targ1_*) so the two
                 branches' stats coexist in one flat dict. None (eval) keeps sim_*/targ_*.
-    - logits -- the branch's logits (temp/bias applied to sim), or None to skip the p{tag}_hist
+    - logits -- the branch's logits (scale/bias applied to sim), or None to skip the p{tag}_hist
                 entry. Pass them only for BCE-family branches, where sigmoid(logits) is the
                 predicted pair probability -- on [0, 1] like the targets, so the P and Y strips
                 are directly comparable. Under InfoNCE the row-softmax carries no such reading.
@@ -268,10 +268,10 @@ class VLMWrapper(abc.ABC):
 
         if hasattr(config, "loss1"):
             cfg_logits = config.loss1["logits"]
-            if cfg_logits["temp"]["init"] is not None:  # temp.init set in config
+            if cfg_logits["scale"]["init"] is not None:  # scale.init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
-                        self.model.logit_scale.fill_(-math.log(cfg_logits["temp"]["init"]))  # tau -> log(1/tau)
+                        self.model.logit_scale.fill_(math.log(cfg_logits["scale"]["init"]))  # alpha -> log(alpha)
             bias_init = resolve_bias_init(config.loss1, config, "1")
             if bias_init is None:  # (bias.init: null) in config
                 if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
@@ -284,23 +284,23 @@ class VLMWrapper(abc.ABC):
                 else:  # logit_bias attribute is not a nn.Parameter
                     delattr(self.model, "logit_bias")
                     self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(bias_init, device=self.device)))
-            if cfg_logits["temp"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
+            if cfg_logits["scale"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
                 self.model.logit_scale.requires_grad_(False)
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
         if hasattr(config, "loss") and config.loss["mix"] != 0.0:
             cfg_logits2 = config.loss2["logits"]
-            if cfg_logits2["temp"]["init"] is None:  # (temp.init: null) in config
+            if cfg_logits2["scale"]["init"] is None:  # (scale.init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
-            else:  # temp.init set in config
-                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(-math.log(cfg_logits2["temp"]["init"]), device=self.device)))  # tau -> log(1/tau)
+            else:  # scale.init set in config
+                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(math.log(cfg_logits2["scale"]["init"]), device=self.device)))  # alpha -> log(alpha)
             bias_init2 = resolve_bias_init(config.loss2, config, "2")
             if bias_init2 is None:
                 self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(self.model.logit_bias.detach().item(), device=self.device)))
             else:
                 self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(bias_init2, device=self.device)))
-            if cfg_logits2["temp"]["freeze"]:
+            if cfg_logits2["scale"]["freeze"]:
                 self.model.logit_scale2.requires_grad_(False)
             if cfg_logits2["bce"]["bias"]["freeze"]:
                 self.model.logit_bias2.requires_grad_(False)
@@ -423,7 +423,7 @@ class VLMWrapper(abc.ABC):
         half_live: bool = False
     ) -> torch.Tensor:
         """
-        Scales similarity matrix by exp(learnable logit scale) (1 / tau) and adds logit bias if applicable (BCE).
+        Scales similarity matrix by exp(learnable logit scale) (alpha = 1 / tau) and adds logit bias if applicable (BCE).
 
         `half_live` (bifurcated branches): uses 0.5*p + 0.5*p.detach() for the logit scale/bias, so
         each of the two un-halved branch calls contributes exactly half their grad -- the branch sum
@@ -527,7 +527,7 @@ class VLMWrapper(abc.ABC):
         """
         model = self._unwrapped_model
         logit_scale = model.logit_scale2 if secondary else model.logit_scale
-        clamp = crit.cfg["logits"]["temp"]["clamp"]
+        clamp = crit.cfg["logits"]["scale"]["clamp"]
         center = crit.cfg["logits"]["bce"]["center"]
 
         if crit.bifurcated:

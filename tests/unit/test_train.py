@@ -13,7 +13,7 @@ from utils.utils import save_pickle, load_pickle
 def _full_loss_cfg(crit="bce", targ="mp"):
     return {
         "crit": crit,
-        "infonce": {"tsm": {"type": "linear", "sm_temp": "pinned"}},
+        "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}},
         "bce": {"targ_mass_neut": False},
         "sim": "cos",
         "targ": targ,
@@ -28,7 +28,7 @@ def _full_loss_cfg(crit="bce", targ="mp"):
             "bce": {"dsmr": True},
         },
         "logits": {
-            "temp": {"init": None, "freeze": False, "clamp": False},
+            "scale": {"init": None, "freeze": False, "clamp": False},
             "bce": {"center": None, "bias": {"init": None, "freeze": False}},
         },
     }
@@ -138,7 +138,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
-    assert config["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_temp": "pinned"}}  # infonce + mp: block live
+    assert config["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
     wting = config["loss1"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
@@ -331,19 +331,19 @@ def test_tracked_logit_scalars_skips_frozen_inert_and_inactive() -> None:
 
     # loss2 off: only loss1's pair, and its bias only because crit is BCE-family
     assert tracked(_fake_pipe("bce", "bce", 0.0, all_learnable)) == {
-        "temp1": "logit_scale", "bias1": "logit_bias",
+        "scale1": "logit_scale", "bias1": "logit_bias",
     }
-    assert tracked(_fake_pipe("infonce", "bce", 0.0, all_learnable)) == {"temp1": "logit_scale"}
+    assert tracked(_fake_pipe("infonce", "bce", 0.0, all_learnable)) == {"scale1": "logit_scale"}
 
     # loss2 mixed in: both pairs, each loss's bias gated by its OWN crit
     assert tracked(_fake_pipe("infonce", "bce", 0.3, all_learnable)) == {
-        "temp1": "logit_scale", "temp2": "logit_scale2", "bias2": "logit_bias2",
+        "scale1": "logit_scale", "scale2": "logit_scale2", "bias2": "logit_bias2",
     }
 
     # frozen scalars are dropped -- a flat line says nothing
     frozen_t1_b2 = {**all_learnable, "logit_scale": False, "logit_bias2": False}
     assert tracked(_fake_pipe("bce", "bce", 0.3, frozen_t1_b2)) == {
-        "bias1": "logit_bias", "temp2": "logit_scale2",
+        "bias1": "logit_bias", "scale2": "logit_scale2",
     }
 
 

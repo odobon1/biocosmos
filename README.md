@@ -86,9 +86,9 @@ Note: With `hardware.loss_chunk_size: null`, the full similarity matrix is compu
 
     hpo_coords:
       - - {opt.lr.init: [2.0e-6, 2.0e-5]}
-      - - {loss1.logits.temp.init: [0.0, 0.1, 0.2]}
+      - - {loss1.logits.scale.init: [10.0, 30.0, 100.0]}
     ```
-   produces four arms — `Targ-MP_loss1.sim-cos`, `Targ-MP_loss1.sim-geo1`, `Targ-SP_loss1.sim-cos`, `Targ-SP_loss1.sim-geo1` — each merging one partial member from every arm combo group, and six coords — `LR-2.0e-6_Tau-0.0`, `LR-2.0e-6_Tau-0.1`, `LR-2.0e-6_Tau-0.2`, `LR-2.0e-5_Tau-0.0`, … — i.e. 24 (arm, coord) combinations per dataset and seed. The arm list is equivalent to spelling out its product as a single combo group:
+   produces four arms — `Targ-MP_loss1.sim-cos`, `Targ-MP_loss1.sim-geo1`, `Targ-SP_loss1.sim-cos`, `Targ-SP_loss1.sim-geo1` — each merging one partial member from every arm combo group, and six coords — `LR-2.0e-6_Alpha-10.0`, `LR-2.0e-6_Alpha-30.0`, `LR-2.0e-6_Alpha-100.0`, `LR-2.0e-5_Alpha-10.0`, … — i.e. 24 (arm, coord) combinations per dataset and seed. The arm list is equivalent to spelling out its product as a single combo group:
     ```yaml
     ablation_arms:
       - - {loss1.targ: mp, loss1.sim: cos,  name: Targ-MP_loss1.sim-cos}

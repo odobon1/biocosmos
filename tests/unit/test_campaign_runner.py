@@ -767,13 +767,13 @@ def test_expand_combo_groups_combo_list_in_unnamed_item_folds_into_derived_name(
         ("Targ-MP_BS-2k", {"loss1.targ": "mp", "batch_size": 2048}),
     ]
     coords = cr._expand_combo_groups(
-        [[{"opt.lr.init": [2.0e-6, 2.0e-5]}], [{"loss1.logits.temp.init": [0.0, 0.1]}]],
+        [[{"opt.lr.init": [2.0e-6, 2.0e-5]}], [{"loss1.logits.scale.init": [10.0, 100.0]}]],
         "hpo_coords",
     )
     assert [name for name, _ in coords] == [
-        "LR-2.0e-6_Tau-0.0", "LR-2.0e-6_Tau-0.1", "LR-2.0e-5_Tau-0.0", "LR-2.0e-5_Tau-0.1",
+        "LR-2.0e-6_Alpha-10.0", "LR-2.0e-6_Alpha-100.0", "LR-2.0e-5_Alpha-10.0", "LR-2.0e-5_Alpha-100.0",
     ]
-    assert dict(coords)["LR-2.0e-5_Tau-0.1"] == {"opt.lr.init": 2.0e-5, "loss1.logits.temp.init": 0.1}
+    assert dict(coords)["LR-2.0e-5_Alpha-100.0"] == {"opt.lr.init": 2.0e-5, "loss1.logits.scale.init": 100.0}
 
 
 def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups() -> None:

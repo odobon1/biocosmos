@@ -60,7 +60,7 @@ def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },
-        "logits": {"temp": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 
@@ -151,7 +151,7 @@ def _full_reference(crit1, crit2, mix, unitless, img, txt, class_encs_b, targ_da
     sims_ref = []
 
     def crit_loss(crit, secondary):
-        clamp = crit.cfg["logits"]["temp"]["clamp"]
+        clamp = crit.cfg["logits"]["scale"]["clamp"]
         center = crit.cfg["logits"]["bce"]["center"]
         if crit.bifurcated:
             sims = (

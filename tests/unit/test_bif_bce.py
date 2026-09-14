@@ -31,7 +31,7 @@ def _cfg(crit, targ="mp", cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False,
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },
-        "logits": {"temp": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 

@@ -54,7 +54,7 @@ def cfg_loss(targ="mp", cls_imb_norm=False, center=None, crit="bce", neut=False)
             "focal": {"gamma": 2.0},
             "bce": {"dsmr": True},
         },
-        "logits": {"temp": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
 
 
@@ -169,7 +169,7 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, unitless, fi, ft, fc
         return sim_scaled + b
 
     def crit_loss(crit, secondary):
-        clamp = crit.cfg["logits"]["temp"]["clamp"]
+        clamp = crit.cfg["logits"]["scale"]["clamp"]
         center = crit.cfg["logits"]["bce"]["center"]
         if crit.bifurcated:
             sims = (

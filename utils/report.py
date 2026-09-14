@@ -1400,7 +1400,7 @@ def plot_composite_metrics(
     # between the loss1 strip and the S panel, so each series keeps its own y-scale. Checked over every
     # loss2 series that can exist, since with diagnostics off only its logit scalars survive (the
     # subscripted labels still apply)
-    has_loss2 = any(len(data_epoch[key]) == len(x_train) for key in ("grad_sum_sim2", "sim2_min", "temp2", "bias2"))
+    has_loss2 = any(len(data_epoch[key]) == len(x_train) for key in ("grad_sum_sim2", "sim2_min", "scale2", "bias2"))
     # base slots 6-9 (grad/step/sim-grad-sum/S) are kept per enabled component, the loss2 sim-grad-sum
     # strip slotted after loss1's
     height_ratios = [
@@ -1435,12 +1435,12 @@ def plot_composite_metrics(
         *[height_ratios[-2]] * (len(p_panels) + len(targ_panels)),
         height_ratios[-1],
     ]
-    # each tracked logit scalar (TrialData temp*/bias* series; empty when untracked) gets an LR-height
-    # strip between the Y panels and LR, temps first; labels are subscripted per loss whenever loss2 is
+    # each tracked logit scalar (TrialData scale*/bias* series; empty when untracked) gets an LR-height
+    # strip between the Y panels and LR, scales first; labels are subscripted per loss whenever loss2 is
     # active, even if only one of the pair is tracked
     scalar_panels = [
         (key, rf"${sym}_{tag}$" if has_loss2 else rf"${sym}$")
-        for key, sym, tag in (("temp1", r"\tau", 1), ("temp2", r"\tau", 2), ("bias1", "b", 1), ("bias2", "b", 2))
+        for key, sym, tag in (("scale1", r"\alpha", 1), ("scale2", r"\alpha", 2), ("bias1", "b", 1), ("bias2", "b", 2))
         if len(data_epoch[key]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[0.5] * len(scalar_panels), height_ratios[-1]]
@@ -1607,7 +1607,7 @@ def plot_composite_metrics(
 
     # sim1/sim2 are always identical in practice, so the one S panel shows loss1's. Min/max solid,
     # mean dashed, median dotted; teal/rose is a dark, mutually contrasting pair that also stays
-    # clear of the orange gradient panels above and the purple temp panels below.
+    # clear of the orange gradient panels above and the purple scale panels below.
     axes_hist = []  # the heatmap strips, which keep the colormap's own background
 
     def add_stat_panel(stat_prefix, stat_ylabel, stat_ylim, stat_color):
@@ -1656,11 +1656,9 @@ def plot_composite_metrics(
 
     for key, label in scalar_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("temp") else "blue")
+        ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
-        if key.startswith("temp"):
-            ax.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)

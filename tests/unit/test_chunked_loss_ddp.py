@@ -134,6 +134,7 @@ def build_harness(model_ddp, crit1, crit2, mix, unitless, world_size, device):
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
         dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}}},
         device=device,
+        shared_scalars=False,  # each loss on its own scalar pair (compute_logits routing)
     )
     return h
 

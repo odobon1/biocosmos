@@ -25,7 +25,7 @@ def make_train_config_dummy(**overrides):
         "dev": {"reporting": {"logging": False, "plot_every": "trial"}, "del_base_eval_cache": None, "kill_thresh": None},
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
-        "loss": {"mix": 0.0, "unitless": False},
+        "loss": {"mix": 0.0, "unitless": False, "shared_scalars": False},
         "loss1": {"crit": "bce", "sim": "cos", "targ": "sp", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "loss2": {"crit": "bce", "sim": "cos", "targ": "sp", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
         "opt": {
@@ -85,7 +85,7 @@ def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPa
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="loss.mix out of bounds"):
-        TrainConfig(**make_train_config_dummy(loss={"mix": 1.5, "unitless": False}))
+        TrainConfig(**make_train_config_dummy(loss={"mix": 1.5, "unitless": False, "shared_scalars": False}))
 
 
 def test_train_config_rejects_non_int_n_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,7 +237,7 @@ def test_train_config_accepts_htarg_shuffle_with_secondary_phylo(monkeypatch: py
 
     cfg = TrainConfig(**make_train_config_dummy(
         htarg={"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": True},
-        loss={"mix": 0.3, "unitless": False},
+        loss={"mix": 0.3, "unitless": False, "shared_scalars": False},
         loss2={"crit": "bce", "sim": "cos", "targ": "phylo", "wting": {"focal": {"gamma": 0.0}}, "logits": {"scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}}},
     ))
 
@@ -725,6 +725,60 @@ def test_train_config_rejects_non_bool_unitless(monkeypatch: pytest.MonkeyPatch)
     cfg_dict = make_train_config_dummy()
     cfg_dict["loss"]["unitless"] = "unscaled"
     with pytest.raises(ValueError, match="loss.unitless must be a bool"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_non_bool_shared_scalars(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["loss"]["shared_scalars"] = "yes"
+    with pytest.raises(ValueError, match="loss.shared_scalars must be a bool"):
+        TrainConfig(**cfg_dict)
+
+
+def test_train_config_shared_scalars_replaces_loss2_logits_with_loss1s(monkeypatch: pytest.MonkeyPatch) -> None:
+    # under a live blend, sharing makes loss2 run on loss1's scalars: its logits block becomes a copy of
+    # loss1's, so every reader of loss2.logits.* (clamp/center via crit.cfg, scalar_lr_factor) follows loss1
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(loss={"mix": 0.3, "unitless": False, "shared_scalars": True})
+    cfg_dict["loss1"]["logits"] = {"scalar_lr_factor": 5.0, "scale": {"init": 30.0, "clamp": True},
+                                   "bce": {"center": "grad_proj", "bias": {"init": "pos_prevalence"}}}
+    # loss2's own (inert) block is validated as written; loss1's is not re-validated against loss2's crit
+    # (its pos_prevalence bias init shared with an InfoNCE loss2 is fine -- the bias is inert there)
+    cfg_dict["loss2"]["crit"] = "infonce"
+
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.shared_scalars is True
+    assert cfg.loss2["logits"] == cfg.loss1["logits"]
+    assert cfg.loss2["logits"] is not cfg.loss1["logits"]
+
+
+@pytest.mark.parametrize("mix", [0.0, 1.0])
+def test_train_config_shared_scalars_inert_for_a_lone_loss(monkeypatch: pytest.MonkeyPatch, mix) -> None:
+    # sharing needs two live losses: at mix 0.0 / 1.0 the flag is inert and loss2 keeps its own block
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(loss={"mix": mix, "unitless": False, "shared_scalars": True})
+    cfg_dict["loss1"]["logits"]["scale"]["init"] = 30.0
+
+    cfg = TrainConfig(**cfg_dict)
+    assert cfg.shared_scalars is False
+    assert cfg.loss2["logits"]["scale"]["init"] is None
+
+
+def test_train_config_shared_scalars_applies_loss1_center_to_loss2_under_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # loss2's tiles are centered per loss1's mode under sharing, so loss1's center: sim with a geo loss2 sim
+    # hits the chunking constraint through loss2
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(loss={"mix": 0.3, "unitless": False, "shared_scalars": True})  # batch_size 8
+    cfg_dict["loss1"]["logits"]["bce"]["center"] = "sim"
+    cfg_dict["loss2"]["sim"] = "geo1"
+    cfg_dict["hw"]["loss_chunk_size"] = 8
+
+    with pytest.raises(ValueError, match="loss2.logits.bce.center: sim requires loss2.sim: cos"):
         TrainConfig(**cfg_dict)
 
 

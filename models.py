@@ -289,7 +289,9 @@ class VLMWrapper(abc.ABC):
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
-        if hasattr(config, "loss") and config.loss["mix"] != 0.0:
+        # loss2's own scalar pair; under loss.shared_scalars loss2 runs on logit_scale / logit_bias instead
+        # (compute_logits routes it there), so no second pair is registered
+        if hasattr(config, "loss") and config.loss["mix"] != 0.0 and not config.shared_scalars:
             cfg_logits2 = config.loss2["logits"]
             if cfg_logits2["scale"]["init"] is None:  # (scale.init: null) in config
                 self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
@@ -425,6 +427,9 @@ class VLMWrapper(abc.ABC):
         """
         Scales similarity matrix by exp(learnable logit scale) (alpha = 1 / tau) and adds logit bias if applicable (BCE).
 
+        `secondary` selects loss2's own scale/bias pair (logit_scale2 / logit_bias2); under
+        loss.shared_scalars loss2 has none and runs on loss1's pair.
+
         `half_live` (bifurcated branches): uses 0.5*p + 0.5*p.detach() for the logit scale/bias, so
         each of the two un-halved branch calls contributes exactly half their grad -- the branch sum
         matches the non-bifurcated 1x (the towers, living in one branch each, already get 1x).
@@ -451,10 +456,10 @@ class VLMWrapper(abc.ABC):
         -> the full BxB reductions computed here.
         """
         model = self._unwrapped_model
-        if not secondary:
-            logit_scale, logit_bias = model.logit_scale, model.logit_bias
-        else:
+        if secondary and not self.cfg.shared_scalars:
             logit_scale, logit_bias = model.logit_scale2, model.logit_bias2
+        else:
+            logit_scale, logit_bias = model.logit_scale, model.logit_bias
         if half_live:
             logit_scale = 0.5 * logit_scale + 0.5 * logit_scale.detach()
             logit_bias = 0.5 * logit_bias + 0.5 * logit_bias.detach()
@@ -526,7 +531,7 @@ class VLMWrapper(abc.ABC):
           values are identical up to fp; grads bifurcate.
         """
         model = self._unwrapped_model
-        logit_scale = model.logit_scale2 if secondary else model.logit_scale
+        logit_scale = model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale
         clamp = crit.cfg["logits"]["scale"]["clamp"]
         center = crit.cfg["logits"]["bce"]["center"]
 

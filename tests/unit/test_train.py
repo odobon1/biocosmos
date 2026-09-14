@@ -57,7 +57,7 @@ class _FakeCoordCfg:
         "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
     })
     loss1: dict = field(default_factory=_full_loss_cfg)
-    loss: dict = field(default_factory=lambda: {"mix": 0.0, "unitless": False})
+    loss: dict = field(default_factory=lambda: {"mix": 0.0, "unitless": False, "shared_scalars": False})
     loss2: dict = field(default_factory=lambda: _full_loss_cfg(targ="phylo"))
     opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
 
@@ -169,7 +169,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss1"]
-    assert config["loss"] == {"mix": 0.3, "unitless": True}
+    assert config["loss"] == {"mix": 0.3, "unitless": True, "shared_scalars": False}
     cls_imb2 = config["loss2"]["wting"]["cls_imb"]
     assert "norm" not in cls_imb2  # its rescale is cancelled by unit-scaling
 
@@ -180,7 +180,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg.loss["mix"] = 0.3
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s5" / "config.json").read_text())
-    assert config["loss"] == {"mix": 0.3, "unitless": False}
+    assert config["loss"] == {"mix": 0.3, "unitless": False, "shared_scalars": False}
     assert config["loss2"]["wting"]["cls_imb"]["norm"] is True
 
     # unitless applies to a lone loss too: loss1's norm scalar cancels with no secondary loss mixed in
@@ -192,6 +192,28 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     config = json.loads((tmp_path / "s6" / "config.json").read_text())
     assert config["loss"] == {"mix": 0.0, "unitless": True} and "loss2" not in config
     assert "norm" not in config["loss1"]["wting"]["cls_imb"]
+
+    # shared logit scalars under a live blend: loss2 runs on loss1's pair, so its own logits block is inert
+    (tmp_path / "s7").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s7")
+    cfg = _FakeCoordCfg()
+    cfg.loss["mix"] = 0.3
+    cfg.loss["shared_scalars"] = True
+    ArtifactManager.save_metadata_coord(cfg)
+    config = json.loads((tmp_path / "s7" / "config.json").read_text())
+    assert config["loss"] == {"mix": 0.3, "unitless": False, "shared_scalars": True}
+    assert "logits" not in config["loss2"] and "logits" in config["loss1"]
+
+    # sharing needs two live losses: at mix 1.0 the flag is inert and loss2 keeps its own logits block
+    (tmp_path / "s8").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s8")
+    cfg = _FakeCoordCfg()
+    cfg.loss["mix"] = 1.0
+    cfg.loss["shared_scalars"] = True
+    ArtifactManager.save_metadata_coord(cfg)
+    config = json.loads((tmp_path / "s8" / "config.json").read_text())
+    assert config["loss"] == {"mix": 1.0, "unitless": False}
+    assert "logits" in config["loss2"]
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
@@ -310,15 +332,15 @@ def test_format_and_merge_mem_running_max() -> None:
     assert merge_mem(snap, later) == {"ram": "6.0/128.0 GB", "vram": "37.5/79.3 GB"}
 
 
-def _fake_pipe(loss_crit, loss2_crit, mix, requires_grad):
+def _fake_pipe(loss_crit, loss2_crit, mix, requires_grad, shared_scalars=False):
     """A stand-in TrainPipeline carrying just what _tracked_logit_scalars reads: the loss configs and
-    an unwrapped model whose logit scalars have the given requires_grad flags."""
-    model = SimpleNamespace(**{
-        attr: SimpleNamespace(requires_grad=requires_grad[attr])
-        for attr in ("logit_scale", "logit_bias", "logit_scale2", "logit_bias2")
-    })
+    an unwrapped model whose logit scalars have the given requires_grad flags (no second pair under
+    shared scalars, as in models.py)."""
+    attrs = ("logit_scale", "logit_bias") + (() if shared_scalars else ("logit_scale2", "logit_bias2"))
+    model = SimpleNamespace(**{attr: SimpleNamespace(requires_grad=requires_grad[attr]) for attr in attrs})
     return SimpleNamespace(
-        cfg=SimpleNamespace(loss={"mix": mix}, loss1={"crit": loss_crit}, loss2={"crit": loss2_crit}),
+        cfg=SimpleNamespace(loss={"mix": mix}, loss1={"crit": loss_crit}, loss2={"crit": loss2_crit},
+                            shared_scalars=shared_scalars),
         modelw=SimpleNamespace(_unwrapped_model=model),
     )
 
@@ -344,6 +366,23 @@ def test_tracked_logit_scalars_skips_frozen_inert_and_inactive() -> None:
     frozen_t1_b2 = {**all_learnable, "logit_scale": False, "logit_bias2": False}
     assert tracked(_fake_pipe("bce", "bce", 0.3, frozen_t1_b2)) == {
         "bias1": "logit_bias", "scale2": "logit_scale2",
+    }
+
+
+def test_tracked_logit_scalars_shared_pair_tracked_once() -> None:
+    # under loss.shared_scalars loss2 runs on loss1's pair (no scale2/bias2 exist): one series each, and
+    # the shared bias is live when EITHER loss is BCE-family
+    all_learnable = dict.fromkeys(("logit_scale", "logit_bias"), True)
+    tracked = TrainPipeline._tracked_logit_scalars
+
+    assert tracked(_fake_pipe("bce", "bce", 0.3, all_learnable, shared_scalars=True)) == {
+        "scale1": "logit_scale", "bias1": "logit_bias",
+    }
+    assert tracked(_fake_pipe("infonce", "bce", 0.3, all_learnable, shared_scalars=True)) == {
+        "scale1": "logit_scale", "bias1": "logit_bias",
+    }
+    assert tracked(_fake_pipe("infonce", "infonce", 0.3, all_learnable, shared_scalars=True)) == {
+        "scale1": "logit_scale",
     }
 
 

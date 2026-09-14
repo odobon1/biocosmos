@@ -272,19 +272,23 @@ class TrainPipeline:
     def _tracked_logit_scalars(self):
         """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
         a loss's scale whenever it's learnable, its bias only when the loss is BCE-family (inert under
-        InfoNCE) and learnable; loss2's only when loss2 is active. Frozen scalars (and non-parameter
-        buffers) are left out -- a flat line says nothing."""
+        InfoNCE) and learnable; loss2's only when loss2 is active and has its own pair -- under
+        loss.shared_scalars it runs on loss1's, tracked once as scale1/bias1 (the shared bias is live
+        when either loss is BCE-family). Frozen scalars (and non-parameter buffers) are left out -- a
+        flat line says nothing."""
         model = self.modelw._unwrapped_model
+        shared = self.cfg.shared_scalars
         tracked = {}
         for tag, cfg_loss, attr_scale, attr_bias in (
             ("1", self.cfg.loss1, "logit_scale", "logit_bias"),
             ("2", self.cfg.loss2, "logit_scale2", "logit_bias2"),
         ):
-            if tag == "2" and self.cfg.loss["mix"] == 0.0:
+            if tag == "2" and (self.cfg.loss["mix"] == 0.0 or shared):
                 continue
             if getattr(model, attr_scale).requires_grad:
                 tracked[f"scale{tag}"] = attr_scale
-            if cfg_loss["crit"] in ("bce", "bif_bce") and getattr(model, attr_bias).requires_grad:
+            bias_live = cfg_loss["crit"] in ("bce", "bif_bce") or (shared and self.cfg.loss2["crit"] in ("bce", "bif_bce"))
+            if bias_live and getattr(model, attr_bias).requires_grad:
                 tracked[f"bias{tag}"] = attr_bias
         return tracked
 

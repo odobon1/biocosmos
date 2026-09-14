@@ -20,6 +20,7 @@ CFG_PARAM_ALIASES = {
     "batch_size": "BS",
     "loss.mix": "Mix",
     "loss.unitless": "Unit",
+    "loss.shared_scalars": "ShSc",
     "loss1.targ": "Targ",
     "loss1.wting.bce.dsmr": "DSMR",
     "loss1.logits.scale.init": "Alpha",
@@ -289,6 +290,16 @@ class TrainConfig:
             raise ValueError(f"loss.mix out of bounds: {self.loss['mix']}, must be between 0.0 and 1.0")
         if not isinstance(self.loss["unitless"], bool):
             raise ValueError(f"loss.unitless must be a bool, got {self.loss['unitless']!r}")
+        if not isinstance(self.loss["shared_scalars"], bool):
+            raise ValueError(f"loss.shared_scalars must be a bool, got {self.loss['shared_scalars']!r}")
+        # shared logit scalars need two live losses (a lone loss keeps its own pair). Under sharing loss2 runs
+        # on loss1's scale/bias params, so its logits block is replaced by loss1's outright: every reader of
+        # loss2.logits.* (clamp / center via crit.cfg, scalar_lr_factor) then follows loss1's settings.
+        # Placed after the per-loss validation above -- loss1's block is validated against loss1's crit only
+        # (a pos_prevalence bias init shared with an InfoNCE loss2 is fine: the bias is inert there)
+        self.shared_scalars = self.loss["shared_scalars"] and 0.0 < self.loss["mix"] < 1.0
+        if self.shared_scalars:
+            self.loss2["logits"] = deepcopy(self.loss1["logits"])
 
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)

@@ -69,14 +69,16 @@ class Harness:
     _global_batch_loss = VLMWrapper._global_batch_loss
 
 
-def _make_harness(model, crit1, crit2=None, mix=0.0, unitless=False):
+def _make_harness(model, crit1, crit2=None, mix=0.0, unitless=False, shared_scalars=False):
     h = Harness()
     h.model = model
     h.crit1 = crit1
     h.crit2 = crit2
     h.world_size = 1
-    # _global_batch_loss reads each branch's crit to decide whether p{tag}_* (sigmoid) stats apply
+    # _global_batch_loss reads each branch's crit to decide whether p{tag}_* (sigmoid) stats apply;
+    # compute_logits routes loss2 onto loss1's scalar pair under shared_scalars
     h.cfg = SimpleNamespace(
+        shared_scalars=shared_scalars,
         loss={"mix": mix, "unitless": unitless},
         loss1={"crit": crit1.cfg["crit"]},
         loss2={"crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
@@ -280,3 +282,25 @@ def test_infonce_branch_reports_no_probability_stats():
     assert not any(key.startswith("p1_") for key in batch_stats)
     assert "sim1_min" in batch_stats and "targ1_min" in batch_stats  # sim/targ still reported
     assert "p2_hist" in batch_stats
+
+
+def test_shared_scalars_blend_accumulates_on_loss1_pair():
+    # loss.shared_scalars: loss2 runs on loss1's scale/bias (no second pair exists), so the blend's scalar
+    # grads are the mix-weighted sum of what each loss alone puts on that pair
+    B, K, D, mix = 16, 5, 8, 0.3
+    crit1 = _make_crit(_cfg("bif_bce"), K, B)
+    crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
+
+    def scalar_grads(crit1_, crit2_, mix_, shared):
+        img, txt, class_encs_b = _data(B, K, D)
+        toy = Toy(with_secondary=not shared).train()
+        h = _make_harness(toy, crit1_, crit2_, mix=mix_, shared_scalars=shared)
+        loss, *_ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
+        loss.backward()
+        return toy.logit_scale.grad, toy.logit_bias.grad
+
+    g_blend = scalar_grads(crit1, crit2, mix, shared=True)
+    g1 = scalar_grads(crit1, None, 0.0, shared=False)  # loss1 alone on the pair
+    g2 = scalar_grads(crit2, None, 0.0, shared=False)  # loss2 alone, run as a primary on the same pair
+    for gb, ga, gc in zip(g_blend, g1, g2):
+        torch.testing.assert_close(gb, (1.0 - mix) * ga + mix * gc, rtol=1e-5, atol=1e-7)

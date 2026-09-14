@@ -301,12 +301,20 @@ class ArtifactManager:
                 del metadata["arch"]["siglip"]
                 del metadata["dropout"]["siglip"]
 
-            if metadata["loss"]["mix"] == 0.0:
+            mix = metadata["loss"]["mix"]
+            if mix == 0.0:
                 del metadata["loss2"]
+            # shared logit scalars need two live losses; under sharing loss2 runs on loss1's scale/bias
+            # under loss1.logits.* settings, so its own logits block is never read
+            if mix in (0.0, 1.0):
+                del metadata["loss"]["shared_scalars"]
+            elif metadata["loss"]["shared_scalars"]:
+                del metadata["loss2"]["logits"]
 
             # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
-            # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's logit params
-            # are always fresh learnable Parameters, so loss2.logits is never pruned.
+            # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's own logit params
+            # are always fresh learnable Parameters, so a loss2.logits block that survives sharing is
+            # never pruned.
             if not is_siglip and metadata["loss1"]["logits"]["bce"]["bias"]["init"] is None:
                 del metadata["loss1"]["logits"]["bce"]["bias"]
 

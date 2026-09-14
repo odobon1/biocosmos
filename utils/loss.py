@@ -123,7 +123,8 @@ class Criterion(abc.ABC):
         Computes loss for a batch given logits and target data. `logits` is the full-batch logit
         matrix pt[B, B]; for a bifurcated criterion, the (i2t, t2i) branch pair, both
         [img-row, txt-col]. `logit_scale` is this criterion's learnable log logit scale param
-        (model.logit_scale for loss1, model.logit_scale2 for loss2), raw (pre-clamp).
+        (model.logit_scale for loss1, model.logit_scale2 for loss2 -- or model.logit_scale too under
+        loss.shared_scalars), raw (pre-clamp).
 
         Returns:
         - loss ------- Weighted scalar loss (== loss_raw when not training)

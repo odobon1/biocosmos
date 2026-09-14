@@ -56,6 +56,11 @@ loss:  # Common loss params
   unitless: false  # {true, false}; (true) Rescale each active loss by its detached magnitude, L / L.detach() (bif_bce:
   # by L/2, its gradient-scale-equivalent value): a lone loss reads a constant 1.0 (bif_bce 2.0), and a blend's losses are
   # equalized to unit magnitude so mix is the true gradient-contribution ratio; (false) Raw losses
+  shared_scalars: true  # {true, false}; (true) loss1 and loss2 share one set of logit scalars (scale, and bias where
+  # applicable): loss2 runs on loss1's scale/bias params, and every setting governing them (loss1.logits.*:
+  # scalar_lr_factor, scale.init/freeze/clamp, bce.center, bce.bias.init/freeze) is loss1's -- loss2.logits.* is inert;
+  # (false) loss2 gets its own scale/bias params per loss2.logits.*; Inert iff (loss.mix: 0.0 | 1.0) -- sharing needs
+  # two live losses, a lone loss keeps its own scalars
 
 loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
   crit: infonce  # {infonce, bce, bif_bce}; note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
@@ -108,9 +113,9 @@ loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
       # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);
       # (grad_proj) Forward untouched, backward-only global-mean projection of the gradient entering sim (scale AND bias
       # learn from raw BCE grads); (grad_proj2) Same but projected at the scaled sims (bias raw, scale projected);
-      # Per-criterion (loss2 has its own flag); Chunked path (hw.loss_chunk_size) reproduces full-batch centering
-      # exactly; (sim) under chunking requires sim: cos (config error otherwise -- no closed-form global mean for geo);
-      # sensitive to mixed precision
+      # Per-criterion (loss2 has its own flag, unless loss.shared_scalars); Chunked path (hw.loss_chunk_size)
+      # reproduces full-batch centering exactly; (sim) under chunking requires sim: cos (config error otherwise -- no
+      # closed-form global mean for geo); sensitive to mixed precision
       bias:  # Inert iff (loss1.crit: infonce)
         init: null  # {null, pos_prevalence, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
         # (pos_prevalence) log(p / (1 - p)), p the expected positive prevalence of this loss's target matrix under its
@@ -141,7 +146,7 @@ loss2:  # Secondary loss params; Inert iff (loss.mix: 0.0)
       gamma: 0.0  # [0.0, inf)
     bce:
       dsmr: false  # {true, false}
-  logits:
+  logits:  # Inert iff (loss.shared_scalars: true) -- loss2 then runs on loss1's scalars under loss1.logits.*
     scalar_lr_factor: 10.0  # (0.0, inf)
     scale:
       init: null  # {null, [float]}

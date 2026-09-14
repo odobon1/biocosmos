@@ -19,14 +19,14 @@ from models import VLMWrapper
 B = 64
 
 
-def _make_stub():
+def _make_stub(shared_scalars=False):
     model = SimpleNamespace(
         logit_scale=torch.nn.Parameter(torch.tensor(2.3)),
         logit_bias=torch.nn.Parameter(torch.tensor(-0.5)),
         logit_scale2=torch.nn.Parameter(torch.tensor(1.7)),
         logit_bias2=torch.nn.Parameter(torch.tensor(0.2)),
     )
-    return SimpleNamespace(model=model, _unwrapped_model=model)
+    return SimpleNamespace(model=model, _unwrapped_model=model, cfg=SimpleNamespace(shared_scalars=shared_scalars))
 
 
 def _run(center, secondary=False, center_global=None):
@@ -102,6 +102,19 @@ def test_secondary_honors_own_flag():
     sim = torch.randn(B, B)
     assert torch.allclose(logits, sim * torch.tensor(1.7).exp() + 0.2)  # forward untouched
     assert abs(g_sim.sum().item()) < 1e-5
+
+
+def test_secondary_shared_scalars_runs_on_loss1_pair():
+    # loss.shared_scalars: the secondary criterion's logits use logit_scale / logit_bias (loss2 has no pair
+    # of its own), and their grads land there
+    torch.manual_seed(0)
+    stub = _make_stub(shared_scalars=True)
+    sim = torch.randn(B, B).requires_grad_(True)
+    logits = VLMWrapper.compute_logits(stub, sim, False, None, secondary=True)
+    assert torch.allclose(logits, sim * torch.tensor(2.3).exp() - 0.5)
+    F.binary_cross_entropy_with_logits(logits, (torch.rand(B, B) < 0.05).float()).backward()
+    assert stub.model.logit_scale.grad is not None and stub.model.logit_bias.grad is not None
+    assert stub.model.logit_scale2.grad is None and stub.model.logit_bias2.grad is None
 
 
 def test_grad_proj_center_global_subtracts_constant():

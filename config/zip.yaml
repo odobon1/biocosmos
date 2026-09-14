@@ -1,0 +1,15 @@
+# tools/zip.py settings -- which of a bundled campaign's (artifacts/<campaign>/) bulky contents ship, and which
+# untracked files join the source snapshot. A campaign's core -- metrics, metadata, stats tables + plots, learning
+# curves, the epoch/eval/init logs -- always ships; the source side is git-tracked files plus `untracked` below.
+
+weights: false  # {true, false}; (true) include model weights: each trainval trial's model.pt (the full model
+# state), and the chkpts/ resume state (train_state.pt: model + optimizer) of any trial still in progress or failed
+manif_viz: false  # {true, false}; (true) include the rendered manifold viz: every per-eval plot dir
+# (evals/<eval>/viz/, viz_pooled/) and the evolving GIFs (<trial>/viz/, viz_pooled/)
+manif_viz_cache: false  # {true, false}; (true) include the per-eval caches the renders are built from -- embs.npz
+# (raw eval embeddings, ~N x D x 2 bytes per eval), projections.npz, projections_pooled.npz, orient_ref.pkl;
+# needed to re-render (tools/regen_manif_viz.py) from the unpacked zip
+batch_logs: true  # {true, false}; (true) include each trial's per-batch logs (logs/batch/: general, grad_norm,
+# temp_bias, sim_targ -- one line per train batch, so they grow with run length)
+
+untracked: []  # [str]; relative paths of untracked files or dirs to bundle with the tracked source

@@ -1,6 +1,9 @@
 artifacts/*
 !artifacts/.gitkeep
 
+temp/*
+!temp/.gitkeep
+
 base_eval_cache/
 
 data/cub/*

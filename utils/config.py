@@ -51,6 +51,28 @@ CFG_PARAM_VALUE_ALIASES = {
     "loss2.targ": {
         "phylo": "hp",
     },
+    "opt.lr.init": {
+        1.0e-7: "1e-7",
+        2.0e-7: "2e-7",
+        3.0e-7: "3e-7",
+        6.0e-7: "6e-7",
+        1.0e-6: "1e-6",
+        2.0e-6: "2e-6",
+        3.0e-6: "3e-6",
+        6.0e-6: "6e-6",
+        1.0e-5: "1e-5",
+        2.0e-5: "2e-5",
+        3.0e-5: "3e-5",
+        6.0e-5: "6e-5",
+        1.0e-4: "1e-4",
+        2.0e-4: "2e-4",
+        3.0e-4: "3e-4",
+        6.0e-4: "6e-4",
+        1.0e-3: "1e-3",
+        2.0e-3: "2e-3",
+        3.0e-3: "3e-3",
+        6.0e-3: "6e-3",
+    }
 }
 
 CFG_UNIVERSAL_VALUE_ALIASES = {
@@ -576,6 +598,11 @@ def load_stats_config_dict() -> dict:
 
 def get_config_stats():
     return StatsConfig(**load_stats_config_dict())
+
+
+def load_zip_config_dict() -> dict:
+    with open(paths["config"] / "zip.yaml") as f:
+        return yaml.safe_load(f)
 
 
 @dataclass

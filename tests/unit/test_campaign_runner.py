@@ -1371,6 +1371,11 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
     ).stdout.strip()
     meta = json.loads((tmp_path / "cmp_commit" / "_screen" / "phase_metadata.json").read_text())
     assert meta["commit"] == head
+    # the dirty flag sits right under the hash; the test's camp yaml (config/camps/camp.yaml) is no tracked file, so
+    # the run can't be exactly the commit's code whatever the checkout's state
+    keys = list(meta)
+    assert keys[keys.index("commit") + 1] == "dirty"
+    assert meta["dirty"] is True
 
 
 def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
@@ -2266,3 +2271,28 @@ def test_stash_nccl_dumps_accumulates_into_existing_dir(tmp_path) -> None:
 
     assert (tmp_path / "nccl_traces" / "earlier_cub_7_rank0").read_text() == "old"
     assert (tmp_path / "nccl_traces" / "sp_base_cub_42_rank0").read_text() == "new"
+
+
+def test_is_dirty_tracks_tracked_file_edits_and_an_untracked_camp_yaml(tmp_path, monkeypatch) -> None:
+    # the provenance flag next to phase_metadata.json's commit hash: staged/unstaged edits to tracked files make the
+    # checkout dirty, other untracked files (stray notebooks, temp/) don't -- git describe --dirty semantics -- except
+    # the campaign's own yaml, config/camps/<name>.yaml, which the commit must have for the run to be its code
+    def git(*args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=tmp_path, check=True, capture_output=True)
+    git("init", "-q")
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "config" / "camps").mkdir(parents=True)
+    (tmp_path / "config" / "camps" / "camp.yaml").write_text("x")
+    git("add", "a.py", "config/camps/camp.yaml")
+    git("commit", "-q", "-m", "init")
+    monkeypatch.setattr(cr, "__file__", str(tmp_path / "campaign_runner.py"))  # _is_dirty runs git in its module's dir
+
+    assert cr._is_dirty("camp") is False
+    (tmp_path / "untracked.ipynb").write_text("x")
+    assert cr._is_dirty("camp") is False
+    (tmp_path / "config" / "camps" / "camp_new.yaml").write_text("x")
+    assert cr._is_dirty("camp_new") is True  # the campaign's own yaml is untracked
+    (tmp_path / "a.py").write_text("y")
+    assert cr._is_dirty("camp") is True
+    git("add", "a.py")
+    assert cr._is_dirty("camp") is True

@@ -201,6 +201,14 @@ def _get_commit_hash() -> str:
         check=True,
     ).stdout.strip()
 
+def _is_dirty(name: str) -> bool:
+    """Whether the code the campaign runs is not exactly the recorded commit's: the repo's tracked files differ from
+    HEAD (staged or unstaged edits; untracked files don't count, as with `git describe --dirty`), or the campaign's
+    own yaml, config/camps/<name>.yaml, is untracked (a campaign the commit doesn't have)."""
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=Path(__file__).parent, capture_output=True, text=True, check=True).stdout.strip()
+    return bool(git("status", "--porcelain", "--untracked-files=no")) or not git("ls-files", "--", f"config/camps/{name}.yaml")
+
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
@@ -638,7 +646,7 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
 
-def _phase_metadata(campaign: str, phase: str, seeds: list[int], matrix: dict, base_sel: bool) -> tuple[dict, Path]:
+def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, base_sel: bool) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
     coord under every arm for the screening phase, each arm's picked coord(s) for the qual and trainval phases -- the
@@ -669,6 +677,7 @@ def _phase_metadata(campaign: str, phase: str, seeds: list[int], matrix: dict, b
         metadata = {
             "duration": "0-00:00:00",
             "commit": _get_commit_hash(),  # repo HEAD at first launch; not updated by relaunches
+            "dirty": _is_dirty(name),  # (true) tracked files differed from that commit at first launch, or the camp yaml is untracked: the code run was not exactly the commit's
             "n_gpus": n_gpus,
             "n_cpus": slurm_alloc["n_cpus"],
             "ram": slurm_alloc["ram"],
@@ -862,7 +871,7 @@ class _Camp:
                     except Exception as e:
                         raise ValueError(f"invalid config for arm '{arm}' / coord '{coord}' on dataset '{dataset}': {e}") from e
 
-def _apply_plan(campaign: str, phase: str, cfg_snapshot: dict, plan: _Plan) -> None:
+def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: _Plan) -> None:
     """Bring the phase's tree in line with `plan` -- at its first application (phase entry) and again whenever a
     re-read of the camp yaml changed it: the qual tree's new picks copied over from screening (_copy_qual_picks), the
     trainval tree's config snapshot (_write_phase_snapshot), phase_metadata.json reconciled (_phase_metadata: the
@@ -873,7 +882,7 @@ def _apply_plan(campaign: str, phase: str, cfg_snapshot: dict, plan: _Plan) -> N
         _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
-    metadata, fpath_meta = _phase_metadata(campaign, phase, plan.seeds, plan.matrix,
+    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix,
                                            cfg_snapshot["train"]["dev"]["reporting"]["eval"]["base_chkpt_sel"])
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
@@ -932,10 +941,10 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 dpath_phase.mkdir(parents=True, exist_ok=True)
                 save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
-                _phase_metadata(campaign, earlier, plan_earlier.seeds, plan_earlier.matrix, base_sel)
+                _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix, base_sel)
             plans = plans_new
             plan = plans[-1]
-            _apply_plan(campaign, phase, cfg_snapshot, plan)
+            _apply_plan(campaign, camp.name, phase, cfg_snapshot, plan)
             trials = plan.trials()
             arm_payloads, coord_payloads = dict(plan.arms), dict(plan.coords)
             # a pruned trial (its dir gone) is forgotten, so an item removed and re-added mid-run runs again

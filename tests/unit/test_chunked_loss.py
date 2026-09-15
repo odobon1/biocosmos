@@ -284,11 +284,19 @@ def test_stats_min_max_mean_exact():
     _, _, stats, _ = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, targ_data_b, crit, None, 0.0, None,
         lambda s, clamp, center=None, secondary=False, center_global=None, half_live=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
+        hpsm_kappas=(0.0, 5.0),
     )
     assert stats["sim1_min"] == pytest.approx(sim.min().item(), abs=1e-5)
     assert stats["sim1_max"] == pytest.approx(sim.max().item(), abs=1e-5)
     assert stats["sim1_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
     assert stats["targ1_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
+    # the margins stream exactly too, one per kappa: I2T per-row margins just add across tiles, T2I
+    # per-column weight sums fold across tiles before the ratio; the mean is their average
+    i2t = [L.hard_pair_similarity_margin(sim, targs, kappa).mean().item() for kappa in (0.0, 5.0)]
+    t2i = [L.hard_pair_similarity_margin(sim.T, targs.T, kappa).mean().item() for kappa in (0.0, 5.0)]
+    assert stats["sim1_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
+    assert stats["sim1_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
+    assert stats["sim1_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
     assert "sim2_min" not in stats
     # the streamed probability histogram matches a full-batch one over the stub's logits
     # (sim * 10 - 0.5): counts just add across tiles, so it is exact, not subsampled
@@ -324,6 +332,9 @@ def test_stats_split_by_crit():
         assert stats[f"targ{tag}_min"] == pytest.approx(targs.min().item(), abs=1e-5)
         assert stats[f"targ{tag}_max"] == pytest.approx(targs.max().item(), abs=1e-5)
         assert stats[f"targ{tag}_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
+        # default kappas (0.0,): the bidirectional mean
+        expected = 0.5 * (L.hard_pair_similarity_margin(sim, targs, 0.0).mean() + L.hard_pair_similarity_margin(sim.T, targs.T, 0.0).mean())
+        assert stats[f"sim{tag}_margin"] == pytest.approx([expected.item()], abs=1e-5)
 
 
 def test_batch_diagnostics_off():

@@ -417,7 +417,7 @@ def test_tracked_targ_stats_only_graded_targets_of_active_branches() -> None:
     assert tracked(_fake_targ_pipe("phylo", "phylo", 0.3)) == {"targ1", "targ2"}
     assert tracked(_fake_targ_pipe("mp", "phylo", 0.3)) == {"targ2"}  # only loss2 qualifies
     assert tracked(_fake_targ_pipe("tax", "sp", 0.3)) == {"targ1"}
-    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) == set()  # neither -> no Y panel at all
+    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) == set()  # neither -> no Q panel at all
     # loss2 off: its targ is irrelevant however it's configured
     assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) == {"targ1"}
     assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) == set()

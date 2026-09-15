@@ -148,40 +148,40 @@ class InfoNCECriterion(Criterion):
     def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
         B = logits.size(0)
         
-        Y = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
-        Y_mass = Y.sum(dim=1)
+        Q = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+        Q_mass = Q.sum(dim=1)
 
         if self.cfg["infonce"]["tsm"]["type"] == "linear":
-            Y_scaled = Y / Y_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+            Y = Q / Q_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         elif self.cfg["infonce"]["tsm"]["type"] == "softmax":
-            scale_Y = self.cfg["infonce"]["tsm"]["sm_scale"]
-            if scale_Y == "pinned" or scale_Y == "pinned1":
+            scale_Q = self.cfg["infonce"]["tsm"]["sm_scale"]
+            if scale_Q == "pinned" or scale_Q == "pinned1":
                 logit_scale = logit_scale.detach()
                 if self.cfg["logits"]["scale"]["clamp"]:
                     logit_scale = logit_scale.clamp(max=math.log(100))
-                if scale_Y == "pinned":
-                    Y_scaled = F.softmax(2 * Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
-                elif scale_Y == "pinned1":
-                    Y_scaled = F.softmax(Y * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                if scale_Q == "pinned":
+                    Y = F.softmax(2 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                elif scale_Q == "pinned1":
+                    Y = F.softmax(Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
             else:
-                Y_scaled = F.softmax(2 * Y * scale_Y, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                Y = F.softmax(2 * Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
 
-        loss_i2t_raw = -Y_scaled * F.log_softmax(logits,   dim=1)  # pt[B, B]
-        loss_t2i_raw = -Y_scaled * F.log_softmax(logits.T, dim=1)  # pt[B, B]
+        loss_i2t_raw = -Y * F.log_softmax(logits,   dim=1)  # pt[B, B]
+        loss_t2i_raw = -Y * F.log_softmax(logits.T, dim=1)  # pt[B, B]
 
         # per-anchor CE (row sum) averaged over anchors -- CLIP's /B, the scale the weighted loss carries
         loss_raw = 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
 
         if not train:
-            return loss_raw, loss_raw, Y
+            return loss_raw, loss_raw, Q
 
         W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
         if self.cfg["wting"]["cls_imb"]["norm"]:
             W_ci = W_ci / W_ci.mean()  # pt[B]
 
         # Note: 2D-focal is still used despite 1D class-imbalance weighting (reduces to standard focal loss in the SP setting)
-        W_foc_i2t = self._focal_2d(logits,   Y_scaled)  # pt[B, B]
-        W_foc_t2i = self._focal_2d(logits.T, Y_scaled)  # pt[B, B]
+        W_foc_i2t = self._focal_2d(logits,   Y)  # pt[B, B]
+        W_foc_t2i = self._focal_2d(logits.T, Y)  # pt[B, B]
 
         W_i2t = W_foc_i2t * W_ci[:, None]  # pt[B, B]
         W_t2i = W_foc_t2i * W_ci[:, None]  # pt[B, B]
@@ -191,7 +191,7 @@ class InfoNCECriterion(Criterion):
 
         loss = 0.5 * (loss_i2t.mean() + loss_t2i.mean())
 
-        return loss, loss_raw, Y
+        return loss, loss_raw, Q
 
 class BCECriterion(Criterion):
     """
@@ -496,6 +496,38 @@ def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi,
 HIST_BINS = 20  # bins spanning [0, 1] for the target / predicted-probability histogram strips
 
 
+def hard_pair_similarity_margin(S, Q, kappa):
+    """
+    Hardness-weighted continuous-Q hard-pair similarity margin, per row.
+
+        w^+_ij ∝ q_ij     exp(-kappa * s_ij)
+        w^-_ij ∝ (1-q_ij) exp(+kappa * s_ij)
+
+        Δs_i(kappa) = sum_j w^+_ij s_ij - sum_j w^-_ij s_ij
+
+    kappa = 0 reduces exactly to the continuous-Q mean-separation margin (the q-weighted mean
+    similarity of a row's positives minus the (1-q)-weighted mean of its negatives). Increasing
+    kappa concentrates the positive side on lower-similarity ("hard") positives and the negative
+    side on higher-similarity ("hard") negatives. Generalizes over sp / mp / continuous targets.
+
+    - S ---- [R, B] similarities (a full BxB matrix, or a row-block of one)
+    - Q ---- [R, B] target memberships in [0, 1]
+    - kappa  hardness weight; dev.reporting.learning_curves.hpsm.kappas lists the values curved
+
+    Returns Δs_i(kappa) per row, [R]; the batch statistic is its mean over all B rows. Rows are the
+    anchors: on S (image rows, text columns) that is the I2T margin, on S.T with Q.T the T2I one; the
+    batch stats report both and their mean, mirroring the bidirectional loss.
+    """
+    assert S.shape == Q.shape
+    assert S.ndim == 2
+    # log-weights; log(0) = -inf keeps an exact-zero membership at exactly zero weight
+    pos_logits = torch.log(Q) - kappa * S
+    neg_logits = torch.log1p(-Q) + kappa * S
+    w_pos = torch.softmax(pos_logits, dim=1)
+    w_neg = torch.softmax(neg_logits, dim=1)
+    return (w_pos * S).sum(dim=1) - (w_neg * S).sum(dim=1)
+
+
 class _SimTargStatsAccum:
     """
     Streams one loss branch's per-batch sim/target/probability distribution stats over the loss tiles
@@ -503,18 +535,29 @@ class _SimTargStatsAccum:
     the full BxB matrices. sim/targ min/max/mean are exact; their median is over a strided subsample
     of each tile (an exact BxB median would need the whole matrix). Targets and probabilities are
     also summarized as HIST_BINS histograms, which stream exactly -- counts just add across tiles
-    and ranks. The chunked path is BCE-family only, so p{idx}_hist is always reported here.
+    and ranks. The mean hard-pair similarity margins (sim{idx}_margin*, one entry per hpsm_kappas
+    value) are exact too. I2T (image anchors): every tile holds whole rows, so the per-row margins just
+    sum across tiles and ranks. T2I (text anchors): a text's weights over the images span every tile
+    and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
+    mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
+    weights underflow only past kappa ~ 300) and the ratio is taken after the fold. The chunked path
+    is BCE-family only, so p{idx}_hist is always reported here.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = ("targ", "p")
 
-    def __init__(self, device):
+    def __init__(self, device, hpsm_kappas, B):
         self.mins = {f: torch.tensor(float("inf"), device=device) for f in self._FIELDS}
         self.maxs = {f: torch.tensor(float("-inf"), device=device) for f in self._FIELDS}
         self.sums = {f: torch.zeros((), dtype=torch.float64, device=device) for f in self._FIELDS}
         self.samps = {f: [] for f in self._FIELDS}
         self.hists = {f: torch.zeros(HIST_BINS, dtype=torch.float64, device=device) for f in self._HIST_FIELDS}
         self.count = 0
+        self.kappas = hpsm_kappas
+        self.B = B
+        self.margin_sums = torch.zeros(len(hpsm_kappas), dtype=torch.float64, device=device)  # I2T per-row margins, summed
+        # T2I per-column sums per kappa: [pos mass, pos weighted sim, neg mass, neg weighted sim] x B
+        self.t2i_sums = torch.zeros(len(hpsm_kappas), 4, B, dtype=torch.float64, device=device)
 
     def update(self, sim_tile, targs_tile, logits_tile):
         tiles = {
@@ -532,6 +575,13 @@ class _SimTargStatsAccum:
         for field in self._HIST_FIELDS:
             self.hists[field] += torch.histc(tiles[field], bins=HIST_BINS, min=0.0, max=1.0).double()
         self.count += tiles["sim"].numel()
+        S, Q = sim_tile.float(), targs_tile.float()
+        self.margin_sums += torch.stack([hard_pair_similarity_margin(S, Q, kappa).double().sum() for kappa in self.kappas])
+        S, Q = S.double(), Q.double()
+        for idx_kappa, kappa in enumerate(self.kappas):
+            W_pos = Q * torch.exp(-kappa * (S + 1.0))          # ∝ q exp(-kappa s), shifted by the s >= -1 bound
+            W_neg = (1.0 - Q) * torch.exp(kappa * (S - 1.0))   # ∝ (1-q) exp(+kappa s), shifted by the s <= 1 bound
+            self.t2i_sums[idx_kappa] += torch.stack([W_pos.sum(0), (W_pos * S).sum(0), W_neg.sum(0), (W_neg * S).sum(0)])
 
     def finalize(self, world_size, idx):
         mins = dict(self.mins)
@@ -540,19 +590,22 @@ class _SimTargStatsAccum:
         samps = {f: torch.cat(self.samps[f]) for f in self._FIELDS}
         hists = dict(self.hists)
         count = self.count
+        margin_sums = self.margin_sums
+        t2i_sums = self.t2i_sums
         if world_size > 1:  # fold per-band partials; the bands partition the BxB rows exactly
             ext = torch.stack([*(-mins[f] for f in self._FIELDS), *(maxs[f] for f in self._FIELDS)])
             dist.all_reduce(ext, op=dist.ReduceOp.MAX)
             mins = {f: -ext[i] for i, f in enumerate(self._FIELDS)}
             maxs = {f: ext[len(self._FIELDS) + i] for i, f in enumerate(self._FIELDS)}
-            # the scalar sums ride along with every histogram's bins in one collective
-            packed = torch.cat([torch.stack([sums[f] for f in self._FIELDS]),
-                                *(hists[f] for f in self._HIST_FIELDS)])
+            # the scalar sums and margin accumulators ride along with every histogram's bins in one collective
+            parts = [torch.stack([sums[f] for f in self._FIELDS]), margin_sums, t2i_sums.flatten(),
+                     *(hists[f] for f in self._HIST_FIELDS)]
+            packed = torch.cat(parts)
             dist.all_reduce(packed)
-            sums = {f: packed[i] for i, f in enumerate(self._FIELDS)}
-            base = len(self._FIELDS)
-            hists = {f: packed[base + i * HIST_BINS:base + (i + 1) * HIST_BINS]
-                     for i, f in enumerate(self._HIST_FIELDS)}
+            sums_v, margin_sums, t2i_flat, *hists_v = torch.split(packed, [p.numel() for p in parts])
+            sums = {f: sums_v[i] for i, f in enumerate(self._FIELDS)}
+            t2i_sums = t2i_flat.view_as(t2i_sums)
+            hists = dict(zip(self._HIST_FIELDS, hists_v))
             count *= world_size  # equal bands -> equal per-rank counts
             # median subsamples: equal bands + equal tile sizes -> equal lengths on every rank, so a
             # plain all_gather reassembles the exact same subsample pool a single full sweep produces
@@ -568,6 +621,12 @@ class _SimTargStatsAccum:
             stats[f"{field}{idx}_mean"] = (sums[field] / count).item()
         for field in self._HIST_FIELDS:
             stats[f"{field}{idx}_hist"] = (hists[field] / hists[field].sum()).tolist()
+        i2t = margin_sums / self.B
+        pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
+        t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)
+        stats[f"sim{idx}_margin_i2t"] = i2t.tolist()
+        stats[f"sim{idx}_margin_t2i"] = t2i.tolist()
+        stats[f"sim{idx}_margin"] = (0.5 * (i2t + t2i)).tolist()
         return stats
 
 
@@ -778,7 +837,7 @@ def _gsum_hook(acc):
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, unitless,
                               compute_logits, chunk_size, mixed_prec, device, rank, world_size,
-                              sim_grad_sums=True, sim_targ_stats=True):
+                              sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,)):
     """
     Tiled + row-band-sharded global-batch BCE-family loss + backward (GradCache-style representation
     gradients). Computes the exact same weighted loss and gradients as the full-batch path
@@ -810,6 +869,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
     - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
     - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sims (None, None).
     - sim_targ_stats ---- False skips the per-tile stats accumulation and returns batch_stats None.
+    - hpsm_kappas ------- kappa values the sim{k}_margin* stats are reported at (one entry each).
 
     Returns (loss, loss_raw, batch_stats, grad_sum_sims), all detached; gradients left in the leaves' /
     params' .grad. grad_sum_sims = (sum(dL/dsim1), sum(dL/dsim2)|None), the full-batch sums accumulated
@@ -877,7 +937,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
 
     wbce_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
     raw_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
-    stats = [_SimTargStatsAccum(device) for _ in crits]
+    stats = [_SimTargStatsAccum(device, hpsm_kappas, B) for _ in crits]
 
     for rs in range(lo, hi, chunk_size):
         re = rs + chunk_size  # the band is an exact multiple of chunk_size (checked above)

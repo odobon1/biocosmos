@@ -82,7 +82,8 @@ def _make_harness(model, crit1, crit2=None, mix=0.0, unitless=False, shared_scal
         loss={"mix": mix, "unitless": unitless},
         loss1={"crit": crit1.cfg["crit"]},
         loss2={"crit": crit2.cfg["crit"] if crit2 is not None else "bce"},
-        dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True}}},
+        dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
+                           "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}}},
     )
     return h
 
@@ -264,6 +265,18 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
         assert sum(hist) == pytest.approx(1.0, abs=1e-5)
         expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
         assert hist == pytest.approx(expected.tolist(), abs=1e-5)
+    # one margin per configured kappa, per direction plus their mean; loss2's targets are sp (Q = I),
+    # where at kappa 0 both directions read the diagonal minus the off-diagonal mean (row-wise for
+    # I2T, column-wise for T2I -- the same total, so the mean equals either)
+    s = sims2[0].detach()
+    eye = torch.eye(B)
+    i2t = [L.hard_pair_similarity_margin(s, eye, kappa).mean().item() for kappa in (0.0, 3.0)]
+    t2i = [L.hard_pair_similarity_margin(s.T, eye, kappa).mean().item() for kappa in (0.0, 3.0)]
+    assert i2t[0] == pytest.approx((s.diag() - (s.sum(1) - s.diag()) / (B - 1)).mean().item(), abs=1e-5)
+    assert t2i[0] == pytest.approx(i2t[0], abs=1e-5)
+    assert batch_stats["sim2_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
+    assert batch_stats["sim2_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
+    assert batch_stats["sim2_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
 
 
 def test_infonce_branch_reports_no_probability_stats():

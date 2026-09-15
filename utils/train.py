@@ -86,6 +86,16 @@ class TrialData:
             "sim2_max": [],
             "sim2_median": [],
             "sim2_mean": [],
+            # sim*_margin*: per batch, the mean hard-pair similarity margin at each
+            # dev.reporting.learning_curves.hpsm.kappas value (a list in config order, not a scalar), per
+            # loss branch (sim_targ_batch_stats): the I2T / T2I directions and their mean, each its own
+            # curve strip with one line per kappa (the directional strips only under hpsm.multimodal)
+            "sim1_margin_i2t": [],
+            "sim1_margin_t2i": [],
+            "sim1_margin": [],
+            "sim2_margin_i2t": [],
+            "sim2_margin_t2i": [],
+            "sim2_margin": [],
             # targ*_hist / p*_hist: per batch, the targets and predicted pair probabilities binned
             # over [0, 1] (a list of bin fractions, not a scalar) -- the curve strips render them as
             # heatmap columns. targ* is recorded only for branches with graded targets

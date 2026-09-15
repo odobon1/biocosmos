@@ -42,12 +42,12 @@ freeze:
 htarg:  # Hierarchical target params
   kernel: laplace  # {bm, laplace, ou}; Phylo target kernel on the tree's Brownian-motion VCV C (C_ab = depth of MRCA(a, b),
   # C_aa = tip depth); (bm) Brownian kernel, cosine-normalized: C_ab / sqrt(C_aa * C_bb), the shared root-path length over
-  # the tips' own depths (root-dependent; 0 for pairs splitting at the root); (laplace | ou) Y = exp(-beta * d / avg_dist)
+  # the tips' own depths (root-dependent; 0 for pairs splitting at the root); (laplace | ou) Q = exp(-beta * d / avg_dist)
   # over a root-independent tree metric d, avg_dist its batch-pair-probability-weighted mean: (laplace) d = sqrt(patristic
   # distance), the Brownian contrast SD (Laplace / exponential kernel on the Brownian embedding); (ou) d = patristic
   # distance (stationary Ornstein-Uhlenbeck tree covariance); Inert iff (loss1.targ != phylo AND loss2.targ != phylo)
   exp:  # Exp-decay kernel params; Inert iff (htarg.kernel: bm, or no phylo target active)
-    beta: 1.0  # (0.0, inf); Sharpness: Y = exp(-beta * d / avg_dist), i.e. the beta: 1.0 kernel raised to the power beta;
+    beta: 1.0  # (0.0, inf); Sharpness: Q = exp(-beta * d / avg_dist), i.e. the beta: 1.0 kernel raised to the power beta;
     # larger --> faster decay (sharper targets); (1.0) The average sampled pair sits at e^-1
   shuffle: false  # {true, false}
 
@@ -71,12 +71,12 @@ loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
     tsm:  # Target Simplex Mapping
       type: softmax  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
-      # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make alpha_Y comparable to logits' alpha
+      # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make alpha_Q comparable to logits' alpha
       # i.e. target range --> similarity range
       sm_scale: pinned  # {pinned, pinned1, [float]}
-      # (pinned) Target scale alpha_Y pinned to the logits' learnable logit-scale alpha = exp(logit_scale) (targs scaled by x2 first)
+      # (pinned) Target scale alpha_Q pinned to the logits' learnable logit-scale alpha = exp(logit_scale) (targs scaled by x2 first)
       # (pinned1) Same as pinned but without the x2 target scaling
-      # ([float]) Fixed alpha_Y (non-learnable), set =0.5 for no target scaling; inert if (loss1.infonce.tsm.type: linear)
+      # ([float]) Fixed alpha_Q (non-learnable), set =0.5 for no target scaling; inert if (loss1.infonce.tsm.type: linear)
   bce:  # Inert iff (loss1.crit != bif_bce)
     targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its target
     # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1); Inert iff (loss1.crit != bif_bce)
@@ -212,8 +212,12 @@ dev:
       # no curve panel)
       sim_grad_sums: true  # {true, false}; Retained sim grads' full-batch sums (the sim-grad-sum curve strips;
       # no log fields)
-      sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Y
-      # curve panels)
+      sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Q
+      # curve panels and the mean hard-pair similarity margin strips)
+    learning_curves:
+      hpsm:
+        kappas: [0, 1, 10, 100]  # hard-pair similarity margin plotted kappa values
+        multimodal: false  # {true, false}
     logging: true
     plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
     # (trial) Only at the final checkpoint

@@ -68,7 +68,8 @@ def regen_learning_curves(campaign):
                             if cfg.train_pt != "trainval"
                             else []
                         )
-                        plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch)
+                        plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,
+                                     cfg.dev["reporting"]["learning_curves"]["hpsm"])
                         print(f"regenerated: {dpath_trial / ('learning_curve.png' if phase == 'trainval' else 'learning_curves')}")
 
 

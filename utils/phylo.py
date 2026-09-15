@@ -22,7 +22,7 @@ class PhyloVCV:
     Phylo target matrix from the dataset's tree: a unit-diagonal kernel on the tree's Brownian-motion
     VCV C (C_ab = depth of MRCA(a, b), C_aa = tip depth = root-to-tip length), selected by `kernel`.
     'bm': the Brownian kernel itself, cosine-normalized -- C_ab / sqrt(C_aa * C_bb), the shared
-    root-path length over the tips' own depths (root-dependent). 'laplace' / 'ou': Y = exp(-beta * d / avg_dist)
+    root-path length over the tips' own depths (root-dependent). 'laplace' / 'ou': Q = exp(-beta * d / avg_dist)
     over a root-independent tree metric d -- 'laplace': d(a, b) = sqrt(patristic distance), the standard
     deviation of the Brownian-motion contrast X_a - X_b (the Laplace / exponential kernel on the Brownian
     feature embedding); 'ou': d(a, b) = patristic distance (the stationary Ornstein-Uhlenbeck tree

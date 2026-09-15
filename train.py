@@ -437,7 +437,8 @@ class TrainPipeline:
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
         if final or self.cfg.dev["reporting"]["plot_every"] == "chkpt":
-            plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch)
+            plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch,
+                         self.cfg.dev["reporting"]["learning_curves"]["hpsm"])
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.loss_chunk_size is not None:

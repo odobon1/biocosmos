@@ -81,7 +81,7 @@ _LW_COMP = 2.2
 _LW_PARTITION = 1.8
 _LW_MODALITY = 1.5
 
-# Max heatmap columns in a P/Y strip before adjacent ones are folded together. Each recorded batch
+# Max heatmap columns in a P/Q strip before adjacent ones are folded together. Each recorded batch
 # contributes one histogram column; once there are more than this, every 2 consecutive columns are
 # averaged into one (then every 4, every 8, ...) so the strip keeps a readable cell width instead of
 # collapsing into a smear. Columns therefore oscillate between this and half of it as training runs.
@@ -91,7 +91,7 @@ P_HEATMAP_HORIZONTAL_THRESHOLD = 128
 # whose muted tops leave a sparse strip washed out. The purple stops are the blue ones hue-rotated
 # at the same saturation and lightness, so the two strips read as one style in two hues.
 _P_CMAP = LinearSegmentedColormap.from_list("p_density", ["#FFFFFF", "#4C7FE8", "#0A1FB0"])
-_Y_CMAP = LinearSegmentedColormap.from_list("y_density", ["#FFFFFF", "#9A4CE8", "#5D0AB0"])
+_Q_CMAP = LinearSegmentedColormap.from_list("q_density", ["#FFFFFF", "#9A4CE8", "#5D0AB0"])
 # most of the mass sits in one bin (a BCE run starts with every pair near 0), so a linear ramp would
 # leave the rest invisible -- sqrt scaling lifts the sparse bins into view
 _HIST_NORM = PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0)
@@ -1339,6 +1339,7 @@ def plot_metrics(
         dpath_trial,
         nshot_bucket_names,
         epoch_size,
+        hpsm,
         fontsize_axes=12,
         fontsize_ticks=8,
         fontsize_legend=8,
@@ -1379,6 +1380,7 @@ def plot_metrics(
             subplot_border_width,
             figsize,
             height_ratios,
+            hpsm,
             group_key=group_key,
             plot_title=title_prefix if group_name is None else f"{title_prefix}, {group_name}",
             output_filename="learning_curve.png" if group_key is None else f"learning_curves/{group_key}.png",
@@ -1398,6 +1400,7 @@ def plot_composite_metrics(
     subplot_border_width,
     figsize,
     height_ratios,
+    hpsm,
     group_key,
     plot_title,
     output_filename,
@@ -1425,17 +1428,17 @@ def plot_composite_metrics(
         *([height_ratios[9]] if has_sim_stats else []),
         *height_ratios[10:],
     ]
-    # one Y-stats panel per loss branch whose targets carry distributional signal -- TrainPipeline
+    # one Q-stats panel per loss branch whose targets carry distributional signal -- TrainPipeline
     # records targ stats only for phylo/tax branches (sp/mp targets are 0/1 indicators), so a branch
     # with no series gets no panel, and neither qualifying leaves none at all. Subscripted per loss
-    # whenever loss2 is active, even when only one branch qualifies. The base list's single Y slot
+    # whenever loss2 is active, even when only one branch qualifies. The base list's single Q slot
     # (second to last, before LR) is replaced by one per panel.
     targ_panels = [
-        (f"targ{tag}_hist", f"Y{sub}" if has_loss2 else "Y")
+        (f"targ{tag}_hist", f"Q{sub}" if has_loss2 else "Q")
         for tag, sub in (("1", "₁"), ("2", "₂"))
         if len(data_epoch[f"targ{tag}_hist"]) == len(x_train)
     ]
-    # P strips (sigmoid(logits), the predicted pair probabilities) sit between S and Y, on Y's [0, 1]
+    # P strips (sigmoid(logits), the predicted pair probabilities) sit between S and Q, on Q's [0, 1]
     # axis so predictions and targets read against each other. Recorded only for BCE-family branches,
     # so an InfoNCE branch has no series and gets no panel.
     p_panels = [
@@ -1449,7 +1452,7 @@ def plot_composite_metrics(
         height_ratios[-1],
     ]
     # each tracked logit scalar (TrialData scale*/bias* series; empty when untracked) gets an LR-height
-    # strip between the Y panels and LR, scales first; labels are subscripted per loss whenever loss2 is
+    # strip between the Q panels and LR, scales first; labels are subscripted per loss whenever loss2 is
     # active, even if only one of the pair is tracked
     scalar_panels = [
         (key, rf"${sym}_{tag}$" if has_loss2 else rf"${sym}$")
@@ -1457,6 +1460,19 @@ def plot_composite_metrics(
         if len(data_epoch[key]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[0.5] * len(scalar_panels), height_ratios[-1]]
+    # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above LR, S-height
+    # panels each drawing one line per dev.reporting.learning_curves.hpsm.kappas value. Per loss branch
+    # (unlike S the margin depends on the targets): with hpsm.multimodal the I2T and T2I directions and
+    # then their mean, else the mean alone
+    hpsm_kappas = hpsm["kappas"]
+    margin_dirs = [("_i2t", "I2T "), ("_t2i", "T2I ")] if hpsm["multimodal"] else []
+    margin_panels = [
+        (f"sim{tag}_margin{suffix}", rf"{prefix}$\overline{{\Delta S}}_{{\kappa{sub}}}$")
+        for tag, sub in (("1", ",1" if has_loss2 else ""), ("2", ",2"))
+        for suffix, prefix in (*margin_dirs, ("", ""))
+        if len(data_epoch[f"sim{tag}_margin{suffix}"]) == len(x_train)
+    ]
+    height_ratios = [*height_ratios[:-1], *[1] * len(margin_panels), height_ratios[-1]]
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -1665,13 +1681,31 @@ def plot_composite_metrics(
     for hist_key, label in p_panels:
         add_hist_panel(hist_key, label, _P_CMAP)
     for hist_key, label in targ_panels:
-        add_hist_panel(hist_key, label, _Y_CMAP)
+        add_hist_panel(hist_key, label, _Q_CMAP)
 
     for key, label in scalar_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    for key, label in margin_panels:
+        # mean hard-pair similarity margin (hard_pair_similarity_margin): per row, the hardness-weighted
+        # mean sim of the positives minus that of the negatives, averaged over rows; kappa 0 is the plain
+        # mean-separation margin, larger kappas weight each side toward its hard pairs
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        margins = np.array(data_epoch[key])  # [batch, kappa]
+        colors = plt.cm.viridis(np.linspace(0.0, 0.75, len(hpsm_kappas)))
+        for idx_kappa in reversed(range(len(hpsm_kappas))):  # drawn last-to-first, so a smaller kappa sits on top
+            ax.plot(x_train, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {hpsm_kappas[idx_kappa]:g}$")
+        ax.axhline(0.0, color="gray", linewidth=0.5)
+        ax.set_ylabel(label, fontsize=fontsize_axes + 4)
+        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        handles, labels = ax.get_legend_handles_labels()  # legend in config order
+        ax.legend(handles[::-1], labels[::-1], loc="upper left", ncol=len(hpsm_kappas), fontsize=fontsize_legend)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)

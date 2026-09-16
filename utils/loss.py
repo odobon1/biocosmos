@@ -605,42 +605,89 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt):
     return torch.stack(sums).view(3, 3, 2).permute(2, 0, 1) / S.size(0)
 
 
-def infonce_scale_grad_batch_stats(sim, targs, y, logits, alpha, idx):
+def infonce_kl_terms(Y, log_P, P_opt):
     """
-    One InfoNCE loss branch's per-batch logit-scale gradient decomposition stats (the dalpha{idx}_*
-    and dlogalpha{idx}_* learning-curve strips): infonce_scale_grad_sums over both anchor directions,
-    averaged -- the loss is the mean of the two directions' CE, so the averaged full / all sum is its
-    d(loss_raw)/d(alpha) -- with the coherence C = |sum| / sum|.| taken on the averaged sums (the
-    bidirectional gradient's own cancellation ratio, so C = |sum| / sum_abs holds across the
-    reported series). The dlogalpha family is the same decomposition for the log-scale parameter the
-    model actually learns (logits.scale: the param is log(alpha), z = exp(log alpha) * s):
-    d/d(log alpha) = alpha * d/dalpha per pair, so its sums are alpha times the dalpha ones and its
-    C, alpha cancelling in the ratio, equals the dalpha one (up to the ratio's epsilon).
+    One anchor direction's InfoNCE target-to-prediction divergence, decomposed through the reachable
+    optimum p* = infonce_p_opt(Y, alpha):
+
+        D_KL(y || p) = D_KL(y || p*) + D_KL(p* || p) + <y - p*, log(p* / p)>
+                     =     E_ir      +      E_s      +        E_sr
+
+    per anchor row, each averaged over the anchors. D_KL(y || p) is the direction's raw loss (the
+    per-anchor CE) less the targets' entropy -- the part of the loss training can drive down. E_ir
+    is the part no similarity geometry can remove at this alpha (the target lies outside the
+    reachable set), E_s the part the model still could (its p is not p*), E_sr the cross term. All
+    four are >= 0: the divergences by definition, E_sr because p is itself reachable -- with A the
+    target mass the cap clips off, E_sr = A * (2 alpha - the mean log-ratio of p between the capped
+    and the floored entries), and no two entries of p differ by more than 2 alpha in logit; it is
+    zero iff p keeps every capped entry the full 2 alpha above every floored one, as p* does.
+
+    - Y ------ [R, B] target distributions (rows = anchors; Y serves both directions, as in
+               InfoNCECriterion)
+    - log_P -- [R, B] the anchors' predicted log distributions (the row log-softmax of the
+               direction's logits)
+    - P_opt -- infonce_p_opt(Y, alpha)
+
+    Returns [4]: the batch means of (D_KL(y || p), E_s, E_ir, E_sr).
+    """
+    log_P_opt = P_opt.log()
+    neg_H = torch.xlogy(Y, Y).sum(dim=1)  # -H(y); 0 log 0 = 0
+    kl = neg_H - (Y * log_P).sum(dim=1)
+    E_s = (P_opt * (log_P_opt - log_P)).sum(dim=1)
+    E_ir = neg_H - (Y * log_P_opt).sum(dim=1)
+    E_sr = ((Y - P_opt) * (log_P_opt - log_P)).sum(dim=1)
+    return torch.stack([kl.mean(), E_s.mean(), E_ir.mean(), E_sr.mean()])
+
+
+def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
+    """
+    One InfoNCE loss branch's per-batch reachable-optimum (p* = infonce_p_opt) diagnostics, each
+    taken over both anchor directions and averaged -- the loss is the mean of the two directions' CE:
+
+    - the logit-scale gradient decomposition (the dalpha{idx}_* and dlogalpha{idx}_* learning-curve
+      strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
+      the coherence C = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
+      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). The dlogalpha
+      family is the same decomposition for the log-scale parameter the model actually learns
+      (logits.scale: the param is log(alpha), z = exp(log alpha) * s): d/d(log alpha) = alpha *
+      d/dalpha per pair, so its sums are alpha times the dalpha ones and its C, alpha cancelling in
+      the ratio, equals the dalpha one (up to the ratio's epsilon).
+    - the KL decomposition (the kl{idx}* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
+      per anchor, batch-meaned.
 
     - sim, targs, y, logits -- the branch's BxB S, Q, Y and logits (first branch), as passed to
       sim_targ_batch_stats
     - alpha ---------------- its logit scale alpha = exp(logit_scale), post-clamp
-    - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*)
+    - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*, kl1* / kl2*)
 
-    Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]}; the
-    reductions are stacked so the device->host transfer is a single .cpu() sync.
+    Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
+    {kl{idx}, kl{idx}_s, kl{idx}_ir, kl{idx}_sr: scalar}; the reductions are stacked so the
+    device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
         alpha = torch.as_tensor(alpha, dtype=torch.float64, device=S.device).detach()
         P_opt = infonce_p_opt(Y, alpha)
-        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, torch.softmax(Z, dim=1), P_opt)
-                      + infonce_scale_grad_sums(S.T, Q.T, Y, torch.softmax(Z.T, dim=1), P_opt))
+        log_P_i2t, log_P_t2i = torch.log_softmax(Z, dim=1), torch.log_softmax(Z.T, dim=1)
+        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt)
+                      + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt))
+        kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt) + infonce_kl_terms(Y, log_P_t2i, P_opt))
         families = []
         for scaled in (sums, alpha * sums):  # d/dalpha, then d/d(log alpha)
             C = scaled[0].abs() / (scaled[1] + 1e-30)
             families.append(torch.cat([scaled, C[None]]))
-        vals = torch.stack(families).cpu().tolist()  # [2, 3, 3, 3]
+        grad = torch.stack(families)  # [2, 3, 3, 3]
+        packed = torch.cat([grad.flatten(), kl]).cpu()
+        vals = packed[:grad.numel()].view_as(grad).tolist()
+        kl_vals = packed[grad.numel():].tolist()
     return {
-        f"{prefix}{idx}_{agg}_{comp}": vals[f][a][c]
-        for f, prefix in enumerate(("dalpha", "dlogalpha"))
-        for a, agg in enumerate(("sum", "sum_abs", "C"))
-        for c, comp in enumerate(("full", "struct", "res"))
+        **{
+            f"{prefix}{idx}_{agg}_{comp}": vals[f][a][c]
+            for f, prefix in enumerate(("dalpha", "dlogalpha"))
+            for a, agg in enumerate(("sum", "sum_abs", "C"))
+            for c, comp in enumerate(("full", "struct", "res"))
+        },
+        **dict(zip((f"kl{idx}", f"kl{idx}_s", f"kl{idx}_ir", f"kl{idx}_sr"), kl_vals)),
     }
 
 

@@ -1492,7 +1492,7 @@ def plot_composite_metrics(
     # since only they record the series) sit directly above LR, nine S-height panels per branch: the
     # per-pair dL/dalpha terms summed, summed in magnitude, and their coherence ratio C = |sum| / sum|.|,
     # each for the full gradient and its structural / residual parts (utils.loss
-    # .infonce_scale_grad_batch_stats), every panel drawing the all / positive-mass / negative-mass
+    # .infonce_batch_stats), every panel drawing the all / positive-mass / negative-mass
     # attributions; then the same nine for the log-scale parameter the model learns (dlogalpha*),
     # below them. Subscripted per loss whenever loss2 is active. The figure grows by a strip's worth
     # of height per panel, so the base panels keep their size.
@@ -1517,8 +1517,33 @@ def plot_composite_metrics(
         for comp in ("full", "struct", "res")
         if len(data_epoch[f"{prefix}{tag}_{agg}_{comp}"]) == len(x_train)
     ]
-    height_ratios = [*height_ratios[:-1], *[1] * len(dalpha_panels), height_ratios[-1]]
-    figsize = (figsize[0], figsize[1] + 0.8 * len(dalpha_panels))
+    # the InfoNCE KL decomposition strips (sim_targ_stats on; InfoNCE branches only) sit directly
+    # above LR, four S-height panels per branch (utils.loss.infonce_kl_terms, both anchor directions
+    # averaged, batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then its three
+    # parts, the structural E_s = D_KL(p* || p) (what the model could still remove at this alpha), the
+    # irreducible E_ir = D_KL(y || p*) (the target outside the reachable set) and the cross term E_sr.
+    # The divergences' axes start at 0; E_sr is >= 0 as well while p stays inside the reachable band
+    # (exact for cosine logits, which bf16 rounding can just nudge out), so it gets a zero reference
+    # line and an autoscaled axis in place of the floor. Subscripted per loss whenever loss2 is active.
+
+    def kl_labels(tag):
+        y, p, p_opt = (f"y_{tag}", f"p_{tag}", f"p_{tag}^*") if has_loss2 else ("y", "p", "p^*")
+        sub = f",{tag}" if has_loss2 else ""
+        return (
+            ("", rf"$D_{{\mathrm{{KL}}}}({y}\|{p})$"),
+            ("_s", rf"$\mathcal{{E}}_{{s{sub}}} = D_{{\mathrm{{KL}}}}({p_opt}\|{p})$"),
+            ("_ir", rf"$\mathcal{{E}}_{{\text{{ir}}{sub}}} = D_{{\mathrm{{KL}}}}({y}\|{p_opt})$"),
+            ("_sr", rf"$\mathcal{{E}}_{{\text{{sr}}{sub}}}$"),
+        )
+
+    kl_panels = [
+        (f"kl{tag}{suffix}", label, suffix != "_sr")
+        for tag in ("1", "2")
+        for suffix, label in kl_labels(tag)
+        if len(data_epoch[f"kl{tag}{suffix}"]) == len(x_train)
+    ]
+    height_ratios = [*height_ratios[:-1], *[1] * (len(dalpha_panels) + len(kl_panels)), height_ratios[-1]]
+    figsize = (figsize[0], figsize[1] + 0.8 * (len(dalpha_panels) + len(kl_panels)))
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -1777,6 +1802,19 @@ def plot_composite_metrics(
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         legend_handles[ax] = ax.get_legend_handles_labels()[0]
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    for key, label, floored in kl_panels:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        ax.plot(x_train, data_epoch[key], color="darkmagenta", linewidth=1.0)
+        if floored:
+            ax.set_ylim(bottom=0.0)  # a divergence
+        else:
+            ax.axhline(0.0, color="gray", linewidth=0.5)
+        ax.set_ylabel(label, fontsize=fontsize_axes)
+        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)

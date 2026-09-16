@@ -113,7 +113,7 @@ class TrialData:
             "y2_min": [],
             "y2_max": [],
             # dalpha*_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
-            # decomposition (utils.loss.infonce_scale_grad_batch_stats): the per-pair dL/dalpha terms,
+            # decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
             # the target), each summed, summed in magnitude, and their coherence ratio C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
@@ -128,6 +128,13 @@ class TrialData:
                 for agg in ("sum", "sum_abs", "C")
                 for comp in ("full", "struct", "res")
             },
+            # kl*: per batch, the InfoNCE KL decomposition (utils.loss.infonce_kl_terms, both anchor
+            # directions averaged): kl{tag} = D_KL(y || p), the raw loss less the targets' entropy,
+            # and its parts kl{tag}_s = E_s = D_KL(p* || p) (structural: the model's p vs the
+            # reachable optimum), kl{tag}_ir = E_ir = D_KL(y || p*) (irreducible: the target outside
+            # the reachable set) and kl{tag}_sr = E_sr, the cross term -- scalars, one curve strip
+            # each. InfoNCE branches only, like dalpha*.
+            **{f"kl{tag}{suffix}": [] for tag in (1, 2) for suffix in ("", "_s", "_ir", "_sr")},
         }
         self.data_eval = {
             "n_samps_seen": [],

@@ -18,7 +18,7 @@ from utils.loss import (
     Criterion,
     chunked_bce_loss_backward,
     hard_pair_similarity_margin,
-    infonce_scale_grad_batch_stats,
+    infonce_batch_stats,
     HIST_BINS,
     pos_prevalence,
 )
@@ -596,9 +596,9 @@ class VLMWrapper(abc.ABC):
     ) -> Dict[str, Any]:
         """
         One loss branch's per-batch stats: sim_targ_batch_stats (sims[0] / logits[0]: branch values are
-        identical, so the first branch carries them) plus, for an InfoNCE branch, the logit-scale
-        gradient decomposition (infonce_scale_grad_batch_stats), which needs the alpha its logits
-        carry: the criterion's scale, post-clamp, as compute_logits applies it.
+        identical, so the first branch carries them) plus, for an InfoNCE branch, the reachable-optimum
+        diagnostics (infonce_batch_stats: the logit-scale gradient and the KL decompositions), which
+        need the alpha its logits carry: the criterion's scale, post-clamp, as compute_logits applies it.
         """
         cfg_loss = self.cfg.loss2 if secondary else self.cfg.loss1
         kappas = self.cfg.dev["reporting"]["learning_curves"]["hpsm"]["kappas"]
@@ -608,7 +608,7 @@ class VLMWrapper(abc.ABC):
             logit_scale = (model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale).detach()
             if crit.cfg["logits"]["scale"]["clamp"]:
                 logit_scale = logit_scale.clamp(max=math.log(100))
-            stats.update(infonce_scale_grad_batch_stats(sims[0], targs, y, logits[0], logit_scale.exp(), idx))
+            stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.exp(), idx))
         return stats
 
     def _global_batch_loss(

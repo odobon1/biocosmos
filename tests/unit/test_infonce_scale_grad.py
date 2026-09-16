@@ -1,11 +1,13 @@
 """
-The InfoNCE logit-scale gradient decomposition (utils.loss.infonce_p_opt / infonce_scale_grad_sums /
-infonce_scale_grad_batch_stats): per pair, dL/dalpha = (p - y) s splits into a structural part
-(p - p*) s -- what the model could still remove at this alpha -- and a residual (p* - y) s that no
-similarity geometry can, p* being the row softmax's reachable optimum under bounded-cosine logits
-(max / min ratio at most exp(2 alpha)); each is attributed to the positive / negative target mass by
-the soft masks q / 1 - q, and reported summed, summed in magnitude, and as the coherence ratio
-C = |sum| / sum|.|, averaged over the I2T / T2I anchor directions.
+The InfoNCE reachable-optimum diagnostics (utils.loss.infonce_p_opt / infonce_scale_grad_sums /
+infonce_kl_terms / infonce_batch_stats), p* being the row softmax's reachable optimum under
+bounded-cosine logits (max / min ratio at most exp(2 alpha)). The logit-scale gradient
+decomposition: per pair, dL/dalpha = (p - y) s splits into a structural part (p - p*) s -- what the
+model could still remove at this alpha -- and a residual (p* - y) s that no similarity geometry can;
+each is attributed to the positive / negative target mass by the soft masks q / 1 - q, and reported
+summed, summed in magnitude, and as the coherence ratio C = |sum| / sum|.|. The KL decomposition:
+per anchor, D_KL(y || p) = D_KL(y || p*) + D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_s + E_sr,
+batch-meaned. Both averaged over the I2T / T2I anchor directions.
 """
 
 import math
@@ -124,9 +126,10 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     Q, Y = _targets(B, 4, seed=6)
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
-    stats = L.infonce_scale_grad_batch_stats(S.float(), Q.float(), Y.float(), logits, torch.tensor(alpha), idx=2)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, torch.tensor(alpha), idx=2)
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
-    assert set(stats) == {f"{prefix}2_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps}
+    assert set(stats) == {f"{prefix}2_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
+        "kl2", "kl2_s", "kl2_ir", "kl2_sr"}
     # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same C
     for comp in comps:
         for agg in aggs[:2]:
@@ -146,8 +149,92 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
         assert all(0.0 <= v <= 1.0 for v in C)
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
-    stats_sym = L.infonce_scale_grad_batch_stats(S_sym, Q, Y, alpha * S_sym, alpha, idx=1)
+    stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, alpha, idx=1)
     one_dir = L.infonce_scale_grad_sums(S_sym, Q, Y, torch.softmax(alpha * S_sym, dim=1), L.infonce_p_opt(Y, alpha))
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha1_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
         assert stats_sym[f"dalpha1_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
+
+
+def _kl_rows(A, B):
+    # row-wise D_KL(a || b), the single-row get_kl of MP-HCon-Intuition.ipynb
+    return torch.xlogy(A, A / B).sum(dim=1)
+
+
+def test_kl_terms_match_their_definitions_and_decompose():
+    L = import_loss_module()
+    B, alpha = 12, 4.0
+    Q, Y = _targets(B, 4, seed=8)
+    S = _sims(B, seed=9)
+    log_P = torch.log_softmax(alpha * S, dim=1)
+    P = log_P.exp()
+    P_opt = L.infonce_p_opt(Y, alpha)
+    kl, E_s, E_ir, E_sr = L.infonce_kl_terms(Y, log_P, P_opt)
+    # each term by its definition, batch-meaned
+    torch.testing.assert_close(kl, _kl_rows(Y, P).mean())
+    torch.testing.assert_close(E_s, _kl_rows(P_opt, P).mean())
+    torch.testing.assert_close(E_ir, _kl_rows(Y, P_opt).mean())
+    torch.testing.assert_close(E_sr, ((Y - P_opt) * (P_opt / P).log()).sum(dim=1).mean())
+    # the decomposition is exact, every part nonnegative, and D_KL(y || p) is this direction's raw
+    # InfoNCE loss (per-anchor CE, anchor-averaged) less the targets' mean entropy
+    torch.testing.assert_close(kl, E_ir + E_s + E_sr)
+    assert kl > 0 and E_s > 0 and E_ir > 0 and E_sr > 0
+    ce = -(Y * log_P).sum(dim=1).mean()
+    H = -torch.xlogy(Y, Y).sum(dim=1).mean()
+    torch.testing.assert_close(kl, ce - H)
+
+
+def test_kl_terms_notebook_example():
+    # MP-HCon-Intuition.ipynb: y = [1/2, 1/2, 0, 0], s = [0.9, 1, -0.9, -1] at alpha 3 reads
+    # (kl, E_s, E_ir, E_sr) = (0.0145, 0.0113, 0.0025, 0.0007) to the notebook's printed precision
+    L = import_loss_module()
+    Y = torch.tensor([[0.5, 0.5, 0.0, 0.0]], dtype=torch.float64)
+    log_P = torch.log_softmax(3.0 * torch.tensor([[0.9, 1.0, -0.9, -1.0]], dtype=torch.float64), dim=1)
+    terms = L.infonce_kl_terms(Y, log_P, L.infonce_p_opt(Y, 3.0))
+    assert terms.tolist() == pytest.approx([0.0145, 0.0113, 0.0025, 0.0007], abs=6e-5)
+
+
+@pytest.mark.parametrize("alpha", [0.5, 3.0, 10.0])
+def test_kl_cross_term_is_nonnegative_on_reachable_p(alpha):
+    # E_sr >= 0 for every p a bounded-cosine softmax can realize (random geometries, the ideal
+    # 2q - 1 one, and sign patterns at the band's edges), and the structural and cross terms vanish
+    # at p = p*, leaving D_KL(y || p*) = E_ir
+    L = import_loss_module()
+    B = 10
+    Q, Y = _targets(B, 3, seed=10)
+    P_opt = L.infonce_p_opt(Y, alpha)
+    g = torch.Generator().manual_seed(11)
+    geometries = (
+        *(torch.rand(B, B, generator=g).double() * 2.0 - 1.0 for _ in range(20)),
+        2.0 * Q - 1.0,
+        torch.sign(torch.rand(B, B, generator=g).double() - 0.5),
+    )
+    for S in geometries:
+        assert L.infonce_kl_terms(Y, torch.log_softmax(alpha * S, dim=1), P_opt)[3] >= -1e-12
+    kl, E_s, E_ir, E_sr = L.infonce_kl_terms(Y, P_opt.log(), P_opt)
+    torch.testing.assert_close(torch.stack([E_s, E_sr]), torch.zeros(2, dtype=torch.float64))
+    torch.testing.assert_close(kl, E_ir)
+
+
+def test_batch_stats_kl_keys_average_directions():
+    L = import_loss_module()
+    B, alpha = 12, 4.0
+    Q, Y = _targets(B, 4, seed=12)
+    S = _sims(B, seed=13)
+    logits = (alpha * S).float() - 0.7  # a bias is inert under the row softmax
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, alpha, idx=1)
+    Yf, Z = Y.float().double(), logits.double()
+    P_opt = L.infonce_p_opt(Yf, alpha)
+    i2t = L.infonce_kl_terms(Yf, torch.log_softmax(Z, dim=1), P_opt)
+    t2i = L.infonce_kl_terms(Yf, torch.log_softmax(Z.T, dim=1), P_opt)
+    expected = 0.5 * (i2t + t2i)
+    for k, key in enumerate(("kl1", "kl1_s", "kl1_ir", "kl1_sr")):
+        assert stats[key] == pytest.approx(expected[k].item(), rel=1e-9, abs=1e-12)
+    assert stats["kl1"] == pytest.approx(stats["kl1_s"] + stats["kl1_ir"] + stats["kl1_sr"], rel=1e-9, abs=1e-12)
+    # the irreducible part depends on the targets and alpha alone, not on the anchor direction
+    assert i2t[2] == t2i[2]
+    # kl1 is the criterion's loss_raw (the two directions' per-anchor CE means, averaged) less the
+    # targets' mean entropy
+    ce = 0.5 * sum(-(Yf * torch.log_softmax(M, dim=1)).sum(dim=1).mean() for M in (Z, Z.T))
+    H = -torch.xlogy(Yf, Yf).sum(dim=1).mean()
+    assert stats["kl1"] == pytest.approx((ce - H).item(), rel=1e-9, abs=1e-12)

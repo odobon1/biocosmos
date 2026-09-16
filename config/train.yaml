@@ -214,7 +214,7 @@ dev:
       # no log fields)
       sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Q
       # curve panels, the alpha panels' target bound line, the mean hard-pair similarity margin strips and,
-      # for InfoNCE losses, the logit-scale gradient decomposition strips)
+      # for InfoNCE losses, the logit-scale gradient decomposition and KL decomposition strips)
     learning_curves:
       hpsm:
         kappas: [0, 1, 10, 100, 1_000, 10_000, 100_000]  # hard-pair similarity margin plotted kappa values

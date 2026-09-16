@@ -267,9 +267,7 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
         assert sum(hist) == pytest.approx(1.0, abs=1e-5)
         expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
         assert hist == pytest.approx(expected.tolist(), abs=1e-5)
-        # BCE-family: the target distribution Y is Q itself, so its extremes are the targets' own
-        assert batch_stats[f"y{tag}_min"] == batch_stats[f"targ{tag}_min"]
-        assert batch_stats[f"y{tag}_max"] == batch_stats[f"targ{tag}_max"]
+        assert f"alpha_req{tag}_max" not in batch_stats  # the target-implied scale bounds are InfoNCE-only
     # one margin per configured kappa, per direction plus their mean; loss2's targets are sp (Q = I),
     # where at kappa 0 both directions read the diagonal minus the off-diagonal mean (row-wise for
     # I2T, column-wise for T2I -- the same total, so the mean equals either)
@@ -287,9 +285,10 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
 def test_infonce_branch_stats():
     # p* is the sigmoid-BCE pair probability; an InfoNCE branch gets none (its row-softmax mean is a
     # fixed 1/B), while a BCE branch mixed in alongside it still does. The InfoNCE branch alone gets
-    # the logit-scale gradient decomposition (dalpha1_* / dlogalpha1_*), whose full / all sums are
-    # d(loss_raw)/d(alpha) and d(loss_raw)/d(log alpha) of that branch's raw bidirectional InfoNCE --
-    # the latter its logit_scale grad outright, since the parameter is log(alpha)
+    # the row-wise target-implied scale bounds (alpha_req1_*) and the logit-scale gradient
+    # decomposition (dalpha1_* / dlogalpha1_*), whose full / all sums are d(loss_raw)/d(alpha) and
+    # d(loss_raw)/d(log alpha) of that branch's raw bidirectional InfoNCE -- the latter its
+    # logit_scale grad outright, since the parameter is log(alpha)
     B, K, D = 16, 5, 8
     img, txt, class_encs_b = _data(B, K, D)
     crit1 = _make_crit(_cfg("infonce"), K, B)
@@ -305,7 +304,7 @@ def test_infonce_branch_stats():
     prefixes, aggs, comps = ("dalpha", "dlogalpha"), ("sum", "sum_abs", "C"), ("full", "struct", "res")
     assert {key for key in batch_stats if "alpha" in key} == {
         f"{prefix}1_{agg}_{comp}" for prefix in prefixes for agg in aggs for comp in comps
-    }
+    } | {f"alpha_req1_{stat}" for stat in ("min", "mean", "max")}
     for prefix in prefixes:
         for agg in aggs:
             for comp in comps:

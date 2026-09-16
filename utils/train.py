@@ -105,13 +105,17 @@ class TrialData:
             "targ2_hist": [],
             "p1_hist": [],
             "p2_hist": [],
-            # y*_min / y*_max: per batch, the extremes of the branch's target distribution Y
-            # (Criterion.targ_dist: Q itself under the BCE family, its row-normalized / softmaxed form
-            # under InfoNCE) -- the alpha panels' target-implied scale bound line
-            "y1_min": [],
-            "y1_max": [],
-            "y2_min": [],
-            "y2_max": [],
+            # alpha_req*_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
+            # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the branch's target
+            # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the alpha
+            # panels' bound lines. Recorded only for InfoNCE branches (utils.loss.infonce_batch_stats),
+            # so a BCE-family branch's series stay empty and its alpha panel gets no lines.
+            "alpha_req1_min": [],
+            "alpha_req1_mean": [],
+            "alpha_req1_max": [],
+            "alpha_req2_min": [],
+            "alpha_req2_mean": [],
+            "alpha_req2_max": [],
             # dalpha*_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
             # decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs

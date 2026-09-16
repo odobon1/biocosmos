@@ -123,7 +123,7 @@ class _ZeroSumGradConst(torch.autograd.Function):
         return g - ctx.c, None
 
 def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: List[float], idx: Optional[int] = None,
-                         logits: Optional[torch.Tensor] = None, y: Optional[torch.Tensor] = None) -> Dict[str, float]:
+                         logits: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """
     Per-batch distribution stats over the full BxB similarity and target matrices; drives
     the batch-level learning-curve strips, sim_targ.log, and the eval sim/targ sections
@@ -137,10 +137,6 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
                 entry. Pass them only for BCE-family branches, where sigmoid(logits) is the
                 predicted pair probability -- on [0, 1] like the targets, so the P and Q strips
                 are directly comparable. Under InfoNCE the row-softmax carries no such reading.
-
-    - y ------- the branch's target distribution Y (Criterion.targ_dist), or None to skip the
-                y{tag}_min / y{tag}_max entries: its extremes, which the alpha panels' target-implied
-                scale bound line reads.
     - hpsm_kappas -- the kappa values the mean hard-pair similarity margins are reported at
                 (dev.reporting.learning_curves.hpsm.kappas; one curve-strip line each).
 
@@ -168,9 +164,6 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
         if logits is not None:
             p = logits.detach().float().sigmoid()
             packed = torch.cat([packed, torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()])
-        if y is not None:
-            yv = y.detach().float()
-            packed = torch.cat([packed, torch.stack([yv.min(), yv.max()])])
         vals = packed.cpu().tolist()
     tag = "" if idx is None else str(idx)
     n_kappas = len(hpsm_kappas)
@@ -190,12 +183,8 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
         f"sim{tag}_margin":     [0.5 * (a + b) for a, b in zip(margin_i2t, margin_t2i)],
         f"targ{tag}_hist":      vals[8 + 2 * n_kappas:8 + 2 * n_kappas + HIST_BINS],
     }
-    off = 8 + 2 * n_kappas + HIST_BINS
     if logits is not None:
-        stats[f"p{tag}_hist"] = vals[off:off + HIST_BINS]
-        off += HIST_BINS
-    if y is not None:
-        stats[f"y{tag}_min"], stats[f"y{tag}_max"] = vals[off:off + 2]
+        stats[f"p{tag}_hist"] = vals[8 + 2 * n_kappas + HIST_BINS:]
     return stats
 
 def stat_logits(logits, cfg_loss):
@@ -597,12 +586,13 @@ class VLMWrapper(abc.ABC):
         """
         One loss branch's per-batch stats: sim_targ_batch_stats (sims[0] / logits[0]: branch values are
         identical, so the first branch carries them) plus, for an InfoNCE branch, the reachable-optimum
-        diagnostics (infonce_batch_stats: the logit-scale gradient and the KL decompositions), which
-        need the alpha its logits carry: the criterion's scale, post-clamp, as compute_logits applies it.
+        diagnostics (infonce_batch_stats: the logit-scale gradient and the KL decompositions, and the
+        row-wise target-implied scale bounds), which need the alpha its logits carry: the criterion's
+        scale, post-clamp, as compute_logits applies it.
         """
         cfg_loss = self.cfg.loss2 if secondary else self.cfg.loss1
         kappas = self.cfg.dev["reporting"]["learning_curves"]["hpsm"]["kappas"]
-        stats = sim_targ_batch_stats(sims[0], targs, kappas, idx=idx, logits=stat_logits(logits, cfg_loss), y=y)
+        stats = sim_targ_batch_stats(sims[0], targs, kappas, idx=idx, logits=stat_logits(logits, cfg_loss))
         if cfg_loss["crit"] == "infonce":
             model = self._unwrapped_model
             logit_scale = (model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale).detach()

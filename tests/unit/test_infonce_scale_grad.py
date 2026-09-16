@@ -129,7 +129,7 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, torch.tensor(alpha), idx=2)
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
     assert set(stats) == {f"{prefix}2_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
-        "kl2", "kl2_s", "kl2_ir", "kl2_sr"}
+        "kl2", "kl2_s", "kl2_ir", "kl2_sr", "alpha_req2_min", "alpha_req2_mean", "alpha_req2_max"}
     # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same C
     for comp in comps:
         for agg in aggs[:2]:
@@ -154,6 +154,33 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha1_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
         assert stats_sym[f"dalpha1_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
+
+
+def test_batch_stats_row_wise_scale_bounds():
+    # the target-implied scale bound is row-wise (softmax feasibility is): per row i, the smallest
+    # alpha whose logit range 2 alpha spans log(Y_i), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as
+    # its min / mean / max over rows -- a global max(Y) / min(Y) would pair extremes from different
+    # rows and overstate the batch's requirement
+    L = import_loss_module()
+    B, alpha = 12, 4.0
+    Q, Y_lin = _targets(B, 4, seed=6)
+    S = _sims(B, seed=7)
+    logits = (alpha * S).float()
+    Y = torch.softmax(2.0 * Q * 3.0, dim=1)  # the softmax tsm at sm_scale 3: zero-free, every row finite
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, alpha, idx=1)
+    Yf = Y.float().double()
+    alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))  # == 3 * (max_j Q_ij - min_j Q_ij) per row
+    assert stats["alpha_req1_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
+    assert stats["alpha_req1_mean"] == pytest.approx(alpha_req.mean().item(), rel=1e-9)
+    assert stats["alpha_req1_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
+    # under the linear tsm a row with an exact zero (the mp rows of _targets) sits at infinity, taking
+    # the max and the mean with it, while the min still reads off the graded rows
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, alpha, idx=1)
+    Yf = Y_lin.float().double()
+    alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))
+    assert math.isinf(alpha_req.max()) and torch.isfinite(alpha_req).any()
+    assert stats["alpha_req1_min"] == pytest.approx(alpha_req[torch.isfinite(alpha_req)].min().item(), rel=1e-9)
+    assert math.isinf(stats["alpha_req1_mean"]) and math.isinf(stats["alpha_req1_max"])
 
 
 def _kl_rows(A, B):

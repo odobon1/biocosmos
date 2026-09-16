@@ -654,6 +654,12 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
       the ratio, equals the dalpha one (up to the ratio's epsilon).
     - the KL decomposition (the kl{idx}* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
       per anchor, batch-meaned.
+    - the row-wise target-implied scale bounds (the alpha panels' red lines): for row i, the smallest
+      alpha whose logit range alpha * S over S in [-1, 1] spans Y_i as optimal logits log(Y_i) (up to
+      a constant), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as its min / mean / max over rows.
+      Softmax feasibility is row-wise, so the batch's requirement is the max (a global max(Y) / min(Y)
+      would pair extremes from different rows and overstate it); a row holding a zero sits at
+      infinity. One statistic for both directions, which train against Y's rows alike.
 
     - sim, targs, y, logits -- the branch's BxB S, Q, Y and logits (first branch), as passed to
       sim_targ_batch_stats
@@ -661,8 +667,8 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
     - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*, kl1* / kl2*)
 
     Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
-    {kl{idx}, kl{idx}_s, kl{idx}_ir, kl{idx}_sr: scalar}; the reductions are stacked so the
-    device->host transfer is a single .cpu() sync.
+    {kl{idx}, kl{idx}_s, kl{idx}_ir, kl{idx}_sr: scalar} and {alpha_req{idx}_{min,mean,max}: scalar};
+    the reductions are stacked so the device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
@@ -672,14 +678,17 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
         sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt)
                       + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt))
         kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt) + infonce_kl_terms(Y, log_P_t2i, P_opt))
+        alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
+        bounds = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
         families = []
         for scaled in (sums, alpha * sums):  # d/dalpha, then d/d(log alpha)
             C = scaled[0].abs() / (scaled[1] + 1e-30)
             families.append(torch.cat([scaled, C[None]]))
         grad = torch.stack(families)  # [2, 3, 3, 3]
-        packed = torch.cat([grad.flatten(), kl]).cpu()
+        packed = torch.cat([grad.flatten(), kl, bounds]).cpu()
         vals = packed[:grad.numel()].view_as(grad).tolist()
-        kl_vals = packed[grad.numel():].tolist()
+        kl_vals = packed[grad.numel():grad.numel() + kl.numel()].tolist()
+        bound_vals = packed[grad.numel() + kl.numel():].tolist()
     return {
         **{
             f"{prefix}{idx}_{agg}_{comp}": vals[f][a][c]
@@ -688,6 +697,7 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
             for c, comp in enumerate(("full", "struct", "res"))
         },
         **dict(zip((f"kl{idx}", f"kl{idx}_s", f"kl{idx}_ir", f"kl{idx}_sr"), kl_vals)),
+        **dict(zip((f"alpha_req{idx}_min", f"alpha_req{idx}_mean", f"alpha_req{idx}_max"), bound_vals)),
     }
 
 
@@ -704,8 +714,7 @@ class _SimTargStatsAccum:
     and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
     mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
     weights underflow only past kappa ~ 300) and the ratio is taken after the fold. The chunked path
-    is BCE-family only, so p{idx}_hist is always reported here and y{idx}_min/max -- the extremes of
-    the target distribution Y (Criterion.targ_dist) -- are the targets' own.
+    is BCE-family only, so p{idx}_hist is always reported here.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = ("targ", "p")
@@ -785,9 +794,6 @@ class _SimTargStatsAccum:
             stats[f"{field}{idx}_mean"] = (sums[field] / count).item()
         for field in self._HIST_FIELDS:
             stats[f"{field}{idx}_hist"] = (hists[field] / hists[field].sum()).tolist()
-        # the chunked path is BCE-family only, so the target distribution Y is Q itself
-        stats[f"y{idx}_min"] = stats[f"targ{idx}_min"]
-        stats[f"y{idx}_max"] = stats[f"targ{idx}_max"]
         i2t = margin_sums / self.B
         pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
         t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)

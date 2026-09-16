@@ -332,9 +332,7 @@ def test_stats_split_by_crit():
         assert stats[f"targ{tag}_min"] == pytest.approx(targs.min().item(), abs=1e-5)
         assert stats[f"targ{tag}_max"] == pytest.approx(targs.max().item(), abs=1e-5)
         assert stats[f"targ{tag}_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
-        # BCE-family: the target distribution Y is Q itself, so its extremes are the targets' own
-        assert stats[f"y{tag}_min"] == stats[f"targ{tag}_min"]
-        assert stats[f"y{tag}_max"] == stats[f"targ{tag}_max"]
+        assert f"alpha_req{tag}_max" not in stats  # the target-implied scale bounds are InfoNCE-only
         # default kappas (0.0,): the bidirectional mean
         expected = 0.5 * (L.hard_pair_similarity_margin(sim, targs, 0.0).mean() + L.hard_pair_similarity_margin(sim.T, targs.T, 0.0).mean())
         assert stats[f"sim{tag}_margin"] == pytest.approx([expected.item()], abs=1e-5)

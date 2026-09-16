@@ -1522,9 +1522,10 @@ def plot_composite_metrics(
     # averaged, batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then its three
     # parts, the structural E_s = D_KL(p* || p) (what the model could still remove at this alpha), the
     # irreducible E_ir = D_KL(y || p*) (the target outside the reachable set) and the cross term E_sr.
-    # The divergences' axes start at 0; E_sr is >= 0 as well while p stays inside the reachable band
-    # (exact for cosine logits, which bf16 rounding can just nudge out), so it gets a zero reference
-    # line and an autoscaled axis in place of the floor. Subscripted per loss whenever loss2 is active.
+    # All four are >= 0 (E_sr because p is itself reachable; bf16 logit rounding can dip it a hair
+    # below), so each panel draws a zero reference line and autoscales -- the line hugs the bottom
+    # while the series stays positive, and any dip below it shows. Subscripted per loss whenever
+    # loss2 is active.
 
     def kl_labels(tag):
         y, p, p_opt = (f"y_{tag}", f"p_{tag}", f"p_{tag}^*") if has_loss2 else ("y", "p", "p^*")
@@ -1537,7 +1538,7 @@ def plot_composite_metrics(
         )
 
     kl_panels = [
-        (f"kl{tag}{suffix}", label, suffix != "_sr")
+        (f"kl{tag}{suffix}", label)
         for tag in ("1", "2")
         for suffix, label in kl_labels(tag)
         if len(data_epoch[f"kl{tag}{suffix}"]) == len(x_train)
@@ -1758,15 +1759,18 @@ def plot_composite_metrics(
     for key, label, tag in scalar_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
-        if key.startswith("scale") and len(data_epoch[f"targ{tag}_hist"]) == len(x_train):
-            # per batch, the smallest alpha whose logit range alpha * S over S in [-1, 1] spans the
-            # branch's target distribution Y as optimal logits log(Y) (up to a constant):
-            # 0.5 * log(max(Y) / min(Y)). Only for graded (phylo/tax) targets -- the branches with a Q
-            # panel -- since sp/mp's zero entries put it at infinity; a stray zero there (a tax top-rank
-            # split, a bm-kernel pair meeting at the root) just leaves a gap in the line
-            with np.errstate(divide="ignore"):
-                bound = 0.5 * np.log(np.array(data_epoch[f"y{tag}_max"]) / np.array(data_epoch[f"y{tag}_min"]))
-            ax.plot(x_train, bound, color="red", linestyle="--", linewidth=1.0)
+        if key.startswith("scale") and len(data_epoch[f"alpha_req{tag}_max"]) == len(x_train):
+            # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
+            # alpha_req; InfoNCE branches only, so a BCE-family branch's panel gets no lines): for row
+            # i, the smallest alpha whose logit range alpha * S over S in [-1, 1] spans the branch's
+            # target distribution Y_i as optimal logits log(Y_i) (up to a constant), 0.5 * log(max_j Y_ij
+            # / min_j Y_ij). Softmax feasibility is row-wise, so the batch's requirement is the max over
+            # rows (solid), drawn with the min (solid) and the mean (dashed). A row holding a zero sits
+            # at infinity and leaves a gap in the lines it reaches (the max and the mean): a stray one
+            # under graded targets (a tax top-rank split, a bm-kernel pair meeting at the root), every
+            # row under sp/mp targets with the linear tsm, which then draws nothing
+            for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
+                ax.plot(x_train, data_epoch[f"alpha_req{tag}_{stat}"], color="red", linestyle=linestyle, linewidth=1.0)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
@@ -1806,13 +1810,10 @@ def plot_composite_metrics(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-    for key, label, floored in kl_panels:
+    for key, label in kl_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch[key], color="darkmagenta", linewidth=1.0)
-        if floored:
-            ax.set_ylim(bottom=0.0)  # a divergence
-        else:
-            ax.axhline(0.0, color="gray", linewidth=0.5)
+        ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)

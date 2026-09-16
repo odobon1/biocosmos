@@ -103,6 +103,11 @@ class Criterion(abc.ABC):
     def _targets(self, batch_size, class_encs_b, targ_data_b):
         return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
 
+    def targ_dist(self, Q, logit_scale):
+        """The target distribution Y the loss trains against, from the target matrix Q: Q itself for
+        the BCE family (each pair's own target probability); InfoNCE row-normalizes / softmaxes it."""
+        return Q
+
     def _cls_imb_wts(self, class_encs_b):
         return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.wt_mean, self.batch_size)
 
@@ -145,10 +150,7 @@ class InfoNCECriterion(Criterion):
     def _preds(self, Z):
         return F.softmax(Z, dim=1)
 
-    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
-        B = logits.size(0)
-        
-        Q = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+    def targ_dist(self, Q, logit_scale):
         Q_mass = Q.sum(dim=1)
 
         if self.cfg["infonce"]["tsm"]["type"] == "linear":
@@ -165,6 +167,13 @@ class InfoNCECriterion(Criterion):
                     Y = F.softmax(Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
             else:
                 Y = F.softmax(2 * Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+        return Y
+
+    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
+        B = logits.size(0)
+        
+        Q = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+        Y = self.targ_dist(Q, logit_scale)  # pt[B, B]
 
         loss_i2t_raw = -Y * F.log_softmax(logits,   dim=1)  # pt[B, B]
         loss_t2i_raw = -Y * F.log_softmax(logits.T, dim=1)  # pt[B, B]
@@ -528,6 +537,113 @@ def hard_pair_similarity_margin(S, Q, kappa):
     return (w_pos * S).sum(dim=1) - (w_neg * S).sum(dim=1)
 
 
+def infonce_p_opt(Y, alpha, n_iter=40):
+    """
+    Row-wise reachable-set projection of the InfoNCE target distribution Y: the closest distribution
+    a row softmax can realize under bounded-cosine logits. With s in [-1, 1] and z = alpha * s, a
+    row's logits span at most 2 * alpha, so its softmax p can only realize distributions with
+    max(p) / min(p) <= exp(2 * alpha). The one closest to a target row y in the cross-entropy the
+    loss minimizes (-sum y log p; the I-projection) is
+
+        p* = clamp(y, lam, exp(2 * alpha) * lam),  sum(p*) = 1
+
+    -- entries already inside the band are kept, the rest pinned to its edges (a target of exactly
+    0, an sp / mp negative, lands on the floor lam), lam set by the sum. lam is solved per row by
+    bisection on eta = log(lam) over [-log(B) - 2 * alpha, -log(B)], where the clamped row mass is
+    <= 1 and >= 1 respectively (monotone in eta between). One p* serves both anchor directions:
+    InfoNCECriterion reads Y's rows as each anchor's targets in the I2T and the T2I direction alike.
+
+    - Y ------ [R, B] target distributions (rows summing to 1; Criterion.targ_dist under InfoNCE)
+    - alpha -- the logit scale alpha = exp(logit_scale) the logits carry (post-clamp)
+
+    Returns p* in Y's shape, float64 (the residual p* - y underflows float32 at moderate alpha).
+    """
+    Y = Y.detach().double()
+    alpha = torch.as_tensor(alpha, dtype=torch.float64, device=Y.device).detach()
+    log_Y = Y.log()  # log(0) = -inf: a zero target sits at the floor after the clamp
+    hi = torch.full((Y.size(0), 1), -math.log(Y.size(1)), dtype=torch.float64, device=Y.device)  # row mass >= 1
+    lo = hi - 2 * alpha  # row mass <= 1
+    for _ in range(n_iter):
+        eta = 0.5 * (lo + hi)
+        under = log_Y.clamp(min=eta, max=eta + 2 * alpha).exp().sum(dim=1, keepdim=True) < 1.0
+        lo = torch.where(under, eta, lo)
+        hi = torch.where(under, hi, eta)
+    eta = 0.5 * (lo + hi)
+    return log_Y.clamp(min=eta, max=eta + 2 * alpha).exp()
+
+
+def infonce_scale_grad_sums(S, Q, Y, P, P_opt):
+    """
+    One anchor direction's per-pair InfoNCE logit-scale gradient terms, decomposed and aggregated:
+
+        dL/dalpha_ij = (p_ij - y_ij) s_ij                                    (full)
+                     = (p_ij - p*_ij) s_ij  +  (p*_ij - y_ij) s_ij            (struct + res)
+
+    with p the row softmax of the logits and p* = infonce_p_opt(Y, alpha). 'struct' is the part the
+    model could still remove at this alpha (its p is not the reachable optimum p*), 'res' the part
+    no similarity geometry can (the target lies outside the reachable set: sp / mp zeros, or graded
+    targets steeper than exp(2 * alpha) allows). Each term is also attributed to the positive and
+    negative target mass by the soft masks q_ij and 1 - q_ij (generalizing the binary split over
+    graded targets).
+
+    - S, Q, Y, P, P_opt -- [R, B]: sims, target memberships, target distributions, the predicted row
+      distributions and the reachable optimum, rows = anchors (image anchors on the batch's S / Q / Y
+      / softmax(logits); text anchors on S.T / Q.T / Y / softmax(logits.T), Y serving both directions
+      as in InfoNCECriterion)
+
+    Returns [2, 3, 3]: (sum, sum of |.|) x (full, struct, res) x (all, positive, negative mass), each
+    a per-anchor row sum averaged over the anchors -- so the full / all sum is exactly this
+    direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
+    """
+    terms = ((P - Y) * S, (P - P_opt) * S, (P_opt - Y) * S)
+    masks = (None, Q, 1.0 - Q)
+    sums = []
+    for G in terms:
+        for M in masks:
+            GM = G if M is None else G * M
+            sums.append(torch.stack([GM.sum(), GM.abs().sum()]))
+    return torch.stack(sums).view(3, 3, 2).permute(2, 0, 1) / S.size(0)
+
+
+def infonce_scale_grad_batch_stats(sim, targs, y, logits, alpha, idx):
+    """
+    One InfoNCE loss branch's per-batch logit-scale gradient decomposition stats (the dalpha{idx}_*
+    and dlogalpha{idx}_* learning-curve strips): infonce_scale_grad_sums over both anchor directions,
+    averaged -- the loss is the mean of the two directions' CE, so the averaged full / all sum is its
+    d(loss_raw)/d(alpha) -- with the coherence C = |sum| / sum|.| taken on the averaged sums (the
+    bidirectional gradient's own cancellation ratio, so C = |sum| / sum_abs holds across the
+    reported series). The dlogalpha family is the same decomposition for the log-scale parameter the
+    model actually learns (logits.scale: the param is log(alpha), z = exp(log alpha) * s):
+    d/d(log alpha) = alpha * d/dalpha per pair, so its sums are alpha times the dalpha ones and its
+    C, alpha cancelling in the ratio, equals the dalpha one (up to the ratio's epsilon).
+
+    - sim, targs, y, logits -- the branch's BxB S, Q, Y and logits (first branch), as passed to
+      sim_targ_batch_stats
+    - alpha ---------------- its logit scale alpha = exp(logit_scale), post-clamp
+    - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*)
+
+    Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]}; the
+    reductions are stacked so the device->host transfer is a single .cpu() sync.
+    """
+    with torch.no_grad():
+        S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
+        alpha = torch.as_tensor(alpha, dtype=torch.float64, device=S.device).detach()
+        P_opt = infonce_p_opt(Y, alpha)
+        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, torch.softmax(Z, dim=1), P_opt)
+                      + infonce_scale_grad_sums(S.T, Q.T, Y, torch.softmax(Z.T, dim=1), P_opt))
+        families = []
+        for scaled in (sums, alpha * sums):  # d/dalpha, then d/d(log alpha)
+            C = scaled[0].abs() / (scaled[1] + 1e-30)
+            families.append(torch.cat([scaled, C[None]]))
+        vals = torch.stack(families).cpu().tolist()  # [2, 3, 3, 3]
+    return {
+        f"{prefix}{idx}_{agg}_{comp}": vals[f][a][c]
+        for f, prefix in enumerate(("dalpha", "dlogalpha"))
+        for a, agg in enumerate(("sum", "sum_abs", "C"))
+        for c, comp in enumerate(("full", "struct", "res"))
+    }
+
+
 class _SimTargStatsAccum:
     """
     Streams one loss branch's per-batch sim/target/probability distribution stats over the loss tiles
@@ -541,7 +657,8 @@ class _SimTargStatsAccum:
     and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
     mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
     weights underflow only past kappa ~ 300) and the ratio is taken after the fold. The chunked path
-    is BCE-family only, so p{idx}_hist is always reported here.
+    is BCE-family only, so p{idx}_hist is always reported here and y{idx}_min/max -- the extremes of
+    the target distribution Y (Criterion.targ_dist) -- are the targets' own.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = ("targ", "p")
@@ -621,6 +738,9 @@ class _SimTargStatsAccum:
             stats[f"{field}{idx}_mean"] = (sums[field] / count).item()
         for field in self._HIST_FIELDS:
             stats[f"{field}{idx}_hist"] = (hists[field] / hists[field].sum()).tolist()
+        # the chunked path is BCE-family only, so the target distribution Y is Q itself
+        stats[f"y{idx}_min"] = stats[f"targ{idx}_min"]
+        stats[f"y{idx}_max"] = stats[f"targ{idx}_max"]
         i2t = margin_sums / self.B
         pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
         t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)

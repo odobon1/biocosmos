@@ -373,6 +373,7 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
     (dpath_trial / "trial_metadata.json").write_text(json.dumps({
         "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": "1.00"},
         "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
+        "killed": 1 if killed else None,  # the eval index a killed trial stopped at
     }))
     fpath_meta_coord = dpath_coord / "coord_metadata.json"
     if not fpath_meta_coord.exists():
@@ -1134,6 +1135,39 @@ def test_update_phase_stats_shades_killed_rows_yellow(tmp_path, monkeypatch) -> 
     assert _fill_rgb(ws, 6, 21) is None  # seed 43 never ran b: '-' stays unshaded
 
 
+def test_update_phase_stats_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch) -> None:
+    # the 'Hardware Performance' sheet's counterpart of the score sheets' yellow rows: a row holding a
+    # killed trial (dev.kill_thresh) reads 'X' across its readings -- the dataset table, the Mean table
+    # (its crash totals still counted) and the killed seed's block, while the surviving sibling seed's
+    # block keeps its readings; a row without a kill is untouched
+    for seed, killed in (("42", False), ("43", True)):
+        dpath_selected = _dpath_coord(tmp_path, "cub", "a", "c0") / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected.mkdir(parents=True)
+        _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.20)), killed=killed)
+    dpath_selected = _dpath_coord(tmp_path, "cub", "b", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected.mkdir(parents=True)
+    _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.80)))
+    (_dpath_coord(tmp_path, "cub", "a", "c0") / "coord_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 2, "vram": 0, "other": 1}}))
+    _write_meta(tmp_path, ["a", "b"], ["c0"], ["cub"])
+
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+
+    report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
+
+    ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")["Hardware Performance"]
+    grid = [[c.value for c in r] for r in ws.iter_rows()]
+    # CUB table (7 wide): header row 3, arm rows 4 (a) / 5 (b); Mean table (10 wide): rows 9 (a) / 10 (b)
+    assert grid[4][:7] == ["a", "c0 (2)", "X", "X", "X", "X", "X"]
+    assert grid[5][:7] == ["b", "c0 (1)", "1", "1", "1", "1", "1"]
+    assert grid[9][:10] == ["a", "-", "X", "X", "X", "X", "X", "2", "0", "1"]
+    assert grid[10][:10] == ["b", "-", "1", "1", "1", "1", "1", "0", "0", "0"]
+    # seed blocks past the 10-wide aggregate block: seed 42 at col 11, seed 43 at col 19
+    assert grid[0][11] == "seed 42" and grid[4][11:18] == ["a", "c0", "1", "1", "1", "1", "1"]
+    assert grid[0][19] == "seed 43" and grid[4][19:26] == ["a", "c0", "X", "X", "X", "X", "X"]
+    assert grid[5][19:26] == ["b", "c0", "-", "-", "-", "-", "-"]  # seed 43 never ran b (key cell: the arm's best coord)
+    assert ws.cell(row=5, column=3).fill.patternType is None  # hardware cells stay unstyled
+
+
 def test_render_stats_table_shades_killed_rows_yellow(tmp_path) -> None:
     # the png renderer's killed rows take the same yellow (a smoke render with the real styling path)
     grid = [["Coord", "All"], ["c0 (2, 1 killed)", "55.00 ± 7.07"], ["c1 (1)", "40.00"]]
@@ -1447,6 +1481,7 @@ def test_update_phase_stats_arms_workbook_picks_best_coord_per_dataset(tmp_path,
         (dpath_coord / "_seeds" / "42" / "trial_metadata.json").write_text(json.dumps({
             "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": trial_t[(dataset, coord)]},
             "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
+            "killed": None,
         }))
         (dpath_coord / "coord_metadata.json").write_text(json.dumps({"n_crashes": crashes[(dataset, coord)]}))
     _write_meta(tmp_path, ["a"], ["c0", "c1"], ["cub", "bryo"])
@@ -1512,6 +1547,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
         (dpath_trial / "trial_metadata.json").write_text(json.dumps({
             "runtime": {"train": {"mean": train_t}, "eval": {"mean": eval_t}, "trial": trial_t},
             "memory": {"ram": ram, "vram": vram},
+            "killed": None,
         }))
     # the per-dataset coord files: overrides/config identical across a coord's datasets, the
     # crash counters per dataset (hp's 2/1/0 total is split across cub and bryo)

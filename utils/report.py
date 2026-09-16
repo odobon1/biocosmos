@@ -97,6 +97,10 @@ _Q_CMAP = LinearSegmentedColormap.from_list("q_density", ["#FFFFFF", "#9A4CE8", 
 _HIST_NORM = PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0)
 # panel background for the learning curves' line plots (the heatmap strips paint over their own)
 _BG_LINE_PANEL = "#FAF7F0"
+# the dL/dalpha strips' attributions, in series order: the whole term (*), then its positive- (+) and
+# negative- (-) target-mass shares -- black for the total, Okabe-Ito blue / vermillion for the pair
+# (legible together, and under red-green color blindness)
+_DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
 
 def _fold_hist_columns(cols, threshold):
     """(folded columns, group size) for a P heatmap strip: one histogram per recorded batch folded
@@ -452,12 +456,14 @@ def _collect_hw(arm_coords, datasets):
     trial_metadata.json and keyed by trial seed (the trial dir name, like _collect_comps): one
     {_HW_LABELS label -> float} dict per trial -- runtime.trial / runtime.train.mean /
     runtime.eval.mean are float-seconds strings, memory.ram / memory.vram are 'used/total GB'
-    strings (numerator taken). A written best-checkpoint (evals/_selected/map/) metrics file is the
-    completion signal, same as _collect_comps (native.json stands in for the set -- all per-group
-    files are materialized together at trial end). Also each (arm, coord) x dataset's n_crashes
-    ({'ram'/'vram'/'other' -> int}, summed across its seeds, completed or not) from its coord_metadata.json
-    (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/; zeros for a dataset the coord never launched in),
-    whose counters survive the trial-dir wipes that reset trial_metadata's."""
+    strings (numerator taken) -- plus 'killed', whether the trial was killed (dev.kill_thresh; the
+    file's killed field is the eval index it stopped at, else null). A written best-checkpoint
+    (evals/_selected/map/) metrics file is the completion signal, same as _collect_comps (native.json
+    stands in for the set -- all per-group files are materialized together at trial end). Also each
+    (arm, coord) x dataset's n_crashes ({'ram'/'vram'/'other' -> int}, summed across its seeds, completed
+    or not) from its coord_metadata.json (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/; zeros for a
+    dataset the coord never launched in), whose counters survive the trial-dir wipes that reset
+    trial_metadata's."""
     hw_by, crashes_by = {}, {}
     for arm, coord in arm_coords:
         for dataset in datasets:
@@ -473,6 +479,7 @@ def _collect_hw(arm_coords, datasets):
                             "Mean Time Eval": float(meta["runtime"]["eval"]["mean"]),
                             "Peak RAM": float(meta["memory"]["ram"].split("/")[0]),
                             "Peak VRAM": float(meta["memory"]["vram"].split("/")[0]),
+                            "killed": meta["killed"] is not None,
                         }
             hw_by[((arm, coord), dataset)] = trials
             fpath_meta = dpath_coord / "coord_metadata.json"
@@ -576,11 +583,11 @@ def _curve(dataset, arm, coord, criterion, group_key):
 def _col_styles(grid, bold_high, n_keys):
     """Per-column data-cell styling for one rendered table, shared by the png and xlsx tables:
     styles[c] for each score-label column c (the first n_keys columns are the row keys) -- row ->
-    mean for numeric cells ('-' skipped) and the bold-winner rows (highest mean, ties included;
-    empty unless bold_high)."""
+    mean for numeric cells ('-' and the hw sheet's 'X' skipped) and the bold-winner rows (highest
+    mean, ties included; empty unless bold_high)."""
     styles = {}
     for c in range(n_keys, len(grid[0])):
-        means = {r: float(grid[r][c].split(" ± ")[0]) for r in range(1, len(grid)) if grid[r][c] != "-"}
+        means = {r: float(grid[r][c].split(" ± ")[0]) for r in range(1, len(grid)) if grid[r][c] not in ("-", "X")}
         winners = set()
         if bold_high and means:
             top = max(means.values())
@@ -1013,7 +1020,10 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     per-dataset trial means -- plus Total Crashes RAM / VRAM / Other columns (Mean table only, since
     they don't decompose per dataset/seed), each cell the row's crash total of that cause across all
     its trials (seeds + datasets, completed or not; an arms/ row sums its best coords'), read from
-    coord_metadata.json's n_crashes. Hardware cells get no winner-bold/heatmap styling. Column widths
+    coord_metadata.json's n_crashes. A row holding a killed trial (dev.kill_thresh; the score sheets'
+    yellow rows) reads 'X' across its readings -- a run cut short, its wall-clock not comparable --
+    in every table it is killed in (its seed's block, its dataset's table, the Mean table), the crash
+    totals still counted. Hardware cells get no winner-bold/heatmap styling. Column widths
     hug each column's longest header/data cell (banner/label text overflows); blank separator columns
     get a small ~square width. Regenerated at the end of each full seed sweep of the matrix (train.py,
     seed_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
@@ -1106,12 +1116,16 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
         block of per-dataset tables + Mean table, then per-seed blocks; key_cells as there) over
         the hw readings (hw_by[(row, dataset)][seed]): header key columns + _HW_LABELS (the Mean
         table appends the _HW_CRASH_LABELS crash totals, crash_totals[row]), cells the rounded mean
-        of the row's per-trial readings ('-' when the row has none there); the Mean table means the
-        per-dataset trial means across datasets."""
+        of the row's per-trial readings ('-' when the row has none there; 'X' across the readings when
+        the row holds a killed trial, dev.kill_thresh -- the score sheets' yellow rows -- a run cut
+        short, its readings not comparable; the Mean table's crash totals stand); the Mean table means
+        the per-dataset trial means across datasets."""
 
-        def hw_row(cells, readings):
+        def hw_row(cells, readings, killed):
             if not readings:
                 return [*cells] + ["-"] * len(_HW_LABELS)
+            if killed:
+                return [*cells] + ["X"] * len(_HW_LABELS)
             return [*cells] + [str(round(np.mean([r[hw_label] for r in readings]))) for hw_label in _HW_LABELS]
 
         tables = []
@@ -1120,7 +1134,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
             for row in rows:
                 readings = list(hw_by[(row, dataset)].values())
                 cells = key_cells(row, dataset)
-                grid.append(hw_row([*cells[:-1], f"{cells[-1]} ({len(readings)})"], readings))
+                grid.append(hw_row([*cells[:-1], f"{cells[-1]} ({len(readings)})"], readings, any(r["killed"] for r in readings)))
             tables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
         xgrid = [[*headers, *_HW_LABELS, *_HW_CRASH_LABELS]]
         for row in rows:
@@ -1128,7 +1142,8 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 {hw_label: np.mean([r[hw_label] for r in hw_by[(row, dataset)].values()]) for hw_label in _HW_LABELS}
                 for dataset in datasets if hw_by[(row, dataset)]
             ]
-            xgrid.append(hw_row(key_cells(row, None), dataset_means) + [str(crash_totals[row][kind]) for kind in _CRASH_KINDS])
+            killed = any(r["killed"] for dataset in datasets for r in hw_by[(row, dataset)].values())
+            xgrid.append(hw_row(key_cells(row, None), dataset_means, killed) + [str(crash_totals[row][kind]) for kind in _CRASH_KINDS])
         tables.append(("Mean", xgrid, set()))
         blocks = [(None, tables)]
 
@@ -1138,7 +1153,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
                 grid = [[*headers, *_HW_LABELS]]
                 for row in rows:
                     trial = hw_by[(row, dataset)].get(seed)
-                    grid.append(hw_row(key_cells(row, dataset), [] if trial is None else [trial]))
+                    grid.append(hw_row(key_cells(row, dataset), [] if trial is None else [trial], trial is not None and trial["killed"]))
                 stables.append((DATASET_ALIAS2NAME[dataset], grid, set()))
             blocks.append((f"seed {seed}", stables))
         return blocks
@@ -1455,7 +1470,7 @@ def plot_composite_metrics(
     # strip between the Q panels and LR, scales first; labels are subscripted per loss whenever loss2 is
     # active, even if only one of the pair is tracked
     scalar_panels = [
-        (key, rf"${sym}_{tag}$" if has_loss2 else rf"${sym}$")
+        (key, rf"${sym}_{tag}$" if has_loss2 else rf"${sym}$", tag)
         for key, sym, tag in (("scale1", r"\alpha", 1), ("scale2", r"\alpha", 2), ("bias1", "b", 1), ("bias2", "b", 2))
         if len(data_epoch[key]) == len(x_train)
     ]
@@ -1473,6 +1488,37 @@ def plot_composite_metrics(
         if len(data_epoch[f"sim{tag}_margin{suffix}"]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[1] * len(margin_panels), height_ratios[-1]]
+    # the InfoNCE logit-scale gradient decomposition strips (sim_targ_stats on; InfoNCE branches only,
+    # since only they record the series) sit directly above LR, nine S-height panels per branch: the
+    # per-pair dL/dalpha terms summed, summed in magnitude, and their coherence ratio C = |sum| / sum|.|,
+    # each for the full gradient and its structural / residual parts (utils.loss
+    # .infonce_scale_grad_batch_stats), every panel drawing the all / positive-mass / negative-mass
+    # attributions; then the same nine for the log-scale parameter the model learns (dlogalpha*),
+    # below them. Subscripted per loss whenever loss2 is active. The figure grows by a strip's worth
+    # of height per panel, so the base panels keep their size.
+
+    def dalpha_label(sym, agg, comp, tag):
+        sub = f"_{tag}" if has_loss2 else ""
+        if agg == "C":
+            base = rf"C_{{{sym}{',' + tag if has_loss2 else ''}}}"
+            return rf"${base}$" if comp == "full" else rf"${base}^{{\text{{{comp}}}}}$"
+        term = rf"\frac{{\partial L{sub}}}{{\partial {sym}}}"
+        if comp != "full":
+            term = rf"({term})^{{\text{{{comp}}}}}"
+        if agg == "sum_abs":
+            term = rf"|{term}|"
+        return rf"$\sum {term}$"
+
+    dalpha_panels = [
+        (f"{prefix}{tag}_{agg}_{comp}", dalpha_label(sym, agg, comp, tag), agg)
+        for prefix, sym in (("dalpha", r"\alpha"), ("dlogalpha", r"\log \alpha"))
+        for tag in ("1", "2")
+        for agg in ("sum", "sum_abs", "C")
+        for comp in ("full", "struct", "res")
+        if len(data_epoch[f"{prefix}{tag}_{agg}_{comp}"]) == len(x_train)
+    ]
+    height_ratios = [*height_ratios[:-1], *[1] * len(dalpha_panels), height_ratios[-1]]
+    figsize = (figsize[0], figsize[1] + 0.8 * len(dalpha_panels))
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -1683,9 +1729,18 @@ def plot_composite_metrics(
     for hist_key, label in targ_panels:
         add_hist_panel(hist_key, label, _Q_CMAP)
 
-    for key, label in scalar_panels:
+    for key, label, tag in scalar_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
+        if key.startswith("scale") and len(data_epoch[f"targ{tag}_hist"]) == len(x_train):
+            # per batch, the smallest alpha whose logit range alpha * S over S in [-1, 1] spans the
+            # branch's target distribution Y as optimal logits log(Y) (up to a constant):
+            # 0.5 * log(max(Y) / min(Y)). Only for graded (phylo/tax) targets -- the branches with a Q
+            # panel -- since sp/mp's zero entries put it at infinity; a stray zero there (a tax top-rank
+            # split, a bm-kernel pair meeting at the root) just leaves a gap in the line
+            with np.errstate(divide="ignore"):
+                bound = 0.5 * np.log(np.array(data_epoch[f"y{tag}_max"]) / np.array(data_epoch[f"y{tag}_min"]))
+            ax.plot(x_train, bound, color="red", linestyle="--", linewidth=1.0)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
@@ -1706,6 +1761,22 @@ def plot_composite_metrics(
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         handles, labels = ax.get_legend_handles_labels()  # legend in config order
         ax.legend(handles[::-1], labels[::-1], loc="upper left", ncol=len(hpsm_kappas), fontsize=fontsize_legend)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    for key, label, agg in dalpha_panels:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        vals = np.array(data_epoch[key])  # [batch, (all, pos, neg)]
+        for idx_attr, (attr_label, color) in enumerate(_DALPHA_ATTRIBUTIONS):
+            ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
+        if agg == "C":
+            ax.set_ylim(0.0, 1.0)  # a cancellation ratio
+        else:
+            ax.axhline(0.0, color="gray", linewidth=0.5)
+        ax.set_ylabel(label, fontsize=fontsize_axes)
+        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        ax.legend(loc="upper left", ncol=len(_DALPHA_ATTRIBUTIONS), fontsize=fontsize_legend)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)

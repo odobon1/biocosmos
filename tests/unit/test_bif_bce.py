@@ -32,10 +32,11 @@ def _cfg(crit, targ="mp", cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False,
             "bce": {"dsmr": dsmr},
         },
         "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "infonce": {"tsm": {"type": "linear", "sm_scale": 1.0}},  # read by InfoNCECriterion only
     }
 
 
-CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}
+CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "infonce": L.InfoNCECriterion}
 
 
 def _make_crit(cfg, K, B):
@@ -65,6 +66,7 @@ class Harness:
     _unwrapped_model = VLMWrapper._unwrapped_model
     compute_logits = VLMWrapper.compute_logits
     _loss_for_crit_full_batch = VLMWrapper._loss_for_crit_full_batch
+    _branch_batch_stats = VLMWrapper._branch_batch_stats
     _gather_batch = VLMWrapper._gather_batch
     _global_batch_loss = VLMWrapper._global_batch_loss
 
@@ -99,7 +101,7 @@ def _data(B, K, D, seed=0):
 def _run_full(crit, img, txt, class_encs_b, train=True):
     toy = Toy().train(train)
     h = _make_harness(toy, crit)
-    loss, loss_raw, logits, sims, targs = h._loss_for_crit_full_batch(
+    loss, loss_raw, logits, sims, targs, _ = h._loss_for_crit_full_batch(
         img, txt, class_encs_b, [None] * img.size(0), crit
     )
     return toy, loss, loss_raw, logits, sims, targs
@@ -265,6 +267,9 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
         assert sum(hist) == pytest.approx(1.0, abs=1e-5)
         expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
         assert hist == pytest.approx(expected.tolist(), abs=1e-5)
+        # BCE-family: the target distribution Y is Q itself, so its extremes are the targets' own
+        assert batch_stats[f"y{tag}_min"] == batch_stats[f"targ{tag}_min"]
+        assert batch_stats[f"y{tag}_max"] == batch_stats[f"targ{tag}_max"]
     # one margin per configured kappa, per direction plus their mean; loss2's targets are sp (Q = I),
     # where at kappa 0 both directions read the diagonal minus the off-diagonal mean (row-wise for
     # I2T, column-wise for T2I -- the same total, so the mean equals either)
@@ -279,22 +284,38 @@ def test_loss2_mix_through_global_batch_loss(crit1_name, crit2_name):
     assert batch_stats["sim2_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
 
 
-def test_infonce_branch_reports_no_probability_stats():
+def test_infonce_branch_stats():
     # p* is the sigmoid-BCE pair probability; an InfoNCE branch gets none (its row-softmax mean is a
-    # fixed 1/B), while a BCE branch mixed in alongside it still does
+    # fixed 1/B), while a BCE branch mixed in alongside it still does. The InfoNCE branch alone gets
+    # the logit-scale gradient decomposition (dalpha1_* / dlogalpha1_*), whose full / all sums are
+    # d(loss_raw)/d(alpha) and d(loss_raw)/d(log alpha) of that branch's raw bidirectional InfoNCE --
+    # the latter its logit_scale grad outright, since the parameter is log(alpha)
     B, K, D = 16, 5, 8
     img, txt, class_encs_b = _data(B, K, D)
-    crit1 = _make_crit(_cfg("bce"), K, B)
+    crit1 = _make_crit(_cfg("infonce"), K, B)
     crit2 = _make_crit(_cfg("bce", targ="sp"), K, B)
     toy = Toy(with_secondary=True).train()
     h = _make_harness(toy, crit1, crit2, mix=0.3)
-    h.cfg.loss1["crit"] = "infonce"  # branch 1 only; the criterion object stays BCE for the math
 
-    *_, batch_stats, _ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
+    _, loss_raw, *_, batch_stats, _ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
 
     assert not any(key.startswith("p1_") for key in batch_stats)
     assert "sim1_min" in batch_stats and "targ1_min" in batch_stats  # sim/targ still reported
     assert "p2_hist" in batch_stats
+    prefixes, aggs, comps = ("dalpha", "dlogalpha"), ("sum", "sum_abs", "C"), ("full", "struct", "res")
+    assert {key for key in batch_stats if "alpha" in key} == {
+        f"{prefix}1_{agg}_{comp}" for prefix in prefixes for agg in aggs for comp in comps
+    }
+    for prefix in prefixes:
+        for agg in aggs:
+            for comp in comps:
+                assert len(batch_stats[f"{prefix}1_{agg}_{comp}"]) == 3  # [all, pos, neg]
+    # loss_raw = (1 - mix) * loss1_raw + mix * loss2_raw, the InfoNCE branch's raw loss being the only
+    # part that reads logit_scale (loss2 runs on logit_scale2)
+    (g_log_scale,) = torch.autograd.grad(loss_raw, toy.logit_scale)
+    alpha = toy.logit_scale.detach().exp()
+    assert batch_stats["dalpha1_sum_full"][0] == pytest.approx((g_log_scale / alpha / 0.7).item(), rel=1e-4)
+    assert batch_stats["dlogalpha1_sum_full"][0] == pytest.approx((g_log_scale / 0.7).item(), rel=1e-4)
 
 
 def test_shared_scalars_blend_accumulates_on_loss1_pair():

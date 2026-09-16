@@ -358,6 +358,71 @@ class TrainConfig:
         return name_field in cls.__dataclass_fields__
 
 
+def inert_params(cfg: TrainConfig) -> dict[str, str]:
+    """The params the effective config never reads -- config/train.yaml's 'Inert iff' annotations -- as
+    {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
+    render inert keeps the first-listed reason."""
+    is_siglip = "siglip" in cfg.arch["model_type"].lower()
+    mix = cfg.loss["mix"]
+    phylo_active = cfg.loss1["targ"] == "phylo" or (cfg.loss2["targ"] == "phylo" and mix != 0.0)
+    rules = [
+        ("arch.clip", is_siglip, "arch.model_type is a SigLIP model"),
+        ("arch.siglip", not is_siglip, "arch.model_type is a CLIP model"),
+        ("dropout.siglip", not is_siglip, "arch.model_type is a CLIP model"),
+        ("dropout.siglip.proj_head", cfg.arch["siglip"]["vis_proj_head"] is None, "arch.siglip.vis_proj_head is null"),
+        ("htarg", not phylo_active, "no live loss has targ: phylo"),
+        ("htarg.exp", cfg.htarg["kernel"] == "bm", "htarg.kernel is bm"),
+        ("loss.shared_scalars", not 0.0 < mix < 1.0, f"loss.mix is {mix} (sharing needs two live losses)"),
+        ("loss2", mix == 0.0, "loss.mix is 0.0"),
+        ("loss2.logits", cfg.shared_scalars, "loss.shared_scalars is true (loss2 runs on loss1's scalars)"),
+        # CLIP + bias.init null: logit_bias is a fixed 0.0 buffer (models.py), never learnable; loss2's own
+        # pair is always fresh learnable Parameters
+        ("loss1.logits.bce.bias.freeze", not is_siglip and cfg.loss1["logits"]["bce"]["bias"]["init"] is None,
+         "the CLIP logit bias is a fixed 0.0 buffer under loss1.logits.bce.bias.init: null"),
+    ]
+    for key in ("loss1", "loss2"):
+        cfg_loss = getattr(cfg, key)
+        crit, targ = cfg_loss["crit"], cfg_loss["targ"]
+        cls_imb_type = cfg_loss["wting"]["cls_imb"]["type"]
+        rules += [
+            (f"{key}.infonce", crit != "infonce", f"{key}.crit is {crit}"),
+            (f"{key}.infonce.tsm.sm_scale", cfg_loss["infonce"]["tsm"]["type"] == "linear", f"{key}.infonce.tsm.type is linear"),
+            (f"{key}.bce", crit != "bif_bce", f"{key}.crit is {crit}"),
+            (f"{key}.bce", targ == "sp", f"{key}.targ is sp (row mass already 1)"),
+            (f"{key}.wting.bce", crit == "infonce", f"{key}.crit is infonce"),
+            (f"{key}.wting.cls_imb.inv_freq", cls_imb_type != "inv_freq", f"{key}.wting.cls_imb.type is {cls_imb_type}"),
+            (f"{key}.wting.cls_imb.class_bal", cls_imb_type != "class_bal", f"{key}.wting.cls_imb.type is {cls_imb_type}"),
+            (f"{key}.wting.cls_imb.norm", cls_imb_type is None, f"{key}.wting.cls_imb.type is null"),
+            (f"{key}.wting.cls_imb.norm", cfg.loss["unitless"], "loss.unitless is true (its rescale cancels the per-batch normalizer)"),
+            (f"{key}.logits.bce", crit == "infonce", f"{key}.crit is infonce (sigmoid/BCE-path logit params)"),
+        ]
+    # an aug block whose prob is 0.0 is dropped from the working config (__post_init__): its other params are unread
+    for block, params in (("cjit", ("brightness", "contrast", "saturation", "hue")), ("sharpness", ("factor",)),
+                          ("gblur", ("kernel_size", "sigma"))):
+        rules += [(f"aug.{block}.{param}", block not in cfg.aug, f"aug.{block}.prob is 0.0") for param in params]
+
+    inert = {}
+    for prefix, cond, reason in rules:
+        if cond:
+            inert.setdefault(prefix, reason)
+    return inert
+
+def _check_overrides_live(cfg: TrainConfig, overrides: dict) -> None:
+    """Refuse campaign overrides (dot-path keys) of params the effective config renders inert: the arm / coord
+    would advertise a setting the trial never reads, whatever its value -- one equal to the baseline's included.
+    Each hit is reported with its outermost cause (the shortest covering inert_params prefix)."""
+    inert = inert_params(cfg)
+    hits = {}
+    for key in overrides:
+        covering = [prefix for prefix in inert if key == prefix or key.startswith(prefix + ".")]
+        if covering:
+            hits[key] = inert[min(covering, key=len)]
+    if hits:
+        raise ValueError(
+            "inert override(s), never read under this config: "
+            + "; ".join(f"{key} ({reason})" for key, reason in hits.items())
+        )
+
 def apply_train_debug_overrides(cfg_dict: dict) -> dict:
     cfg_dict = dict(cfg_dict)
     dev_cfg = cfg_dict.get("dev", {}) or {}
@@ -484,6 +549,8 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
         cfg_dict = apply_overrides(cfg_dict, overrides)
     cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live
     cfg = TrainConfig(**cfg_dict)
+    if overrides is not None:
+        _check_overrides_live(cfg, overrides)
     # campaign trials inject the frozen snapshot; otherwise load live. Either way it goes through
     # ManifoldVizConfig so the injected dict is validated too (not just the live yaml).
     cfg_manif_viz = cfg.manif_viz if cfg.manif_viz is not None else load_manif_viz_config_dict()

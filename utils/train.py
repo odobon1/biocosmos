@@ -105,6 +105,29 @@ class TrialData:
             "targ2_hist": [],
             "p1_hist": [],
             "p2_hist": [],
+            # y*_min / y*_max: per batch, the extremes of the branch's target distribution Y
+            # (Criterion.targ_dist: Q itself under the BCE family, its row-normalized / softmaxed form
+            # under InfoNCE) -- the alpha panels' target-implied scale bound line
+            "y1_min": [],
+            "y1_max": [],
+            "y2_min": [],
+            "y2_max": [],
+            # dalpha*_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
+            # decomposition (utils.loss.infonce_scale_grad_batch_stats): the per-pair dL/dalpha terms,
+            # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
+            # the target), each summed, summed in magnitude, and their coherence ratio C -- every
+            # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
+            # strip per key with a line per entry; dlogalpha*: the same for the log-scale parameter
+            # the model learns (alpha times the dalpha sums, the same C). Recorded only for InfoNCE
+            # branches (VLMWrapper._branch_batch_stats), so a BCE-family branch's series stay empty
+            # and get no panels.
+            **{
+                f"{prefix}{tag}_{agg}_{comp}": []
+                for prefix in ("dalpha", "dlogalpha")
+                for tag in (1, 2)
+                for agg in ("sum", "sum_abs", "C")
+                for comp in ("full", "struct", "res")
+            },
         }
         self.data_eval = {
             "n_samps_seen": [],

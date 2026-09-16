@@ -2,6 +2,7 @@ import pytest
 
 from utils.config import CampaignConfig, GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
+from utils.config import get_config_train, inert_params, _check_overrides_live
 from utils.config import apply_model_specific_opt_defaults
 from utils.config import apply_dataset_specific_defaults
 
@@ -806,6 +807,118 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch
 
     with pytest.raises(ValueError, match="center: sim requires loss1.sim: cos"):
         TrainConfig(**cfg_dict)
+
+
+def _full_loss_cfg(crit="bce", targ="mp", cls_imb_type=None, tsm_type="softmax"):
+    # the train.yaml loss schema in full: the dummy's minimal blocks lack the sections the inert rules read
+    return {
+        "crit": crit, "sim": "cos", "targ": targ,
+        "infonce": {"tsm": {"type": tsm_type, "sm_scale": "pinned"}},
+        "bce": {"targ_mass_neut": False},
+        "wting": {
+            "cls_imb": {"type": cls_imb_type, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
+            "focal": {"gamma": 0.0},
+            "bce": {"dsmr": False},
+        },
+        "logits": {"scalar_lr_factor": 1.0, "scale": {"init": None, "freeze": False, "clamp": False},
+                   "bce": {"center": None, "bias": {"init": None, "freeze": False}}},
+    }
+
+
+def test_get_config_train_rejects_inert_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    # loss1.targ mp under loss.mix 0.0 leaves no live phylo target, so an htarg.kernel override is never read:
+    # refused even when it restates the baseline's own value -- the value is beside the point -- while the
+    # live override alongside it (loss1.targ) goes unmentioned
+    patch_hw(monkeypatch)
+    cfg_dict = make_train_config_dummy(loss1=_full_loss_cfg(targ="mp"), loss2=_full_loss_cfg(targ="phylo"))
+    cfg_dict["_overrides"] = {"loss1.targ": "mp", "htarg.kernel": cfg_dict["htarg"]["kernel"]}
+
+    with pytest.raises(ValueError, match=r"inert override\(s\).*htarg\.kernel \(no live loss has targ: phylo\)") as excinfo:
+        get_config_train(cfg_dict)
+    assert "loss1.targ" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("live", [{"loss1.targ": "phylo"}, {"loss.mix": 0.3, "loss2.targ": "phylo"}])
+def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch: pytest.MonkeyPatch, live) -> None:
+    patch_hw(monkeypatch)
+    cfg_dict = make_train_config_dummy(loss1=_full_loss_cfg(targ="mp"), loss2=_full_loss_cfg(targ="phylo"))
+    cfg_dict["_overrides"] = {**live, "htarg.kernel": "bm"}
+
+    assert get_config_train(cfg_dict).htarg["kernel"] == "bm"
+
+
+def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    # loss2.infonce.tsm.type is inert both through loss2.crit (bce) and through loss.mix 0.0 (all of loss2):
+    # the enclosing cause is the one reported; every inert key is listed
+    patch_hw(monkeypatch)
+    cfg_dict = make_train_config_dummy(loss1=_full_loss_cfg(), loss2=_full_loss_cfg())
+    cfg_dict["_overrides"] = {"loss2.infonce.tsm.type": "linear", "loss.shared_scalars": True}
+
+    with pytest.raises(ValueError) as excinfo:
+        get_config_train(cfg_dict)
+    msg = str(excinfo.value)
+    assert "loss2.infonce.tsm.type (loss.mix is 0.0)" in msg
+    assert "loss.shared_scalars (loss.mix is 0.0 (sharing needs two live losses))" in msg
+
+
+def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+    cfg = TrainConfig(**make_train_config_dummy(loss1=_full_loss_cfg(crit="bce", targ="mp"), loss2=_full_loss_cfg()))
+
+    inert = inert_params(cfg)
+    assert {
+        "arch.siglip", "dropout.siglip", "htarg", "loss2", "loss.shared_scalars",
+        "loss1.infonce", "loss1.bce", "loss1.wting.cls_imb.inv_freq", "loss1.wting.cls_imb.class_bal",
+        "loss1.wting.cls_imb.norm", "loss1.logits.bce.bias.freeze",  # CLIP's fixed 0.0 bias buffer
+        "aug.cjit.brightness", "aug.sharpness.factor", "aug.gblur.sigma",  # every aug prob is 0.0
+    } <= inert.keys()
+    assert inert["loss1.bce"] == "loss1.crit is bce"
+    # live: the family's own block, the toggles themselves, the BCE-path logit params under a BCE crit
+    _check_overrides_live(cfg, {
+        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.mix": 0.0, "loss.unitless": True,
+        "loss1.wting.cls_imb.type": None, "loss1.wting.focal.gamma": 0.0, "loss1.wting.bce.dsmr": False,
+        "loss1.logits.bce.center": None, "loss1.logits.bce.bias.init": None, "aug.cjit.prob": 0.0,
+    })
+
+
+def test_inert_params_siglip_shared_unitless_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+    cfg = TrainConfig(**make_train_config_dummy(
+        arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
+        htarg={"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
+        loss={"mix": 0.3, "unitless": True, "shared_scalars": True},
+        loss1=_full_loss_cfg(crit="infonce", targ="phylo", cls_imb_type="inv_freq"),
+        loss2=_full_loss_cfg(crit="bce", targ="mp"),
+    ))
+
+    inert = inert_params(cfg)
+    assert {
+        "arch.clip", "dropout.siglip.proj_head", "htarg.exp", "loss2.logits",
+        "loss1.bce", "loss1.wting.bce", "loss1.logits.bce", "loss1.wting.cls_imb.class_bal", "loss1.wting.cls_imb.norm",
+    } <= inert.keys()
+    assert inert["loss1.wting.cls_imb.norm"].startswith("loss.unitless is true")
+    _check_overrides_live(cfg, {
+        "dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.shared_scalars": True,
+        "loss1.infonce.tsm.sm_scale": "pinned1", "loss1.wting.cls_imb.inv_freq.gamma": 1.0,
+        "loss2.targ": "mp", "loss2.wting.cls_imb.type": None,
+    })
+
+
+@pytest.mark.parametrize("targ, reason", [("sp", "loss1.targ is sp (row mass already 1)"), ("mp", None)])
+def test_inert_params_targ_mass_neut_under_bif_bce(monkeypatch: pytest.MonkeyPatch, targ, reason) -> None:
+    patch_hw(monkeypatch)
+    cfg = TrainConfig(**make_train_config_dummy(loss1=_full_loss_cfg(crit="bif_bce", targ=targ), loss2=_full_loss_cfg()))
+
+    assert inert_params(cfg).get("loss1.bce") == reason
+
+
+def test_inert_params_linear_tsm_makes_sm_scale_inert(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+    cfg = TrainConfig(**make_train_config_dummy(loss1=_full_loss_cfg(crit="infonce", tsm_type="linear"), loss2=_full_loss_cfg()))
+
+    inert = inert_params(cfg)
+    assert inert["loss1.infonce.tsm.sm_scale"] == "loss1.infonce.tsm.type is linear"
+    assert "loss1.infonce" not in inert
 
 
 def _make_stats_config_dummy(**overrides):

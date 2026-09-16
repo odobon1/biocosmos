@@ -93,4 +93,30 @@ def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     targs = loss_mod.compute_targs_phylo([{"cid": "a", "dataset": "cub"}, {"cid": "b", "dataset": "cub"}])
 
     assert torch.equal(targs, torch.full((2, 2), 0.25))
-    
+
+
+def _infonce(loss_mod, tsm_type, sm_scale, clamp=True):
+    crit = loss_mod.InfoNCECriterion.__new__(loss_mod.InfoNCECriterion)  # bypass build_wting (no dataset needed)
+    crit.cfg = {"infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}, "logits": {"scale": {"clamp": clamp}}}
+    return crit
+
+
+def test_targ_dist_is_q_for_bce_and_the_tsm_row_transform_for_infonce() -> None:
+    # the target distribution Y a criterion trains against: the BCE family scores each pair against
+    # its own target, InfoNCE against Q row-normalized (linear tsm) or row-softmaxed (softmax tsm) --
+    # the pinned scales at the (clamped) live logit scale, a numeric sm_scale as a constant
+    loss_mod = import_loss_module()
+    Q = torch.tensor([[1.0, 0.5, 0.0], [0.5, 1.0, 0.25], [0.0, 0.25, 1.0]])
+    logit_scale = torch.tensor(5.0)  # exp(5) > 100, so the clamped pinned scale reads 100
+
+    bce = loss_mod.BCECriterion.__new__(loss_mod.BCECriterion)
+    assert bce.targ_dist(Q, logit_scale) is Q
+
+    Y = _infonce(loss_mod, "linear", "pinned").targ_dist(Q, logit_scale)
+    assert torch.allclose(Y, Q / Q.sum(dim=1, keepdim=True))  # rows sum to 1, zeros stay zero
+    Y = _infonce(loss_mod, "softmax", "pinned").targ_dist(Q, logit_scale)
+    assert torch.allclose(Y, torch.softmax(2 * Q * 100.0, dim=1))
+    Y = _infonce(loss_mod, "softmax", "pinned1", clamp=False).targ_dist(Q, logit_scale)
+    assert torch.allclose(Y, torch.softmax(Q * torch.exp(logit_scale), dim=1))
+    Y = _infonce(loss_mod, "softmax", 3.0).targ_dist(Q, logit_scale)
+    assert torch.allclose(Y, torch.softmax(2 * Q * 3.0, dim=1))

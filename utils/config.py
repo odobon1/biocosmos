@@ -232,9 +232,6 @@ class TrainConfig:
         if kill_thresh is not None and not 0.0 < kill_thresh < 1.0:
             raise ValueError(f"dev.kill_thresh must be null or a fraction in (0.0, 1.0), got {kill_thresh!r}")
 
-        if self.freeze["image"] and self.freeze["text"]:
-            raise ValueError("Image and text encoders are both set to frozen!")
-
         if self.arch["siglip"]["vis_proj_head"] is None and self.dropout["siglip"]["proj_head"] > 0.0:
             raise ValueError(
                 "dropout.siglip.proj_head > 0 requires arch.siglip.vis_proj_head to be 'linear' or 'mlp' "

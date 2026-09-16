@@ -75,11 +75,11 @@ def test_train_config_rejects_head_dropout_without_proj_head(monkeypatch: pytest
         ))
 
 
-def test_train_config_rejects_freezing_both_encoders(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_accepts_freezing_both_encoders(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="both set to frozen"):
-        TrainConfig(**make_train_config_dummy(freeze={"text": True, "image": True}))
+    cfg = TrainConfig(**make_train_config_dummy(freeze={"text": True, "image": True}))
+    assert cfg.freeze == {"text": True, "image": True}
 
 
 def test_train_config_rejects_invalid_secondary_mix(monkeypatch: pytest.MonkeyPatch) -> None:

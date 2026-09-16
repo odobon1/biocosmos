@@ -120,8 +120,6 @@ class TrainPipeline:
         self._resume_state = resume_state
         self._local_rank = local_rank
 
-        self.modelw.freeze(self.cfg.freeze["text"], self.cfg.freeze["image"])
-
         index_data, _, enc2cid = spawn_partition_data(config=self.cfg, partition=self.cfg.train_pt)
         text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
         self.dataloader = spawn_dataloader(
@@ -779,6 +777,11 @@ def run_training(cfg):
         modelw._unwrapped_model.load_state_dict(resume_state["model"])
         trial_state = ArtifactManager.load_trial_state()
 
+    # freeze BEFORE the DDP wrap: the freeze loops match the unwrapped parameter names (DDP prefixes them
+    # "module."), and DDP builds its reducer over the params trainable at wrap time -- a tower frozen after
+    # the wrap never reports its grads ready, so the next backward errors; with the logit scalars frozen
+    # too there is nothing left to train and DDP refuses to wrap at all
+    modelw.freeze(cfg.freeze["text"], cfg.freeze["image"])
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
     train_pipe = TrainPipeline(

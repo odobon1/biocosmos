@@ -1522,6 +1522,7 @@ def plot_composite_metrics(
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
+    legend_handles = {}  # panel -> its legend's handles, boxed outside the panel once the layout is settled
 
     ax0 = fig.add_subplot(gs[0, 0])
 
@@ -1543,7 +1544,7 @@ def plot_composite_metrics(
     ax0.set_ylabel("mAP Composite", fontsize=fontsize_axes, fontweight="bold")
     ax0.set_ylim(0, 1)
     if has_eval:
-        ax0.legend(loc="lower right", ncol=len(ax0.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        legend_handles[ax0] = ax0.get_legend_handles_labels()[0]
     ax0.grid(True)
     ax0.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1564,7 +1565,7 @@ def plot_composite_metrics(
     ax1.set_ylabel("mAP Primitive", fontsize=fontsize_axes, fontweight="bold")
     ax1.set_ylim(0, 1)
     if has_eval:
-        ax1.legend(loc="lower right", ncol=len(ax1.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        legend_handles[ax1] = ax1.get_legend_handles_labels()[0]
     ax1.grid(True)
     ax1.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1575,7 +1576,7 @@ def plot_composite_metrics(
         for key in reversed(bucket_comp_keys):
             maybe_plot(ax2, x_eval, comp_nshot, key, key)
         if comp_nshot:
-            ax2.legend(loc="lower right", ncol=len(ax2.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+            legend_handles[ax2] = ax2.get_legend_handles_labels()[0]
     ax2.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
     ax2.set_ylim(0, 1)
     ax2.grid(True)
@@ -1598,7 +1599,7 @@ def plot_composite_metrics(
     ax3.set_ylabel("I2T Acc.", fontsize=fontsize_axes, fontweight="bold")
     ax3.set_ylim(0, 1)
     if has_eval:
-        ax3.legend(loc="lower right", ncol=len(ax3.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+        legend_handles[ax3] = ax3.get_legend_handles_labels()[0]
     ax3.grid(True)
     ax3.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1608,7 +1609,7 @@ def plot_composite_metrics(
         for key in reversed(bucket_comp_keys):
             maybe_plot(ax4, x_eval, comp_nshot_acc, key, key)
         if comp_nshot_acc:
-            ax4.legend(loc="lower right", ncol=len(ax4.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+            legend_handles[ax4] = ax4.get_legend_handles_labels()[0]
     ax4.set_ylabel("n-shot Acc.\n(ID I2T)", fontsize=fontsize_axes, fontweight="bold")
     ax4.set_ylim(0, 1)
     ax4.grid(True)
@@ -1627,7 +1628,7 @@ def plot_composite_metrics(
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")
-    ax5.legend(loc="lower left", ncol=len(ax5.get_legend_handles_labels()[0]), fontsize=fontsize_legend)
+    legend_handles[ax5] = ax5.get_legend_handles_labels()[0]
     ax5.grid(True)
     ax5.tick_params(labelbottom=False, labelsize=fontsize_ticks)
 
@@ -1697,7 +1698,7 @@ def plot_composite_metrics(
                 ax.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
         ax.set_ylabel(stat_ylabel, fontsize=fontsize_axes, fontweight="bold")
         ax.set_ylim(*stat_ylim)
-        ax.legend(handles=legend_styles, loc="upper center", ncol=len(legend_styles), fontsize=fontsize_legend)
+        legend_handles[ax] = legend_styles
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1759,8 +1760,7 @@ def plot_composite_metrics(
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
-        handles, labels = ax.get_legend_handles_labels()  # legend in config order
-        ax.legend(handles[::-1], labels[::-1], loc="upper left", ncol=len(hpsm_kappas), fontsize=fontsize_legend)
+        legend_handles[ax] = ax.get_legend_handles_labels()[0][::-1]  # legend in config order
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1776,7 +1776,7 @@ def plot_composite_metrics(
             ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
-        ax.legend(loc="upper left", ncol=len(_DALPHA_ATTRIBUTIONS), fontsize=fontsize_legend)
+        legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1810,10 +1810,28 @@ def plot_composite_metrics(
     fig.suptitle(plot_title, fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
+    # each legend goes in a box outside its panel, on the side away from the panel's y label and tick
+    # labels, no taller than the panel: sized against the panel heights the layout above settled, then
+    # a second pass makes room for the boxes
+    for idx_ax, ax in enumerate(axes):
+        if ax in legend_handles:
+            _place_legend_outside(ax, legend_handles[ax], "left" if idx_ax % 2 == 1 else "right", fontsize_legend)
+    plt.tight_layout()
     fpath_plot = dpath_trial / output_filename
     fpath_plot.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fpath_plot, dpi=300)
     plt.close(fig)
+
+def _place_legend_outside(ax, handles, side, fontsize):
+    """
+    Legend for `handles` in a box outside the axes on `side` ("left" / "right"), centered on the
+    axes' height, with the fewest columns that keep the box no taller than the axes.
+    """
+    loc, anchor = ("center right", (0.0, 0.5)) if side == "left" else ("center left", (1.0, 0.5))
+    for ncol in range(1, len(handles) + 1):
+        legend = ax.legend(handles=handles, loc=loc, bbox_to_anchor=anchor, ncol=ncol, fontsize=fontsize)
+        if legend.get_window_extent().height <= ax.bbox.height:
+            break
 
 def maybe_plot(ax, x, data, key, label, **kwargs):
     """

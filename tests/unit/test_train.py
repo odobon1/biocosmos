@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from train import TrainPipeline, kill_chkpt, pass_epoch_span, samps_stop
@@ -384,6 +385,24 @@ def test_tracked_logit_scalars_shared_pair_tracked_once() -> None:
     assert tracked(_fake_pipe("infonce", "infonce", 0.3, all_learnable, shared_scalars=True)) == {
         "scale1": "logit_scale",
     }
+
+
+def test_logit_scalar_values_cap_the_scale_under_the_clamp() -> None:
+    # the scale series carry the alpha the logits carry, exp(logit_scale) held at 100 by the loss's
+    # logits.scale.clamp (compute_logits' cap) once the raw parameter sits above ln(100), each loss's
+    # scale under its own flag; the bias series the raw bias
+    model = SimpleNamespace(
+        logit_scale=torch.tensor(140.0).log(), logit_bias=torch.tensor(-0.5), logit_scale2=torch.tensor(40.0).log(),
+    )
+    pipe = SimpleNamespace(
+        cfg=SimpleNamespace(loss1={"logits": {"scale": {"clamp": True}}}, loss2={"logits": {"scale": {"clamp": True}}}),
+        modelw=SimpleNamespace(_unwrapped_model=model),
+        _logit_scalars_tracked={"scale1": "logit_scale", "bias1": "logit_bias", "scale2": "logit_scale2"},
+    )
+    values = TrainPipeline._logit_scalar_values(pipe)
+    assert values == pytest.approx({"scale1": 100.0, "bias1": -0.5, "scale2": 40.0}, rel=1e-5)
+    pipe.cfg.loss1["logits"]["scale"]["clamp"] = False  # unbounded: the raw scale, wherever it sits
+    assert TrainPipeline._logit_scalar_values(pipe)["scale1"] == pytest.approx(140.0, rel=1e-5)
 
 
 def test_pass_epoch_span_shares_the_straddled_epoch_between_passes() -> None:

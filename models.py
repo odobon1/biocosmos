@@ -587,18 +587,17 @@ class VLMWrapper(abc.ABC):
         One loss branch's per-batch stats: sim_targ_batch_stats (sims[0] / logits[0]: branch values are
         identical, so the first branch carries them) plus, for an InfoNCE branch, the reachable-optimum
         diagnostics (infonce_batch_stats: the logit-scale gradient and the KL decompositions, and the
-        row-wise target-implied scale bounds), which need the alpha its logits carry: the criterion's
-        scale, post-clamp, as compute_logits applies it.
+        row-wise target-implied scale bounds), which take the criterion's raw log-scale parameter and
+        its clamp flag: from them the alpha its logits carry (post-clamp, as compute_logits applies it)
+        and, for the parameter's own gradient, whether the clamp holds it.
         """
         cfg_loss = self.cfg.loss2 if secondary else self.cfg.loss1
         kappas = self.cfg.dev["reporting"]["learning_curves"]["hpsm"]["kappas"]
         stats = sim_targ_batch_stats(sims[0], targs, kappas, idx=idx, logits=stat_logits(logits, cfg_loss))
         if cfg_loss["crit"] == "infonce":
             model = self._unwrapped_model
-            logit_scale = (model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale).detach()
-            if crit.cfg["logits"]["scale"]["clamp"]:
-                logit_scale = logit_scale.clamp(max=math.log(100))
-            stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.exp(), idx))
+            logit_scale = model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale
+            stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), crit.cfg["logits"]["scale"]["clamp"], idx))
         return stats
 
     def _global_batch_loss(

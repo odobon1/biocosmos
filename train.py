@@ -291,12 +291,21 @@ class TrainPipeline:
         return tracked
 
     def _logit_scalar_values(self):
-        # scale series carry alpha = exp(logit_scale) (the quantity scale.init specifies), bias series the raw bias
+        # scale series carry the alpha the logits carry: exp(logit_scale) (the quantity scale.init specifies),
+        # capped at 100 under the loss's logits.scale.clamp as compute_logits applies it -- so a held clamp
+        # reads as the series pinned at the cap (the raw parameter above it, its gradient zero); bias series
+        # the raw bias
         model = self.modelw._unwrapped_model
-        return {
-            key: getattr(model, attr).exp().item() if key.startswith("scale") else getattr(model, attr).item()
-            for key, attr in self._logit_scalars_tracked.items()
-        }
+        values = {}
+        for key, attr in self._logit_scalars_tracked.items():
+            value = getattr(model, attr).detach()
+            if key.startswith("scale"):
+                cfg_loss = self.cfg.loss2 if key == "scale2" else self.cfg.loss1
+                if cfg_loss["logits"]["scale"]["clamp"]:
+                    value = value.clamp(max=math.log(100))
+                value = value.exp()
+            values[key] = value.item()
+        return values
 
     def _tracked_targ_stats(self):
         """Batch-stat key prefixes ('targ1'/'targ2') for the target distributions worth curving: phylo

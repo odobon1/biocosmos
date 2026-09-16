@@ -107,7 +107,8 @@ loss1:  # Primary loss params; Inert iff (loss.mix: 1.0)
       # Increasing scale/alpha --> sharper, decreasing --> softer
       freeze: false  # {true, false}; (true) Non-learnable log-scale
       clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
-      # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup); (false) Unbounded
+      # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup) -- a held cap passes no gradient to
+      # the log-scale (the alpha curve then sits at 100, the dlogalpha strips at zero); (false) Unbounded
     bce:  # Sigmoid/BCE-path logit params
       center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum; (null) Disabled; (sim) Center
       # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);

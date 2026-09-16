@@ -5,9 +5,11 @@ bounded-cosine logits (max / min ratio at most exp(2 alpha)). The logit-scale gr
 decomposition: per pair, dL/dalpha = (p - y) s splits into a structural part (p - p*) s -- what the
 model could still remove at this alpha -- and a residual (p* - y) s that no similarity geometry can;
 each is attributed to the positive / negative target mass by the soft masks q / 1 - q, and reported
-summed, summed in magnitude, and as the coherence ratio C = |sum| / sum|.|. The KL decomposition:
-per anchor, D_KL(y || p) = D_KL(y || p*) + D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_s + E_sr,
-batch-meaned. Both averaged over the I2T / T2I anchor directions.
+summed, summed in magnitude, and as the coherence ratio C = |sum| / sum|.|; the dlogalpha family is
+the log-scale parameter's own gradient, alpha times the dalpha sums, and zero while logits.scale.clamp
+holds the parameter above its cap. The KL decomposition: per anchor, D_KL(y || p) = D_KL(y || p*) +
+D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_s + E_sr, batch-meaned. Both averaged over the I2T /
+T2I anchor directions.
 """
 
 import math
@@ -56,6 +58,11 @@ def _sims(B, seed):
     S = torch.rand(B, B, generator=g).double() * 2.0 - 1.0
     S.fill_diagonal_(0.9)
     return S
+
+
+def _log_scale(alpha):
+    # the raw log-scale parameter infonce_batch_stats takes (the model's logit_scale, detached)
+    return torch.tensor(math.log(alpha), dtype=torch.float64)
 
 
 @pytest.mark.parametrize("alpha", [0.5, 3.0, 10.0])
@@ -126,7 +133,7 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     Q, Y = _targets(B, 4, seed=6)
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, torch.tensor(alpha), idx=2)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=2)
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
     assert set(stats) == {f"{prefix}2_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
         "kl2", "kl2_s", "kl2_ir", "kl2_sr", "alpha_req2_min", "alpha_req2_mean", "alpha_req2_max"}
@@ -149,7 +156,7 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
         assert all(0.0 <= v <= 1.0 for v in C)
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
-    stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, alpha, idx=1)
+    stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False, idx=1)
     one_dir = L.infonce_scale_grad_sums(S_sym, Q, Y, torch.softmax(alpha * S_sym, dim=1), L.infonce_p_opt(Y, alpha))
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha1_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
@@ -167,7 +174,7 @@ def test_batch_stats_row_wise_scale_bounds():
     S = _sims(B, seed=7)
     logits = (alpha * S).float()
     Y = torch.softmax(2.0 * Q * 3.0, dim=1)  # the softmax tsm at sm_scale 3: zero-free, every row finite
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, alpha, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=1)
     Yf = Y.float().double()
     alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))  # == 3 * (max_j Q_ij - min_j Q_ij) per row
     assert stats["alpha_req1_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
@@ -175,12 +182,68 @@ def test_batch_stats_row_wise_scale_bounds():
     assert stats["alpha_req1_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
     # under the linear tsm a row with an exact zero (the mp rows of _targets) sits at infinity, taking
     # the max and the mean with it, while the min still reads off the graded rows
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, alpha, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, _log_scale(alpha), False, idx=1)
     Yf = Y_lin.float().double()
     alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))
     assert math.isinf(alpha_req.max()) and torch.isfinite(alpha_req).any()
     assert stats["alpha_req1_min"] == pytest.approx(alpha_req[torch.isfinite(alpha_req)].min().item(), rel=1e-9)
     assert math.isinf(stats["alpha_req1_mean"]) and math.isinf(stats["alpha_req1_max"])
+
+
+def _grad_log_scale(S, Y, log_alpha_raw, clamp):
+    # the optimizer's view: d(loss_raw)/d(log alpha_raw) by autograd through compute_logits' scale path
+    # (exp(clamp(log alpha_raw, max=ln 100)) * S under logits.scale.clamp, exp(log alpha_raw) * S
+    # without), the loss the two directions' per-anchor mean CE averaged
+    a = torch.tensor(log_alpha_raw, dtype=torch.float64, requires_grad=True)
+    Z = (a.clamp(max=math.log(100)) if clamp else a).exp() * S
+    ce = lambda z: -(Y * torch.log_softmax(z, dim=1)).sum(dim=1).mean()
+    (grad,) = torch.autograd.grad(0.5 * (ce(Z) + ce(Z.T)), a)
+    return grad.item()
+
+
+@pytest.mark.parametrize("log_alpha_raw", [math.log(40.0), math.log(100), math.log(100) + 0.3])
+def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clamp(log_alpha_raw):
+    # dalpha* is the pressure on the effective scale the logits carry -- exp(min(log alpha_raw, ln 100))
+    # under logits.scale.clamp -- so with the clamp on every non-dlogalpha stat matches the clamp-off
+    # stats at that scale; dlogalpha* is the raw parameter's gradient: alpha times dalpha* while the
+    # clamp is slack, and zero throughout once the parameter sits above the cap and the clamp blocks
+    # it, the pressure on the effective scale notwithstanding. Exactly at the cap the family follows
+    # the running torch's clamp backward either way (the gradient passes in 2.5 / 2.7, is blocked in
+    # 2.14), which the loss-gradient check settles first
+    L = import_loss_module()
+    B = 12
+    Q, Y = _targets(B, 4, seed=10)
+    S = _sims(B, seed=11)
+    log_alpha_eff = min(log_alpha_raw, math.log(100))
+    logits = math.exp(log_alpha_eff) * S
+    log_scale = torch.tensor(log_alpha_raw, dtype=torch.float64)
+    on = L.infonce_batch_stats(S, Q, Y, logits, log_scale, True, idx=1)
+    off_eff = L.infonce_batch_stats(S, Q, Y, logits, torch.tensor(log_alpha_eff, dtype=torch.float64), False, idx=1)
+    for key in on:
+        if not key.startswith("dlogalpha"):
+            assert on[key] == pytest.approx(off_eff[key], rel=1e-12), key
+    grad_ref = _grad_log_scale(S, Y, log_alpha_raw, clamp=True)
+    assert on["dlogalpha1_sum_full"][0] == pytest.approx(grad_ref, rel=1e-9, abs=1e-12)
+    held = grad_ref == 0.0
+    if log_alpha_raw > math.log(100):
+        assert held
+    elif log_alpha_raw < math.log(100):
+        assert not held
+    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
+    if held:
+        assert any(v != 0.0 for v in on["dalpha1_sum_full"])
+        for agg in aggs:
+            for comp in comps:
+                assert on[f"dlogalpha1_{agg}_{comp}"] == [0.0, 0.0, 0.0]
+    else:
+        alpha = math.exp(log_alpha_raw)
+        for comp in comps:
+            for agg in aggs[:2]:
+                assert on[f"dlogalpha1_{agg}_{comp}"] == pytest.approx([alpha * v for v in on[f"dalpha1_{agg}_{comp}"]], rel=1e-12)
+            assert on[f"dlogalpha1_C_{comp}"] == pytest.approx(on[f"dalpha1_C_{comp}"], rel=1e-12)
+    # with the clamp off the parameter's gradient follows the raw scale wherever it sits
+    off_raw = L.infonce_batch_stats(S, Q, Y, math.exp(log_alpha_raw) * S, log_scale, False, idx=1)
+    assert off_raw["dlogalpha1_sum_full"][0] == pytest.approx(_grad_log_scale(S, Y, log_alpha_raw, clamp=False), rel=1e-9, abs=1e-12)
 
 
 def _kl_rows(A, B):
@@ -249,7 +312,7 @@ def test_batch_stats_kl_keys_average_directions():
     Q, Y = _targets(B, 4, seed=12)
     S = _sims(B, seed=13)
     logits = (alpha * S).float() - 0.7  # a bias is inert under the row softmax
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, alpha, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=1)
     Yf, Z = Y.float().double(), logits.double()
     P_opt = L.infonce_p_opt(Yf, alpha)
     i2t = L.infonce_kl_terms(Yf, torch.log_softmax(Z, dim=1), P_opt)

@@ -1494,8 +1494,10 @@ def plot_composite_metrics(
     # each for the full gradient and its structural / residual parts (utils.loss
     # .infonce_batch_stats), every panel drawing the all / positive-mass / negative-mass
     # attributions; then the same nine for the log-scale parameter the model learns (dlogalpha*),
-    # below them. Subscripted per loss whenever loss2 is active. The figure grows by a strip's worth
-    # of height per panel, so the base panels keep their size.
+    # below them -- flat zero wherever logits.scale.clamp holds the parameter above its cap, the
+    # dalpha* strips still carrying the pressure on the effective scale. Subscripted per loss
+    # whenever loss2 is active. The figure grows by a strip's worth of height per panel, so the base
+    # panels keep their size.
 
     def dalpha_label(sym, agg, comp, tag):
         sub = f"_{tag}" if has_loss2 else ""
@@ -1761,8 +1763,10 @@ def plot_composite_metrics(
         ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
         if key.startswith("scale") and len(data_epoch[f"alpha_req{tag}_max"]) == len(x_train):
             # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
-            # alpha_req; InfoNCE branches only, so a BCE-family branch's panel gets no lines): for row
-            # i, the smallest alpha whose logit range alpha * S over S in [-1, 1] spans the branch's
+            # alpha_req; InfoNCE branches only, so a BCE-family branch's panel gets no lines), read
+            # against the alpha the logits carry (the series sits at 100 while logits.scale.clamp
+            # holds): for row i, the smallest alpha whose logit range alpha * S over S in [-1, 1]
+            # spans the branch's
             # target distribution Y_i as optimal logits log(Y_i) (up to a constant), 0.5 * log(max_j Y_ij
             # / min_j Y_ij). Softmax feasibility is row-wise, so the batch's requirement is the max over
             # rows (solid), drawn with the min (solid) and the mean (dashed). A row holding a zero sits

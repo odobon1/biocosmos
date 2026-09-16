@@ -72,8 +72,10 @@ class TrialData:
             "delta_norm_model": [],  # ||delta theta||: the L2 norm of each step's parameter update
             "grad_sum_sim1": [],
             "grad_sum_sim2": [],
-            # learnable logit scalars, scale as alpha = exp(logit_scale); a series stays empty when its
-            # scalar is untracked (TrainPipeline._tracked_logit_scalars) and then gets no curve panel
+            # learnable logit scalars, scale as the alpha the logits carry -- exp(logit_scale), capped at
+            # 100 under the loss's logits.scale.clamp (TrainPipeline._logit_scalar_values); a series stays
+            # empty when its scalar is untracked (TrainPipeline._tracked_logit_scalars) and then gets no
+            # curve panel
             "scale1": [],
             "bias1": [],
             "scale2": [],
@@ -122,9 +124,11 @@ class TrialData:
             # the target), each summed, summed in magnitude, and their coherence ratio C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
             # strip per key with a line per entry; dlogalpha*: the same for the log-scale parameter
-            # the model learns (alpha times the dalpha sums, the same C). Recorded only for InfoNCE
-            # branches (VLMWrapper._branch_batch_stats), so a BCE-family branch's series stay empty
-            # and get no panels.
+            # the model learns (alpha times the dalpha sums, the same C -- all zero while
+            # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient;
+            # dalpha* is the pressure on the effective, post-clamp scale either way). Recorded only for
+            # InfoNCE branches (VLMWrapper._branch_batch_stats), so a BCE-family branch's series stay
+            # empty and get no panels.
             **{
                 f"{prefix}{tag}_{agg}_{comp}": []
                 for prefix in ("dalpha", "dlogalpha")

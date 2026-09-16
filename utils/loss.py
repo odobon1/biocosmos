@@ -639,7 +639,7 @@ def infonce_kl_terms(Y, log_P, P_opt):
     return torch.stack([kl.mean(), E_s.mean(), E_ir.mean(), E_sr.mean()])
 
 
-def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
+def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp, idx):
     """
     One InfoNCE loss branch's per-batch reachable-optimum (p* = infonce_p_opt) diagnostics, each
     taken over both anchor directions and averaged -- the loss is the mean of the two directions' CE:
@@ -647,11 +647,20 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
     - the logit-scale gradient decomposition (the dalpha{idx}_* and dlogalpha{idx}_* learning-curve
       strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
       the coherence C = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
-      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). The dlogalpha
-      family is the same decomposition for the log-scale parameter the model actually learns
-      (logits.scale: the param is log(alpha), z = exp(log alpha) * s): d/d(log alpha) = alpha *
-      d/dalpha per pair, so its sums are alpha times the dalpha ones and its C, alpha cancelling in
-      the ratio, equals the dalpha one (up to the ratio's epsilon).
+      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). alpha is the
+      scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
+      effective scale whether or not the parameter can follow it. The dlogalpha family is the
+      gradient of the log-scale parameter the model actually learns (logits.scale: the param is
+      log(alpha_raw), and z = exp(min(log alpha_raw, ln 100)) * s under logits.scale.clamp, exp(log
+      alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dalpha per pair while the clamp is off
+      or slack, so its sums are alpha times the dalpha ones and its C, alpha cancelling in the ratio,
+      equals the dalpha one (up to the ratio's epsilon); once the clamp holds (the raw parameter
+      above ln 100, where clamp's backward blocks the gradient) the parameter's gradient is exactly
+      zero however hard the loss pushes on the effective scale, and the whole family reads zero (sum,
+      sum_abs, and C by the ratio's epsilon) while dalpha keeps reporting the pressure. The factor
+      d(alpha)/d(log alpha_raw) is taken by autograd through the same clamp-then-exp path
+      compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
+      backward breaks the tie (the gradient passes in 2.5 / 2.7, is blocked in 2.14).
     - the KL decomposition (the kl{idx}* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
       per anchor, batch-meaned.
     - the row-wise target-implied scale bounds (the alpha panels' red lines): for row i, the smallest
@@ -663,7 +672,8 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
 
     - sim, targs, y, logits -- the branch's BxB S, Q, Y and logits (first branch), as passed to
       sim_targ_batch_stats
-    - alpha ---------------- its logit scale alpha = exp(logit_scale), post-clamp
+    - logit_scale ---------- its log logit-scale parameter, raw (pre-clamp) and detached
+    - clamp ---------------- its logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
     - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*, kl1* / kl2*)
 
     Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
@@ -672,7 +682,14 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
     """
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
-        alpha = torch.as_tensor(alpha, dtype=torch.float64, device=S.device).detach()
+        with torch.enable_grad():
+            # the scale the logits carry and its derivative in the raw parameter, d(alpha)/d(log alpha_raw),
+            # by autograd through the clamp-then-exp path compute_logits takes: alpha while the clamp is
+            # slack, zero once it holds (its backward blocks the gradient above the cap)
+            log_alpha = torch.as_tensor(logit_scale, device=S.device).detach().requires_grad_(True)
+            alpha = (log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp()
+            (dalpha_dlog,) = torch.autograd.grad(alpha, log_alpha)
+        alpha, dalpha_dlog = alpha.detach().double(), dalpha_dlog.double()
         P_opt = infonce_p_opt(Y, alpha)
         log_P_i2t, log_P_t2i = torch.log_softmax(Z, dim=1), torch.log_softmax(Z.T, dim=1)
         sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt)
@@ -681,7 +698,7 @@ def infonce_batch_stats(sim, targs, y, logits, alpha, idx):
         alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
         bounds = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
         families = []
-        for scaled in (sums, alpha * sums):  # d/dalpha, then d/d(log alpha)
+        for scaled in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
             C = scaled[0].abs() / (scaled[1] + 1e-30)
             families.append(torch.cat([scaled, C[None]]))
         grad = torch.stack(families)  # [2, 3, 3, 3]

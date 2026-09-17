@@ -7,7 +7,7 @@ across branches so it may stay on), bifurcated BCE reads 2x the non-bifurcated l
 branch sum) while every gradient -- towers, logit scale/bias (half-live) -- matches non-bifurcated
 BCE 1x. The tests bind the REAL VLMWrapper methods to a lightweight harness `self` (single
 process, world_size 1, so _gather_batch is a no-op) and also cover the branch tuples' shapes, the
-per-branch tower routing, eval mode, the sp no-op of targ_mass_neut, a target blend (loss.lambda)
+per-branch tower routing, eval mode, the sp no-op of targ_mass_neut, a target blend (loss.blend.lambda)
 through _global_batch_loss, and the InfoNCE batch stats.
 """
 from types import SimpleNamespace
@@ -24,7 +24,7 @@ from models import VLMWrapper
 def _cfg(crit, lambda_=0.0, cls_imb=None, focal_gamma=0.0, dsmr=False, neut=False, center=None):
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
-        "crit": crit, "sim": "cos", "lambda": lambda_, "blend_type": "targ", "unitless": False,
+        "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
@@ -48,7 +48,7 @@ def _make_crit(cfg, K, B, targ1="mp", targ2="sp"):
     cls = CRIT_CLS[cfg["crit"]]
     crit = cls.__new__(cls)  # bypass build_wting (no dataset needed)
     crit.cfg = cfg
-    crit.targ_specs = L.targ_specs(cfg["lambda"], _targ(targ1), _targ(targ2))
+    crit.targ_specs = L.targ_specs(cfg["blend"]["lambda"], _targ(targ1), _targ(targ2))
     crit.device = torch.device("cpu")
     crit.batch_size = B
     g = torch.Generator().manual_seed(K)
@@ -235,6 +235,23 @@ def test_target_blend_through_global_batch_loss(crit_name):
     assert batch_stats["sim_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
     assert batch_stats["sim_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
     assert batch_stats["sim_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
+
+
+@pytest.mark.parametrize("crit_name", ["bce", "bif_bce", "infonce"])
+def test_batch_stats_carry_a_unitless_loss_blends_lambda_eff(crit_name):
+    # the lambda_eff curve strip's series: recorded by the criterion where unitless reweights a loss blend's two
+    # terms (Criterion.term_coeffs), absent from the batch stats on static weights
+    B, K, D = 16, 5, 8
+    cfg = _cfg(crit_name, lambda_=0.3)
+    for unitless_blend in (False, True):
+        if unitless_blend:
+            cfg["blend"]["type"], cfg["unitless"] = "loss", True
+        img, txt, class_encs_b = _data(B, K, D)
+        h = _make_harness(Toy().train(), _make_crit(cfg, K, B, targ1="mp", targ2="sp"))
+        *_, batch_stats, _ = h._global_batch_loss(img, txt, class_encs_b, [None] * B)
+        assert ("lambda_eff" in batch_stats) == unitless_blend
+    assert batch_stats["lambda_eff"] == pytest.approx(h.crit.lambda_eff.item())
+    assert 0.0 < batch_stats["lambda_eff"] < 1.0
 
 
 def test_infonce_stats():

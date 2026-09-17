@@ -488,7 +488,9 @@ class PrintLog:
                 f"{batch_str:<10} "
                 f"lr={lr:.2e} "
                 f"loss={loss_batch:.2e} "
-                f"\n"
+                # a unitless loss blend's effective lambda (batch_stats: needs batch_diagnostics.sim_targ_stats)
+                + (f"lambda_eff={batch_stats['lambda_eff']:.4f} " if batch_stats is not None and "lambda_eff" in batch_stats else "")
+                + f"\n"
             )
             if line_grad_norm:
                 PrintLog.log_batch_grad_norm.write(
@@ -710,14 +712,14 @@ class PrintLog:
 
         lines = ["=== Loss ==="]
         # the live target specs with their blend weights (utils.loss.targ_specs)
-        lambda_ = cfg_loss["lambda"]
+        lambda_ = cfg_loss["blend"]["lambda"]
         targs = [(w, cfg_targ["targ"]) for w, cfg_targ in ((1.0 - lambda_, cfg_loss1), (lambda_, cfg_loss2)) if w != 0.0]
         info = [
             ("Crit", cfg_loss["crit"]),
             ("Sim", cfg_loss["sim"]),
             ("Targs", " + ".join(f"{w:g} {targ}" for w, targ in targs) if len(targs) > 1 else targs[0][1]),
-            *((("Blend Type", cfg_loss["blend_type"]),) if len(targs) > 1 else ()),
-            *((("Shared Logit Scalars", cfg_loss["logits"]["shared"]),) if len(targs) > 1 and cfg_loss["blend_type"] == "loss" else ()),
+            *((("Blend Type", cfg_loss["blend"]["type"]),) if len(targs) > 1 else ()),
+            *((("Shared Logit Scalars", cfg_loss["logits"]["shared"]),) if len(targs) > 1 and cfg_loss["blend"]["type"] == "loss" else ()),
             ("Unitless", cfg_loss["unitless"]),
         ]
         lines.append(PrintLog._dash_aligned_lines(info))

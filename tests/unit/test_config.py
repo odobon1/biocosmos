@@ -10,7 +10,7 @@ from utils.config import apply_dataset_specific_defaults
 def _loss_cfg(lambda_=0.0, **overrides):
     """The dummy's minimal `loss` block (train.yaml's loss schema, the sections __post_init__ reads)."""
     cfg = {
-        "crit": "bce", "sim": "cos", "lambda": lambda_, "blend_type": "targ", "unitless": False,
+        "crit": "bce", "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
         "wting": {"focal": {"gamma": 0.0}},
         "logits": {"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}},
     }
@@ -96,7 +96,7 @@ def test_train_config_accepts_freezing_both_encoders(monkeypatch: pytest.MonkeyP
 def test_train_config_rejects_invalid_secondary_lambda(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="loss.lambda out of bounds"):
+    with pytest.raises(ValueError, match="loss.blend.lambda out of bounds"):
         TrainConfig(**make_train_config_dummy(loss=_loss_cfg(lambda_=1.5)))
 
 
@@ -730,7 +730,7 @@ def test_train_config_rejects_unknown_bias_init(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_train_config_rejects_identical_target_distributions_under_a_live_blend(monkeypatch: pytest.MonkeyPatch) -> None:
-    # a blend of two identical target distributions is that distribution: loss.lambda would do nothing
+    # a blend of two identical target distributions is that distribution: loss.blend.lambda would do nothing
     patch_hw(monkeypatch)
 
     with pytest.raises(ValueError, match="same target distribution"):
@@ -741,7 +741,7 @@ def test_train_config_rejects_identical_target_distributions_under_a_live_blend(
         loss1={"targ": "mp", "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
         loss2={"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}},
     ))
-    assert cfg.loss["lambda"] == 0.3
+    assert cfg.loss["blend"]["lambda"] == 0.3
     with pytest.raises(ValueError, match="same target distribution"):
         TrainConfig(**make_train_config_dummy(
             loss=_loss_cfg(crit="infonce", lambda_=0.3),
@@ -749,22 +749,26 @@ def test_train_config_rejects_identical_target_distributions_under_a_live_blend(
             loss2={"targ": "mp", "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
         ))
     # the endpoints have one live target: nothing to blend, no error
-    assert TrainConfig(**make_train_config_dummy(loss=_loss_cfg(lambda_=1.0), loss1={"targ": "mp"}, loss2={"targ": "mp"})).loss["lambda"] == 1.0
+    assert TrainConfig(**make_train_config_dummy(loss=_loss_cfg(lambda_=1.0), loss1={"targ": "mp"}, loss2={"targ": "mp"})).loss["blend"]["lambda"] == 1.0
 
 
 def test_train_config_rejects_invalid_blend_type_and_unitless(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="Unknown loss.blend_type"):
-        TrainConfig(**make_train_config_dummy(loss=_loss_cfg(blend_type="grad")))
+    loss = _loss_cfg()
+    loss["blend"]["type"] = "grad"
+    with pytest.raises(ValueError, match="Unknown loss.blend.type"):
+        TrainConfig(**make_train_config_dummy(loss=loss))
     with pytest.raises(ValueError, match="loss.unitless must be a bool"):
         TrainConfig(**make_train_config_dummy(loss=_loss_cfg(unitless="yes")))
     loss = _loss_cfg()
     loss["logits"]["shared"] = "no"
     with pytest.raises(ValueError, match="loss.logits.shared must be a bool"):
         TrainConfig(**make_train_config_dummy(loss=loss))
-    cfg = TrainConfig(**make_train_config_dummy(loss=_loss_cfg(blend_type="loss", unitless=True)))
-    assert (cfg.loss["blend_type"], cfg.loss["unitless"]) == ("loss", True)
+    loss = _loss_cfg(unitless=True)
+    loss["blend"]["type"] = "loss"
+    cfg = TrainConfig(**make_train_config_dummy(loss=loss))
+    assert (cfg.loss["blend"]["type"], cfg.loss["unitless"]) == ("loss", True)
 
 
 def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -794,7 +798,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch
 def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):
     # the train.yaml loss schema in full: the dummy's minimal block lacks the sections the inert rules read
     return {
-        "crit": crit, "sim": "cos", "lambda": lambda_, "blend_type": "targ", "unitless": unitless,
+        "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": unitless,
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {"type": cls_imb_type, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -811,7 +815,7 @@ def _full_targ_cfg(targ="mp", tsm_type="softmax"):
 
 
 def test_get_config_train_rejects_inert_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss1.targ mp under loss.lambda 0.0 leaves no live phylo target, so an htarg.kernel override is never read:
+    # loss1.targ mp under loss.blend.lambda 0.0 leaves no live phylo target, so an htarg.kernel override is never read:
     # refused even when it restates the baseline's own value -- the value is beside the point -- while the
     # live override alongside it (loss1.targ) goes unmentioned
     patch_hw(monkeypatch)
@@ -823,7 +827,7 @@ def test_get_config_train_rejects_inert_override(monkeypatch: pytest.MonkeyPatch
     assert "loss1.targ" not in str(excinfo.value)
 
 
-@pytest.mark.parametrize("live", [{"loss1.targ": "phylo"}, {"loss.lambda": 0.3, "loss2.targ": "phylo"}])
+@pytest.mark.parametrize("live", [{"loss1.targ": "phylo"}, {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}])
 def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch: pytest.MonkeyPatch, live) -> None:
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg("mp"), loss2=_full_targ_cfg("phylo"))
@@ -833,7 +837,7 @@ def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch
 
 
 def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss2.infonce.tsm.type is inert both through loss.crit (bce) and through loss.lambda 0.0 (all of loss2):
+    # loss2.infonce.tsm.type is inert both through loss.crit (bce) and through loss.blend.lambda 0.0 (all of loss2):
     # the enclosing cause is the one reported; every inert key is listed
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg(), loss2=_full_targ_cfg())
@@ -842,8 +846,8 @@ def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pyte
     with pytest.raises(ValueError) as excinfo:
         get_config_train(cfg_dict)
     msg = str(excinfo.value)
-    assert "loss2.infonce.tsm.type (loss.lambda is 0.0)" in msg
-    assert "loss2.targ (loss.lambda is 0.0)" in msg
+    assert "loss2.infonce.tsm.type (loss.blend.lambda is 0.0)" in msg
+    assert "loss2.targ (loss.blend.lambda is 0.0)" in msg
 
 
 def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -861,7 +865,7 @@ def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "loss1" not in inert
     # live: the family's own block, the toggles themselves, the BCE-path logit params under a BCE crit
     _check_overrides_live(cfg, {
-        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.lambda": 0.0, "loss1.targ": "sp",
+        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.blend.lambda": 0.0, "loss1.targ": "sp",
         "loss.wting.cls_imb.type": None, "loss.wting.focal.gamma": 0.0, "loss.wting.bce.dsmr": False,
         "loss.logits.bce.center": None, "loss.logits.bce.bias.init": None, "aug.cjit.prob": 0.0,
     })
@@ -885,7 +889,7 @@ def test_inert_params_siglip_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> N
     assert inert["loss2.infonce.tsm.sm_scale"] == "loss2.infonce.tsm.type is linear"
     assert not {"loss1", "loss2", "loss1.infonce", "loss2.infonce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
     _check_overrides_live(cfg, {
-        "dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.lambda": 0.5,
+        "dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.blend.lambda": 0.5,
         "loss1.infonce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
         "loss2.targ": "mp", "loss2.infonce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
     })
@@ -923,23 +927,23 @@ def test_inert_params_blend_type_needs_two_targets_and_a_target_dependent_factor
     targs = {"loss1": _full_targ_cfg("mp"), "loss2": _full_targ_cfg("phylo")}
 
     lone = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(unitless=True), **targs))
-    assert inert_params(lone)["loss.blend_type"] == "loss.lambda is 0.0 (a lone target)"
+    assert inert_params(lone)["loss.blend.type"] == "loss.blend.lambda is 0.0 (a lone target)"
 
     plain = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(lambda_=0.3), **targs))
-    assert inert_params(plain)["loss.blend_type"].startswith("no target-dependent loss factor is live")
+    assert inert_params(plain)["loss.blend.type"].startswith("no target-dependent loss factor is live")
 
     unit, focal, dsmr = _full_loss_cfg(lambda_=0.3, unitless=True), _full_loss_cfg(lambda_=0.3), _full_loss_cfg(lambda_=0.3)
     focal["wting"]["focal"]["gamma"] = 2.0
     dsmr["wting"]["bce"]["dsmr"] = True
     for loss in (unit, focal, dsmr):
-        assert "loss.blend_type" not in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
+        assert "loss.blend.type" not in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
     # DSMR is BCE-only and targ_mass_neut bif_bce-only: neither counts where the criterion never reads it
     loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
     loss["wting"]["bce"]["dsmr"] = loss["bce"]["targ_mass_neut"] = True
-    assert "loss.blend_type" in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
+    assert "loss.blend.type" in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
     loss = _full_loss_cfg(crit="bif_bce", lambda_=0.3)
     loss["bce"]["targ_mass_neut"] = True
-    assert "loss.blend_type" not in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
+    assert "loss.blend.type" not in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
 
 
 def test_inert_params_separate_logit_scalars_need_a_live_loss_blend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -950,15 +954,15 @@ def test_inert_params_separate_logit_scalars_need_a_live_loss_blend(monkeypatch:
 
     def inert(lambda_, blend_type, shared):
         loss = _full_loss_cfg(lambda_=lambda_)
-        loss["blend_type"], loss["logits"]["shared"] = blend_type, shared
+        loss["blend"]["type"], loss["logits"]["shared"] = blend_type, shared
         return inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
 
-    assert inert(0.0, "loss", False)["loss.logits.shared"] == "loss.lambda is 0.0 (a lone target)"
-    assert inert(0.3, "targ", False)["loss.logits.shared"] == "loss.blend_type is targ (one loss on one set of logits)"
+    assert inert(0.0, "loss", False)["loss.logits.shared"] == "loss.blend.lambda is 0.0 (a lone target)"
+    assert inert(0.3, "targ", False)["loss.logits.shared"] == "loss.blend.type is targ (one loss on one set of logits)"
     live = inert(0.3, "loss", False)
-    assert "loss.logits.shared" not in live and "loss.blend_type" not in live
+    assert "loss.logits.shared" not in live and "loss.blend.type" not in live
     assert "loss.logits.shared" not in inert(0.3, "loss", True)  # live, though the blend type it needs is not:
-    assert "loss.blend_type" in inert(0.3, "loss", True)         # shared scalars, no target-dependent factor
+    assert "loss.blend.type" in inert(0.3, "loss", True)         # shared scalars, no target-dependent factor
 
 
 def test_inert_params_unitless_cancels_cls_imb_norm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -976,7 +980,7 @@ def test_inert_params_loss1_inert_at_lambda_one(monkeypatch: pytest.MonkeyPatch)
     cfg = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(lambda_=1.0), loss1=_full_targ_cfg("phylo"), loss2=_full_targ_cfg("mp")))
 
     inert = inert_params(cfg)
-    assert inert["loss1"] == "loss.lambda is 1.0"
+    assert inert["loss1"] == "loss.blend.lambda is 1.0"
     assert inert["htarg"] == "no live target is phylo"
     assert "loss2" not in inert
 

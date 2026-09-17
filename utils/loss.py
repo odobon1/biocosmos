@@ -82,11 +82,11 @@ def sep_logit_scalars(cfg_loss):
     """
     Whether each loss term runs on its own logit scalars (scale + bias; the model's logit_scale / logit_bias
     for loss1's term, logit_scale2 / logit_bias2 for loss2's): loss.logits.shared false under a loss blend
-    (loss.blend_type loss) of two live targets -- a target blend or a lone target is one loss on one set of
+    (loss.blend.type loss) of two live targets -- a target blend or a lone target is one loss on one set of
     logits, which leaves nothing to separate. Both pairs follow the one loss.logits block (init, freeze,
     clamp, center, scalar_lr_factor).
     """
-    return not cfg_loss["logits"]["shared"] and cfg_loss["blend_type"] == "loss" and 0.0 < cfg_loss["lambda"] < 1.0
+    return not cfg_loss["logits"]["shared"] and cfg_loss["blend"]["type"] == "loss" and 0.0 < cfg_loss["blend"]["lambda"] < 1.0
 
 class Criterion(abc.ABC):
     """
@@ -97,7 +97,7 @@ class Criterion(abc.ABC):
     per-class-pair weights for BCE.
 
     The training loss is a sum of terms (loss_terms) blended by their coefficients (term_coeffs): under
-    loss.blend_type targ the one loss against the blended distribution, under loss.blend_type loss each
+    loss.blend.type targ the one loss against the blended distribution, under loss.blend.type loss each
     spec's own loss L(Y_k) weighted w_k -- one criterion, similarity and weighting config either way. On
     shared logit scalars the loss is affine in the target, so the two coincide (value and gradients) unless
     a target-dependent factor is on: focal, DSMR and targ_mass_neut read the term's own target, and
@@ -110,10 +110,11 @@ class Criterion(abc.ABC):
 
     wting_dim: int
     bifurcated = False  # True -> consumes the (i2t, t2i) branch logits pair (see BifurcatedBCECriterion)
+    lambda_eff = None  # the last training batch's effective lambda (term_coeffs), or None
 
     def __init__(self, cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         self.cfg = cfg_loss
-        self.targ_specs = targ_specs(cfg_loss["lambda"], cfg_loss1, cfg_loss2)
+        self.targ_specs = targ_specs(cfg_loss["blend"]["lambda"], cfg_loss1, cfg_loss2)
         self.device = device
         self.batch_size = batch_size
         counts, self.wt_mean = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim, batch_size)
@@ -163,8 +164,8 @@ class Criterion(abc.ABC):
     def loss_terms(self, Ys, Y):
         """The (weight, target distribution) terms the training loss sums over, from the specs'
         distributions Ys (targ_dists) and their blend Y (targ_dist): the loss against Y alone under
-        loss.blend_type targ, each spec's own loss weighted w_k under loss.blend_type loss."""
-        if self.cfg["blend_type"] == "targ":
+        loss.blend.type targ, each spec's own loss weighted w_k under loss.blend.type loss."""
+        if self.cfg["blend"]["type"] == "targ":
             return [(1.0, Y)]
         return [(w, Y_k) for (w, _), Y_k in zip(self.targ_specs, Ys)]
 
@@ -174,10 +175,19 @@ class Criterion(abc.ABC):
         enters at unit magnitude (L_k / L_k.detach()) and its weight is its share of the loss reading (a
         lone term reads a constant 1.0). A bifurcated loss reads 2x its gradient scale (un-halved branch
         sum, 1x grads), so its normalizer is L_k / 2 -- the gradient-scale-equivalent value (a lone term
-        reads 2.0)."""
+        reads 2.0).
+
+        Records `lambda_eff` for the batch stats (the lambda_eff learning-curve strip): under loss.unitless
+        over a loss blend's two terms, loss2's term's share of the blend coefficients, c_2 / (c_1 + c_2) =
+        lambda L_1 / (lambda L_1 + (1 - lambda) L_2) -- with target-independent weights on shared logit
+        scalars the lambda of the target blend the gradient follows; None otherwise (a lone term, or the
+        static weights)."""
         if not self.cfg["unitless"]:
+            self.lambda_eff = None
             return ws
-        return [w / (L.detach() / (2.0 if self.bifurcated else 1.0)).clamp_min(1e-12) for w, L in zip(ws, losses)]
+        coeffs = [w / (L.detach() / (2.0 if self.bifurcated else 1.0)).clamp_min(1e-12) for w, L in zip(ws, losses)]
+        self.lambda_eff = coeffs[1] / (coeffs[0] + coeffs[1]) if len(coeffs) > 1 else None
+        return coeffs
 
     def _cls_imb_wts(self, class_encs_b):
         return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.wt_mean, self.batch_size)
@@ -475,7 +485,7 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
     (targ_specs) before the weights, which read it. W holds the loss's weights that are constant given
     the pair's classes -- class-imbalance (per-anchor / per-pair by the criterion's wting_dim), DSMR and
     targ_mass_neut with the expected (global / per-anchor-class) target masses in place of the batch's
-    -- not focal (prediction-dependent). Under loss.blend_type loss the loss is a sum of per-spec terms
+    -- not focal (prediction-dependent). Under loss.blend.type loss the loss is a sum of per-spec terms
     (Criterion.loss_terms), each under its own target's weights W_k, and the minimizing constant is
     p = sum_k w_k sum(W_k * Y_k) / sum_k w_k sum(W_k) -- under the static term weights w_k (loss.unitless'
     coefficients follow the model's losses, unknown at init). Dataset-level constant, identical across
@@ -487,7 +497,7 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
     encs = (~torch.isnan(counts)).nonzero(as_tuple=True)[0]  # classes present in the partition
     K = encs.numel()
 
-    specs = targ_specs(cfg_loss["lambda"], cfg_loss1, cfg_loss2)
+    specs = targ_specs(cfg_loss["blend"]["lambda"], cfg_loss1, cfg_loss2)
     Y_rests = []  # per live spec, the other B-1 slots; under sp only the anchor's own slot is positive
     for _, cfg_targ in specs:
         if cfg_targ["targ"] == "sp":
@@ -497,7 +507,7 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
         rank_encs = compute_rank_encs(dataset, cids) if cfg_targ["targ"] == "tax" else [None] * K
         targ_data_cls = [{"cid": cid, "dataset": dataset, "rank_encs": re} for cid, re in zip(cids, rank_encs)]
         Y_rests.append(compute_targets(cfg_targ["targ"], K, encs, targ_data_cls, "cpu").double())  # [K, K]; unit diagonal (same-class slots positive)
-    if cfg_loss["blend_type"] == "targ":
+    if cfg_loss["blend"]["type"] == "targ":
         terms = [(1.0, sum(w * Y_rest for (w, _), Y_rest in zip(specs, Y_rests)))]
     else:
         terms = [(w, Y_rest) for (w, _), Y_rest in zip(specs, Y_rests)]
@@ -545,10 +555,10 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
 # Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets and their
-# blend under either loss.blend_type, cls_imb.norm, loss.unitless) -- only InfoNCE is excluded
+# blend under either loss.blend.type, cls_imb.norm, loss.unitless) -- only InfoNCE is excluded
 # (chunking_supported). The target tiles are the loss terms' (loss_term_spec_fns): the criterion's blended
-# targets under blend_type targ (blend_targ_block_fn: sum_k w_k Q_k over the live target specs, Y = Q for
-# the BCE family), each spec's own Q_k under blend_type loss -- all on the block's one logits tile, or
+# targets under blend.type targ (blend_targ_block_fn: sum_k w_k Q_k over the live target specs, Y = Q for
+# the BCE family), each spec's own Q_k under blend.type loss -- all on the block's one logits tile, or
 # under separate logit scalars (loss.logits.shared false) each term on its own scalar pair's logits tile
 # off the block's one sim tile, grad_proj* then projecting per pair (_crit_center_grad_mean). The
 # reductions that couple across the whole BxB matrix -- the cls_imb.norm weight-mean normalizers (a 2D
@@ -625,9 +635,9 @@ def loss_term_spec_fns(crit, spec_fns):
     """
     The tiled analogue of Criterion.loss_terms: per loss term its (term weight, term spec_fns) pair, the
     term's target tile being blend_targ_block_fn over its spec_fns -- every live spec blended into one term
-    under loss.blend_type targ, each spec alone (its unweighted Q_k) under loss.blend_type loss.
+    under loss.blend.type targ, each spec alone (its unweighted Q_k) under loss.blend.type loss.
     """
-    if crit.cfg["blend_type"] == "targ":
+    if crit.cfg["blend"]["type"] == "targ":
         return [(1.0, spec_fns)]
     return [(w, [(1.0, targ_type, fn)]) for w, targ_type, fn in spec_fns]
 
@@ -1231,8 +1241,8 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     floating-point summation order.
 
     The loss is the criterion's blend of loss terms (loss_term_spec_fns, the tiled Criterion.loss_terms):
-    under loss.blend_type targ the one loss against the blended target tiles (blend_targ_block_fn: sum_k
-    w_k Q_k over the live target specs, as the full-batch targ_memb / targ_dist), under loss.blend_type
+    under loss.blend.type targ the one loss against the blended target tiles (blend_targ_block_fn: sum_k
+    w_k Q_k over the live target specs, as the full-batch targ_memb / targ_dist), under loss.blend.type
     loss each spec's own loss weighted w_k -- every term on the block's one logits tile, or each on its
     own scalar pair's tile under separate logit scalars (Criterion.sep_scalars). All
     cross-tile-coupled normalizers are precomputed detached constants (_precompute_crit_consts, and under
@@ -1362,4 +1372,6 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     loss_raw = (raw_tot / B).float()
     grad_sum_sim = grad_sum.item() if sim_grad_sums else None
     batch_stats = stats.finalize(world_size) if sim_targ_stats else None
+    if batch_stats is not None and crit.lambda_eff is not None:  # rank-identical: the term magnitudes are all-reduced
+        batch_stats["lambda_eff"] = crit.lambda_eff.item()
     return loss, loss_raw, batch_stats, grad_sum_sim

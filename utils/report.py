@@ -1004,7 +1004,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     (ablation_arms for the arm band, hpo_coords for the coord band: the union of the rows' overrides.json
     'arm' / 'coord' keys, first-seen order), each cell the row's effective value resolved from its
     config.json (an arms/ row reads its arm's first (arm, coord) row's) -- '-' when the param is
-    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.lambda
+    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.blend.lambda
     0.0). Params whose effective value is identical across every row of the workbook are omitted
     (they differentiate nothing); a band all of whose params are uniform is omitted entirely. These
     tables get no winner-bold/heatmap styling. The third sheet, 'Hardware Performance', mirrors the
@@ -1517,6 +1517,12 @@ def plot_composite_metrics(
     ]
     height_ratios = [*height_ratios[:-1], *[1] * (len(dalpha_panels) + len(kl_panels)), height_ratios[-1]]
     figsize = (figsize[0], figsize[1] + 0.8 * (len(dalpha_panels) + len(kl_panels)))
+    # the effective-lambda strip (sim_targ_stats on; loss.unitless over a live loss blend only) sits right
+    # above LR, an LR-height panel: loss2's term's share of the unitless blend coefficients, lambda L_1 /
+    # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where unitless moves the blend
+    # off the nominal loss.blend.lambda, batch by batch
+    has_lambda_eff = len(data_epoch["lambda_eff"]) == len(x_train)
+    height_ratios = [*height_ratios[:-1], *([0.5] if has_lambda_eff else []), height_ratios[-1]]
 
     fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(len(height_ratios), 1, height_ratios=height_ratios, hspace=0)
@@ -1779,6 +1785,15 @@ def plot_composite_metrics(
         ax.plot(x_train, data_epoch[key], color="darkmagenta", linewidth=1.0)
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
+        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    if has_lambda_eff:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        ax.plot(x_train, data_epoch["lambda_eff"], color="tab:olive", linewidth=1.0)
+        ax.set_ylabel(r"$\lambda_{\mathrm{eff}}$", fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)

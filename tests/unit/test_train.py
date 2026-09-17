@@ -15,8 +15,7 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
     return {
         "crit": crit,
         "sim": "cos",
-        "lambda": lambda_,
-        "blend_type": "targ",
+        "blend": {"lambda": lambda_, "type": "targ"},
         "unitless": False,
         "bce": {"targ_mass_neut": False},
         "wting": {
@@ -126,7 +125,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
     assert "stoch_depth" in config["dropout"]["siglip"]
     assert "loss2" not in config  # lambda 0.0
-    assert "blend_type" not in config["loss"] and config["loss"]["unitless"] is False  # a lone target: nothing to blend
+    assert "type" not in config["loss"]["blend"] and config["loss"]["unitless"] is False  # a lone target: nothing to blend
     assert "shared" not in config["loss"]["logits"]  # ... and no second term to give its own logit scalars
     assert config["loss1"] == {"targ": "mp"}  # the InfoNCE-only tsm sub-block pruned under a BCE crit
     assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
@@ -173,19 +172,19 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg.loss["wting"]["cls_imb"]["type"] = None
     del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
     cfg.loss["wting"]["bce"]["dsmr"] = False
-    cfg.loss["lambda"] = 0.3
+    cfg.loss["blend"]["lambda"] = 0.3
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
     assert "wting" not in config["loss"]
-    assert config["loss"]["lambda"] == 0.3
-    assert "blend_type" not in config["loss"]  # no loss factor reads the target: the blend types coincide
+    assert config["loss"]["blend"]["lambda"] == 0.3
+    assert "type" not in config["loss"]["blend"]  # no loss factor reads the target: the blend types coincide
     assert config["loss1"] == {"targ": "mp"} and config["loss2"] == {"targ": "phylo"}
 
     # lambda 1.0: the primary target spec is never read
     (tmp_path / "s5").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s5")
     cfg = _FakeCoordCfg()
-    cfg.loss["lambda"] = 1.0
+    cfg.loss["blend"]["lambda"] = 1.0
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s5" / "config.json").read_text())
     assert "loss1" not in config and config["loss2"] == {"targ": "phylo"}
@@ -200,7 +199,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     config = json.loads((tmp_path / "s6" / "config.json").read_text())
     assert config["loss1"] == {"targ": "sp"}
     assert config["loss2"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
-    assert config["loss"]["blend_type"] == "targ"  # a live blend under focal: the blend types differ
+    assert config["loss"]["blend"]["type"] == "targ"  # a live blend under focal: the blend types differ
     assert "shared" not in config["loss"]["logits"]  # a target blend is one loss on one set of logits
 
     # unitless: its rescale cancels cls_imb.norm's per-batch normalizer, and makes a blend's type matter
@@ -208,12 +207,12 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s7")
     cfg = _FakeCoordCfg()
     cfg.loss = _full_loss_cfg(lambda_=0.3)
-    cfg.loss["unitless"], cfg.loss["blend_type"] = True, "loss"
+    cfg.loss["unitless"], cfg.loss["blend"]["type"] = True, "loss"
     del cfg.loss["wting"]["focal"]
     cfg.loss["wting"]["bce"]["dsmr"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s7" / "config.json").read_text())
-    assert (config["loss"]["blend_type"], config["loss"]["unitless"]) == ("loss", True)
+    assert (config["loss"]["blend"]["type"], config["loss"]["unitless"]) == ("loss", True)
     assert config["loss"]["logits"]["shared"] is True  # a live loss blend: its terms could run on separate scalars
     assert config["loss"]["wting"]["cls_imb"] == {"type": "inv_freq", "inv_freq": {"gamma": 0.5}}
 
@@ -341,7 +340,7 @@ def _fake_pipe(loss_crit, requires_grad, sep=False):
     attrs = {attr: SimpleNamespace(requires_grad=requires_grad[attr]) for attr in ("logit_scale", "logit_bias")}
     if sep:
         attrs.update({f"{attr}2": scalar for attr, scalar in attrs.items()})
-    loss = {"crit": loss_crit, "lambda": 0.3 if sep else 0.0, "blend_type": "loss", "logits": {"shared": not sep}}
+    loss = {"crit": loss_crit, "blend": {"lambda": 0.3 if sep else 0.0, "type": "loss"}, "logits": {"shared": not sep}}
     return SimpleNamespace(cfg=SimpleNamespace(loss=loss), modelw=SimpleNamespace(_unwrapped_model=SimpleNamespace(**attrs)))
 
 
@@ -407,7 +406,7 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
 
 
 def _fake_targ_pipe(targ1, targ2, lambda_):
-    return SimpleNamespace(cfg=SimpleNamespace(loss={"lambda": lambda_}, loss1={"targ": targ1}, loss2={"targ": targ2}))
+    return SimpleNamespace(cfg=SimpleNamespace(loss={"blend": {"lambda": lambda_}}, loss1={"targ": targ1}, loss2={"targ": targ2}))
 
 
 def test_tracked_targ_stats_graded_blends_only() -> None:

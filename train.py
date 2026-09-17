@@ -298,7 +298,7 @@ class TrainPipeline:
         phylo or tax, or when two distinct targets are blended (0 < lambda < 1 puts their disagreements at
         lambda / 1 - lambda). A lone sp / mp target is a 0/1 indicator whose spread says nothing. When untracked,
         the targ stats are dropped before TrialData records them, so they get no learning-curve panel."""
-        live = [cfg_targ["targ"] for _, cfg_targ in targ_specs(self.cfg.loss["lambda"], self.cfg.loss1, self.cfg.loss2)]
+        live = [cfg_targ["targ"] for _, cfg_targ in targ_specs(self.cfg.loss["blend"]["lambda"], self.cfg.loss1, self.cfg.loss2)]
         return any(targ in ("phylo", "tax") for targ in live) or len(set(live)) > 1
 
     @rank0

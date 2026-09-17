@@ -4,7 +4,7 @@ Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.l
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
 logit scale/bias) of the full-batch path (BCECriterion.__call__ / BifurcatedBCECriterion.__call__ via
 _global_batch_loss), up to floating-point summation order -- across the full BCE-family config space:
-mp/sp/tax/phylo targets and their blends (loss.lambda) under either loss.blend_type, loss.unitless,
+mp/sp/tax/phylo targets and their blends (loss.blend.lambda) under either loss.blend.type, loss.unitless,
 separate logit scalars (loss.logits.shared false: one logits tile per loss term), cls_imb.norm, and
 bif_bce's two-branch tiles
 (half-live logit scalars, row-wise DSMR, targ_mass_neut, per-branch centering).
@@ -54,7 +54,7 @@ def _cfg(crit="bce", lambda_=0.0, dsmr=True, focal_gamma=2.0, sim="cos", cls_imb
          blend_type="targ", unitless=False, shared=True):
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
-        "crit": crit, "sim": sim, "lambda": lambda_, "blend_type": blend_type, "unitless": unitless,
+        "crit": crit, "sim": sim, "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
@@ -78,7 +78,7 @@ def _make_crit(cfg, K, B, targ1="mp", targ2="sp"):
     cls = CRIT_CLS[cfg["crit"]]
     crit = cls.__new__(cls)  # bypass build_wting (no dataset needed)
     crit.cfg = cfg
-    crit.targ_specs = L.targ_specs(cfg["lambda"], _targ(targ1), _targ(targ2))
+    crit.targ_specs = L.targ_specs(cfg["blend"]["lambda"], _targ(targ1), _targ(targ2))
     crit.device = torch.device("cpu")
     crit.batch_size = B
     g = torch.Generator().manual_seed(K)
@@ -286,12 +286,13 @@ def _assert_chunked_matches_full(cfg, targ1, targ2, C):
     loss_ref, loss_raw_ref, sims_ref = _full_reference(crit, img, txt, class_encs_b, targ_data_b, p)
     loss_ref.backward()
     gsum_ref = sum(s.grad.double().sum().item() for s in sims_ref)
+    lambda_eff_ref = crit.lambda_eff  # the full-batch call's, before the chunked run records its own
 
     # chunked
     imgc = img0.clone().requires_grad_(True)
     txtc = txt0.clone().requires_grad_(True)
     pc = _params(1)
-    loss_c, loss_raw_c, _, gsum_c = L.chunked_bce_loss_backward(
+    loss_c, loss_raw_c, stats_c, gsum_c = L.chunked_bce_loss_backward(
         imgc, txtc, class_encs_b, targ_data_b, crit, _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
     )
 
@@ -303,6 +304,12 @@ def _assert_chunked_matches_full(cfg, targ1, targ2, C):
     for key in ("scale", "bias") + (("scale2", "bias2") if crit.sep_scalars else ()):
         torch.testing.assert_close(pc[key].grad, p[key].grad, rtol=1e-4, atol=1e-6)
     assert gsum_c == pytest.approx(gsum_ref, rel=1e-4, abs=1e-4)
+    # the batch stats carry a unitless loss blend's effective lambda -- from the pre-swept term magnitudes,
+    # matching the full-batch criterion's -- and no such key otherwise
+    unitless_blend = cfg["unitless"] and cfg["blend"]["type"] == "loss" and 0.0 < cfg["blend"]["lambda"] < 1.0
+    assert ("lambda_eff" in stats_c) == (lambda_eff_ref is not None) == unitless_blend
+    if unitless_blend:
+        assert stats_c["lambda_eff"] == pytest.approx(lambda_eff_ref.item(), rel=1e-4)
     return loss_c
 
 

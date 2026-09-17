@@ -642,14 +642,14 @@ def test_expand_combo_groups_single_combo_group_unchanged() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
                 {"loss1.targ": "sp", "name": "sp"},
             ]
         ],
         "ablation_arms",
     )
     assert members == [
-        ("hp", {"loss.lambda": 0.3, "loss2.targ": "phylo"}),
+        ("hp", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}),
         ("sp", {"loss1.targ": "sp"}),
     ]
 
@@ -657,11 +657,11 @@ def test_expand_combo_groups_single_combo_group_unchanged() -> None:
 def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
     # an item without a 'name' is named by its overrides: 'key-value' pairs joined by '_', with
     # keys/values mapped through CFG_PARAM_ALIASES / CFG_PARAM_VALUE_ALIASES when an alias exists
-    # (e.g. loss.lambda -> Lambda, mp -> MP) and anything unaliased passing through verbatim
+    # (e.g. loss.blend.lambda -> Lambda, mp -> MP) and anything unaliased passing through verbatim
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"},
                 {"loss1.targ": "mp"},
                 {"loss1.targ": "sp", "name": "sp"},
                 {"loss.sim": "geo1"},
@@ -670,7 +670,7 @@ def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
         "ablation_arms",
     )
     assert members == [
-        ("Lambda-0.3_Targ2-hp", {"loss.lambda": 0.3, "loss2.targ": "phylo"}),
+        ("Lambda-0.3_Targ2-hp", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}),
         ("Targ-MP", {"loss1.targ": "mp"}),
         ("sp", {"loss1.targ": "sp"}),
         ("loss.sim-geo1", {"loss.sim": "geo1"}),
@@ -686,8 +686,8 @@ def test_expand_combo_groups_universal_value_aliases() -> None:
             [
                 {"htarg.shuffle": True, "chain_floor": None},
                 {"dv_batching": False},
-                {"loss.lambda": 0.0},
-                {"loss.lambda": 1.0},
+                {"loss.blend.lambda": 0.0},
+                {"loss.blend.lambda": 1.0},
             ]
         ],
         "ablation_arms",
@@ -706,15 +706,15 @@ def test_expand_combo_groups_combo_list_expands_item_and_appends_to_name() -> No
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
                 {"loss1.targ": "mp", "batch_size": [1024, 2048], "name": "mp"},
             ]
         ],
         "ablation_arms",
     )
     assert members == [
-        ("hp_BS-1k", {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
-        ("hp_BS-2k", {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
+        ("hp_BS-1k", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
+        ("hp_BS-2k", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
         ("mp_BS-1k", {"loss1.targ": "mp", "batch_size": 1024}),
         ("mp_BS-2k", {"loss1.targ": "mp", "batch_size": 2048}),
     ]
@@ -746,7 +746,7 @@ def test_expand_combo_groups_multiple_combo_lists_cross_within_item() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 2.0e-4], "name": "hp"},
+                {"loss.blend.lambda": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 2.0e-4], "name": "hp"},
             ]
         ],
         "hpo_coords",
@@ -757,7 +757,7 @@ def test_expand_combo_groups_multiple_combo_lists_cross_within_item() -> None:
         "hp_BS-2k_LR-7.0e-6",
         "hp_BS-2k_LR-2.0e-4",
     ]
-    assert dict(members)["hp_BS-2k_LR-2.0e-4"] == {"loss.lambda": 0.3, "batch_size": 2048, "opt.lr.init": 2.0e-4}
+    assert dict(members)["hp_BS-2k_LR-2.0e-4"] == {"loss.blend.lambda": 0.3, "batch_size": 2048, "opt.lr.init": 2.0e-4}
 
 
 def test_expand_combo_groups_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
@@ -783,7 +783,7 @@ def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
                 {"loss1.targ": "mp"},
             ],
             [
@@ -796,8 +796,8 @@ def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups
 
     assert len(members) == 4
     assert dict(members) == {
-        "hp_2k": {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
-        "hp_BS-1k": {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
+        "hp_2k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
+        "hp_BS-1k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
         "Targ-MP_2k": {"loss1.targ": "mp", "batch_size": 2048},
         "Targ-MP_BS-1k": {"loss1.targ": "mp", "batch_size": 1024},
     }
@@ -808,7 +808,7 @@ def test_expand_combo_groups_cartesian_product_merges_and_joins_names() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
                 {"loss1.targ": "mp", "name": "mp"},
             ],
             [
@@ -821,8 +821,8 @@ def test_expand_combo_groups_cartesian_product_merges_and_joins_names() -> None:
 
     assert len(members) == 4
     assert dict(members) == {
-        "hp_2k": {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
-        "hp_1k": {"loss.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
+        "hp_2k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
+        "hp_1k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
         "mp_2k": {"loss1.targ": "mp", "batch_size": 2048},
         "mp_1k": {"loss1.targ": "mp", "batch_size": 1024},
     }
@@ -852,11 +852,11 @@ def test_expand_combo_groups_raises_on_cross_combo_group_key_collision() -> None
         cr._expand_combo_groups(
             [
                 [
-                    {"loss.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                    {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
                     {"loss1.targ": "mp", "name": "mp"},
                 ],
                 [
-                    {"loss.lambda": 0.4, "loss2.targ": "phylo", "name": "hp4"},
+                    {"loss.blend.lambda": 0.4, "loss2.targ": "phylo", "name": "hp4"},
                     {"loss1.targ": "mp", "name": "sw2"},
                 ],
             ],
@@ -886,7 +886,7 @@ def test_expand_combo_groups_null_name_skips_component() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
+                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
                 {"loss1.targ": "mp", "name": "mp"},
             ],
             [
@@ -897,8 +897,8 @@ def test_expand_combo_groups_null_name_skips_component() -> None:
         "ablation_arms",
     )
     assert dict(members) == {
-        "hp_if": {"loss.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
-        "hp": {"loss.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
+        "hp_if": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
+        "hp": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
         "mp_if": {"loss1.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
         "mp": {"loss1.targ": "mp", "loss.wting.cls_imb.type": "class_bal"},
     }

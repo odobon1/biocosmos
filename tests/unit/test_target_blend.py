@@ -6,7 +6,7 @@ weighting is on (class-imbalance weights are target-independent, so they may sta
 reads the target, so with it on the two differ. Checked per criterion family, InfoNCE under each pairing
 of per-target simplex mappings.
 
-loss.blend_type loss IS that loss blend -- each term its single-target criterion's weighted loss, focal /
+loss.blend.type loss IS that loss blend -- each term its single-target criterion's weighted loss, focal /
 DSMR / targ_mass_neut reading the term's own target -- and loss.unitless enters each term at unit magnitude.
 """
 from types import SimpleNamespace
@@ -22,7 +22,7 @@ from models import VLMWrapper
 
 def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr=False, neut=False, shared=True):
     return {
-        "crit": crit, "sim": "cos", "lambda": lambda_, "blend_type": blend_type, "unitless": unitless,
+        "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -42,7 +42,7 @@ CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "infonce
 
 def _make_crit(cfg, specs, K, B):
     """A criterion over explicit (weight, target spec) pairs -- Criterion.targ_specs as built from
-    loss.lambda, or a lone (1.0, spec) for a single-target reference."""
+    loss.blend.lambda, or a lone (1.0, spec) for a single-target reference."""
     cls = CRIT_CLS[cfg["crit"]]
     crit = cls.__new__(cls)  # bypass build_wting (no dataset needed)
     crit.cfg = cfg
@@ -150,9 +150,9 @@ TARG_DEP = [
 
 @pytest.mark.parametrize("crit,wting", TARG_DEP)
 def test_loss_blend_is_the_blend_of_the_single_target_losses(crit, wting):
-    # blend_type loss: each term is its single-target criterion's weighted loss, the target-dependent factors
+    # blend.type loss: each term is its single-target criterion's weighted loss, the target-dependent factors
     # (focal, DSMR, targ_mass_neut) reading the term's own target -- so the loss blend identity holds with
-    # them on, where blend_type targ (one weight on the blended Y) breaks it
+    # them on, where blend.type targ (one weight on the blended Y) breaks it
     lambda_, K, B = 0.3, 6, 24
     spec1, spec2 = _targ("mp", "linear"), _targ("tax", "softmax")
     blend = _make_crit(_cfg(crit, lambda_, blend_type="loss", **wting), L.targ_specs(lambda_, spec1, spec2), K, B)
@@ -195,7 +195,7 @@ def test_unitless_loss_blend_enters_each_term_at_unit_magnitude(crit):
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
 def test_unitless_target_blend_rescales_the_one_loss(crit):
-    # blend_type targ has one term, the loss against the blended Y: unitless divides it by its own magnitude
+    # blend.type targ has one term, the loss against the blended Y: unitless divides it by its own magnitude
     lambda_, K, B = 0.3, 6, 24
     specs = L.targ_specs(lambda_, _targ("mp", "linear"), _targ("tax", "softmax"))
     loss_u, raw_u, grads_u = _run(_make_crit(_cfg(crit, lambda_, unitless=True), specs, K, B))
@@ -284,6 +284,33 @@ def test_separate_logit_scalars_infonce_returns_the_primary_distribution():
     Q = torch.rand(B, B)
     Y_2 = crit.targ_dists([Q, Q], [torch.tensor(2.3), torch.tensor(1.7)])[1]
     torch.testing.assert_close(Y_2, torch.softmax(2 * Q * torch.tensor(1.7).exp(), dim=1))
+
+
+@pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
+def test_unitless_loss_blend_records_lambda_eff(crit):
+    # the batch stats' lambda_eff (the learning-curve strip): loss2's term's share of the unitless blend
+    # coefficients, lambda L1 / (lambda L1 + (1 - lambda) L2) -- bif_bce's L/2 normalizers cancel in the ratio.
+    # Recorded only where unitless reweights two terms: not on static weights, a target blend or a lone target
+    lambda_, K, B = 0.3, 6, 24
+    spec1, spec2 = _targ("mp", "linear"), _targ("tax", "softmax")
+    specs = L.targ_specs(lambda_, spec1, spec2)
+    loss_1, _, _ = _run(_make_crit(_cfg(crit, 0.0, focal_gamma=2.0), [(1.0, spec1)], K, B))
+    loss_2, _, _ = _run(_make_crit(_cfg(crit, 0.0, focal_gamma=2.0), [(1.0, spec2)], K, B))
+
+    blend = _make_crit(_cfg(crit, lambda_, focal_gamma=2.0, blend_type="loss", unitless=True), specs, K, B)
+    assert blend.lambda_eff is None  # nothing recorded before a training batch
+    _run(blend)
+    torch.testing.assert_close(blend.lambda_eff, lambda_ * loss_1 / (lambda_ * loss_1 + (1.0 - lambda_) * loss_2))
+    assert not blend.lambda_eff.requires_grad
+
+    for cfg, crit_specs in (
+        (_cfg(crit, lambda_, focal_gamma=2.0, blend_type="loss"), specs),  # static weights
+        (_cfg(crit, lambda_, focal_gamma=2.0, unitless=True), specs),  # a target blend: one term
+        (_cfg(crit, 0.0, focal_gamma=2.0, blend_type="loss", unitless=True), [(1.0, spec1)]),  # a lone target
+    ):
+        other = _make_crit(cfg, crit_specs, K, B)
+        _run(other)
+        assert other.lambda_eff is None
 
 
 def test_unitless_infonce_returns_the_distribution_its_gradient_follows():

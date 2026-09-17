@@ -601,6 +601,8 @@ class VLMWrapper(abc.ABC):
         if cfg_loss["crit"] == "infonce":
             logit_scale = self._unwrapped_model.logit_scale
             stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), cfg_loss["logits"]["scale"]["clamp"]))
+        if self.crit.lambda_eff is not None:  # a unitless loss blend's effective lambda (Criterion.term_coeffs)
+            stats["lambda_eff"] = self.crit.lambda_eff.item()
         return stats
 
     def _global_batch_loss(

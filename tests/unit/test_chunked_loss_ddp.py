@@ -21,7 +21,7 @@ Cases: a plain BCE step, a BCE step with cls_imb.norm (the embedding-free banded
 mp / phylo target blend (the blended target tiles and the banded soft-target dsmr-mass all-reduce), a
 tax-target case (the tax target tiles under sharding), two centering cases, two bif_bce cases (the
 banded two-branch tiles with row-wise dsmr + targ_mass_neut, and a blend with per-branch grad-proj
-constants -- the branch grad-mean all-reduce under sharding), two unitless loss blends (loss.blend_type
+constants -- the branch grad-mean all-reduce under sharding), two unitless loss blends (loss.blend.type
 loss + loss.unitless: the per-term dsmr masses and the banded term-magnitude pre-sweep's all-reduce, bce and
 bif_bce + grad-proj), and two loss blends on separate logit scalars (loss.logits.shared false: the second
 scalar pair's band-partial grads under the manual all-reduce, per-pair grad-proj constants, bce and bif_bce).
@@ -50,7 +50,7 @@ import torch.multiprocessing as mp
 def cfg_loss(lambda_=0.0, cls_imb_norm=False, center=None, crit="bce", neut=False, blend_type="targ", unitless=False, shared=True):
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
-        "crit": crit, "sim": "cos", "lambda": lambda_, "blend_type": blend_type, "unitless": unitless,
+        "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
@@ -134,7 +134,7 @@ class DummyPhyloVCV:
 def make_crit(crit_cls, cfg, targ1, targ2, K, B, device, targ_specs):
     crit = crit_cls.__new__(crit_cls)
     crit.cfg = cfg
-    crit.targ_specs = targ_specs(cfg["lambda"], targ_spec(targ1), targ_spec(targ2))
+    crit.targ_specs = targ_specs(cfg["blend"]["lambda"], targ_spec(targ1), targ_spec(targ2))
     crit.device = device
     crit.batch_size = B
     g = torch.Generator().manual_seed(12345)  # rank-independent -> identical counts on all ranks

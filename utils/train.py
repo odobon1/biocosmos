@@ -131,6 +131,11 @@ class TrialData:
             # kl_ir = E_ir = D_KL(y || p*) (irreducible: the target outside the reachable set) and
             # kl_sr = E_sr, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
             **{f"kl{suffix}": [] for suffix in ("", "_s", "_ir", "_sr")},
+            # lambda_eff: per batch, loss2's term's share of a unitless loss blend's coefficients, lambda L_1 /
+            # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where loss.unitless moves the
+            # blend off the nominal loss.blend.lambda; a scalar, one curve strip right above LR. Recorded only under
+            # loss.unitless over a live loss blend (loss.blend.type loss), so the series stays empty otherwise.
+            "lambda_eff": [],
         }
         self.data_eval = {
             "n_samps_seen": [],
@@ -336,7 +341,7 @@ class ArtifactManager:
                 del metadata["dropout"]["siglip"]
 
             # target specs: loss2 carries weight lambda, loss1 weight 1 - lambda (utils.loss.targ_specs)
-            lambda_ = metadata["loss"]["lambda"]
+            lambda_ = metadata["loss"]["blend"]["lambda"]
             if lambda_ == 0.0:
                 del metadata["loss2"]
             if lambda_ == 1.0:
@@ -346,7 +351,7 @@ class ArtifactManager:
             crit = loss["crit"]
             is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
 
-            # blend_type: a lone target has nothing to blend, and on shared logit scalars without a loss
+            # blend.type: a lone target has nothing to blend, and on shared logit scalars without a loss
             # factor that reads the target (unitless, focal, DSMR, targ_mass_neut) the loss is affine in it
             # -- a loss blend is then the target blend's loss, value and gradients. logits.shared: only a
             # live loss blend has two terms to give separate logit scalars
@@ -355,10 +360,10 @@ class ArtifactManager:
                 or (is_bce_family and loss["wting"]["bce"]["dsmr"])
                 or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
             )
-            if lambda_ in (0.0, 1.0) or loss["blend_type"] == "targ":
+            if lambda_ in (0.0, 1.0) or loss["blend"]["type"] == "targ":
                 del loss["logits"]["shared"]
             if lambda_ in (0.0, 1.0) or not targ_dep:
-                del loss["blend_type"]
+                del loss["blend"]["type"]
 
             # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
             # whole bias block is a no-op (logits = sim * scale.exp() + 0)

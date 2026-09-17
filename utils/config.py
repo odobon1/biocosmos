@@ -18,8 +18,8 @@ import pdb
 CFG_PARAM_ALIASES = {
     "n_epochs": "E",
     "batch_size": "BS",
-    "loss.lambda": "Lambda",
-    "loss.blend_type": "Blend",
+    "loss.blend.lambda": "Lambda",
+    "loss.blend.type": "Blend",
     "loss.unitless": "Unit",
     "loss.logits.shared": "ShSc",
     "loss.wting.bce.dsmr": "DSMR",
@@ -241,9 +241,9 @@ class TrainConfig:
         if isinstance(htarg_beta, bool) or not isinstance(htarg_beta, (int, float)) or htarg_beta <= 0:
             raise ValueError(f"htarg.exp.beta must be a positive number, got {htarg_beta!r}")
 
-        lambda_ = self.loss["lambda"]
+        lambda_ = self.loss["blend"]["lambda"]
         if not 0.0 <= lambda_ <= 1.0:
-            raise ValueError(f"loss.lambda out of bounds: {lambda_}, must be between 0.0 and 1.0")
+            raise ValueError(f"loss.blend.lambda out of bounds: {lambda_}, must be between 0.0 and 1.0")
         # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
         live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, self.loss1), (lambda_, self.loss2)) if w != 0.0]
 
@@ -251,7 +251,7 @@ class TrainConfig:
             if "phylo" not in live_targs:
                 raise ValueError(
                     "htarg.shuffle=True requires a live phylo target: "
-                    "loss1.targ 'phylo' under loss.lambda != 1.0, or loss2.targ 'phylo' under loss.lambda != 0.0"
+                    "loss1.targ 'phylo' under loss.blend.lambda != 1.0, or loss2.targ 'phylo' under loss.blend.lambda != 0.0"
                 )
             if self.seed is None:
                 raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
@@ -272,12 +272,12 @@ class TrainConfig:
             self.loss["crit"] != "infonce" or self.loss1["infonce"]["tsm"] == self.loss2["infonce"]["tsm"]
         ):
             raise ValueError(
-                f"loss1 and loss2 specify the same target distribution (targ '{self.loss1['targ']}') under loss.lambda "
-                f"{lambda_}: the blend is that target itself, so loss.lambda is inert"
+                f"loss1 and loss2 specify the same target distribution (targ '{self.loss1['targ']}') under loss.blend.lambda "
+                f"{lambda_}: the blend is that target itself, so loss.blend.lambda is inert"
             )
 
-        if self.loss["blend_type"] not in ("targ", "loss"):
-            raise ValueError(f"Unknown loss.blend_type: '{self.loss['blend_type']}', must be one of {{targ, loss}}")
+        if self.loss["blend"]["type"] not in ("targ", "loss"):
+            raise ValueError(f"Unknown loss.blend.type: '{self.loss['blend']['type']}', must be one of {{targ, loss}}")
         if not isinstance(self.loss["unitless"], bool):
             raise ValueError(f"loss.unitless must be a bool, got {self.loss['unitless']!r}")
         if not isinstance(self.loss["logits"]["shared"], bool):
@@ -351,7 +351,7 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
     render inert keeps the first-listed reason."""
     is_siglip = "siglip" in cfg.arch["model_type"].lower()
-    lambda_ = cfg.loss["lambda"]
+    lambda_ = cfg.loss["blend"]["lambda"]
     crit = cfg.loss["crit"]
     cls_imb_type = cfg.loss["wting"]["cls_imb"]["type"]
     # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
@@ -371,14 +371,14 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
         ("dropout.siglip.proj_head", cfg.arch["siglip"]["vis_proj_head"] is None, "arch.siglip.vis_proj_head is null"),
         ("htarg", "phylo" not in live_targs, "no live target is phylo"),
         ("htarg.exp", cfg.htarg["kernel"] == "bm", "htarg.kernel is bm"),
-        ("loss1", lambda_ == 1.0, "loss.lambda is 1.0"),
-        ("loss2", lambda_ == 0.0, "loss.lambda is 0.0"),
-        ("loss.blend_type", lambda_ in (0.0, 1.0), f"loss.lambda is {lambda_} (a lone target)"),
-        ("loss.blend_type", not targ_dep,
+        ("loss1", lambda_ == 1.0, "loss.blend.lambda is 1.0"),
+        ("loss2", lambda_ == 0.0, "loss.blend.lambda is 0.0"),
+        ("loss.blend.type", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
+        ("loss.blend.type", not targ_dep,
          "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut) on shared logit scalars: "
          "the blend types coincide"),
-        ("loss.logits.shared", lambda_ in (0.0, 1.0), f"loss.lambda is {lambda_} (a lone target)"),
-        ("loss.logits.shared", cfg.loss["blend_type"] == "targ", "loss.blend_type is targ (one loss on one set of logits)"),
+        ("loss.logits.shared", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
+        ("loss.logits.shared", cfg.loss["blend"]["type"] == "targ", "loss.blend.type is targ (one loss on one set of logits)"),
         ("loss.bce", crit != "bif_bce", f"loss.crit is {crit}"),
         ("loss.bce", all(targ == "sp" for targ in live_targs), "every live target is sp (row mass already 1)"),
         ("loss.wting.bce", crit == "infonce", "loss.crit is infonce"),

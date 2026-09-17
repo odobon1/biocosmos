@@ -40,8 +40,7 @@ class FakePhyloVCV:
 def make_cfg_loss(crit="bce", wting_type=None, gamma=1.0, dsmr=False, targ_mass_neut=False, lambda_=0.0, blend_type="targ"):
     return {
         "crit": crit,
-        "lambda": lambda_,
-        "blend_type": blend_type,
+        "blend": {"lambda": lambda_, "type": blend_type},
         "bce": {"targ_mass_neut": targ_mass_neut},
         "wting": {
             "cls_imb": {"type": wting_type, "inv_freq": {"gamma": gamma}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -186,7 +185,7 @@ def test_blend_dsmr_reads_the_blended_masses():
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce"])
 def test_loss_blend_dsmr_reads_each_terms_own_masses(crit):
-    # blend_type loss: each term's DSMR weights read its own target, so the binary sp / mp terms each balance to
+    # blend.type loss: each term's DSMR weights read its own target, so the binary sp / mp terms each balance to
     # 1/2 and so does their blend -- where the target blend's soft sp / mp matrix (test above) does not
     assert prevalence(make_cfg_loss(crit=crit, dsmr=True, lambda_=0.3, blend_type="loss"), "sp", "mp") == pytest.approx(0.5)
     assert prevalence(make_cfg_loss(crit=crit, dsmr=True, lambda_=0.3), "sp", "mp") != pytest.approx(0.5)

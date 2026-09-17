@@ -261,15 +261,18 @@ class TrainPipeline:
     @rank0
     def _tracked_logit_scalars(self):
         """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
-        the scale whenever it's learnable, the bias only when the loss is BCE-family (inert under
-        InfoNCE) and learnable. Frozen scalars (and non-parameter buffers) are left out -- a flat line
-        says nothing. Under separate logit scalars (utils.loss.sep_logit_scalars) loss2's term's pair is
-        tracked alike, as scale2 / bias2."""
+        the scale whenever it's learnable -- two series off the one parameter, scale (the alpha the
+        logits carry) and logit_scale (the parameter itself, log alpha) -- the bias only when the loss
+        is BCE-family (inert under InfoNCE) and learnable. Frozen scalars (and non-parameter buffers)
+        are left out -- a flat line says nothing. Under separate logit scalars
+        (utils.loss.sep_logit_scalars) loss2's term's pair is tracked alike, as scale2 / logit_scale2 /
+        bias2."""
         model = self.modelw._unwrapped_model
         tracked = {}
         for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
             if getattr(model, f"logit_scale{suffix}").requires_grad:
                 tracked[f"scale{suffix}"] = f"logit_scale{suffix}"
+                tracked[f"logit_scale{suffix}"] = f"logit_scale{suffix}"
             if self.cfg.loss["crit"] in ("bce", "bif_bce") and getattr(model, f"logit_bias{suffix}").requires_grad:
                 tracked[f"bias{suffix}"] = f"logit_bias{suffix}"
         return tracked
@@ -278,7 +281,8 @@ class TrainPipeline:
     def _logit_scalar_values(self):
         # the scale series carries the alpha the logits carry: exp(logit_scale) (the quantity scale.init specifies),
         # capped at 100 under loss.logits.scale.clamp as compute_logits applies it -- so a held clamp reads as
-        # the series pinned at the cap (the raw parameter above it, its gradient zero); the bias series the raw
+        # the series pinned at the cap (the raw parameter above it, its gradient zero); the logit_scale series
+        # is that raw parameter as the model holds it (log alpha: no exp, no clamp) and the bias series the raw
         # bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the value the
         # batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under, not the
         # post-update one.

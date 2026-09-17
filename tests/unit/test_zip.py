@@ -16,7 +16,7 @@ CORE = {  # always included, whatever the toggles
     f"{TRIAL}/data_trial.pkl",
     f"{TRIAL}/evals/eval1/native.json",
     f"{TRIAL}/evals/_selected/map/native.json",
-    f"{TRIAL}/learning_curves/native.png",
+    f"{TRIAL}/learning_curves/scores/native.png",
     f"{TRIAL}/logs/epoch.log",
 }
 BULKY = {  # toggle -> the files it governs

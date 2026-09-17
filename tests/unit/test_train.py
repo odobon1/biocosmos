@@ -346,13 +346,14 @@ def _fake_pipe(loss_crit, requires_grad, sep=False):
 
 def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
     # a scalar gets a learning-curve series only when it's learnable AND meaningful: the bias is
-    # BCE-family-only (inert under InfoNCE)
+    # BCE-family-only (inert under InfoNCE). The scale parameter feeds two series: scale (alpha) and
+    # logit_scale (the parameter itself, log alpha)
     all_learnable = {"logit_scale": True, "logit_bias": True}
     tracked = TrainPipeline._tracked_logit_scalars
 
-    assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "bias": "logit_bias"}
-    assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "bias": "logit_bias"}
-    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale"}
+    assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale"}
 
     # frozen scalars are dropped -- a flat line says nothing
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {"bias": "logit_bias"}
@@ -360,23 +361,26 @@ def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
 
     # separate logit scalars: loss2's term's pair gets its own series, under the same rules
     assert tracked(_fake_pipe("bce", all_learnable, sep=True)) == {
-        "scale": "logit_scale", "bias": "logit_bias", "scale2": "logit_scale2", "bias2": "logit_bias2"}
-    assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {"scale": "logit_scale", "scale2": "logit_scale2"}
+        "scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias",
+        "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "bias2": "logit_bias2"}
+    assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {
+        "scale": "logit_scale", "logit_scale": "logit_scale", "scale2": "logit_scale2", "logit_scale2": "logit_scale2"}
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {"bias": "logit_bias", "bias2": "logit_bias2"}
 
 
 def test_logit_scalar_values_cap_the_scale_under_the_clamp() -> None:
     # the scale series carries the alpha the logits carry, exp(logit_scale) held at 100 by
     # loss.logits.scale.clamp (compute_logits' cap) once the raw parameter sits above ln(100); the
+    # logit_scale series the parameter as the model holds it (log alpha: no exp, no clamp), the
     # bias series the raw bias
     model = SimpleNamespace(logit_scale=torch.tensor(140.0).log(), logit_bias=torch.tensor(-0.5))
     pipe = SimpleNamespace(
         cfg=SimpleNamespace(loss={"logits": {"scale": {"clamp": True}}}),
         modelw=SimpleNamespace(_unwrapped_model=model),
-        _logit_scalars_tracked={"scale": "logit_scale", "bias": "logit_bias"},
+        _logit_scalars_tracked={"scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias"},
     )
     values = TrainPipeline._logit_scalar_values(pipe)
-    assert values == pytest.approx({"scale": 100.0, "bias": -0.5}, rel=1e-5)
+    assert values == pytest.approx({"scale": 100.0, "logit_scale": torch.tensor(140.0).log().item(), "bias": -0.5}, rel=1e-5)
     # the second pair's scale (separate logit scalars) reads the same way: alpha, under the same cap
     model.logit_scale2 = torch.tensor(50.0).log()
     pipe._logit_scalars_tracked = {"scale2": "logit_scale2"}

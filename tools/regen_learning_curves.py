@@ -1,7 +1,7 @@
 """
 python -m tools.regen_learning_curves <campaign>
 
-Re-render every trial's learning-curve plots (learning_curves/{native,native_macro,joint,joint_macro}.png; the trainval phase's single learning_curve.png), in
+Re-render every trial's learning-curve plots (learning_curves/scores/{native,native_macro,joint,joint_macro}.png + learning_curves/{general,alpha,logalpha,KL}.png; the trainval phase has no scores/), in
 every phase of the campaign (_screen/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code -- no train/eval rerun -- so styling/layout edits take effect for an
 already-run campaign. Each trial's config is rebuilt exactly as on the campaign launch path (the phase's frozen
@@ -75,7 +75,7 @@ def regen_learning_curves(campaign):
                         )
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,
                                      cfg.dev["reporting"]["learning_curves"]["hpsm"])
-                        print(f"regenerated: {dpath_trial / ('learning_curve.png' if phase == 'trainval' else 'learning_curves')}")
+                        print(f"regenerated: {dpath_trial / 'learning_curves'}")
 
 
 def main():

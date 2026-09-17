@@ -19,7 +19,6 @@ from torchvision.transforms import (
 )
 import torchvision.transforms.functional as F
 import random
-import fcntl
 import getpass
 import io
 import mmap
@@ -428,6 +427,7 @@ def stage_img_cache(dataset):
     seconds spent. Concurrency-safe via flock on the node-local FS -- no torch.distributed dependency, so it
     works for 1 or N ranks and even concurrent jobs on the same node: the first process copies while the rest
     block on the lock, then take the already-staged fast path."""
+    import fcntl  # Unix-only; imported here so utils.data stays importable on Windows (e.g. unpickling splits)
     t0 = time.perf_counter()
     dpath_src = paths["img_cache"] / dataset
     if not (dpath_src / "meta.json").exists():

@@ -5,7 +5,8 @@ Re-render every trial's learning-curve plots (learning_curves/{native,native_mac
 every phase of the campaign (_screen/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code -- no train/eval rerun -- so styling/layout edits take effect for an
 already-run campaign. Each trial's config is rebuilt exactly as on the campaign launch path (the phase's frozen
-cfg_baseline.json snapshot + the coord's overrides.json, arm + coord overrides merged) to recover samps_per_epoch
+cfg_baseline.json snapshot + the coord's overrides.json, arm + coord overrides merged, against the SLURM alloc
+recorded in phase_metadata.json rather than a live one -- so no SLURM job is needed) to recover samps_per_epoch
 (the plots' epoch axis) and the split whose n-shot bucket names label the n-shot panels. Trials without a
 data_trial.pkl (never checkpointed) are skipped.
 """
@@ -15,6 +16,7 @@ import sys
 from copy import deepcopy
 from types import SimpleNamespace
 
+import utils.hardware
 from utils.config import get_config_train
 from utils.report import plot_metrics
 from utils.train import ArtifactManager
@@ -28,6 +30,9 @@ def regen_learning_curves(campaign):
             continue
         cfg_snapshot = load_json(ArtifactManager.dpath_phase / "cfg_baseline.json")
         metadata = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
+        # TrainConfig sizes its dataloader workers against the live SLURM alloc; hand it the alloc the phase
+        # recorded at launch instead, so the rebuild matches the launch path and the tool also runs outside a job
+        utils.hardware.get_slurm_alloc = lambda: {key: metadata[key] for key in ("n_gpus", "n_cpus", "ram")}
 
         for dataset, arms in metadata["matrix"].items():
             for arm, coords in arms.items():

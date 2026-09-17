@@ -19,7 +19,6 @@ matplotlib.use("Agg")
 matplotlib.rcParams["mathtext.fontset"] = "cm"  # Computer Modern for math ylabels (LaTeX look)
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patheffects as patheffects
 from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FormatStrFormatter
@@ -1545,7 +1544,7 @@ def plot_composite_metrics(
         for metric_name, metric_label, color in retrieval_specs:
             ax0.plot(x_eval, comp_map[metric_name], label=metric_label, color=color, linewidth=_LW_MODALITY)
         _mark_best(ax0, x_eval, comp_map["all"], fontsize_legend)
-    ax0.set_ylabel("mAP Composite", fontsize=fontsize_axes, fontweight="bold")
+    ax0.set_ylabel("mAP Composite", fontsize=fontsize_axes)
     ax0.set_ylim(0, 1)
     if has_eval:
         legend_handles[ax0] = ax0.get_legend_handles_labels()[0]
@@ -1566,7 +1565,7 @@ def plot_composite_metrics(
                     linewidth=_LW_MODALITY,
                 )
 
-    ax1.set_ylabel("mAP Primitive", fontsize=fontsize_axes, fontweight="bold")
+    ax1.set_ylabel("mAP Primitive", fontsize=fontsize_axes)
     ax1.set_ylim(0, 1)
     if has_eval:
         legend_handles[ax1] = ax1.get_legend_handles_labels()[0]
@@ -1581,7 +1580,7 @@ def plot_composite_metrics(
             maybe_plot(ax2, x_eval, comp_nshot, key, key)
         if comp_nshot:
             legend_handles[ax2] = ax2.get_legend_handles_labels()[0]
-    ax2.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes, fontweight="bold")
+    ax2.set_ylabel("n-shot mAP (ID)", fontsize=fontsize_axes)
     ax2.set_ylim(0, 1)
     ax2.grid(True)
     ax2.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1600,7 +1599,7 @@ def plot_composite_metrics(
         comp_acc = comp_scores["acc"]["i2t"]
         ax3.plot(x_eval, comp_acc, label="Comp", color=_COLOR_COMP, linewidth=_LW_COMP, zorder=4)
         _mark_best(ax3, x_eval, comp_acc, fontsize_legend)
-    ax3.set_ylabel("I2T Acc.", fontsize=fontsize_axes, fontweight="bold")
+    ax3.set_ylabel("I2T Acc.", fontsize=fontsize_axes)
     ax3.set_ylim(0, 1)
     if has_eval:
         legend_handles[ax3] = ax3.get_legend_handles_labels()[0]
@@ -1614,7 +1613,7 @@ def plot_composite_metrics(
             maybe_plot(ax4, x_eval, comp_nshot_acc, key, key)
         if comp_nshot_acc:
             legend_handles[ax4] = ax4.get_legend_handles_labels()[0]
-    ax4.set_ylabel("n-shot Acc.\n(ID I2T)", fontsize=fontsize_axes, fontweight="bold")
+    ax4.set_ylabel("n-shot Acc.\n(ID I2T)", fontsize=fontsize_axes)
     ax4.set_ylim(0, 1)
     ax4.grid(True)
     ax4.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1628,7 +1627,6 @@ def plot_composite_metrics(
         for partition, partition_label, loss_color in (("id", "ID", "tab:green"), ("ood", "OOD", "tab:red")):
             ax5.plot(x_eval, data_eval["loss_raw"][partition], label=f"{partition_label} Val", color=loss_color)
     ax5.set_ylabel(r"$\mathcal{L}$", fontsize=fontsize_axes + 4)
-    ax5.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
     ax5.set_yscale("log")
     ax5.minorticks_on()
     ax5.grid(which="minor", axis="y")
@@ -1642,8 +1640,6 @@ def plot_composite_metrics(
         ax6 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax6.plot(x_train, data_epoch["grad_norm_model"], color="tab:orange")
         ax6.set_ylabel(r"$\|\nabla_{\theta}\mathcal{L}\|$", fontsize=fontsize_axes + 4)
-        # CM mathtext has no bold symbol fonts; a thin stroke outline fakes the bold
-        ax6.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax6.set_yscale("log")
         ax6.minorticks_on()
         ax6.grid(which="minor", axis="y")
@@ -1657,7 +1653,6 @@ def plot_composite_metrics(
         ax6b = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax6b.plot(x_train, data_epoch["delta_norm_model"], color="tab:brown")
         ax6b.set_ylabel(r"$\|\Delta\theta\|$", fontsize=fontsize_axes + 4)
-        ax6b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax6b.set_yscale("log")
         ax6b.minorticks_on()
         ax6b.grid(which="minor", axis="y")
@@ -1670,7 +1665,6 @@ def plot_composite_metrics(
         ax7.plot(x_train, data_epoch["grad_sum_sim"], color="tab:orange", linewidth=1.0)
         ax7.axhline(0.0, color="gray", linewidth=0.5)
         ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
-        ax7.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
         ax7.grid(True)
         ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax7)
@@ -1690,7 +1684,7 @@ def plot_composite_metrics(
             stat_key = f"{stat_prefix}_{stat_name}"
             if len(data_epoch[stat_key]) == len(x_train):
                 ax.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
-        ax.set_ylabel(stat_ylabel, fontsize=fontsize_axes, fontweight="bold")
+        ax.set_ylabel(stat_ylabel, fontsize=fontsize_axes)
         ax.set_ylim(*stat_ylim)
         legend_handles[ax] = legend_styles
         ax.grid(True)
@@ -1712,7 +1706,7 @@ def plot_composite_metrics(
         ])
         ax.pcolormesh(x_edges, np.linspace(0.0, 1.0, grid.shape[1] + 1), grid.T,
                       cmap=cmap, norm=_HIST_NORM, shading="flat")
-        ax.set_ylabel(ylabel, fontsize=fontsize_axes, fontweight="bold")
+        ax.set_ylabel(ylabel, fontsize=fontsize_axes)
         ax.set_ylim(0.0, 1.0)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1742,7 +1736,6 @@ def plot_composite_metrics(
             for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
                 ax.plot(x_train, data_epoch[f"alpha_req_{stat}"], color="red", linestyle=linestyle, linewidth=1.0)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
-        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1758,7 +1751,6 @@ def plot_composite_metrics(
             ax.plot(x_train, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {hpsm_kappas[idx_kappa]:g}$")
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
-        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         legend_handles[ax] = ax.get_legend_handles_labels()[0][::-1]  # legend in config order
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1774,7 +1766,6 @@ def plot_composite_metrics(
         else:
             ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
-        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1785,7 +1776,6 @@ def plot_composite_metrics(
         ax.plot(x_train, data_epoch[key], color="darkmagenta", linewidth=1.0)
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
-        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1794,7 +1784,6 @@ def plot_composite_metrics(
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch["lambda_eff"], color="tab:olive", linewidth=1.0)
         ax.set_ylabel(r"$\lambda_{\mathrm{eff}}$", fontsize=fontsize_axes + 4)
-        ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1802,7 +1791,7 @@ def plot_composite_metrics(
     ax10 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
     if len(data_epoch["lr"]) == len(x_train):
         ax10.plot(x_train, data_epoch["lr"], color="red")
-    ax10.set_ylabel("η", fontsize=fontsize_axes + 6, fontweight="bold")
+    ax10.set_ylabel("η", fontsize=fontsize_axes + 6)
     ax10.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
     ax10.yaxis.set_offset_position("right")
     ax10.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
@@ -1828,10 +1817,11 @@ def plot_composite_metrics(
     fig.suptitle(plot_title, fontweight="bold", y=0.98, fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    # each legend goes in a box outside its panel, on the side away from the panel's y label and tick
-    # labels, no taller than the panel: sized against the panel heights the layout above settled, then
-    # a second pass makes room for the boxes
+    # each y label is shrunk to its panel's height, and each legend goes in a box outside its panel, on
+    # the side away from the panel's y label and tick labels, no taller than the panel: sized against
+    # the panel heights the layout above settled, then a second pass makes room for the boxes
     for idx_ax, ax in enumerate(axes):
+        _fit_ylabel(ax)
         if ax in legend_handles:
             _place_legend_outside(ax, legend_handles[ax], "left" if idx_ax % 2 == 1 else "right", fontsize_legend)
     plt.tight_layout()
@@ -1839,6 +1829,15 @@ def plot_composite_metrics(
     fpath_plot.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fpath_plot, dpi=300)
     plt.close(fig)
+
+def _fit_ylabel(ax):
+    """
+    Shrinks the axes' y label until it is no taller than the axes. The label is rotated, so its
+    height is its longest line's length, and a multi-line label's lines shrink together.
+    """
+    label = ax.yaxis.label
+    while label.get_window_extent().height > ax.bbox.height:
+        label.set_fontsize(label.get_fontsize() * ax.bbox.height / label.get_window_extent().height)
 
 def _place_legend_outside(ax, handles, side, fontsize):
     """

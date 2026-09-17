@@ -1779,3 +1779,25 @@ def test_fold_hist_columns_stride_is_smallest_power_of_two_that_fits() -> None:
         assert n_batches // (stride // 2) > 128  # one step smaller would overflow
         assert n_batches - len(grid) * stride < stride  # at most one partial group dropped
         assert grid.shape[1] == 10  # bins preserved
+
+
+def test_fit_ylabel_shrinks_a_caption_taller_than_its_axes() -> None:
+    # the label is rotated, so its height is its longest line's length: a two-line caption fits the same way
+    for caption in ("n-shot Acc. (ID I2T)", "n-shot Acc.\n(ID I2T)", r"$\mathcal{E}_{\text{ir}} = D_{\mathrm{KL}}(y\|p^*)$"):
+        fig = report.plt.figure(figsize=(4, 1))
+        ax = fig.add_subplot()
+        ax.set_ylabel(caption, fontsize=40)
+        assert ax.yaxis.label.get_window_extent().height > ax.bbox.height
+        report._fit_ylabel(ax)
+        assert ax.yaxis.label.get_fontsize() < 40
+        assert 0.95 * ax.bbox.height < ax.yaxis.label.get_window_extent().height <= ax.bbox.height  # no smaller than it must be
+        report.plt.close(fig)
+
+
+def test_fit_ylabel_keeps_a_caption_that_fits() -> None:
+    fig = report.plt.figure(figsize=(4, 4))
+    ax = fig.add_subplot()
+    ax.set_ylabel("n-shot Acc.\n(ID I2T)", fontsize=12)
+    report._fit_ylabel(ax)
+    assert ax.yaxis.label.get_fontsize() == 12
+    report.plt.close(fig)

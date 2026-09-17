@@ -2,11 +2,12 @@
 Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.loss_chunk_size).
 
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
-primary/secondary logit scale/bias) of the full-batch path (BCECriterion.__call__ /
-BifurcatedBCECriterion.__call__ blended by _global_batch_loss), up to floating-point summation
-order -- across the full BCE-family config space: mp/sp/tax/phylo targets, cls_imb.norm, a
-BCE-family loss2 mix, loss.unitless, and bif_bce's two-branch tiles (half-live logit scalars,
-row-wise DSMR, targ_mass_neut, per-branch centering).
+logit scale/bias) of the full-batch path (BCECriterion.__call__ / BifurcatedBCECriterion.__call__ via
+_global_batch_loss), up to floating-point summation order -- across the full BCE-family config space:
+mp/sp/tax/phylo targets and their blends (loss.lambda) under either loss.blend_type, loss.unitless,
+separate logit scalars (loss.logits.shared false: one logits tile per loss term), cls_imb.norm, and
+bif_bce's two-branch tiles
+(half-live logit scalars, row-wise DSMR, targ_mass_neut, per-branch centering).
 """
 import importlib
 import math
@@ -49,10 +50,11 @@ L = import_loss_module()
 L.configure_phylo_targs(split="D10", train_pt="train", batch_size=4, kernel="laplace", beta=1.0, shuffle=False, seed=None)
 
 
-def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",
-         cls_imb_norm=False, center=None, neut=False):
+def _cfg(crit="bce", lambda_=0.0, dsmr=True, focal_gamma=2.0, sim="cos", cls_imb_norm=False, center=None, neut=False,
+         blend_type="targ", unitless=False, shared=True):
+    """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
-        "crit": crit, "sim": sim, "targ": targ,
+        "crit": crit, "sim": sim, "lambda": lambda_, "blend_type": blend_type, "unitless": unitless,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
@@ -60,17 +62,23 @@ def _cfg(crit="bce", targ="mp", dsmr=True, focal_gamma=2.0, sim="cos",
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
             "bce": {"dsmr": dsmr},
         },
-        "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"shared": shared, "scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
+
+
+def _targ(targ):
+    """A target spec (train.yaml's loss1 / loss2 block); the tsm is read by InfoNCE only."""
+    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}
 
 
-def _make_crit(cfg, K, B):
+def _make_crit(cfg, K, B, targ1="mp", targ2="sp"):
     cls = CRIT_CLS[cfg["crit"]]
     crit = cls.__new__(cls)  # bypass build_wting (no dataset needed)
     crit.cfg = cfg
+    crit.targ_specs = L.targ_specs(cfg["lambda"], _targ(targ1), _targ(targ2))
     crit.device = torch.device("cpu")
     crit.batch_size = B
     g = torch.Generator().manual_seed(K)
@@ -80,12 +88,12 @@ def _make_crit(cfg, K, B):
 
 
 def _params(seed):
-    g = torch.Generator().manual_seed(seed)
     return {
         "scale": torch.tensor(2.3, requires_grad=True),
         "bias": torch.tensor(-0.5, requires_grad=True),
+        # loss2's term's own pair (separate logit scalars); unused -- no grad -- otherwise
         "scale2": torch.tensor(1.7, requires_grad=True),
-        "bias2": torch.tensor(0.2, requires_grad=True),
+        "bias2": torch.tensor(-0.9, requires_grad=True),
     }
 
 
@@ -115,9 +123,8 @@ class _ZSGC(torch.autograd.Function):
 def _compute_logits_fn(p):
     """Stub mirroring VLMWrapper.compute_logits's center/half_live semantics (incl. the chunked
     path's center_global hook) over the toy scale/bias params."""
-    def compute_logits(sim, clamp, center=None, secondary=False, center_global=None, half_live=False):
-        s = p["scale2"] if secondary else p["scale"]
-        b = p["bias2"] if secondary else p["bias"]
+    def compute_logits(sim, clamp, center=None, center_global=None, half_live=False, secondary=False):
+        s, b = (p["scale2"], p["bias2"]) if secondary else (p["scale"], p["bias"])
         if half_live:
             s = 0.5 * s + 0.5 * s.detach()
             b = 0.5 * b + 0.5 * b.detach()
@@ -141,96 +148,130 @@ def _make_targ_data(B, K, R, class_encs_b):
     return [{"rank_encs": rank_encs[i], "cid": f"c{int(class_encs_b[i])}", "dataset": "cub"} for i in range(B)]
 
 
-def _full_reference(crit1, crit2, mix, unitless, img, txt, class_encs_b, targ_data_b, p):
-    """Returns (loss, loss_raw, sims_ref) -- sims_ref is a per-criterion list of branch tuples
-    ((sim,) non-bifurcated, (i2t, t2i) bifurcated) whose retained grads after the caller's backward
-    are the ground truth for the chunked path's tile-accumulated (branch-summed) grad_sum_sims.
-    Mirrors _loss_for_crit_full_batch's branch construction and _global_batch_loss's unitless
-    blend (a bifurcated loss normalizes by L/2)."""
+def _full_reference(crit, img, txt, class_encs_b, targ_data_b, p):
+    """Returns (loss, loss_raw, sims) -- sims the branch tuple ((sim,) non-bifurcated, (i2t, t2i)
+    bifurcated) whose retained grads after the caller's backward are the ground truth for the chunked
+    path's tile-accumulated (branch-summed) grad_sum_sim. Mirrors _loss_full_batch's branch
+    construction, incl. its per-term logits under separate logit scalars."""
     clogits = _compute_logits_fn(p)
-    sims_ref = []
-
-    def crit_loss(crit, secondary):
-        clamp = crit.cfg["logits"]["scale"]["clamp"]
-        center = crit.cfg["logits"]["bce"]["center"]
-        if crit.bifurcated:
-            sims = (
-                compute_sim(img, txt.detach(), crit.cfg["sim"]),
-                compute_sim(img.detach(), txt, crit.cfg["sim"]),
-            )
-            crit_logits = tuple(clogits(s, clamp, center, secondary=secondary, half_live=True) for s in sims)
-        else:
-            sims = (compute_sim(img, txt, crit.cfg["sim"]),)
-            crit_logits = clogits(sims[0], clamp, center, secondary=secondary)
-        for s in sims:
-            s.retain_grad()
-        sims_ref.append(sims)
-        loss, loss_raw, _ = crit(crit_logits, class_encs_b, targ_data_b, train=True, logit_scale=p["scale2"] if secondary else p["scale"])
-        return loss, loss_raw
-
-    loss1, loss1_raw = crit_loss(crit1, False)
-    if unitless:
-        loss1 = loss1 / (loss1.detach() / (2.0 if crit1.bifurcated else 1.0)).clamp_min(1e-12)
-    if mix == 0.0:
-        return loss1, loss1_raw, sims_ref
-    loss2, loss2_raw = crit_loss(crit2, True)
-    if unitless:
-        loss2 = loss2 / (loss2.detach() / (2.0 if crit2.bifurcated else 1.0)).clamp_min(1e-12)
-    loss = (1.0 - mix) * loss1 + mix * loss2
-    return loss, (1.0 - mix) * loss1_raw + mix * loss2_raw, sims_ref
+    clamp = crit.cfg["logits"]["scale"]["clamp"]
+    center = crit.cfg["logits"]["bce"]["center"]
+    secondaries = (False, True) if crit.sep_scalars else (False,)
+    if crit.bifurcated:
+        sims = (
+            compute_sim(img, txt.detach(), crit.cfg["sim"]),
+            compute_sim(img.detach(), txt, crit.cfg["sim"]),
+        )
+        crit_logits = [tuple(clogits(s, clamp, center, half_live=True, secondary=sec) for s in sims) for sec in secondaries]
+    else:
+        sims = (compute_sim(img, txt, crit.cfg["sim"]),)
+        crit_logits = [clogits(sims[0], clamp, center, secondary=sec) for sec in secondaries]
+    for s in sims:
+        s.retain_grad()
+    if crit.sep_scalars:
+        logit_scale = (p["scale"], p["scale2"])
+    else:
+        crit_logits, logit_scale = crit_logits[0], p["scale"]
+    loss, loss_raw, _, _ = crit(crit_logits, class_encs_b, targ_data_b, train=True, logit_scale=logit_scale)
+    return loss, loss_raw, sims
 
 
 CASES = [
-    # (crit1, crit2, targ1, targ2, dsmr, focal, norm_ci, mix, unitless, center1, center2, neut)
-    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, None, None, False),  # baseline
-    ("bce", None,  "sp",    None,  True,  2.0, False, 0.0, False, None, None, False),
-    ("bce", None,  "tax",   None,  True,  2.0, False, 0.0, False, None, None, False),
-    ("bce", None,  "phylo", None,  True,  2.0, False, 0.0, False, None, None, False),
-    ("bce", None,  "mp",    None,  False, 0.0, False, 0.0, False, None, None, False),  # no dsmr, no focal
-    ("bce", None,  "mp",    None,  True,  2.0, True,  0.0, False, None, None, False),  # cls_imb.norm
-    ("bce", None,  "mp",    None,  True,  2.0, True,  0.0, True,  None, None, False),  # lone loss unitless (+ cls_imb.norm: its scalar folds into the unit coeff)
-    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, False, None, None, False),  # mix, no unit scale
-    ("bce", "bce", "mp",    "phylo", True, 2.0, False, 0.3, False, None, None, False),  # mixed target types
-    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, True,  None, None, False),  # mix + unit scale
-    ("bce", "bce", "tax",   "mp",  True,  2.0, True,  0.3, True,  None, None, False),   # everything at once
-    ("bce", "bce", "mp",    "mp",  False, 0.0, False, 0.5, True,  None, None, False),   # unit scale, no weighting
-    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "sim",        None, False),  # in-graph global sim mean
-    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj",  None, False),  # constant grad projection
-    ("bce", None,  "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj2", None, False),
-    ("bce", None,  "phylo", None,  True,  2.0, False, 0.0, False, "grad_proj",  None, False),  # soft targets + projection
-    ("bce", "bce", "mp",    "phylo", True, 2.0, False, 0.3, False, "grad_proj2", "sim", False),  # mixed centers under mix
-    ("bce", "bce", "mp",    "mp",  True,  2.0, False, 0.3, True,  "grad_proj",  "grad_proj", False),  # unit-scale coeff folding
+    # (crit, targ1, targ2, lambda_, dsmr, focal, norm_ci, center, neut)
+    ("bce", "mp",    "sp",    0.0, True,  2.0, False, None, False),  # baseline
+    ("bce", "sp",    "mp",    0.0, True,  2.0, False, None, False),
+    ("bce", "tax",   "sp",    0.0, True,  2.0, False, None, False),
+    ("bce", "phylo", "sp",    0.0, True,  2.0, False, None, False),
+    ("bce", "mp",    "sp",    0.0, False, 0.0, False, None, False),  # no dsmr, no focal
+    ("bce", "mp",    "sp",    0.0, True,  2.0, True,  None, False),  # cls_imb.norm
+    ("bce", "mp",    "sp",    0.3, True,  2.0, False, None, False),  # blended 0/1 targets
+    ("bce", "mp",    "phylo", 0.3, True,  2.0, False, None, False),  # blended with a soft target (dsmr mass: closed form + band sweep)
+    ("bce", "tax",   "mp",    0.3, True,  2.0, True,  None, False),  # everything at once
+    ("bce", "mp",    "phylo", 1.0, True,  2.0, False, None, False),  # loss2's target alone
+    ("bce", "mp",    "sp",    0.0, True,  2.0, False, "sim",        False),  # in-graph global sim mean
+    ("bce", "mp",    "sp",    0.0, True,  2.0, False, "grad_proj",  False),  # constant grad projection
+    ("bce", "mp",    "sp",    0.0, True,  2.0, False, "grad_proj2", False),
+    ("bce", "phylo", "sp",    0.0, True,  2.0, False, "grad_proj",  False),  # soft targets + projection
+    ("bce", "mp",    "phylo", 0.3, True,  2.0, False, "grad_proj2", False),  # blend + projection
+    ("bce", "mp",    "phylo", 0.5, True,  2.0, True,  "sim",        False),  # blend + centering + norm
     # bif_bce: two-branch tiles, 1D per-anchor weighting, half-live logit scalars
-    ("bif_bce", None,      "mp",    None,  False, 0.0, False, 0.0, False, None, None, False),  # bif baseline
-    ("bif_bce", None,      "sp",    None,  False, 2.0, False, 0.0, False, None, None, False),
-    ("bif_bce", None,      "tax",   None,  True,  2.0, False, 0.0, False, None, None, False),  # row-wise dsmr on soft targets
-    ("bif_bce", None,      "phylo", None,  True,  2.0, False, 0.0, False, None, None, True),   # + targ_mass_neut
-    ("bif_bce", None,      "mp",    None,  True,  2.0, True,  0.0, False, None, None, True),   # cls_imb.norm + dsmr + neut
-    ("bif_bce", None,      "mp",    None,  False, 2.0, False, 0.0, False, "sim",        None, False),  # per-branch in-graph mean
-    ("bif_bce", None,      "mp",    None,  True,  2.0, False, 0.0, False, "grad_proj",  None, True),   # per-branch grad const
-    ("bif_bce", None,      "mp",    None,  True,  2.0, False, 0.0, True,  "grad_proj",  None, True),   # lone bif loss unitless (L/2), folded into the grad-proj const
-    ("bif_bce", None,      "mp",    None,  False, 2.0, False, 0.0, False, "grad_proj2", None, False),
-    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, False, 0.3, False, None, None, False),  # bif+bce mix, no unit scale
-    ("bif_bce", "bce",     "mp",    "mp",  True,  2.0, False, 0.3, True,  None, None, False),  # bif+bce mix, unit scale (L/2)
-    ("bce",     "bif_bce", "mp",    "sp",  True,  2.0, False, 0.3, True,  None, None, True),   # bce+bif mix
-    ("bif_bce", "bif_bce", "mp",    "phylo", True, 2.0, False, 0.5, True, "grad_proj", "sim", True),  # bif+bif, mixed centers
+    ("bif_bce", "mp",    "sp",    0.0, False, 0.0, False, None, False),  # bif baseline
+    ("bif_bce", "sp",    "mp",    0.0, False, 2.0, False, None, False),
+    ("bif_bce", "tax",   "sp",    0.0, True,  2.0, False, None, False),  # row-wise dsmr on soft targets
+    ("bif_bce", "phylo", "sp",    0.0, True,  2.0, False, None, True),   # + targ_mass_neut
+    ("bif_bce", "mp",    "sp",    0.0, True,  2.0, True,  None, True),   # cls_imb.norm + dsmr + neut
+    ("bif_bce", "mp",    "sp",    0.0, False, 2.0, False, "sim",        False),  # per-branch in-graph mean
+    ("bif_bce", "mp",    "sp",    0.0, True,  2.0, False, "grad_proj",  True),   # per-branch grad const
+    ("bif_bce", "mp",    "sp",    0.0, False, 2.0, False, "grad_proj2", False),
+    ("bif_bce", "mp",    "sp",    0.3, True,  2.0, False, None, True),   # blended 0/1 targets, row-wise dsmr + neut on the blend
+    ("bif_bce", "mp",    "phylo", 0.5, True,  2.0, True,  "grad_proj",  True),   # blend + everything
 ]
 
 
 @pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
-@pytest.mark.parametrize("crit1_name,crit2_name,targ1,targ2,dsmr,focal,norm_ci,mix,unitless,center1,center2,neut", CASES)
-def test_chunked_matches_full(crit1_name, crit2_name, targ1, targ2, dsmr, focal, norm_ci, mix, unitless, center1, center2, neut, C):
+@pytest.mark.parametrize("crit_name,targ1,targ2,lambda_,dsmr,focal,norm_ci,center,neut", CASES)
+def test_chunked_matches_full(crit_name, targ1, targ2, lambda_, dsmr, focal, norm_ci, center, neut, C):
+    cfg = _cfg(crit=crit_name, lambda_=lambda_, dsmr=dsmr, focal_gamma=focal, cls_imb_norm=norm_ci, center=center, neut=neut)
+    _assert_chunked_matches_full(cfg, targ1, targ2, C)
+
+
+BLEND_CASES = [
+    # (crit, targ1, targ2, lambda_, blend_type, unitless, norm_ci, center, neut); focal + dsmr on throughout --
+    # the target-dependent factors a loss blend computes per term
+    ("bce", "mp",  "sp",    0.3, "loss", False, False, None, False),  # per-term focal + global DSMR mass (closed forms)
+    ("bce", "mp",  "phylo", 0.3, "loss", False, True,  None, False),  # soft-target term: band-swept DSMR mass
+    ("bce", "mp",  "phylo", 0.3, "loss", True,  False, None, False),  # unitless: pre-swept term magnitudes
+    ("bce", "mp",  "phylo", 0.3, "targ", True,  False, None, False),  # unitless over the target blend's one term
+    ("bce", "mp",  "sp",    0.0, "targ", True,  False, None, False),  # unitless lone target
+    ("bce", "tax", "mp",    0.3, "loss", True,  True,  "sim",        False),  # centered forward in the pre-sweep
+    ("bce", "mp",  "phylo", 0.3, "loss", True,  False, "grad_proj",  False),  # grad const over the unitless blend
+    ("bce", "mp",  "phylo", 0.3, "loss", False, False, "grad_proj2", False),
+    ("bif_bce", "mp", "sp",    0.3, "loss", False, False, None, True),   # per-term row-wise dsmr + neut
+    ("bif_bce", "mp", "phylo", 0.3, "loss", True,  True,  None, True),   # unitless bif (L/2 normalizers)
+    ("bif_bce", "mp", "phylo", 0.5, "loss", True,  False, "sim",        True),
+    ("bif_bce", "mp", "phylo", 0.5, "loss", True,  True,  "grad_proj",  True),
+    ("bif_bce", "mp", "phylo", 0.5, "targ", True,  False, "grad_proj2", False),
+]
+
+
+@pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
+@pytest.mark.parametrize("crit_name,targ1,targ2,lambda_,blend_type,unitless,norm_ci,center,neut", BLEND_CASES)
+def test_chunked_matches_full_blend_types(crit_name, targ1, targ2, lambda_, blend_type, unitless, norm_ci, center, neut, C):
+    cfg = _cfg(crit=crit_name, lambda_=lambda_, cls_imb_norm=norm_ci, center=center, neut=neut,
+               blend_type=blend_type, unitless=unitless)
+    loss_c = _assert_chunked_matches_full(cfg, targ1, targ2, C)
+    if unitless:  # every term enters at unit magnitude: the loss reads the term weights' sum (bif: x2)
+        assert loss_c.item() == pytest.approx(2.0 if crit_name == "bif_bce" else 1.0, rel=1e-5)
+
+
+SEP_CASES = [
+    # (crit, targ1, targ2, lambda_, unitless, norm_ci, center, neut); a loss blend on separate logit scalars --
+    # every term on its own pair's logits tile, focal + dsmr on throughout
+    ("bce", "mp",  "sp",    0.3, False, False, None, False),
+    ("bce", "mp",  "phylo", 0.3, True,  True,  None, False),          # unitless: per-term pre-swept magnitudes
+    ("bce", "tax", "mp",    0.3, False, False, "sim",        False),  # one in-graph sim mean, each pair's own e^t
+    ("bce", "mp",  "phylo", 0.3, True,  False, "grad_proj",  False),  # per-pair grad constants
+    ("bce", "mp",  "phylo", 0.3, False, False, "grad_proj2", False),  # ... each at its own e^t
+    ("bif_bce", "mp", "sp",    0.3, False, False, None, True),
+    ("bif_bce", "mp", "phylo", 0.5, True,  True,  "sim",        True),
+    ("bif_bce", "mp", "phylo", 0.5, True,  False, "grad_proj",  True),   # per-pair, per-branch grad constants
+    ("bif_bce", "mp", "phylo", 0.5, False, False, "grad_proj2", False),
+]
+
+
+@pytest.mark.parametrize("C", [16, 48])  # 3 row-blocks, and single-block (== full)
+@pytest.mark.parametrize("crit_name,targ1,targ2,lambda_,unitless,norm_ci,center,neut", SEP_CASES)
+def test_chunked_matches_full_separate_logit_scalars(crit_name, targ1, targ2, lambda_, unitless, norm_ci, center, neut, C):
+    cfg = _cfg(crit=crit_name, lambda_=lambda_, cls_imb_norm=norm_ci, center=center, neut=neut,
+               blend_type="loss", unitless=unitless, shared=False)
+    _assert_chunked_matches_full(cfg, targ1, targ2, C)
+
+
+def _assert_chunked_matches_full(cfg, targ1, targ2, C):
     device = torch.device("cpu")
     B, K, D, R = 48, 20, 16, 4
 
-    cfg1 = _cfg(crit=crit1_name, targ=targ1, dsmr=dsmr, focal_gamma=focal,
-                cls_imb_norm=norm_ci, center=center1, neut=neut)
-    crit1 = _make_crit(cfg1, K, B)
-    crit2 = None
-    if mix != 0.0:
-        cfg2 = _cfg(crit=crit2_name, targ=targ2, dsmr=dsmr, focal_gamma=focal,
-                    cls_imb_norm=norm_ci, center=center2, neut=neut)
-        crit2 = _make_crit(cfg2, K, B)
+    crit = _make_crit(cfg, K, B, targ1=targ1, targ2=targ2)
 
     g = torch.Generator().manual_seed(0)
     img0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
@@ -242,32 +283,27 @@ def test_chunked_matches_full(crit1_name, crit2_name, targ1, targ2, dsmr, focal,
     img = img0.clone().requires_grad_(True)
     txt = txt0.clone().requires_grad_(True)
     p = _params(1)
-    loss_ref, loss_raw_ref, sims_ref = _full_reference(crit1, crit2, mix, unitless, img, txt, class_encs_b, targ_data_b, p)
+    loss_ref, loss_raw_ref, sims_ref = _full_reference(crit, img, txt, class_encs_b, targ_data_b, p)
     loss_ref.backward()
-    gsum_ref = [sum(s.grad.double().sum().item() for s in branches) for branches in sims_ref]
+    gsum_ref = sum(s.grad.double().sum().item() for s in sims_ref)
 
     # chunked
     imgc = img0.clone().requires_grad_(True)
     txtc = txt0.clone().requires_grad_(True)
     pc = _params(1)
     loss_c, loss_raw_c, _, gsum_c = L.chunked_bce_loss_backward(
-        imgc, txtc, class_encs_b, targ_data_b, crit1, crit2, mix, unitless,
-        _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
+        imgc, txtc, class_encs_b, targ_data_b, crit, _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
     )
 
     torch.testing.assert_close(loss_c, loss_ref.detach(), rtol=1e-4, atol=1e-6)
     torch.testing.assert_close(loss_raw_c, loss_raw_ref.detach(), rtol=1e-4, atol=1e-6)
     torch.testing.assert_close(imgc.grad, img.grad, rtol=1e-4, atol=1e-6)
     torch.testing.assert_close(txtc.grad, txt.grad, rtol=1e-4, atol=1e-6)
-    torch.testing.assert_close(pc["scale"].grad, p["scale"].grad, rtol=1e-4, atol=1e-6)
-    torch.testing.assert_close(pc["bias"].grad, p["bias"].grad, rtol=1e-4, atol=1e-6)
-    assert gsum_c[0] == pytest.approx(gsum_ref[0], rel=1e-4, abs=1e-4)
-    if mix != 0.0:
-        torch.testing.assert_close(pc["scale2"].grad, p["scale2"].grad, rtol=1e-4, atol=1e-6)
-        torch.testing.assert_close(pc["bias2"].grad, p["bias2"].grad, rtol=1e-4, atol=1e-6)
-        assert gsum_c[1] == pytest.approx(gsum_ref[1], rel=1e-4, abs=1e-4)
-    else:
-        assert gsum_c[1] is None
+    assert (p["scale2"].grad is not None) == crit.sep_scalars  # the second pair is live under separate scalars only
+    for key in ("scale", "bias") + (("scale2", "bias2") if crit.sep_scalars else ()):
+        torch.testing.assert_close(pc[key].grad, p[key].grad, rtol=1e-4, atol=1e-6)
+    assert gsum_c == pytest.approx(gsum_ref, rel=1e-4, abs=1e-4)
+    return loss_c
 
 
 def test_stats_min_max_mean_exact():
@@ -282,69 +318,60 @@ def test_stats_min_max_mean_exact():
     sim = compute_sim(img.detach(), txt.detach(), "cos")
     targs = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
     _, _, stats, _ = L.chunked_bce_loss_backward(
-        img, txt, class_encs_b, targ_data_b, crit, None, 0.0, None,
-        lambda s, clamp, center=None, secondary=False, center_global=None, half_live=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
+        img, txt, class_encs_b, targ_data_b, crit,
+        lambda s, clamp, center=None, center_global=None, half_live=False, secondary=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
         hpsm_kappas=(0.0, 5.0),
     )
-    assert stats["sim1_min"] == pytest.approx(sim.min().item(), abs=1e-5)
-    assert stats["sim1_max"] == pytest.approx(sim.max().item(), abs=1e-5)
-    assert stats["sim1_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
-    assert stats["targ1_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
+    assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
+    assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
+    assert stats["sim_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
+    assert stats["targ_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
     # the margins stream exactly too, one per kappa: I2T per-row margins just add across tiles, T2I
     # per-column weight sums fold across tiles before the ratio; the mean is their average
     i2t = [L.hard_pair_similarity_margin(sim, targs, kappa).mean().item() for kappa in (0.0, 5.0)]
     t2i = [L.hard_pair_similarity_margin(sim.T, targs.T, kappa).mean().item() for kappa in (0.0, 5.0)]
-    assert stats["sim1_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
-    assert stats["sim1_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
-    assert stats["sim1_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
-    assert "sim2_min" not in stats
+    assert stats["sim_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
+    assert stats["sim_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
+    assert stats["sim_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
     # the streamed probability histogram matches a full-batch one over the stub's logits
     # (sim * 10 - 0.5): counts just add across tiles, so it is exact, not subsampled
     p = (sim * 10.0 - 0.5).sigmoid()
     expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
-    assert stats["p1_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
+    assert stats["p_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
 
 
-def test_stats_split_by_crit():
-    """Under a loss2 mix each branch reports stats over its own sim (per its sim_type) and its own
-    (unblended) targets."""
-    B, C, K, D = 48, 16, 20, 16
-    crit1 = _make_crit(_cfg(targ="mp", sim="cos"), K, B)
-    crit2 = _make_crit(_cfg(targ="sp", sim="geo1"), K, B)
+def test_stats_over_blended_targets():
+    """Under a target blend the stats read the blended target matrix Q = (1 - lambda) Q1 + lambda Q2 -- the
+    target histogram, its point stats and the hard-pair margins alike."""
+    B, C, K, D, lambda_ = 48, 16, 20, 16, 0.3
+    crit = _make_crit(_cfg(lambda_=lambda_), K, B, targ1="mp", targ2="sp")
     g = torch.Generator().manual_seed(3)
     img = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
     txt = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
     class_encs_b = torch.randint(0, K, (B,), generator=g)
-    targ_data_b = [None] * B
 
-    sim1 = compute_sim(img.detach(), txt.detach(), "cos")
-    sim2 = compute_sim(img.detach(), txt.detach(), "geo1")
-    targs1 = (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float()
-    targs2 = torch.eye(B)
+    sim = compute_sim(img.detach(), txt.detach(), "cos")
+    targs = (1.0 - lambda_) * (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float() + lambda_ * torch.eye(B)
     _, _, stats, _ = L.chunked_bce_loss_backward(
-        img, txt, class_encs_b, targ_data_b, crit1, crit2, 0.3, None,
-        _compute_logits_fn(_params(1)), C, False, torch.device("cpu"), rank=0, world_size=1,
+        img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(_params(1)), C, False, torch.device("cpu"), rank=0, world_size=1,
     )
-    for tag, sim, targs in (("1", sim1, targs1), ("2", sim2, targs2)):
-        assert stats[f"sim{tag}_min"] == pytest.approx(sim.min().item(), abs=1e-5)
-        assert stats[f"sim{tag}_max"] == pytest.approx(sim.max().item(), abs=1e-5)
-        assert stats[f"sim{tag}_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
-        assert stats[f"targ{tag}_min"] == pytest.approx(targs.min().item(), abs=1e-5)
-        assert stats[f"targ{tag}_max"] == pytest.approx(targs.max().item(), abs=1e-5)
-        assert stats[f"targ{tag}_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
-        assert f"alpha_req{tag}_max" not in stats  # the target-implied scale bounds are InfoNCE-only
-        # default kappas (0.0,): the bidirectional mean
-        expected = 0.5 * (L.hard_pair_similarity_margin(sim, targs, 0.0).mean() + L.hard_pair_similarity_margin(sim.T, targs.T, 0.0).mean())
-        assert stats[f"sim{tag}_margin"] == pytest.approx([expected.item()], abs=1e-5)
+    assert stats["targ_min"] == pytest.approx(targs.min().item(), abs=1e-5)
+    assert stats["targ_max"] == pytest.approx(targs.max().item(), abs=1e-5)
+    assert stats["targ_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
+    expected = torch.histc(targs, bins=L.HIST_BINS, min=0.0, max=1.0) / targs.numel()
+    assert stats["targ_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
+    assert "alpha_req_max" not in stats  # the target-implied scale bounds are InfoNCE-only
+    # default kappas (0.0,): the bidirectional mean over the blended memberships
+    margin = 0.5 * (L.hard_pair_similarity_margin(sim, targs, 0.0).mean() + L.hard_pair_similarity_margin(sim.T, targs.T, 0.0).mean())
+    assert stats["sim_margin"] == pytest.approx([margin.item()], abs=1e-5)
 
 
 def test_batch_diagnostics_off():
     """Disabling either diagnostics component must leave the loss and every gradient identical (the
-    hooks/stats only observe): sim_grad_sums=False returns grad_sum_sims (None, None) and
-    sim_targ_stats=False returns batch_stats None, each flag independent of the other."""
+    hooks/stats only observe): sim_grad_sums=False returns grad_sum_sim None and sim_targ_stats=False
+    returns batch_stats None, each flag independent of the other."""
     B, C, K, D = 48, 16, 20, 16
-    crit1 = _make_crit(_cfg(targ="mp"), K, B)
-    crit2 = _make_crit(_cfg(crit="bif_bce", targ="mp"), K, B)
+    crit = _make_crit(_cfg(crit="bif_bce", lambda_=0.3), K, B, targ1="mp", targ2="sp")
     g = torch.Generator().manual_seed(3)
     img0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
     txt0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
@@ -355,44 +382,32 @@ def test_batch_diagnostics_off():
         txt = txt0.clone().requires_grad_(True)
         p = _params(1)
         loss, loss_raw, stats, gsum = L.chunked_bce_loss_backward(
-            img, txt, class_encs_b, [None] * B, crit1, crit2, 0.3, None,
-            _compute_logits_fn(p), C, False, torch.device("cpu"), rank=0, world_size=1,
+            img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(p), C, False, torch.device("cpu"), rank=0, world_size=1,
             sim_grad_sums=sim_grad_sums, sim_targ_stats=sim_targ_stats,
         )
         return loss, loss_raw, stats, gsum, img, txt, p
 
     loss_on, raw_on, stats_on, gsum_on, img_on, txt_on, p_on = run(True, True)
-    assert stats_on is not None and gsum_on[0] is not None and gsum_on[1] is not None
+    assert stats_on is not None and gsum_on is not None
     for sim_grad_sums, sim_targ_stats in ((False, False), (True, False), (False, True)):
         loss_off, raw_off, stats_off, gsum_off, img_off, txt_off, p_off = run(sim_grad_sums, sim_targ_stats)
         assert stats_off == (stats_on if sim_targ_stats else None)
-        assert gsum_off == (gsum_on if sim_grad_sums else (None, None))
+        assert gsum_off == (gsum_on if sim_grad_sums else None)
         torch.testing.assert_close(loss_off, loss_on, rtol=0, atol=0)
         torch.testing.assert_close(raw_off, raw_on, rtol=0, atol=0)
         torch.testing.assert_close(img_off.grad, img_on.grad, rtol=0, atol=0)
         torch.testing.assert_close(txt_off.grad, txt_on.grad, rtol=0, atol=0)
-        for key in ("scale", "bias", "scale2", "bias2"):
+        for key in ("scale", "bias"):
             torch.testing.assert_close(p_off[key].grad, p_on[key].grad, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("cfg_loss1,cfg_loss2,mix", [
-    ({"crit": "infonce", "targ": "mp"}, {"crit": "bce"}, 0.0),          # infonce primary
-    ({"crit": "bce", "targ": "mp"}, {"crit": "infonce"}, 0.3),           # infonce secondary (mixed)
-])
-def test_chunking_unsupported_with_infonce(cfg_loss1, cfg_loss2, mix):
-    assert not L.chunking_supported(cfg_loss1, cfg_loss2, mix)
+def test_chunking_unsupported_with_infonce():
+    assert not L.chunking_supported({"crit": "infonce"})
 
 
-@pytest.mark.parametrize("cfg_loss1,cfg_loss2,mix", [
-    ({"crit": "bce", "targ": "phylo"}, {"crit": "bce"}, 0.0),            # phylo now supported
-    ({"crit": "bce", "targ": "mp"}, {"crit": "bce"}, 0.3),               # bce+bce mix supported
-    ({"crit": "bce", "targ": "mp"}, {"crit": "infonce"}, 0.0),           # infonce loss2 inert at mix=0
-    ({"crit": "bif_bce", "targ": "mp"}, {"crit": "bce"}, 0.0),           # bif_bce primary supported
-    ({"crit": "bce", "targ": "mp"}, {"crit": "bif_bce"}, 0.3),           # bif_bce secondary supported
-    ({"crit": "bif_bce", "targ": "mp"}, {"crit": "bif_bce"}, 0.3),       # bif+bif mix supported
-])
-def test_chunking_supported(cfg_loss1, cfg_loss2, mix):
-    assert L.chunking_supported(cfg_loss1, cfg_loss2, mix)
+@pytest.mark.parametrize("crit", ["bce", "bif_bce"])
+def test_chunking_supported(crit):
+    assert L.chunking_supported({"crit": crit})
 
 
 def test_chunked_asserts_on_geo_sim_center():
@@ -405,9 +420,8 @@ def test_chunked_asserts_on_geo_sim_center():
     txt = torch.nn.functional.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
     class_encs_b = torch.randint(0, K, (B,), generator=g)
     with pytest.raises(AssertionError, match="requires cos sim"):
-        L.chunked_bce_loss_backward(img, txt, class_encs_b, [None] * B, crit, None, 0.0, None,
-                                    _compute_logits_fn(_params(1)), 8, False, torch.device("cpu"),
-                                    rank=0, world_size=1)
+        L.chunked_bce_loss_backward(img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(_params(1)), 8, False,
+                                    torch.device("cpu"), rank=0, world_size=1)
 
 
 def _synthetic_vcv():

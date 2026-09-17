@@ -70,11 +70,39 @@ def compute_targs_phylo(targ_data_b):
     targs = get_phylo_vcv(dataset).get_targs_batch(targ_data_b)
     return targs
 
+def targ_specs(lambda_, cfg_loss1, cfg_loss2):
+    """
+    The live (weight, target cfg) pairs of the target blend Y = (1 - lambda) * Y1 + lambda * Y2 -- cfg_loss1 /
+    cfg_loss2 the primary / secondary target params (targ type + InfoNCE tsm). A spec with zero weight
+    (loss2 at lambda 0.0, loss1 at lambda 1.0) is dropped outright: its target is never computed.
+    """
+    return [(w, cfg_targ) for w, cfg_targ in ((1.0 - lambda_, cfg_loss1), (lambda_, cfg_loss2)) if w != 0.0]
+
+def sep_logit_scalars(cfg_loss):
+    """
+    Whether each loss term runs on its own logit scalars (scale + bias; the model's logit_scale / logit_bias
+    for loss1's term, logit_scale2 / logit_bias2 for loss2's): loss.logits.shared false under a loss blend
+    (loss.blend_type loss) of two live targets -- a target blend or a lone target is one loss on one set of
+    logits, which leaves nothing to separate. Both pairs follow the one loss.logits block (init, freeze,
+    clamp, center, scalar_lr_factor).
+    """
+    return not cfg_loss["logits"]["shared"] and cfg_loss["blend_type"] == "loss" and 0.0 < cfg_loss["lambda"] < 1.0
+
 class Criterion(abc.ABC):
     """
-    A loss paired with the class-imbalance weighting it consumes. The weighting dimensionality is a
-    property of the loss (`wting_dim`) -- 1D per-class weights for InfoNCE and bifurcated BCE
-    (per-anchor), 2D per-class-pair weights for BCE.
+    A loss over the blended target distribution Y = sum_k w_k Y_k -- w = (1 - lambda, lambda) over the primary /
+    secondary target specs (targ_specs), each Y_k its target matrix Q_k under the criterion (targ_dists) --
+    paired with the class-imbalance weighting it consumes. The weighting dimensionality is a property of
+    the loss (`wting_dim`) -- 1D per-class weights for InfoNCE and bifurcated BCE (per-anchor), 2D
+    per-class-pair weights for BCE.
+
+    The training loss is a sum of terms (loss_terms) blended by their coefficients (term_coeffs): under
+    loss.blend_type targ the one loss against the blended distribution, under loss.blend_type loss each
+    spec's own loss L(Y_k) weighted w_k -- one criterion, similarity and weighting config either way. On
+    shared logit scalars the loss is affine in the target, so the two coincide (value and gradients) unless
+    a target-dependent factor is on: focal, DSMR and targ_mass_neut read the term's own target, and
+    loss.unitless rescales each term to unit magnitude. Under separate logit scalars (sep_scalars) each
+    term of a loss blend is scored on its own logits -- the one sim matrix under the term's own scale / bias.
 
     Only the class counts and the normalization scalar are held; batch weights are computed from
     them on the fly, so no n_classes (1D) / n_classes^2 (2D) weight buffer persists for the run.
@@ -83,30 +111,73 @@ class Criterion(abc.ABC):
     wting_dim: int
     bifurcated = False  # True -> consumes the (i2t, t2i) branch logits pair (see BifurcatedBCECriterion)
 
-    def __init__(self, cfg_loss, dataset, split, train_pt, device, batch_size):
+    def __init__(self, cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         self.cfg = cfg_loss
+        self.targ_specs = targ_specs(cfg_loss["lambda"], cfg_loss1, cfg_loss2)
         self.device = device
         self.batch_size = batch_size
         counts, self.wt_mean = build_wting(cfg_loss["wting"]["cls_imb"], dataset, split, train_pt, self.wting_dim, batch_size)
         self.counts = counts.to(device)
 
     @staticmethod
-    def build(cfg_loss, dataset, split, train_pt, device, batch_size):
+    def build(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         crit_cls = {
             "infonce": InfoNCECriterion,
             "bce":     BCECriterion,
             "bif_bce": BifurcatedBCECriterion,
         }[cfg_loss["crit"]]
 
-        return crit_cls(cfg_loss, dataset, split, train_pt, device, batch_size)
+        return crit_cls(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size)
 
     def _targets(self, batch_size, class_encs_b, targ_data_b):
-        return compute_targets(self.cfg["targ"], batch_size, class_encs_b, targ_data_b, self.device)
+        """The live target specs' matrices Q_k, in targ_specs order; pt[B, B] each."""
+        return [compute_targets(cfg_targ["targ"], batch_size, class_encs_b, targ_data_b, self.device) for _, cfg_targ in self.targ_specs]
 
-    def targ_dist(self, Q, logit_scale):
-        """The target distribution Y the loss trains against, from the target matrix Q: Q itself for
-        the BCE family (each pair's own target probability); InfoNCE row-normalizes / softmaxes it."""
-        return Q
+    def targ_memb(self, Qs):
+        """The blended target matrix Q = sum_k w_k Q_k from the specs' matrices Qs (_targets): the pair
+        memberships in [0, 1] the batch stats read (target histogram, hard-pair margins, positive / negative
+        mass masks). The distribution the loss trains against is targ_dist."""
+        return sum(w * Q for (w, _), Q in zip(self.targ_specs, Qs))
+
+    @property
+    def sep_scalars(self):
+        """Whether each loss term runs on its own logit scalars (sep_logit_scalars): __call__ then takes
+        per-term logits and log-scales."""
+        return sep_logit_scalars(self.cfg)
+
+    def _per_term(self, fn, x, n):
+        """fn(x) per loss term (or spec), `n` of them: fn over each term's own entry of `x` under separate
+        logit scalars (x then holds one entry per term), else fn(x) once, shared by every term."""
+        return [fn(x_k) for x_k in x] if self.sep_scalars else [fn(x)] * n
+
+    def targ_dists(self, Qs, logit_scales):
+        """Each live spec's target distribution Y_k from its matrix Q_k (_targets), in targ_specs order: for
+        the BCE family each pair's own target probability, Q_k itself; InfoNCE row-normalizes / softmaxes
+        Q_k under the spec's own tsm, at the spec's log logit scale (`logit_scales`, one per spec)."""
+        return Qs
+
+    def targ_dist(self, Qs, logit_scales):
+        """The blended target distribution Y = sum_k w_k Y_k over the specs' distributions (targ_dists)."""
+        return self.targ_memb(self.targ_dists(Qs, logit_scales))
+
+    def loss_terms(self, Ys, Y):
+        """The (weight, target distribution) terms the training loss sums over, from the specs'
+        distributions Ys (targ_dists) and their blend Y (targ_dist): the loss against Y alone under
+        loss.blend_type targ, each spec's own loss weighted w_k under loss.blend_type loss."""
+        if self.cfg["blend_type"] == "targ":
+            return [(1.0, Y)]
+        return [(w, Y_k) for (w, _), Y_k in zip(self.targ_specs, Ys)]
+
+    def term_coeffs(self, ws, losses):
+        """The blend coefficients c_k of the terms' weighted losses L_k (loss = sum_k c_k L_k): the term
+        weights `ws`, each divided under loss.unitless by its term's detached magnitude, so every term
+        enters at unit magnitude (L_k / L_k.detach()) and its weight is its share of the loss reading (a
+        lone term reads a constant 1.0). A bifurcated loss reads 2x its gradient scale (un-halved branch
+        sum, 1x grads), so its normalizer is L_k / 2 -- the gradient-scale-equivalent value (a lone term
+        reads 2.0)."""
+        if not self.cfg["unitless"]:
+            return ws
+        return [w / (L.detach() / (2.0 if self.bifurcated else 1.0)).clamp_min(1e-12) for w, L in zip(ws, losses)]
 
     def _cls_imb_wts(self, class_encs_b):
         return compute_cls_imb_wts(self.cfg["wting"]["cls_imb"], self.counts, class_encs_b, self.wting_dim, self.wt_mean, self.batch_size)
@@ -127,14 +198,17 @@ class Criterion(abc.ABC):
         """
         Computes loss for a batch given logits and target data. `logits` is the full-batch logit
         matrix pt[B, B]; for a bifurcated criterion, the (i2t, t2i) branch pair, both
-        [img-row, txt-col]. `logit_scale` is this criterion's learnable log logit scale param
-        (model.logit_scale for loss1, model.logit_scale2 for loss2 -- or model.logit_scale too under
-        loss.shared_scalars), raw (pre-clamp).
+        [img-row, txt-col]. `logit_scale` is the learnable log logit scale param (model.logit_scale),
+        raw (pre-clamp). Under separate logit scalars (sep_scalars) both are per loss term: a list of the
+        terms' logits and of their log-scale params, in targ_specs order.
 
         Returns:
         - loss ------- Weighted scalar loss (== loss_raw when not training)
-        - loss_raw --- Unweighted scalar loss
-        - targs ------ Target matrix; pt[B, B]
+        - loss_raw --- Unweighted scalar loss: the terms' raw losses under their weights (the blended
+                       target's raw loss on shared logits, the loss being affine in the target)
+        - targs ------ Blended target matrix Q (targ_memb); pt[B, B]
+        - y ---------- Target distribution Y trained against (targ_dist; a training InfoNCE loss returns
+                       the distribution its blended gradient follows -- see InfoNCECriterion); pt[B, B]
         """
         raise NotImplementedError
 
@@ -150,13 +224,14 @@ class InfoNCECriterion(Criterion):
     def _preds(self, Z):
         return F.softmax(Z, dim=1)
 
-    def targ_dist(self, Q, logit_scale):
+    def _tsm(self, Q, cfg_tsm, logit_scale):
+        """One target spec's simplex mapping: its Q row-normalized (linear) or row-softmaxed (softmax)."""
         Q_mass = Q.sum(dim=1)
 
-        if self.cfg["infonce"]["tsm"]["type"] == "linear":
+        if cfg_tsm["type"] == "linear":
             Y = Q / Q_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
-        elif self.cfg["infonce"]["tsm"]["type"] == "softmax":
-            scale_Q = self.cfg["infonce"]["tsm"]["sm_scale"]
+        elif cfg_tsm["type"] == "softmax":
+            scale_Q = cfg_tsm["sm_scale"]
             if scale_Q == "pinned" or scale_Q == "pinned1":
                 logit_scale = logit_scale.detach()
                 if self.cfg["logits"]["scale"]["clamp"]:
@@ -169,38 +244,61 @@ class InfoNCECriterion(Criterion):
                 Y = F.softmax(2 * Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         return Y
 
-    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
-        B = logits.size(0)
-        
-        Q = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
-        Y = self.targ_dist(Q, logit_scale)  # pt[B, B]
+    def targ_dists(self, Qs, logit_scales):
+        return [self._tsm(Q, cfg_targ["infonce"]["tsm"], logit_scale) for (_, cfg_targ), Q, logit_scale in zip(self.targ_specs, Qs, logit_scales)]
 
-        loss_i2t_raw = -Y * F.log_softmax(logits,   dim=1)  # pt[B, B]
-        loss_t2i_raw = -Y * F.log_softmax(logits.T, dim=1)  # pt[B, B]
+    def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
+        B = class_encs_b.size(0)
+        
+        Qs = self._targets(B, class_encs_b, targ_data_b)
+        Q = self.targ_memb(Qs)  # pt[B, B]
+        Ys = self.targ_dists(Qs, self._per_term(lambda t: t, logit_scale, len(Qs)))  # pt[B, B] per live spec
+        Y = self.targ_memb(Ys)  # pt[B, B]
+
+        terms = self.loss_terms(Ys, Y)
+        Zs = self._per_term(lambda Z: Z, logits, len(terms))  # pt[B, B] per term
+        log_ps = self._per_term(lambda Z: (F.log_softmax(Z, dim=1), F.log_softmax(Z.T, dim=1)), logits, len(terms))
+        losses_raw = [(-Y_k * log_p_i2t, -Y_k * log_p_t2i) for (_, Y_k), (log_p_i2t, log_p_t2i) in zip(terms, log_ps)]  # pt[B, B] pairs
 
         # per-anchor CE (row sum) averaged over anchors -- CLIP's /B, the scale the weighted loss carries
-        loss_raw = 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
+        loss_raw = sum(
+            w * 0.5 * (loss_i2t_raw.sum(dim=1).mean() + loss_t2i_raw.sum(dim=1).mean())
+            for (w, _), (loss_i2t_raw, loss_t2i_raw) in zip(terms, losses_raw)
+        )
+
+        if self.sep_scalars:
+            # no one distribution is trained against across two sets of logits: the batch stats read the
+            # primary term's, with its logits and scale (VLMWrapper._batch_stats)
+            Y = terms[0][1]
 
         if not train:
-            return loss_raw, loss_raw, Q
+            return loss_raw, loss_raw, Q, Y
 
         W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
         if self.cfg["wting"]["cls_imb"]["norm"]:
             W_ci = W_ci / W_ci.mean()  # pt[B]
 
-        # Note: 2D-focal is still used despite 1D class-imbalance weighting (reduces to standard focal loss in the SP setting)
-        W_foc_i2t = self._focal_2d(logits,   Y)  # pt[B, B]
-        W_foc_t2i = self._focal_2d(logits.T, Y)  # pt[B, B]
+        losses = []
+        for (_, Y_k), Z, (loss_i2t_raw, loss_t2i_raw) in zip(terms, Zs, losses_raw):
+            # Note: 2D-focal is still used despite 1D class-imbalance weighting (reduces to standard focal loss in the SP setting)
+            W_i2t = self._focal_2d(Z,   Y_k) * W_ci[:, None]  # pt[B, B]
+            W_t2i = self._focal_2d(Z.T, Y_k) * W_ci[:, None]  # pt[B, B]
 
-        W_i2t = W_foc_i2t * W_ci[:, None]  # pt[B, B]
-        W_t2i = W_foc_t2i * W_ci[:, None]  # pt[B, B]
+            loss_i2t = (W_i2t * loss_i2t_raw).sum(dim=1)
+            loss_t2i = (W_t2i * loss_t2i_raw).sum(dim=1)
 
-        loss_i2t = (W_i2t * loss_i2t_raw).sum(dim=1)
-        loss_t2i = (W_t2i * loss_t2i_raw).sum(dim=1)
+            losses.append(0.5 * (loss_i2t.mean() + loss_t2i.mean()))
 
-        loss = 0.5 * (loss_i2t.mean() + loss_t2i.mean())
+        coeffs = self.term_coeffs([w for w, _ in terms], losses)
+        loss = sum(c * L for c, L in zip(coeffs, losses))
 
-        return loss, loss_raw, Q
+        if self.cfg["unitless"] and not self.sep_scalars:
+            # the distribution the blended gradient follows: the terms' targets under their normalized blend
+            # coefficients (the loss is linear in the target) -- unitless reweights a loss blend's terms
+            # away from (1 - lambda, lambda), so the batch stats read this Y rather than the static blend
+            Y = sum(c * Y_k for c, (_, Y_k) in zip(coeffs, terms)) / sum(coeffs)
+
+        return loss, loss_raw, Q, Y
 
 class BCECriterion(Criterion):
     """
@@ -213,34 +311,42 @@ class BCECriterion(Criterion):
         return torch.sigmoid(Z)
 
     def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
-        B = logits.size(0)
+        B = class_encs_b.size(0)
 
-        Y = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+        Qs = self._targets(B, class_encs_b, targ_data_b)
+        Y = self.targ_memb(Qs)  # pt[B, B]; the blended targets are the pair probabilities trained against
+        terms = self.loss_terms(Qs, Y)
 
         # fp32: cos-path logits are bf16 under autocast, where sigmoid saturates to exactly 1.0 at
         # |logit| >~ 6 (zeroing focal weights on the easy set, quantizing the rest); upcast once and
         # reuse for both focal preds and the BCE loss. No-op when logits are already fp32 (geo sim).
-        logits_f = logits.float()
+        logits_f = self._per_term(lambda Z: Z.float(), logits, len(terms))  # pt[B, B] per term
 
-        # Unweighted loss matrix
-        loss_2d_raw = F.binary_cross_entropy_with_logits(logits_f, Y, reduction="none")  # pt[B, B]
-        loss_raw = loss_2d_raw.detach().sum() / B
+        # Unweighted loss matrices
+        losses_2d_raw = [F.binary_cross_entropy_with_logits(Z, Y_k, reduction="none") for (_, Y_k), Z in zip(terms, logits_f)]  # pt[B, B] each
+        loss_raw = sum(w * loss_2d_raw.detach().sum() for (w, _), loss_2d_raw in zip(terms, losses_2d_raw)) / B
 
         if not train:
-            return loss_raw, loss_raw, Y
+            return loss_raw, loss_raw, Y, Y
 
         W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B, B]
         if self.cfg["wting"]["cls_imb"]["norm"]:
             W_ci = W_ci / W_ci.mean()
-        W = W_ci * self._focal_2d(logits_f, Y)  # pt[B, B]
-        if self.cfg["wting"]["bce"]["dsmr"]:
-            mass_pos = torch.sum(Y)
-            mass_neg = torch.sum(1.0 - Y)
-            W = W * _dsmr_weight(Y, mass_pos, mass_neg, B)
 
-        loss = (W * loss_2d_raw).sum() / B
+        losses = []
+        for (_, Y_k), Z, loss_2d_raw in zip(terms, logits_f, losses_2d_raw):
+            W = W_ci * self._focal_2d(Z, Y_k)  # pt[B, B]
+            if self.cfg["wting"]["bce"]["dsmr"]:
+                mass_pos = torch.sum(Y_k)
+                mass_neg = torch.sum(1.0 - Y_k)
+                W = W * _dsmr_weight(Y_k, mass_pos, mass_neg, B)
 
-        return loss, loss_raw, Y
+            losses.append((W * loss_2d_raw).sum() / B)
+
+        coeffs = self.term_coeffs([w for w, _ in terms], losses)
+        loss = sum(c * L for c, L in zip(coeffs, losses))
+
+        return loss, loss_raw, Y, Y
 
 class BifurcatedBCECriterion(Criterion):
     """
@@ -250,14 +356,11 @@ class BifurcatedBCECriterion(Criterion):
     txt-col]; the t2i branch is consumed as its transposed [txt-row, img-col] view, so each
     direction's anchors are rows and per-anchor weighting/reduction is row-wise in both branches
     (pairing the transposed view against Y relies on Y being symmetric, which holds for every
-    targ type). The i2t branch backprops into the image tower only (txt detached upstream), t2i
+    targ type and hence for their blend). The i2t branch backprops into the image tower only (txt detached upstream), t2i
     into the text tower only. The un-halved branch sum makes the loss value (and loss_raw) 2x the
     non-bifurcated reading, but with identical weighting on both branches every gradient matches
     non-bifurcated 1x: towers live in one branch each, and the logit scale/bias are half-live
-    upstream (compute_logits) so their two branch contributions sum to 1x. A unitless (loss.unitless)
-    blend accordingly normalizes this loss by L/2 -- its gradient-scale-equivalent value -- so
-    `mix` keeps the same gradient ratio as with an equivalent non-bifurcated loss
-    (_global_batch_loss).
+    upstream (compute_logits) so their two branch contributions sum to 1x.
     """
 
     wting_dim = 1
@@ -267,52 +370,62 @@ class BifurcatedBCECriterion(Criterion):
         return torch.sigmoid(Z)
 
     def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale):
-        logits_i2t = logits[0]
-        logits_t2i = logits[1].T  # anchors as rows
+        B = class_encs_b.size(0)
 
-        B = logits_i2t.size(0)
-
-        Y = self._targets(B, class_encs_b, targ_data_b)  # pt[B, B]
+        Qs = self._targets(B, class_encs_b, targ_data_b)
+        Y = self.targ_memb(Qs)  # pt[B, B]; the blended targets are the pair probabilities trained against
+        terms = self.loss_terms(Qs, Y)
 
         # fp32: cos-path logits are bf16 under autocast, where sigmoid saturates to exactly 1.0 at
         # |logit| >~ 6 (zeroing focal weights on the easy set, quantizing the rest); upcast once and
         # reuse for both focal preds and the BCE loss. No-op when logits are already fp32 (geo sim).
-        logits_i2t_f = logits_i2t.float()
-        logits_t2i_f = logits_t2i.float()
+        # Per term its (i2t, t2i) pair, the t2i branch transposed: anchors as rows
+        logits_f = self._per_term(lambda Zs: (Zs[0].float(), Zs[1].T.float()), logits, len(terms))
 
         # Unweighted loss matrices
-        loss_i2t_2d_raw = F.binary_cross_entropy_with_logits(logits_i2t_f, Y, reduction="none")  # pt[B, B]
-        loss_t2i_2d_raw = F.binary_cross_entropy_with_logits(logits_t2i_f, Y, reduction="none")  # pt[B, B]
-        loss_raw = loss_i2t_2d_raw.detach().sum() / B + loss_t2i_2d_raw.detach().sum() / B
+        losses_2d_raw = [
+            tuple(F.binary_cross_entropy_with_logits(Z, Y_k, reduction="none") for Z in Zs)  # pt[B, B] each
+            for (_, Y_k), Zs in zip(terms, logits_f)
+        ]
+        loss_raw = sum(
+            w * (loss_i2t_2d_raw.detach().sum() / B + loss_t2i_2d_raw.detach().sum() / B)
+            for (w, _), (loss_i2t_2d_raw, loss_t2i_2d_raw) in zip(terms, losses_2d_raw)
+        )
 
         if not train:
-            return loss_raw, loss_raw, Y
+            return loss_raw, loss_raw, Y, Y
 
         # per-anchor weights are row weights in both branches (rows = each direction's anchors;
         # paired image/text share the class, so w_ci indexes both directions)
         w_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
         if self.cfg["wting"]["cls_imb"]["norm"]:
             w_ci = w_ci / w_ci.mean()
-        W_i2t = w_ci[:, None] * self._focal_2d(logits_i2t_f, Y)  # pt[B, B]
-        W_t2i = w_ci[:, None] * self._focal_2d(logits_t2i_f, Y)  # pt[B, B]
-        if self.cfg["wting"]["bce"]["dsmr"]:
-            W_dsmr = _dsmr_weight_rows(Y, B)  # pt[B, B]
-            W_i2t = W_i2t * W_dsmr
-            W_t2i = W_t2i * W_dsmr
 
-        # 2D --> 1D: per-anchor (row) reduction
-        loss_i2t_1d = (W_i2t * loss_i2t_2d_raw).sum(dim=1)  # pt[B]
-        loss_t2i_1d = (W_t2i * loss_t2i_2d_raw).sum(dim=1)  # pt[B]
+        losses = []
+        for (_, Y_k), (logits_i2t_f, logits_t2i_f), (loss_i2t_2d_raw, loss_t2i_2d_raw) in zip(terms, logits_f, losses_2d_raw):
+            W_i2t = w_ci[:, None] * self._focal_2d(logits_i2t_f, Y_k)  # pt[B, B]
+            W_t2i = w_ci[:, None] * self._focal_2d(logits_t2i_f, Y_k)  # pt[B, B]
+            if self.cfg["wting"]["bce"]["dsmr"]:
+                W_dsmr = _dsmr_weight_rows(Y_k, B)  # pt[B, B]
+                W_i2t = W_i2t * W_dsmr
+                W_t2i = W_t2i * W_dsmr
 
-        if self.cfg["bce"]["targ_mass_neut"]:
-            Y_mass = Y.sum(dim=1)  # pt[B]
-            loss_i2t_1d = loss_i2t_1d / Y_mass
-            loss_t2i_1d = loss_t2i_1d / Y_mass
+            # 2D --> 1D: per-anchor (row) reduction
+            loss_i2t_1d = (W_i2t * loss_i2t_2d_raw).sum(dim=1)  # pt[B]
+            loss_t2i_1d = (W_t2i * loss_t2i_2d_raw).sum(dim=1)  # pt[B]
 
-        # Batch-mean over anchors, branches summed un-halved
-        loss = loss_i2t_1d.mean() + loss_t2i_1d.mean()
+            if self.cfg["bce"]["targ_mass_neut"]:
+                Y_mass = Y_k.sum(dim=1)  # pt[B]
+                loss_i2t_1d = loss_i2t_1d / Y_mass
+                loss_t2i_1d = loss_t2i_1d / Y_mass
 
-        return loss, loss_raw, Y
+            # Batch-mean over anchors, branches summed un-halved
+            losses.append(loss_i2t_1d.mean() + loss_t2i_1d.mean())
+
+        coeffs = self.term_coeffs([w for w, _ in terms], losses)
+        loss = sum(c * L for c, L in zip(coeffs, losses))
+
+        return loss, loss_raw, Y, Y
 
 def _dsmr_weight(targs, mass_pos, mass_neg, B):
     """
@@ -350,18 +463,23 @@ def _dsmr_weight_rows(targs, B):
     )
     return W_dsmr
 
-def pos_prevalence(cfg_loss, dataset, split, train_pt, batch_size):
+def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, batch_size):
     """
-    Expected weighted positive prevalence p = sum(W * Y) / sum(W) of a BCE-family loss's B x B target
-    matrix (diagonal included) under uniform batch sampling from the train partition -- the constant
+    Expected weighted positive prevalence p = sum(W * Y) / sum(W) of a BCE-family loss's B x B blended
+    target matrix (diagonal included) under uniform batch sampling from the train partition -- the constant
     sigmoid probability minimizing the expected weighted BCE (for binary and soft targets alike), so
     logit(p) is the matched logit-bias init (logits.bce.bias.init: pos_prevalence). Computed once at the
     class level from the pair-probability matrix (_pair_prob_freqs, sums to B), each same-class cell
     split into the anchor's own slot (target 1 under every targ type) and its other same-class slots
-    (target 0 under sp, 1 otherwise). W holds the loss's weights that are constant given the pair's
-    classes -- class-imbalance (per-anchor / per-pair by the criterion's wting_dim), DSMR and
+    (target 0 under sp, 1 otherwise); the blend Y = sum_k w_k Y_k is taken over the live target specs
+    (targ_specs) before the weights, which read it. W holds the loss's weights that are constant given
+    the pair's classes -- class-imbalance (per-anchor / per-pair by the criterion's wting_dim), DSMR and
     targ_mass_neut with the expected (global / per-anchor-class) target masses in place of the batch's
-    -- not focal (prediction-dependent). Dataset-level constant, identical across DDP ranks.
+    -- not focal (prediction-dependent). Under loss.blend_type loss the loss is a sum of per-spec terms
+    (Criterion.loss_terms), each under its own target's weights W_k, and the minimizing constant is
+    p = sum_k w_k sum(W_k * Y_k) / sum_k w_k sum(W_k) -- under the static term weights w_k (loss.unitless'
+    coefficients follow the model's losses, unknown at init). Dataset-level constant, identical across
+    DDP ranks.
     """
     B = batch_size
     split_obj = load_split(dataset, split)
@@ -369,35 +487,46 @@ def pos_prevalence(cfg_loss, dataset, split, train_pt, batch_size):
     encs = (~torch.isnan(counts)).nonzero(as_tuple=True)[0]  # classes present in the partition
     K = encs.numel()
 
-    if cfg_loss["targ"] == "sp":
-        Y_rest = torch.zeros(K, K, dtype=torch.float64)  # only the anchor's own slot is positive
-    else:
+    specs = targ_specs(cfg_loss["lambda"], cfg_loss1, cfg_loss2)
+    Y_rests = []  # per live spec, the other B-1 slots; under sp only the anchor's own slot is positive
+    for _, cfg_targ in specs:
+        if cfg_targ["targ"] == "sp":
+            Y_rests.append(torch.zeros(K, K, dtype=torch.float64))
+            continue
         cids = [split_obj.enc2cid[int(enc)] for enc in encs]
-        rank_encs = compute_rank_encs(dataset, cids) if cfg_loss["targ"] == "tax" else [None] * K
+        rank_encs = compute_rank_encs(dataset, cids) if cfg_targ["targ"] == "tax" else [None] * K
         targ_data_cls = [{"cid": cid, "dataset": dataset, "rank_encs": re} for cid, re in zip(cids, rank_encs)]
-        Y_rest = compute_targets(cfg_loss["targ"], K, encs, targ_data_cls, "cpu").double()  # [K, K]; unit diagonal (same-class slots positive)
+        Y_rests.append(compute_targets(cfg_targ["targ"], K, encs, targ_data_cls, "cpu").double())  # [K, K]; unit diagonal (same-class slots positive)
+    if cfg_loss["blend_type"] == "targ":
+        terms = [(1.0, sum(w * Y_rest for (w, _), Y_rest in zip(specs, Y_rests)))]
+    else:
+        terms = [(w, Y_rest) for (w, _), Y_rest in zip(specs, Y_rests)]
 
     # [2, K, K]: (anchor's own slot -- diagonal, P(anchor class); the other B-1 slots) x class pair
     P_full = _pair_prob_freqs(counts, encs, B)
     P_self = torch.diag(counts[encs] / counts.nansum())
     P = torch.stack((P_self, P_full - P_self))
-    Y = torch.stack((torch.ones(K, K, dtype=torch.float64), Y_rest))
 
     wting_dim = {"bce": 2, "bif_bce": 1}[cfg_loss["crit"]]
-    if wting_dim == 2:
-        W = _compute_wts(cfg_loss["wting"]["cls_imb"], P_full)  # per-pair; [K, K]
-        if cfg_loss["wting"]["bce"]["dsmr"]:
-            mass_pos = B * (P * Y).sum()  # expected batch target mass: each of the B anchor slots contributes sum(P * Y)
-            W = W * _dsmr_weight(Y, mass_pos, B**2 - mass_pos, B)
-    else:
-        W = _compute_wts(cfg_loss["wting"]["cls_imb"], counts[encs])[:, None]  # per-anchor (row); [K, 1]
-        row_mass = (P * Y).sum(dim=(0, 2)) / P_self.diagonal()  # expected row target mass given the anchor's class; [K]
-        if cfg_loss["wting"]["bce"]["dsmr"]:
-            W = W * _dsmr_weight(Y, row_mass[:, None], B - row_mass[:, None], B)  # _dsmr_weight_rows' B vs B**2 scale: constant factor, cancels in the ratio
-        if cfg_loss["bce"]["targ_mass_neut"]:
-            W = W / row_mass[:, None]
+    mass_WY = mass_W = 0.0
+    for w_term, Y_rest in terms:
+        Y = torch.stack((torch.ones(K, K, dtype=torch.float64), Y_rest))
+        if wting_dim == 2:
+            W = _compute_wts(cfg_loss["wting"]["cls_imb"], P_full)  # per-pair; [K, K]
+            if cfg_loss["wting"]["bce"]["dsmr"]:
+                mass_pos = B * (P * Y).sum()  # expected batch target mass: each of the B anchor slots contributes sum(P * Y)
+                W = W * _dsmr_weight(Y, mass_pos, B**2 - mass_pos, B)
+        else:
+            W = _compute_wts(cfg_loss["wting"]["cls_imb"], counts[encs])[:, None]  # per-anchor (row); [K, 1]
+            row_mass = (P * Y).sum(dim=(0, 2)) / P_self.diagonal()  # expected row target mass given the anchor's class; [K]
+            if cfg_loss["wting"]["bce"]["dsmr"]:
+                W = W * _dsmr_weight(Y, row_mass[:, None], B - row_mass[:, None], B)  # _dsmr_weight_rows' B vs B**2 scale: constant factor, cancels in the ratio
+            if cfg_loss["bce"]["targ_mass_neut"]:
+                W = W / row_mass[:, None]
+        mass_WY += w_term * (W * P * Y).sum()
+        mass_W += w_term * (W * P).sum()
 
-    return ((W * P * Y).sum() / (W * P).sum()).item()
+    return (mass_WY / mass_W).item()
 
 # ------------------------------------------------------------------------------------------------
 # Tiled / chunked global-batch loss (hardware.loss_chunk_size)
@@ -415,14 +544,19 @@ def pos_prevalence(cfg_loss, dataset, split, train_pt, batch_size):
 # all-reduces so every rank returns identical full-batch values; the leaves' band-partial dL/dembs sum
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
-# Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets,
-# cls_imb.norm, a BCE-family secondary-loss mix, and loss.unitless) -- only InfoNCE is excluded
-# (chunking_supported). The reductions that couple across the whole BxB matrix -- the cls_imb.norm
-# weight-mean normalizers (a 2D band sweep for bce; bif_bce's 1D per-anchor vector is O(B) and built
-# outright), bce's global DSMR mass, and the per-loss unitless scalars -- are all DETACHED
+# Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets and their
+# blend under either loss.blend_type, cls_imb.norm, loss.unitless) -- only InfoNCE is excluded
+# (chunking_supported). The target tiles are the loss terms' (loss_term_spec_fns): the criterion's blended
+# targets under blend_type targ (blend_targ_block_fn: sum_k w_k Q_k over the live target specs, Y = Q for
+# the BCE family), each spec's own Q_k under blend_type loss -- all on the block's one logits tile, or
+# under separate logit scalars (loss.logits.shared false) each term on its own scalar pair's logits tile
+# off the block's one sim tile, grad_proj* then projecting per pair (_crit_center_grad_mean). The
+# reductions that couple across the whole BxB matrix -- the cls_imb.norm weight-mean normalizers (a 2D
+# band sweep for bce; bif_bce's 1D per-anchor vector is O(B) and built outright), bce's global DSMR mass
+# per term, and under loss.unitless the terms' loss magnitudes (_term_loss_values) -- are all DETACHED
 # constants, so they are precomputed (cheap embedding-free closed forms + no_grad band sweeps,
-# all-reduced to rank-identical values) before the single grad-carrying backward sweep applies them
-# as constants. See _precompute_crit_consts.
+# all-reduced to rank-identical values) before the single grad-carrying backward sweep applies them as
+# constants. See _precompute_crit_consts.
 #
 # A bifurcated criterion (bif_bce) runs each block as TWO branch tiles in the branches' own anchor
 # frames -- i2t = (img rows, detached txt), t2i = (txt rows, detached img); Y is symmetric, so one
@@ -441,17 +575,13 @@ def pos_prevalence(cfg_loss, dataset, split, train_pt, batch_size):
 # incoming grad, and the two frames' grad means differ under per-anchor row weighting).
 # ------------------------------------------------------------------------------------------------
 
-def chunking_supported(cfg_loss1, cfg_loss2, mix):
+def chunking_supported(cfg_loss):
     """
     The tiled loss reproduces every BCE-family config (bce and bif_bce) but not InfoNCE (its
     row/column softmax couples along columns, which a row-block cannot tile). Config treats
     hardware.loss_chunk_size as inert (full BxB path) when this returns False.
     """
-    if cfg_loss1["crit"] not in ("bce", "bif_bce"):
-        return False
-    if mix != 0.0 and cfg_loss2["crit"] not in ("bce", "bif_bce"):
-        return False
-    return True
+    return cfg_loss["crit"] in ("bce", "bif_bce")
 
 def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     """
@@ -477,27 +607,55 @@ def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     if targ_type == "phylo":
         return get_phylo_vcv(targ_data_b[0]["dataset"]).make_targ_block_fn(targ_data_b, device)
 
-def bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size):
+def make_targ_block_fns(crit, class_encs_b, targ_data_b, B, device):
     """
-    Global DSMR mass over the full BxB target matrix: mass_pos = sum(targs), mass_neg = B^2 - sum(targs)
-    (== sum(1 - targs) for targets in [0, 1]). For mp/sp (0/1 targets) mass_pos is the O(B) closed form
-    sum_k count_k^2 / B (rank-identical, no collective); for soft tax/phylo targets it is summed over
-    this rank's band [lo, hi) of target tiles (embedding-free) and all-reduced across bands.
-    Matches torch.sum(targs) / torch.sum(1 - targs) in BCECriterion.__call__.
+    Per live target spec of the criterion (targ_specs), its (w_k, targ_type, make_targ_block_fn closure)
+    triple -- the pieces of the blended row-block Y[rs:re] = sum_k w_k Q_k[rs:re] (blend_targ_block_fn),
+    kept apart for the reductions that read the specs individually (bce_dsmr_mass' closed forms).
+    """
+    return [(w, cfg_targ["targ"], make_targ_block_fn(cfg_targ["targ"], class_encs_b, targ_data_b, B, device))
+            for w, cfg_targ in crit.targ_specs]
+
+def blend_targ_block_fn(spec_fns):
+    """(rs, re) -> the blended [re-rs, B] target row-block Y[rs:re] = sum_k w_k Q_k[rs:re] over `spec_fns`
+    (make_targ_block_fns) -- the criterion's targ_memb / targ_dist tile for the BCE family (Y = Q)."""
+    return lambda rs, re: sum(w * fn(rs, re) for w, _, fn in spec_fns)
+
+def loss_term_spec_fns(crit, spec_fns):
+    """
+    The tiled analogue of Criterion.loss_terms: per loss term its (term weight, term spec_fns) pair, the
+    term's target tile being blend_targ_block_fn over its spec_fns -- every live spec blended into one term
+    under loss.blend_type targ, each spec alone (its unweighted Q_k) under loss.blend_type loss.
+    """
+    if crit.cfg["blend_type"] == "targ":
+        return [(1.0, spec_fns)]
+    return [(w, [(1.0, targ_type, fn)]) for w, targ_type, fn in spec_fns]
+
+def bce_dsmr_mass(spec_fns, class_encs_b, B, chunk_size, lo, hi, world_size):
+    """
+    Global DSMR mass over the full BxB blended target matrix: mass_pos = sum(Y) = sum_k w_k sum(Q_k) (the
+    blend is linear), mass_neg = B^2 - mass_pos (== sum(1 - Y) for targets in [0, 1]). `spec_fns` are the
+    live specs' (w_k, targ_type, block closure) triples (make_targ_block_fns). A spec's sum(Q_k) is, for
+    mp/sp (0/1 targets), the O(B) closed form sum_c count_c^2 (rank-identical, no collective); for soft
+    tax/phylo targets it is summed over this rank's band [lo, hi) of target tiles (embedding-free) and
+    all-reduced across bands. Matches torch.sum(Y) / torch.sum(1 - Y) in BCECriterion.__call__.
     """
     device = class_encs_b.device
-    if targ_type == "mp":
-        counts = torch.bincount(class_encs_b).to(torch.float64)
-        mass_pos = (counts * counts).sum()
-    elif targ_type == "sp":
-        mass_pos = torch.tensor(float(B), dtype=torch.float64, device=device)
-    else:  # tax, phylo -- soft targets: sum over this rank's band of tiles, fold across bands
-        mass_pos = torch.zeros((), dtype=torch.float64, device=device)
-        for rs in range(lo, hi, chunk_size):
-            mass_pos += targ_block_fn(rs, rs + chunk_size).double().sum()
-        if world_size > 1:
-            dist.all_reduce(mass_pos)
-    mass_pos = mass_pos.to(device=device, dtype=torch.float32)
+    mass_pos = torch.zeros((), dtype=torch.float64, device=device)
+    for w, targ_type, targ_block_fn in spec_fns:
+        if targ_type == "mp":
+            counts = torch.bincount(class_encs_b).to(torch.float64)
+            mass_k = (counts * counts).sum()
+        elif targ_type == "sp":
+            mass_k = torch.tensor(float(B), dtype=torch.float64, device=device)
+        else:  # tax, phylo -- soft targets: sum over this rank's band of tiles, fold across bands
+            mass_k = torch.zeros((), dtype=torch.float64, device=device)
+            for rs in range(lo, hi, chunk_size):
+                mass_k += targ_block_fn(rs, rs + chunk_size).double().sum()
+            if world_size > 1:
+                dist.all_reduce(mass_k)
+        mass_pos += w * mass_k
+    mass_pos = mass_pos.to(dtype=torch.float32)
     mass_neg = torch.tensor(float(B) * float(B), dtype=torch.float32, device=device) - mass_pos
     return mass_pos, mass_neg
 
@@ -639,13 +797,12 @@ def infonce_kl_terms(Y, log_P, P_opt):
     return torch.stack([kl.mean(), E_s.mean(), E_ir.mean(), E_sr.mean()])
 
 
-def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp, idx):
+def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     """
-    One InfoNCE loss branch's per-batch reachable-optimum (p* = infonce_p_opt) diagnostics, each
-    taken over both anchor directions and averaged -- the loss is the mean of the two directions' CE:
+    The InfoNCE loss's per-batch reachable-optimum (p* = infonce_p_opt) diagnostics, each taken over
+    both anchor directions and averaged -- the loss is the mean of the two directions' CE:
 
-    - the logit-scale gradient decomposition (the dalpha{idx}_* and dlogalpha{idx}_* learning-curve
-      strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
+    - the logit-scale gradient decomposition (the dalpha_* and dlogalpha_* learning-curve strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
       the coherence C = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
       cancellation ratio, so C = |sum| / sum_abs holds across the reported series). alpha is the
       scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
@@ -661,7 +818,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp, idx):
       d(alpha)/d(log alpha_raw) is taken by autograd through the same clamp-then-exp path
       compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
       backward breaks the tie (the gradient passes in 2.5 / 2.7, is blocked in 2.14).
-    - the KL decomposition (the kl{idx}* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
+    - the KL decomposition (the kl* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
       per anchor, batch-meaned.
     - the row-wise target-implied scale bounds (the alpha panels' red lines): for row i, the smallest
       alpha whose logit range alpha * S over S in [-1, 1] spans Y_i as optimal logits log(Y_i) (up to
@@ -670,15 +827,14 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp, idx):
       would pair extremes from different rows and overstate it); a row holding a zero sits at
       infinity. One statistic for both directions, which train against Y's rows alike.
 
-    - sim, targs, y, logits -- the branch's BxB S, Q, Y and logits (first branch), as passed to
-      sim_targ_batch_stats
-    - logit_scale ---------- its log logit-scale parameter, raw (pre-clamp) and detached
-    - clamp ---------------- its logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
-    - idx ------------------ loss-branch index; tags the keys (dalpha1_* / dalpha2_*, kl1* / kl2*)
+    - sim, targs, y, logits -- the batch's BxB S, Q (the blended target matrix), Y (the blended target
+      distribution) and logits (first branch), as passed to sim_targ_batch_stats
+    - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
+    - clamp ---------------- logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
 
-    Returns {{dalpha,dlogalpha}{idx}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
-    {kl{idx}, kl{idx}_s, kl{idx}_ir, kl{idx}_sr: scalar} and {alpha_req{idx}_{min,mean,max}: scalar};
-    the reductions are stacked so the device->host transfer is a single .cpu() sync.
+    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
+    {kl, kl_s, kl_ir, kl_sr: scalar} and {alpha_req_{min,mean,max}: scalar}; the reductions are stacked
+    so the device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
@@ -708,30 +864,30 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp, idx):
         bound_vals = packed[grad.numel() + kl.numel():].tolist()
     return {
         **{
-            f"{prefix}{idx}_{agg}_{comp}": vals[f][a][c]
+            f"{prefix}_{agg}_{comp}": vals[f][a][c]
             for f, prefix in enumerate(("dalpha", "dlogalpha"))
             for a, agg in enumerate(("sum", "sum_abs", "C"))
             for c, comp in enumerate(("full", "struct", "res"))
         },
-        **dict(zip((f"kl{idx}", f"kl{idx}_s", f"kl{idx}_ir", f"kl{idx}_sr"), kl_vals)),
-        **dict(zip((f"alpha_req{idx}_min", f"alpha_req{idx}_mean", f"alpha_req{idx}_max"), bound_vals)),
+        **dict(zip(("kl", "kl_s", "kl_ir", "kl_sr"), kl_vals)),
+        **dict(zip(("alpha_req_min", "alpha_req_mean", "alpha_req_max"), bound_vals)),
     }
 
 
 class _SimTargStatsAccum:
     """
-    Streams one loss branch's per-batch sim/target/probability distribution stats over the loss tiles
-    so the chunked path can report the same batch_stats keys as sim_targ_batch_stats without holding
+    Streams the batch's sim/target/probability distribution stats over the loss tiles so the chunked
+    path can report the same batch_stats keys as sim_targ_batch_stats without holding
     the full BxB matrices. sim/targ min/max/mean are exact; their median is over a strided subsample
     of each tile (an exact BxB median would need the whole matrix). Targets and probabilities are
     also summarized as HIST_BINS histograms, which stream exactly -- counts just add across tiles
-    and ranks. The mean hard-pair similarity margins (sim{idx}_margin*, one entry per hpsm_kappas
+    and ranks. The mean hard-pair similarity margins (sim_margin*, one entry per hpsm_kappas
     value) are exact too. I2T (image anchors): every tile holds whole rows, so the per-row margins just
     sum across tiles and ranks. T2I (text anchors): a text's weights over the images span every tile
     and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
     mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
     weights underflow only past kappa ~ 300) and the ratio is taken after the fold. The chunked path
-    is BCE-family only, so p{idx}_hist is always reported here.
+    is BCE-family only, so p_hist is always reported here.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = ("targ", "p")
@@ -773,7 +929,7 @@ class _SimTargStatsAccum:
             W_neg = (1.0 - Q) * torch.exp(kappa * (S - 1.0))   # ∝ (1-q) exp(+kappa s), shifted by the s <= 1 bound
             self.t2i_sums[idx_kappa] += torch.stack([W_pos.sum(0), (W_pos * S).sum(0), W_neg.sum(0), (W_neg * S).sum(0)])
 
-    def finalize(self, world_size, idx):
+    def finalize(self, world_size):
         mins = dict(self.mins)
         maxs = dict(self.maxs)
         sums = dict(self.sums)
@@ -805,18 +961,18 @@ class _SimTargStatsAccum:
             samps = {f: torch.cat([p[i] for p in parts]) for i, f in enumerate(self._FIELDS)}
         stats = {}
         for field in self._FIELDS:
-            stats[f"{field}{idx}_min"] = mins[field].item()
-            stats[f"{field}{idx}_max"] = maxs[field].item()
-            stats[f"{field}{idx}_median"] = samps[field].median().item()
-            stats[f"{field}{idx}_mean"] = (sums[field] / count).item()
+            stats[f"{field}_min"] = mins[field].item()
+            stats[f"{field}_max"] = maxs[field].item()
+            stats[f"{field}_median"] = samps[field].median().item()
+            stats[f"{field}_mean"] = (sums[field] / count).item()
         for field in self._HIST_FIELDS:
-            stats[f"{field}{idx}_hist"] = (hists[field] / hists[field].sum()).tolist()
+            stats[f"{field}_hist"] = (hists[field] / hists[field].sum()).tolist()
         i2t = margin_sums / self.B
         pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
         t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)
-        stats[f"sim{idx}_margin_i2t"] = i2t.tolist()
-        stats[f"sim{idx}_margin_t2i"] = t2i.tolist()
-        stats[f"sim{idx}_margin"] = (0.5 * (i2t + t2i)).tolist()
+        stats["sim_margin_i2t"] = i2t.tolist()
+        stats["sim_margin_t2i"] = t2i.tolist()
+        stats["sim_margin"] = (0.5 * (i2t + t2i)).tolist()
         return stats
 
 
@@ -855,7 +1011,7 @@ def _bif_branches(img, txt):
     """
     The two bifurcated branches as (rows_live, cols) frames: i2t = (img rows, detached txt), t2i =
     (txt rows, detached img). Each branch's tile grads flow into its live rows only -- the tiled
-    analogue of the full-batch opposite-tower detaches (_loss_for_crit_full_batch).
+    analogue of the full-batch opposite-tower detaches (_loss_full_batch).
     """
     return ((img, txt.detach()), (txt, img.detach()))
 
@@ -886,39 +1042,47 @@ def _bif_block_num_raw(crit, logits_f, targs, w_rows, W_dsmr, neut_mass):
         num_rows = num_rows / neut_mass
     return num_rows.sum(), bce
 
-def _crit_block_logits_f(crit, secondary, rows, cols, compute_logits, center, center_global=None, half_live=False):
-    """
-    [C, B] similarity tile and its float32 logits tile for a criterion (its sim_type + logit
-    scale/bias). `rows`/`cols` are the tile's anchor rows and full column embeddings -- (img rows,
-    txt) non-bifurcated; a bifurcated branch passes its own (rows_live, cols) frame (_bif_branches)
-    with half_live=True so the un-halved branch sum carries 1x logit scale/bias grads.
+def n_scalar_pairs(crit):
+    """The logit-scalar pairs the criterion's logits are built on: one per loss term under separate logit
+    scalars (Criterion.sep_scalars; pair g is compute_logits' secondary=bool(g)), else the one shared."""
+    return len(crit.targ_specs) if crit.sep_scalars else 1
 
-    `center`/`center_global` are passed through to compute_logits: the chunked sweeps supply the
-    full-batch quantity (in-graph global sim mean for "sim"; detached full-batch incoming-grad mean
-    for grad_proj/grad_proj2) so tiles reproduce full-batch centering exactly, never the per-tile mean.
+def _crit_block_logits_f(crit, rows, cols, compute_logits, center, center_globals, half_live=False):
+    """
+    [C, B] similarity tile and its float32 logits tiles for the criterion (its sim_type + logit
+    scale/bias) -- one logits tile per logit-scalar pair (n_scalar_pairs): the one shared pair's, or
+    under separate logit scalars each loss term's own (compute_logits' secondary), all on the one sim
+    tile. `rows`/`cols` are the tile's anchor rows and full column embeddings -- (img rows, txt)
+    non-bifurcated; a bifurcated branch passes its own (rows_live, cols) frame (_bif_branches) with
+    half_live=True so the un-halved branch sum carries 1x logit scale/bias grads.
+
+    `center`/`center_globals` (one per scalar pair) are passed through to compute_logits: the chunked
+    sweeps supply the full-batch quantity (in-graph global sim mean for "sim"; detached full-batch
+    incoming-grad mean for grad_proj/grad_proj2) so tiles reproduce full-batch centering exactly, never
+    the per-tile mean.
     """
     sim_block = compute_sim(rows, cols, crit.cfg["sim"])
-    logits_block = compute_logits(sim_block, crit.cfg["logits"]["scale"]["clamp"], center, secondary=secondary, center_global=center_global, half_live=half_live)
-    return sim_block, logits_block.float()
+    clamp = crit.cfg["logits"]["scale"]["clamp"]
+    logits_blocks = [
+        compute_logits(sim_block, clamp, center, center_global=center_global, half_live=half_live, secondary=bool(g)).float()
+        for g, center_global in enumerate(center_globals)
+    ]
+    return sim_block, logits_blocks
 
-def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs_b, B,
-                            compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
-                            lo, hi, world_size, center, center_global_det):
+def _precompute_crit_consts(crit, terms, class_encs_b, B, chunk_size, device, lo, hi, world_size):
     """
-    Detached global constants for one criterion (see module header). For bce, cls_imb_mean (mean of
-    W_ci) and dsmr_mass are embedding-free; for bif_bce the consts are just the full normalized 1D
-    per-anchor weight vector (O(B), built outright -- its cls_imb.norm mean is over B values, and
-    row-wise DSMR needs no global mass), so the consts dicts are structurally distinct and a bif
-    crit can never reach the 2D _crit_block_weight_bce. L_value (the criterion's full weighted loss,
-    needed for loss.unitless) requires a no_grad tile sweep, run only when unitless is true.
-    All sweeps cover only this rank's row-band [lo, hi); the partial sums are all-reduced so
-    every rank derives identical constants.
-    `center`/`center_global_det` reproduce the criterion's centered forward in the L sweep (for
-    "sim" the detached global sim mean; grad_proj* leave the forward untouched).
-    Returns (consts dict for _crit_block_weight_bce / _bif_block_num_raw, L_value|None).
+    Detached global constants for the criterion (see module header), one consts dict per loss term. For
+    bce, cls_imb_mean (mean of W_ci, shared by the terms) and the term's dsmr_mass are embedding-free;
+    for bif_bce the consts are just the full normalized 1D per-anchor weight vector (O(B), built outright
+    -- its cls_imb.norm mean is over B values, and row-wise DSMR needs no global mass), so the consts
+    dicts are structurally distinct and a bif crit can never reach the 2D _crit_block_weight_bce. The
+    sweeps cover only this rank's row-band [lo, hi); the partial sums are all-reduced so every rank
+    derives identical constants.
+    `terms` are the loss terms' (weight, spec_fns) pairs (loss_term_spec_fns), a term's spec_fns read by
+    its DSMR mass.
+    Returns the terms' consts dicts for _crit_block_weight_bce / _bif_block_num_raw.
     """
     cfg_w = crit.cfg["wting"]
-    targ_type = crit.cfg["targ"]
 
     if crit.bifurcated:
         # full [B] per-anchor weight vector, incl. the cls_imb.norm batch-mean division -- exactly
@@ -926,97 +1090,123 @@ def _precompute_crit_consts(crit, secondary, img, txt, targ_block_fn, class_encs
         w_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b, crit.wting_dim, crit.wt_mean, crit.batch_size)
         if cfg_w["cls_imb"]["norm"]:
             w_ci = w_ci / w_ci.mean()
-        consts = {"w_ci": w_ci}
-    else:
-        cls_imb_mean = None
-        if cfg_w["cls_imb"]["norm"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
-            s = torch.zeros((), dtype=torch.float64, device=device)
-            for rs in range(lo, hi, chunk_size):
-                W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b[rs:rs + chunk_size],
-                                           crit.wting_dim, crit.wt_mean, crit.batch_size, class_encs_cols=class_encs_b)
-                s += W_ci.double().sum()
-            if world_size > 1:
-                dist.all_reduce(s)
-            cls_imb_mean = (s / (B * B)).float()
+        return [{"w_ci": w_ci} for _ in terms]
 
-        dsmr_mass = bce_dsmr_mass(targ_type, targ_block_fn, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["bce"]["dsmr"] else None
-        consts = {"cls_imb_mean": cls_imb_mean, "dsmr_mass": dsmr_mass}
-
-    L_value = None
-    if need_L:
-        sum_Wbce = torch.zeros((), dtype=torch.float64, device=device)
-        with torch.no_grad():
-            for rs in range(lo, hi, chunk_size):
-                re = rs + chunk_size
-                with autocast_ctx():
-                    targs_block = targ_block_fn(rs, re)
-                    if crit.bifurcated:  # both branches: their weighted sums differ (asymmetric logits, frame-dependent row weights)
-                        W_dsmr, neut_mass = _bif_block_invariants(crit, targs_block, B)
-                        for rows_live, cols in _bif_branches(img, txt):
-                            _, logits_f = _crit_block_logits_f(crit, secondary, rows_live[rs:re], cols, compute_logits, center, center_global_det, half_live=True)
-                            num, _ = _bif_block_num_raw(crit, logits_f, targs_block, consts["w_ci"][rs:re], W_dsmr, neut_mass)
-                            sum_Wbce += num.double()
-                    else:
-                        _, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits, center, center_global_det)
-                        W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts)
-                        sum_Wbce += (W * bce).double().sum()
+    cls_imb_mean = None
+    if cfg_w["cls_imb"]["norm"]:  # mean of W_ci over BxB -- embedding-free, tiled to stay O(C*B)
+        s = torch.zeros((), dtype=torch.float64, device=device)
+        for rs in range(lo, hi, chunk_size):
+            W_ci = compute_cls_imb_wts(cfg_w["cls_imb"], crit.counts, class_encs_b[rs:rs + chunk_size],
+                                       crit.wting_dim, crit.wt_mean, crit.batch_size, class_encs_cols=class_encs_b)
+            s += W_ci.double().sum()
         if world_size > 1:
-            dist.all_reduce(sum_Wbce)
-        L_value = (sum_Wbce / B).float()
+            dist.all_reduce(s)
+        cls_imb_mean = (s / (B * B)).float()
 
-    return consts, L_value
+    return [
+        {"cls_imb_mean": cls_imb_mean,
+         "dsmr_mass": bce_dsmr_mass(term_spec_fns, class_encs_b, B, chunk_size, lo, hi, world_size) if cfg_w["bce"]["dsmr"] else None}
+        for _, term_spec_fns in terms
+    ]
 
-def _crit_center_grad_mean(crit, secondary, img, txt, targ_fn, class_encs_b, B, consts, coeff,
+def _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B):
+    """
+    For one block's [C, B] logits tiles over rows rs:re (_crit_block_logits_f; a bifurcated branch's tiles
+    in its own anchor frame): each loss term's weighted loss numerator and detached raw BCE sum against
+    the term's target tile -- on the term's own logits tile under separate logit scalars, else the one
+    shared -- under the term's consts and -- bifurcated -- its block invariants (_bif_block_invariants).
+    """
+    nums, raws = [], []
+    logits_terms = logits_fs if crit.sep_scalars else logits_fs * len(term_blocks)
+    for logits_f, targs, invs, consts in zip(logits_terms, term_blocks, term_invs, consts_list):
+        if crit.bifurcated:
+            num, bce = _bif_block_num_raw(crit, logits_f, targs, consts["w_ci"][rs:re], *invs)
+        else:
+            W, bce = _crit_block_weight_bce(crit, logits_f, targs, class_encs_b[rs:re], class_encs_b, B, consts)
+            num = (W * bce).sum()
+        nums.append(num)
+        raws.append(bce.sum().detach().double())
+    return nums, raws
+
+def _term_loss_values(crit, img, txt, term_fns, consts_list, class_encs_b, B, compute_logits, chunk_size,
+                      autocast_ctx, lo, hi, world_size, device):
+    """
+    loss.unitless: each loss term's full weighted loss L_k, detached -- the magnitudes term_coeffs
+    normalizes by, which the grad sweep needs before its first tile. A no_grad band sweep of the forward
+    (one logits tile per block / branch serves every term sharing its scalars), all-reduced across bands. "sim" centering is
+    reproduced through the full-batch sim mean (the cos mean factorization -- the same value in every
+    branch frame); grad_proj* leave the forward untouched.
+    """
+    center = crit.cfg["logits"]["bce"]["center"]
+    branches = _bif_branches(img, txt) if crit.bifurcated else ((img, txt),)
+    sums = torch.zeros(len(term_fns), dtype=torch.float64, device=device)
+    with torch.no_grad():
+        cgs = [torch.dot(img.mean(0), txt.mean(0)) if center == "sim" else None] * n_scalar_pairs(crit)
+        for rs in range(lo, hi, chunk_size):
+            re = rs + chunk_size
+            with autocast_ctx():
+                term_blocks = [term_fn(rs, re) for term_fn in term_fns]
+                term_invs = [_bif_block_invariants(crit, targs, B) if crit.bifurcated else None for targs in term_blocks]
+                for rows_live, cols in branches:
+                    _, logits_fs = _crit_block_logits_f(crit, rows_live[rs:re], cols, compute_logits, center, cgs, half_live=crit.bifurcated)
+                    nums, _ = _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B)
+                    sums += torch.stack(nums).double()
+    if world_size > 1:
+        dist.all_reduce(sums)
+    return list((sums / B).float())
+
+def _crit_center_grad_mean(crit, img, txt, term_fns, coeffs, class_encs_b, B, consts_list,
                            compute_logits, chunk_size, autocast_ctx, lo, hi, world_size, device):
     """
     grad_proj/grad_proj2: the detached full-batch mean of the incoming gradient at the criterion's
     projection node, so every tile of the grad sweep subtracts the same constant the full-batch
     _ZeroSumGrad projection would (a per-tile mean would be wrong). Sweeps this rank's band with
     tile-local autograd (the sim tile as leaf, embeddings detached: graphs stay O(C*B), no param
-    .grad touched), which captures the focal-weight gradient terms exactly; band partials are
-    all-reduced. Returns the constant at the node the mode projects: the sim node for grad_proj
+    .grad touched) over the blended loss -- the terms' numerators under their blend coefficients
+    `coeffs` (Criterion.term_coeffs) -- which captures the focal-weight gradient terms exactly; band
+    partials are all-reduced. Returns the constant at the node the mode projects: the sim node for grad_proj
     (e^t folded in by autograd), the scaled-sim node for grad_proj2 (the post-clamp e^t divided
     back out, recovered as a probe gradient through compute_logits -- half_live changes no values
     and no dL/dsim, so the plain probe holds for bifurcated branches too).
 
-    A bifurcated criterion gets a per-branch (i2t, t2i) tuple instead of a scalar: each branch's
-    projection node sees only its own incoming grad (the branches join only at the scalar loss),
-    and the two frames' grad means differ under per-anchor row weighting, so a shared constant
-    would be silently wrong.
+    One constant per logit-scalar pair (n_scalar_pairs), returned as a list: every compute_logits call
+    projects at its own node, which under separate logit scalars sees only its own term's incoming grad
+    (under grad_proj2 at its own e^t). A bifurcated criterion gets a per-branch (i2t, t2i) tuple instead
+    of a scalar: each branch's projection node sees only its own incoming grad (the branches join only
+    at the scalar loss), and the two frames' grad means differ under per-anchor row weighting, so a
+    shared constant would be silently wrong.
     """
     clamp = crit.cfg["logits"]["scale"]["clamp"]
     branches = _bif_branches(img, txt) if crit.bifurcated else ((img, txt),)
-    g_sums = torch.zeros(len(branches), dtype=torch.float64, device=device)
+    n_pairs = n_scalar_pairs(crit)
+    g_sums = torch.zeros(n_pairs, len(branches), dtype=torch.float64, device=device)
     for rs in range(lo, hi, chunk_size):
         re = rs + chunk_size
         tile_losses, sim_leaves = [], []
         with autocast_ctx():
-            targs_block = targ_fn(rs, re)
-            if crit.bifurcated:
-                W_dsmr, neut_mass = _bif_block_invariants(crit, targs_block, B)
+            term_blocks = [term_fn(rs, re) for term_fn in term_fns]
+            term_invs = [_bif_block_invariants(crit, targs, B) if crit.bifurcated else None for targs in term_blocks]
             for rows_live, cols in branches:
                 sim_leaf = compute_sim(rows_live[rs:re].detach(), cols.detach(), crit.cfg["sim"]).requires_grad_(True)
-                logits_f = compute_logits(sim_leaf, clamp, None, secondary=secondary).float()
-                if crit.bifurcated:
-                    num, _ = _bif_block_num_raw(crit, logits_f, targs_block, consts["w_ci"][rs:re], W_dsmr, neut_mass)
-                    tile_loss = num / B
-                else:
-                    W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts)
-                    tile_loss = (W * bce).sum() / B
-                tile_losses.append(tile_loss)
+                logits_fs = [compute_logits(sim_leaf, clamp, None, secondary=bool(g)).float() for g in range(n_pairs)]
+                nums, _ = _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B)
+                wnums = [c * num / B for c, num in zip(coeffs, nums)]
+                tile_losses.append(wnums if crit.sep_scalars else [sum(wnums)])  # the loss through each pair's logits
                 sim_leaves.append(sim_leaf)
-        for j, (tile_loss, sim_leaf) in enumerate(zip(tile_losses, sim_leaves)):
-            g_sums[j] += torch.autograd.grad(tile_loss, sim_leaf)[0].double().sum()
+        for j, (pair_losses, sim_leaf) in enumerate(zip(tile_losses, sim_leaves)):
+            for g, pair_loss in enumerate(pair_losses):
+                g_sums[g, j] += torch.autograd.grad(pair_loss, sim_leaf)[0].double().sum()
     if world_size > 1:
         dist.all_reduce(g_sums)
-    cs = (coeff * g_sums / (B * B)).float()  # mean incoming grad at the sim node(s), loss-mix coefficient folded in
+    cs = (g_sums / (B * B)).float()  # mean incoming grad at the sim node(s)
     if crit.cfg["logits"]["bce"]["center"] == "grad_proj2":
-        # the scaled-sim node's grad = (sim node's grad) / e^t; recover the post-clamp e^t as a probe gradient
-        probe = torch.zeros(1, 1, device=device, requires_grad=True)
-        e_det = torch.autograd.grad(compute_logits(probe, clamp, None, secondary=secondary).sum(), probe)[0].reshape(()).detach()
-        cs = cs / e_det
+        # the scaled-sim node's grad = (sim node's grad) / e^t; recover each pair's post-clamp e^t as a probe gradient
+        for g in range(n_pairs):
+            probe = torch.zeros(1, 1, device=device, requires_grad=True)
+            e_det = torch.autograd.grad(compute_logits(probe, clamp, None, secondary=bool(g)).sum(), probe)[0].reshape(()).detach()
+            cs[g] = cs[g] / e_det
     cs = cs.detach()
-    return tuple(cs) if crit.bifurcated else cs[0]
+    return [tuple(cs_g) if crit.bifurcated else cs_g[0] for cs_g in cs]
 
 def _gsum_hook(acc):
     """Tensor backward hook accumulating the incoming grad's sum into `acc`. Returns None so the
@@ -1025,46 +1215,46 @@ def _gsum_hook(acc):
         acc.add_(g.double().sum())
     return hook
 
-def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2, mix, unitless,
-                              compute_logits, chunk_size, mixed_prec, device, rank, world_size,
-                              sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,)):
+def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute_logits, chunk_size, mixed_prec,
+                              device, rank, world_size, sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,)):
     """
     Tiled + row-band-sharded global-batch BCE-family loss + backward (GradCache-style representation
     gradients). Computes the exact same weighted loss and gradients as the full-batch path
-    (BCECriterion.__call__ / BifurcatedBCECriterion.__call__ blended by _global_batch_loss) over the
-    full BxB matrix, but never materializes it and shares the work
-    across ranks: the BxB rows split into world_size equal bands (SigLIP-style decomposition), this rank
-    sums only its band [rank*b, (rank+1)*b) over row-blocks of C x B (b an exact multiple of C =
-    chunk_size), and each block's gradient is backpropagated into the embedding leaves as computed, so
-    peak VRAM is O(C*B) and per-rank compute is O(B^2/world_size). The loss/raw totals and batch stats
-    are all-reduced, so every rank returns identical full-batch values; the leaves' .grad hold this
-    band's PARTIAL dL/dembs, which sum to the full gradient across ranks (the caller completes them --
-    see batch_step_chunked). Exact up to floating-point summation order.
+    (BCECriterion.__call__ / BifurcatedBCECriterion.__call__ via _global_batch_loss) over the full BxB
+    matrix, but never materializes it and shares the work across ranks: the BxB rows split into
+    world_size equal bands (SigLIP-style decomposition), this rank sums only its band [rank*b, (rank+1)*b)
+    over row-blocks of C x B (b an exact multiple of C = chunk_size), and each block's gradient is
+    backpropagated into the embedding leaves as computed, so peak VRAM is O(C*B) and per-rank compute is
+    O(B^2/world_size). The loss/raw totals and batch stats are all-reduced, so every rank returns
+    identical full-batch values; the leaves' .grad hold this band's PARTIAL dL/dembs, which sum to the
+    full gradient across ranks (the caller completes them -- see batch_step_chunked). Exact up to
+    floating-point summation order.
 
-    Supports a BCE-family loss mix: loss = (1 - mix)*s1*L1 + mix*s2*L2, where Lk is criterion k's
-    weighted loss and sk follows loss.unitless: 1 (false) or 1/nk (true), with
-    nk = Lk.detach() (a bifurcated Lk normalizes by Lk/2, its gradient-scale-equivalent value), as
-    in _global_batch_loss (mix == 0 -> just s1*L1).
-    All cross-tile-coupled normalizers are precomputed detached constants (_precompute_crit_consts),
-    so the backward is single-pass.
+    The loss is the criterion's blend of loss terms (loss_term_spec_fns, the tiled Criterion.loss_terms):
+    under loss.blend_type targ the one loss against the blended target tiles (blend_targ_block_fn: sum_k
+    w_k Q_k over the live target specs, as the full-batch targ_memb / targ_dist), under loss.blend_type
+    loss each spec's own loss weighted w_k -- every term on the block's one logits tile, or each on its
+    own scalar pair's tile under separate logit scalars (Criterion.sep_scalars). All
+    cross-tile-coupled normalizers are precomputed detached constants (_precompute_crit_consts, and under
+    loss.unitless the terms' loss magnitudes -- _term_loss_values), so the backward is single-pass.
 
     - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive band-partial dL/dembs
                          in their .grad. A bifurcated criterion sweeps two branch tiles per block
                          (module header), routing each branch's grads into one leaf.
-    - crit1, crit2 ----- primary / secondary BCECriterion / BifurcatedBCECriterion (crit2 None when
-                         mix == 0).
-    - compute_logits --- VLMWrapper.compute_logits(sim, clamp, center, secondary, center_global) -> logits
-                         tile; center_global carries the precomputed full-batch centering quantity
-                         (module header) so tiled centering is exact.
+    - crit ------------- the BCECriterion / BifurcatedBCECriterion.
+    - compute_logits --- VLMWrapper.compute_logits(sim, clamp, center, center_global, half_live, secondary)
+                         -> logits tile; center_global carries the precomputed full-batch centering
+                         quantity (module header) so tiled centering is exact, secondary selects the
+                         second logit-scalar pair (separate logit scalars: one logits tile per loss term).
     - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
-    - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sims (None, None).
+    - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sim None.
     - sim_targ_stats ---- False skips the per-tile stats accumulation and returns batch_stats None.
-    - hpsm_kappas ------- kappa values the sim{k}_margin* stats are reported at (one entry each).
+    - hpsm_kappas ------- kappa values the sim_margin* stats are reported at (one entry each).
 
-    Returns (loss, loss_raw, batch_stats, grad_sum_sims), all detached; gradients left in the leaves' /
-    params' .grad. grad_sum_sims = (sum(dL/dsim1), sum(dL/dsim2)|None), the full-batch sums accumulated
-    tile-by-tile via backward hooks (all-reduced across bands) -- the same values the full-batch path
-    reads off the retained sim grads.
+    Returns (loss, loss_raw, batch_stats, grad_sum_sim), all detached; gradients left in the leaves' /
+    params' .grad. grad_sum_sim = sum(dL/dsim), the full-batch sum accumulated tile-by-tile via backward
+    hooks (all-reduced across bands) -- the same value the full-batch path reads off the retained sim
+    grads.
     """
     B = img.size(0)
     b = B // world_size
@@ -1076,133 +1266,100 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit1, crit2,
             f"multiple of hardware.loss_chunk_size ({chunk_size}); got band size {b}"
         )
     lo, hi = rank * b, (rank + 1) * b
-    crits = [(crit1, False)] + ([(crit2, True)] if mix != 0.0 else [])
 
     def autocast_ctx():
         return torch.autocast(device_type=device.type, dtype=torch.bfloat16) if mixed_prec else nullcontext()
 
-    centers = [crit.cfg["logits"]["bce"]["center"] for crit, _ in crits]
-    for k, (crit, _) in enumerate(crits):
-        # config rejects this combo too (TrainConfig); guard direct callers against a silently-wrong tile mean
-        assert not (centers[k] == "sim" and crit.cfg["sim"] != "cos"), "center: sim under chunking requires cos sim"
-    m_det = None
-    if "sim" in centers:
-        # full-batch sim-matrix mean via the cos bilinearity: mean_ij(img_i . txt_j) = mean(img) . mean(txt)
-        with torch.no_grad():
-            m_det = torch.dot(img.mean(0), txt.mean(0))
+    center = crit.cfg["logits"]["bce"]["center"]
+    # config rejects this combo too (TrainConfig); guard direct callers against a silently-wrong tile mean
+    assert not (center == "sim" and crit.cfg["sim"] != "cos"), "center: sim under chunking requires cos sim"
 
-    need_L = unitless
-    targ_fns, consts_list, L_values = [], [], []
-    for k, (crit, secondary) in enumerate(crits):
-        targ_fn = make_targ_block_fn(crit.cfg["targ"], class_encs_b, targ_data_b, B, device)
-        consts, L_val = _precompute_crit_consts(crit, secondary, img, txt, targ_fn, class_encs_b, B,
-                                                compute_logits, chunk_size, mixed_prec, device, need_L, autocast_ctx,
-                                                lo, hi, world_size,
-                                                centers[k], m_det if centers[k] == "sim" else None)
-        targ_fns.append(targ_fn); consts_list.append(consts); L_values.append(L_val)
+    terms = loss_term_spec_fns(crit, make_targ_block_fns(crit, class_encs_b, targ_data_b, B, device))
+    term_ws = [w for w, _ in terms]
+    term_fns = [blend_targ_block_fn(term_spec_fns) for _, term_spec_fns in terms]
+    consts_list = _precompute_crit_consts(crit, terms, class_encs_b, B, chunk_size, device, lo, hi, world_size)
+    L_values = (
+        _term_loss_values(crit, img, txt, term_fns, consts_list, class_encs_b, B, compute_logits, chunk_size,
+                          autocast_ctx, lo, hi, world_size, device)
+        if crit.cfg["unitless"] else None
+    )
+    coeffs = crit.term_coeffs(term_ws, L_values)
 
-    mix_w = [1.0] if mix == 0.0 else [1.0 - mix, mix]
-    if need_L:
-        # unitless: /nk with nk = Lk.detach(); a bifurcated loss normalizes by Lk/2, its gradient-scale-
-        # equivalent value (un-halved branch sum reads 2x on 1x grads -- see _global_batch_loss)
-        mags = [(L_values[k] / (2.0 if crits[k][0].bifurcated else 1.0)).clamp_min(1e-12) for k in range(len(crits))]
-        coeffs = [mix_w[k] / mags[k] for k in range(len(crits))]
-    else:
-        coeffs = list(mix_w)
-
-    # grad_proj*: the detached full-batch incoming-grad mean per criterion -- the constant every tile
-    # of the grad sweep subtracts in place of the full path's g.mean() (_ZeroSumGradConst)
-    center_consts = [
-        _crit_center_grad_mean(crit, secondary, img, txt, targ_fns[k], class_encs_b, B, consts_list[k],
-                               coeffs[k], compute_logits, chunk_size, autocast_ctx, lo, hi, world_size, device)
-        if centers[k] in ("grad_proj", "grad_proj2") else None
-        for k, (crit, secondary) in enumerate(crits)
-    ]
+    # grad_proj*: the detached full-batch incoming-grad mean -- the constant every tile of the grad sweep
+    # subtracts in place of the full path's g.mean() (_ZeroSumGradConst)
+    center_const = (
+        _crit_center_grad_mean(crit, img, txt, term_fns, coeffs, class_encs_b, B, consts_list, compute_logits,
+                               chunk_size, autocast_ctx, lo, hi, world_size, device)
+        if center in ("grad_proj", "grad_proj2") else None
+    )
 
     # sim-grad-sum metric (learning-curve strip): accumulated tile-by-tile via backward hooks. Under
     # "sim" centering part of the full-path dL/dsim routes through the global mean, which here lives
     # on the leaves and bypasses the tiles -- a hook on the in-graph mean captures it (dm/dsim sums
-    # to exactly 1), so the folded totals match the full-batch sim.grad.sum().
-    grad_sums = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
+    # to exactly 1), so the folded total matches the full-batch sim.grad.sum().
+    grad_sum = torch.zeros((), dtype=torch.float64, device=device)
 
-    wbce_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
-    raw_tot = [torch.zeros((), dtype=torch.float64, device=device) for _ in crits]
-    stats = [_SimTargStatsAccum(device, hpsm_kappas, B) for _ in crits]
+    wbce_tot = torch.zeros((), dtype=torch.float64, device=device)
+    raw_tot = torch.zeros((), dtype=torch.float64, device=device)
+    stats = _SimTargStatsAccum(device, hpsm_kappas, B)
+    n_pairs = n_scalar_pairs(crit)
 
     for rs in range(lo, hi, chunk_size):
         re = rs + chunk_size  # the band is an exact multiple of chunk_size (checked above)
-        targ_blocks = []
-        sim_blocks = []
-        logits_blocks = []
         with autocast_ctx():
-            block_loss = 0.0
-            for k, (crit, secondary) in enumerate(crits):
-                targs_block = targ_fns[k](rs, re)
-                if crit.bifurcated:
-                    W_dsmr, neut_mass = _bif_block_invariants(crit, targs_block, B)
-                    num = 0.0
-                    for j, (rows_live, cols) in enumerate(_bif_branches(img, txt)):
-                        cg = center_consts[k][j] if center_consts[k] is not None else None
-                        if centers[k] == "sim":
-                            # per-branch in-graph mean: the centering's backward routes into the
-                            # branch's live tower only, mirroring the branch's detach pattern
-                            cg = torch.dot(rows_live.mean(0), cols.mean(0))
-                            if sim_grad_sums and cg.requires_grad:
-                                cg.register_hook(_gsum_hook(grad_sums[k]))
-                        sim_block, logits_f = _crit_block_logits_f(crit, secondary, rows_live[rs:re], cols, compute_logits, centers[k], cg, half_live=True)
-                        if sim_grad_sums and sim_block.requires_grad:
-                            sim_block.register_hook(_gsum_hook(grad_sums[k]))
-                        b_num, bce = _bif_block_num_raw(crit, logits_f, targs_block, consts_list[k]["w_ci"][rs:re], W_dsmr, neut_mass)
-                        num = num + b_num  # branches summed un-halved (full-batch: mean1 + mean2 = (sum1 + sum2)/B)
-                        raw_tot[k] += bce.sum().detach().double()
-                        if j == 0:
-                            sim_block_k = sim_block.detach()  # i2t frame -- values match the non-bif sim
-                            logits_block_k = logits_f.detach()
-                else:
-                    cg = center_consts[k]
-                    if centers[k] == "sim":
-                        # in-graph per block: the centering's backward routes through the mean embeddings
-                        # into every leaf row, completing the exact full-batch projection across blocks
-                        cg = torch.dot(img.mean(0), txt.mean(0))
+            term_blocks = [term_fn(rs, re) for term_fn in term_fns]
+            term_invs = [_bif_block_invariants(crit, targs, B) if crit.bifurcated else None for targs in term_blocks]
+            if crit.bifurcated:
+                num = 0.0
+                for j, (rows_live, cols) in enumerate(_bif_branches(img, txt)):
+                    cgs = [cs_g[j] for cs_g in center_const] if center_const is not None else [None] * n_pairs
+                    if center == "sim":
+                        # per-branch in-graph mean: the centering's backward routes into the
+                        # branch's live tower only, mirroring the branch's detach pattern
+                        cg = torch.dot(rows_live.mean(0), cols.mean(0))
                         if sim_grad_sums and cg.requires_grad:
-                            cg.register_hook(_gsum_hook(grad_sums[k]))
-                    sim_block, logits_f = _crit_block_logits_f(crit, secondary, img[rs:re], txt, compute_logits, centers[k], cg)
+                            cg.register_hook(_gsum_hook(grad_sum))
+                        cgs = [cg] * n_pairs
+                    sim_block, logits_fs = _crit_block_logits_f(crit, rows_live[rs:re], cols, compute_logits, center, cgs, half_live=True)
                     if sim_grad_sums and sim_block.requires_grad:
-                        sim_block.register_hook(_gsum_hook(grad_sums[k]))
-                    W, bce = _crit_block_weight_bce(crit, logits_f, targs_block, class_encs_b[rs:re], class_encs_b, B, consts_list[k])
-                    num = (W * bce).sum()
-                    raw_tot[k] += bce.sum().detach().double()
-                    sim_block_k = sim_block.detach()
-                    logits_block_k = logits_f.detach()
-                block_loss = block_loss + coeffs[k] * num / B
-                wbce_tot[k] += num.detach().double()
-                targ_blocks.append(targs_block.detach())
-                sim_blocks.append(sim_block_k)
-                logits_blocks.append(logits_block_k)
+                        sim_block.register_hook(_gsum_hook(grad_sum))
+                    nums, raws = _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B)
+                    num = num + sum(c * b_num for c, b_num in zip(coeffs, nums))  # branches summed un-halved (full-batch: mean1 + mean2 = (sum1 + sum2)/B)
+                    raw_tot += sum(w * raw for w, raw in zip(term_ws, raws))
+                    if j == 0:
+                        sim_block_stat = sim_block.detach()  # i2t frame -- values match the non-bif sim
+                        logits_block_stat = logits_fs[0].detach()  # the primary pair's, as the full-batch stats read
+            else:
+                cgs = center_const if center_const is not None else [None] * n_pairs
+                if center == "sim":
+                    # in-graph per block: the centering's backward routes through the mean embeddings
+                    # into every leaf row, completing the exact full-batch projection across blocks
+                    cg = torch.dot(img.mean(0), txt.mean(0))
+                    if sim_grad_sums and cg.requires_grad:
+                        cg.register_hook(_gsum_hook(grad_sum))
+                    cgs = [cg] * n_pairs
+                sim_block, logits_fs = _crit_block_logits_f(crit, img[rs:re], txt, compute_logits, center, cgs)
+                if sim_grad_sums and sim_block.requires_grad:
+                    sim_block.register_hook(_gsum_hook(grad_sum))
+                nums, raws = _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B)
+                num = sum(c * b_num for c, b_num in zip(coeffs, nums))
+                raw_tot += sum(w * raw for w, raw in zip(term_ws, raws))
+                sim_block_stat = sim_block.detach()
+                logits_block_stat = logits_fs[0].detach()  # the primary pair's, as the full-batch stats read
+            block_loss = num / B
+            wbce_tot += num.detach().double()
         block_loss.backward()
         if sim_targ_stats:
-            for k in range(len(crits)):
-                stats[k].update(sim_blocks[k], targ_blocks[k], logits_blocks[k])
+            # the blended target tile (targ_memb): the terms' tiles under their weights, either blend type
+            stats.update(sim_block_stat, sum(w * targs for w, targs in zip(term_ws, term_blocks)), logits_block_stat)
 
     if world_size > 1:  # fold the band-partial loss totals; the leaves' .grad stay band-partial
-        packed = torch.stack(wbce_tot + raw_tot + grad_sums)
+        packed = torch.stack([wbce_tot, raw_tot, grad_sum])
         dist.all_reduce(packed)
-        wbce_tot = [packed[k] for k in range(len(crits))]
-        raw_tot = [packed[len(crits) + k] for k in range(len(crits))]
-        grad_sums = [packed[2 * len(crits) + k] for k in range(len(crits))]
+        wbce_tot, raw_tot, grad_sum = packed.unbind()
 
-    loss = torch.zeros((), dtype=torch.float64, device=device)
-    loss_raw = torch.zeros((), dtype=torch.float64, device=device)
-    for k in range(len(crits)):
-        loss += coeffs[k] * (wbce_tot[k] / B)
-        loss_raw += mix_w[k] * (raw_tot[k] / B)
-    if sim_grad_sums:
-        grad_sum_sims = (grad_sums[0].item(), grad_sums[1].item() if len(crits) == 2 else None)
-    else:
-        grad_sum_sims = (None, None)
-    batch_stats = None
-    if sim_targ_stats:
-        batch_stats = {}
-        for k in range(len(crits)):  # fixed order: finalize runs collectives, so ranks must agree
-            batch_stats.update(stats[k].finalize(world_size, idx=k + 1))
-    return loss.float(), loss_raw.float(), batch_stats, grad_sum_sims
+    loss = (wbce_tot / B).float()
+    loss_raw = (raw_tot / B).float()
+    grad_sum_sim = grad_sum.item() if sim_grad_sums else None
+    batch_stats = stats.finalize(world_size) if sim_targ_stats else None
+    return loss, loss_raw, batch_stats, grad_sum_sim

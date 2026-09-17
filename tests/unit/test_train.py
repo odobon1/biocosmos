@@ -11,13 +11,14 @@ from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
 
-def _full_loss_cfg(crit="bce", targ="mp"):
+def _full_loss_cfg(crit="bce", lambda_=0.0):
     return {
         "crit": crit,
-        "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}},
-        "bce": {"targ_mass_neut": False},
         "sim": "cos",
-        "targ": targ,
+        "lambda": lambda_,
+        "blend_type": "targ",
+        "unitless": False,
+        "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {
                 "type": "inv_freq",
@@ -29,10 +30,15 @@ def _full_loss_cfg(crit="bce", targ="mp"):
             "bce": {"dsmr": True},
         },
         "logits": {
+            "shared": True,
             "scale": {"init": None, "freeze": False, "clamp": False},
             "bce": {"center": None, "bias": {"init": None, "freeze": False}},
         },
     }
+
+
+def _targ_cfg(targ):
+    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 @dataclass
@@ -57,9 +63,9 @@ class _FakeCoordCfg:
     dropout: dict = field(default_factory=lambda: {
         "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
     })
-    loss1: dict = field(default_factory=_full_loss_cfg)
-    loss: dict = field(default_factory=lambda: {"mix": 0.0, "unitless": False, "shared_scalars": False})
-    loss2: dict = field(default_factory=lambda: _full_loss_cfg(targ="phylo"))
+    loss: dict = field(default_factory=_full_loss_cfg)
+    loss1: dict = field(default_factory=lambda: _targ_cfg("mp"))
+    loss2: dict = field(default_factory=lambda: _targ_cfg("phylo"))
     opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
 
     def __post_init__(self):
@@ -76,7 +82,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
 
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
-    assert "loss1" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert "loss" in config and "loss1" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
     assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
@@ -119,102 +125,97 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert "clip" not in config["arch"]  # non_causal is CLIP-only
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
     assert "stoch_depth" in config["dropout"]["siglip"]
-    assert "loss2" not in config  # mix 0.0
-    assert "infonce" not in config["loss1"]  # InfoNCE-only sub-block
-    assert "bce" not in config["loss1"]  # targ_mass_neut is bif_bce-only
-    cls_imb = config["loss1"]["wting"]["cls_imb"]
+    assert "loss2" not in config  # lambda 0.0
+    assert "blend_type" not in config["loss"] and config["loss"]["unitless"] is False  # a lone target: nothing to blend
+    assert "shared" not in config["loss"]["logits"]  # ... and no second term to give its own logit scalars
+    assert config["loss1"] == {"targ": "mp"}  # the InfoNCE-only tsm sub-block pruned under a BCE crit
+    assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
+    cls_imb = config["loss"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
-    assert cls_imb["norm"] is True  # no unit-scale -> the rescale sticks
-    assert "freeze" in config["loss1"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
+    assert cls_imb["norm"] is True
+    assert "freeze" in config["loss"]["logits"]["bce"]["bias"]  # SigLIP logit_bias is a real Parameter
 
     # CLIP + InfoNCE + class_bal: the 1D path reads none of the BCE-only machinery
     (tmp_path / "s2").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s2")
     cfg = _FakeCoordCfg()
     cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
-    cfg.loss1 = _full_loss_cfg(crit="infonce")
-    cfg.loss1["wting"]["cls_imb"]["type"] = "class_bal"
-    cfg.loss1["wting"]["cls_imb"]["norm"] = False
+    cfg.loss = _full_loss_cfg(crit="infonce")
+    cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
+    cfg.loss["wting"]["cls_imb"]["norm"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
     assert config["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
-    wting = config["loss1"]["wting"]
+    wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
         "type": "class_bal", "class_bal": {"beta": 0.9999}, "norm": False,
     }
-    assert "bias" not in config["loss1"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
+    assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
 
     # bif_bce: 1D per-anchor weighting, and the BCE-family blocks stay live
     (tmp_path / "s4").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s4")
     cfg = _FakeCoordCfg()
-    cfg.loss1 = _full_loss_cfg(crit="bif_bce")
+    cfg.loss = _full_loss_cfg(crit="bif_bce")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
     assert "infonce" not in config["loss1"]
-    assert config["loss1"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
-    assert config["loss1"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
+    assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
+    assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
-    # all weight factors off -> whole wting block inert; unitless cancels loss2's norm scalar
+    # all weight factors off -> whole wting block inert; a live blend keeps both target specs
     (tmp_path / "s3").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s3")
     cfg = _FakeCoordCfg()
-    cfg.loss1["wting"]["cls_imb"]["type"] = None
-    del cfg.loss1["wting"]["focal"]  # config load prunes the block when gamma = 0.0
-    cfg.loss1["wting"]["bce"]["dsmr"] = False
-    cfg.loss["mix"] = 0.3
-    cfg.loss["unitless"] = True
+    cfg.loss["wting"]["cls_imb"]["type"] = None
+    del cfg.loss["wting"]["focal"]  # config load prunes the block when gamma = 0.0
+    cfg.loss["wting"]["bce"]["dsmr"] = False
+    cfg.loss["lambda"] = 0.3
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s3" / "config.json").read_text())
-    assert "wting" not in config["loss1"]
-    assert config["loss"] == {"mix": 0.3, "unitless": True, "shared_scalars": False}
-    cls_imb2 = config["loss2"]["wting"]["cls_imb"]
-    assert "norm" not in cls_imb2  # its rescale is cancelled by unit-scaling
+    assert "wting" not in config["loss"]
+    assert config["loss"]["lambda"] == 0.3
+    assert "blend_type" not in config["loss"]  # no loss factor reads the target: the blend types coincide
+    assert config["loss1"] == {"targ": "mp"} and config["loss2"] == {"targ": "phylo"}
 
-    # raw blend (unitless false) under an active mix: nothing cancels the norm scalar -> norm stays live
+    # lambda 1.0: the primary target spec is never read
     (tmp_path / "s5").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s5")
     cfg = _FakeCoordCfg()
-    cfg.loss["mix"] = 0.3
+    cfg.loss["lambda"] = 1.0
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s5" / "config.json").read_text())
-    assert config["loss"] == {"mix": 0.3, "unitless": False, "shared_scalars": False}
-    assert config["loss2"]["wting"]["cls_imb"]["norm"] is True
+    assert "loss1" not in config and config["loss2"] == {"targ": "phylo"}
 
-    # unitless applies to a lone loss too: loss1's norm scalar cancels with no secondary loss mixed in
+    # InfoNCE: the tsm sub-block is read for every live target, except under sp (the linear mapping is a no-op)
     (tmp_path / "s6").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s6")
     cfg = _FakeCoordCfg()
-    cfg.loss["unitless"] = True
+    cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
+    cfg.loss1 = _targ_cfg("sp")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s6" / "config.json").read_text())
-    assert config["loss"] == {"mix": 0.0, "unitless": True} and "loss2" not in config
-    assert "norm" not in config["loss1"]["wting"]["cls_imb"]
+    assert config["loss1"] == {"targ": "sp"}
+    assert config["loss2"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
+    assert config["loss"]["blend_type"] == "targ"  # a live blend under focal: the blend types differ
+    assert "shared" not in config["loss"]["logits"]  # a target blend is one loss on one set of logits
 
-    # shared logit scalars under a live blend: loss2 runs on loss1's pair, so its own logits block is inert
+    # unitless: its rescale cancels cls_imb.norm's per-batch normalizer, and makes a blend's type matter
     (tmp_path / "s7").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s7")
     cfg = _FakeCoordCfg()
-    cfg.loss["mix"] = 0.3
-    cfg.loss["shared_scalars"] = True
+    cfg.loss = _full_loss_cfg(lambda_=0.3)
+    cfg.loss["unitless"], cfg.loss["blend_type"] = True, "loss"
+    del cfg.loss["wting"]["focal"]
+    cfg.loss["wting"]["bce"]["dsmr"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s7" / "config.json").read_text())
-    assert config["loss"] == {"mix": 0.3, "unitless": False, "shared_scalars": True}
-    assert "logits" not in config["loss2"] and "logits" in config["loss1"]
-
-    # sharing needs two live losses: at mix 1.0 the flag is inert and loss2 keeps its own logits block
-    (tmp_path / "s8").mkdir()
-    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s8")
-    cfg = _FakeCoordCfg()
-    cfg.loss["mix"] = 1.0
-    cfg.loss["shared_scalars"] = True
-    ArtifactManager.save_metadata_coord(cfg)
-    config = json.loads((tmp_path / "s8" / "config.json").read_text())
-    assert config["loss"] == {"mix": 1.0, "unitless": False}
-    assert "logits" in config["loss2"]
+    assert (config["loss"]["blend_type"], config["loss"]["unitless"]) == ("loss", True)
+    assert config["loss"]["logits"]["shared"] is True  # a live loss blend: its terms could run on separate scalars
+    assert config["loss"]["wting"]["cls_imb"] == {"type": "inv_freq", "inv_freq": {"gamma": 0.5}}
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
@@ -333,76 +334,57 @@ def test_format_and_merge_mem_running_max() -> None:
     assert merge_mem(snap, later) == {"ram": "6.0/128.0 GB", "vram": "37.5/79.3 GB"}
 
 
-def _fake_pipe(loss_crit, loss2_crit, mix, requires_grad, shared_scalars=False):
-    """A stand-in TrainPipeline carrying just what _tracked_logit_scalars reads: the loss configs and
-    an unwrapped model whose logit scalars have the given requires_grad flags (no second pair under
-    shared scalars, as in models.py)."""
-    attrs = ("logit_scale", "logit_bias") + (() if shared_scalars else ("logit_scale2", "logit_bias2"))
-    model = SimpleNamespace(**{attr: SimpleNamespace(requires_grad=requires_grad[attr]) for attr in attrs})
-    return SimpleNamespace(
-        cfg=SimpleNamespace(loss={"mix": mix}, loss1={"crit": loss_crit}, loss2={"crit": loss2_crit},
-                            shared_scalars=shared_scalars),
-        modelw=SimpleNamespace(_unwrapped_model=model),
-    )
+def _fake_pipe(loss_crit, requires_grad, sep=False):
+    """A stand-in TrainPipeline carrying just what _tracked_logit_scalars reads: the loss config and an
+    unwrapped model whose logit scalars have the given requires_grad flags -- under `sep` a live loss blend
+    on separate logit scalars, the model then carrying the second pair (same flags)."""
+    attrs = {attr: SimpleNamespace(requires_grad=requires_grad[attr]) for attr in ("logit_scale", "logit_bias")}
+    if sep:
+        attrs.update({f"{attr}2": scalar for attr, scalar in attrs.items()})
+    loss = {"crit": loss_crit, "lambda": 0.3 if sep else 0.0, "blend_type": "loss", "logits": {"shared": not sep}}
+    return SimpleNamespace(cfg=SimpleNamespace(loss=loss), modelw=SimpleNamespace(_unwrapped_model=SimpleNamespace(**attrs)))
 
 
-def test_tracked_logit_scalars_skips_frozen_inert_and_inactive() -> None:
-    # a scalar gets a learning-curve series only when it's learnable AND meaningful: bias is
-    # BCE-family-only (inert under InfoNCE), loss2's pair only when loss2 is mixed in
-    all_learnable = dict.fromkeys(("logit_scale", "logit_bias", "logit_scale2", "logit_bias2"), True)
+def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
+    # a scalar gets a learning-curve series only when it's learnable AND meaningful: the bias is
+    # BCE-family-only (inert under InfoNCE)
+    all_learnable = {"logit_scale": True, "logit_bias": True}
     tracked = TrainPipeline._tracked_logit_scalars
 
-    # loss2 off: only loss1's pair, and its bias only because crit is BCE-family
-    assert tracked(_fake_pipe("bce", "bce", 0.0, all_learnable)) == {
-        "scale1": "logit_scale", "bias1": "logit_bias",
-    }
-    assert tracked(_fake_pipe("infonce", "bce", 0.0, all_learnable)) == {"scale1": "logit_scale"}
-
-    # loss2 mixed in: both pairs, each loss's bias gated by its OWN crit
-    assert tracked(_fake_pipe("infonce", "bce", 0.3, all_learnable)) == {
-        "scale1": "logit_scale", "scale2": "logit_scale2", "bias2": "logit_bias2",
-    }
+    assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale"}
 
     # frozen scalars are dropped -- a flat line says nothing
-    frozen_t1_b2 = {**all_learnable, "logit_scale": False, "logit_bias2": False}
-    assert tracked(_fake_pipe("bce", "bce", 0.3, frozen_t1_b2)) == {
-        "bias1": "logit_bias", "scale2": "logit_scale2",
-    }
+    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {"bias": "logit_bias"}
+    assert tracked(_fake_pipe("infonce", {"logit_scale": False, "logit_bias": True})) == {}
 
-
-def test_tracked_logit_scalars_shared_pair_tracked_once() -> None:
-    # under loss.shared_scalars loss2 runs on loss1's pair (no scale2/bias2 exist): one series each, and
-    # the shared bias is live when EITHER loss is BCE-family
-    all_learnable = dict.fromkeys(("logit_scale", "logit_bias"), True)
-    tracked = TrainPipeline._tracked_logit_scalars
-
-    assert tracked(_fake_pipe("bce", "bce", 0.3, all_learnable, shared_scalars=True)) == {
-        "scale1": "logit_scale", "bias1": "logit_bias",
-    }
-    assert tracked(_fake_pipe("infonce", "bce", 0.3, all_learnable, shared_scalars=True)) == {
-        "scale1": "logit_scale", "bias1": "logit_bias",
-    }
-    assert tracked(_fake_pipe("infonce", "infonce", 0.3, all_learnable, shared_scalars=True)) == {
-        "scale1": "logit_scale",
-    }
+    # separate logit scalars: loss2's term's pair gets its own series, under the same rules
+    assert tracked(_fake_pipe("bce", all_learnable, sep=True)) == {
+        "scale": "logit_scale", "bias": "logit_bias", "scale2": "logit_scale2", "bias2": "logit_bias2"}
+    assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {"scale": "logit_scale", "scale2": "logit_scale2"}
+    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {"bias": "logit_bias", "bias2": "logit_bias2"}
 
 
 def test_logit_scalar_values_cap_the_scale_under_the_clamp() -> None:
-    # the scale series carry the alpha the logits carry, exp(logit_scale) held at 100 by the loss's
-    # logits.scale.clamp (compute_logits' cap) once the raw parameter sits above ln(100), each loss's
-    # scale under its own flag; the bias series the raw bias
-    model = SimpleNamespace(
-        logit_scale=torch.tensor(140.0).log(), logit_bias=torch.tensor(-0.5), logit_scale2=torch.tensor(40.0).log(),
-    )
+    # the scale series carries the alpha the logits carry, exp(logit_scale) held at 100 by
+    # loss.logits.scale.clamp (compute_logits' cap) once the raw parameter sits above ln(100); the
+    # bias series the raw bias
+    model = SimpleNamespace(logit_scale=torch.tensor(140.0).log(), logit_bias=torch.tensor(-0.5))
     pipe = SimpleNamespace(
-        cfg=SimpleNamespace(loss1={"logits": {"scale": {"clamp": True}}}, loss2={"logits": {"scale": {"clamp": True}}}),
+        cfg=SimpleNamespace(loss={"logits": {"scale": {"clamp": True}}}),
         modelw=SimpleNamespace(_unwrapped_model=model),
-        _logit_scalars_tracked={"scale1": "logit_scale", "bias1": "logit_bias", "scale2": "logit_scale2"},
+        _logit_scalars_tracked={"scale": "logit_scale", "bias": "logit_bias"},
     )
     values = TrainPipeline._logit_scalar_values(pipe)
-    assert values == pytest.approx({"scale1": 100.0, "bias1": -0.5, "scale2": 40.0}, rel=1e-5)
-    pipe.cfg.loss1["logits"]["scale"]["clamp"] = False  # unbounded: the raw scale, wherever it sits
-    assert TrainPipeline._logit_scalar_values(pipe)["scale1"] == pytest.approx(140.0, rel=1e-5)
+    assert values == pytest.approx({"scale": 100.0, "bias": -0.5}, rel=1e-5)
+    # the second pair's scale (separate logit scalars) reads the same way: alpha, under the same cap
+    model.logit_scale2 = torch.tensor(50.0).log()
+    pipe._logit_scalars_tracked = {"scale2": "logit_scale2"}
+    assert TrainPipeline._logit_scalar_values(pipe) == pytest.approx({"scale2": 50.0}, rel=1e-5)
+    pipe._logit_scalars_tracked = {"scale": "logit_scale", "bias": "logit_bias"}
+    pipe.cfg.loss["logits"]["scale"]["clamp"] = False  # unbounded: the raw scale, wherever it sits
+    assert TrainPipeline._logit_scalar_values(pipe)["scale"] == pytest.approx(140.0, rel=1e-5)
 
 
 def test_pass_epoch_span_shares_the_straddled_epoch_between_passes() -> None:
@@ -424,22 +406,26 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
     assert [pass_epoch_span(cfg, p) for p in range(1, 6)] == [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
 
 
-def _fake_targ_pipe(targ1, targ2, mix):
-    return SimpleNamespace(cfg=SimpleNamespace(loss={"mix": mix}, loss1={"targ": targ1}, loss2={"targ": targ2}))
+def _fake_targ_pipe(targ1, targ2, lambda_):
+    return SimpleNamespace(cfg=SimpleNamespace(loss={"lambda": lambda_}, loss1={"targ": targ1}, loss2={"targ": targ2}))
 
 
-def test_tracked_targ_stats_only_graded_targets_of_active_branches() -> None:
-    # target stats are curved only for graded targets (phylo/tax); sp/mp are 0/1 indicators whose
-    # spread says nothing, and loss2 counts only when it's mixed in
+def test_tracked_targ_stats_graded_blends_only() -> None:
+    # the blended targets are curved when graded: a live phylo/tax target, or two distinct targets
+    # blended (their disagreements sit at lambda / 1 - lambda); a lone sp/mp target is a 0/1 indicator whose
+    # spread says nothing, and a spec with zero weight does not count
     tracked = TrainPipeline._tracked_targ_stats
 
-    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.3)) == {"targ1", "targ2"}
-    assert tracked(_fake_targ_pipe("mp", "phylo", 0.3)) == {"targ2"}  # only loss2 qualifies
-    assert tracked(_fake_targ_pipe("tax", "sp", 0.3)) == {"targ1"}
-    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) == set()  # neither -> no Q panel at all
-    # loss2 off: its targ is irrelevant however it's configured
-    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) == {"targ1"}
-    assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) == set()
+    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.3)) is True
+    assert tracked(_fake_targ_pipe("mp", "phylo", 0.3)) is True
+    assert tracked(_fake_targ_pipe("tax", "sp", 0.3)) is True
+    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) is True  # distinct 0/1 targets blend to a graded matrix
+    assert tracked(_fake_targ_pipe("sp", "sp", 0.3)) is False
+    # a zero-weight spec is irrelevant however it's configured
+    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) is True
+    assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) is False
+    assert tracked(_fake_targ_pipe("mp", "phylo", 1.0)) is True
+    assert tracked(_fake_targ_pipe("phylo", "mp", 1.0)) is False
 
 
 def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:

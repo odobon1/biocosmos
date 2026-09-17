@@ -70,80 +70,67 @@ class TrialData:
             "loss_raw_train": [],
             "grad_norm_model": [],
             "delta_norm_model": [],  # ||delta theta||: the L2 norm of each step's parameter update
-            "grad_sum_sim1": [],
-            "grad_sum_sim2": [],
+            "grad_sum_sim": [],
             # learnable logit scalars, scale as the alpha the logits carry -- exp(logit_scale), capped at
-            # 100 under the loss's logits.scale.clamp (TrainPipeline._logit_scalar_values), read before
-            # the batch's optimizer step so a point is the value the batch's logits and batch stats were
+            # 100 under loss.logits.scale.clamp (TrainPipeline._logit_scalar_values), read before the
+            # batch's optimizer step so a point is the value the batch's logits and batch stats were
             # computed under; a series stays empty when its scalar is untracked
-            # (TrainPipeline._tracked_logit_scalars) and then gets no curve panel
-            "scale1": [],
-            "bias1": [],
+            # (TrainPipeline._tracked_logit_scalars) and then gets no curve panel. scale2 / bias2: loss2's
+            # term's own pair under separate logit scalars (loss.logits.shared false), empty otherwise
+            "scale": [],
+            "bias": [],
             "scale2": [],
             "bias2": [],
-            "sim1_min": [],
-            "sim1_max": [],
-            "sim1_median": [],
-            "sim1_mean": [],
-            "sim2_min": [],
-            "sim2_max": [],
-            "sim2_median": [],
-            "sim2_mean": [],
-            # sim*_margin*: per batch, the mean hard-pair similarity margin at each
-            # dev.reporting.learning_curves.hpsm.kappas value (a list in config order, not a scalar), per
-            # loss branch (sim_targ_batch_stats): the I2T / T2I directions and their mean, each its own
-            # curve strip with one line per kappa (the directional strips only under hpsm.multimodal)
-            "sim1_margin_i2t": [],
-            "sim1_margin_t2i": [],
-            "sim1_margin": [],
-            "sim2_margin_i2t": [],
-            "sim2_margin_t2i": [],
-            "sim2_margin": [],
-            # targ*_hist / p*_hist: per batch, the targets and predicted pair probabilities binned
-            # over [0, 1] (a list of bin fractions, not a scalar) -- the curve strips render them as
-            # heatmap columns. targ* is recorded only for branches with graded targets
-            # (TrainPipeline._tracked_targ_stats) and p* only for BCE-family ones
-            # (sim_targ_batch_stats), so an excluded branch's series stays empty.
-            "targ1_hist": [],
-            "targ2_hist": [],
-            "p1_hist": [],
-            "p2_hist": [],
-            # alpha_req*_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
-            # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the branch's target
+            "sim_min": [],
+            "sim_max": [],
+            "sim_median": [],
+            "sim_mean": [],
+            # sim_margin*: per batch, the mean hard-pair similarity margin at each
+            # dev.reporting.learning_curves.hpsm.kappas value (a list in config order, not a scalar)
+            # over the blended targets (sim_targ_batch_stats): the I2T / T2I directions and their mean,
+            # each its own curve strip with one line per kappa (the directional strips only under
+            # hpsm.multimodal)
+            "sim_margin_i2t": [],
+            "sim_margin_t2i": [],
+            "sim_margin": [],
+            # targ_hist / p_hist: per batch, the blended targets and predicted pair probabilities
+            # binned over [0, 1] (a list of bin fractions, not a scalar) -- the curve strips render
+            # them as heatmap columns. targ_hist is recorded only when the blended targets are graded
+            # (TrainPipeline._tracked_targ_stats) and p_hist only for a BCE-family loss
+            # (sim_targ_batch_stats), so an excluded series stays empty.
+            "targ_hist": [],
+            "p_hist": [],
+            # alpha_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
+            # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the blended target
             # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the alpha
-            # panels' bound lines. Recorded only for InfoNCE branches (utils.loss.infonce_batch_stats),
-            # so a BCE-family branch's series stay empty and its alpha panel gets no lines.
-            "alpha_req1_min": [],
-            "alpha_req1_mean": [],
-            "alpha_req1_max": [],
-            "alpha_req2_min": [],
-            "alpha_req2_mean": [],
-            "alpha_req2_max": [],
-            # dalpha*_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
+            # panel's bound lines. Recorded only for an InfoNCE loss (utils.loss.infonce_batch_stats),
+            # so a BCE-family loss's series stay empty and its alpha panel gets no lines.
+            "alpha_req_min": [],
+            "alpha_req_mean": [],
+            "alpha_req_max": [],
+            # dalpha_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
             # decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
             # the target), each summed, summed in magnitude, and their coherence ratio C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
-            # strip per key with a line per entry; dlogalpha*: the same for the log-scale parameter
+            # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
             # the model learns (alpha times the dalpha sums, the same C -- all zero while
             # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient;
-            # dalpha* is the pressure on the effective, post-clamp scale either way). Recorded only for
-            # InfoNCE branches (VLMWrapper._branch_batch_stats), so a BCE-family branch's series stay
-            # empty and get no panels.
+            # dalpha_* is the pressure on the effective, post-clamp scale either way). Recorded only for
+            # an InfoNCE loss (VLMWrapper._batch_stats), so a BCE-family loss's series stay empty and
+            # get no panels.
             **{
-                f"{prefix}{tag}_{agg}_{comp}": []
+                f"{prefix}_{agg}_{comp}": []
                 for prefix in ("dalpha", "dlogalpha")
-                for tag in (1, 2)
                 for agg in ("sum", "sum_abs", "C")
                 for comp in ("full", "struct", "res")
             },
             # kl*: per batch, the InfoNCE KL decomposition (utils.loss.infonce_kl_terms, both anchor
-            # directions averaged): kl{tag} = D_KL(y || p), the raw loss less the targets' entropy,
-            # and its parts kl{tag}_s = E_s = D_KL(p* || p) (structural: the model's p vs the
-            # reachable optimum), kl{tag}_ir = E_ir = D_KL(y || p*) (irreducible: the target outside
-            # the reachable set) and kl{tag}_sr = E_sr, the cross term -- scalars, one curve strip
-            # each. InfoNCE branches only, like dalpha*.
-            **{f"kl{tag}{suffix}": [] for tag in (1, 2) for suffix in ("", "_s", "_ir", "_sr")},
+            # directions averaged): kl = D_KL(y || p), the raw loss less the targets' entropy, and its
+            # parts kl_s = E_s = D_KL(p* || p) (structural: the model's p vs the reachable optimum),
+            # kl_ir = E_ir = D_KL(y || p*) (irreducible: the target outside the reachable set) and
+            # kl_sr = E_sr, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
+            **{f"kl{suffix}": [] for suffix in ("", "_s", "_ir", "_sr")},
         }
         self.data_eval = {
             "n_samps_seen": [],
@@ -163,7 +150,7 @@ class TrialData:
 
     def update_train_batch(self, n_samps_seen, lr=None, loss_train=None, loss_raw_train=None, grad_norm_model=None,
                            delta_norm_model=None, batch_stats=None,
-                           grad_sum_sim1=None, grad_sum_sim2=None, logit_scalars=None):
+                           grad_sum_sim=None, logit_scalars=None):
 
         self.data_epoch["n_samps_seen"].append(n_samps_seen)
 
@@ -177,10 +164,8 @@ class TrialData:
             self.data_epoch["grad_norm_model"].append(grad_norm_model)
         if delta_norm_model is not None:
             self.data_epoch["delta_norm_model"].append(delta_norm_model)
-        if grad_sum_sim1 is not None:
-            self.data_epoch["grad_sum_sim1"].append(grad_sum_sim1)
-        if grad_sum_sim2 is not None:
-            self.data_epoch["grad_sum_sim2"].append(grad_sum_sim2)
+        if grad_sum_sim is not None:
+            self.data_epoch["grad_sum_sim"].append(grad_sum_sim)
         if batch_stats is not None:
             for stat_key, stat_value in batch_stats.items():
                 self.data_epoch[stat_key].append(stat_value)
@@ -350,63 +335,67 @@ class ArtifactManager:
                 del metadata["arch"]["siglip"]
                 del metadata["dropout"]["siglip"]
 
-            mix = metadata["loss"]["mix"]
-            if mix == 0.0:
+            # target specs: loss2 carries weight lambda, loss1 weight 1 - lambda (utils.loss.targ_specs)
+            lambda_ = metadata["loss"]["lambda"]
+            if lambda_ == 0.0:
                 del metadata["loss2"]
-            # shared logit scalars need two live losses; under sharing loss2 runs on loss1's scale/bias
-            # under loss1.logits.* settings, so its own logits block is never read
-            if mix in (0.0, 1.0):
-                del metadata["loss"]["shared_scalars"]
-            elif metadata["loss"]["shared_scalars"]:
-                del metadata["loss2"]["logits"]
+            if lambda_ == 1.0:
+                del metadata["loss1"]
+
+            loss = metadata["loss"]
+            crit = loss["crit"]
+            is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
+
+            # blend_type: a lone target has nothing to blend, and on shared logit scalars without a loss
+            # factor that reads the target (unitless, focal, DSMR, targ_mass_neut) the loss is affine in it
+            # -- a loss blend is then the target blend's loss, value and gradients. logits.shared: only a
+            # live loss blend has two terms to give separate logit scalars
+            targ_dep = (
+                loss["unitless"] or "focal" in loss["wting"] or not loss["logits"]["shared"]
+                or (is_bce_family and loss["wting"]["bce"]["dsmr"])
+                or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
+            )
+            if lambda_ in (0.0, 1.0) or loss["blend_type"] == "targ":
+                del loss["logits"]["shared"]
+            if lambda_ in (0.0, 1.0) or not targ_dep:
+                del loss["blend_type"]
 
             # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
-            # whole bias block is a no-op (logits = sim * scale.exp() + 0). loss2's own logit params
-            # are always fresh learnable Parameters, so a loss2.logits block that survives sharing is
-            # never pruned.
-            if not is_siglip and metadata["loss1"]["logits"]["bce"]["bias"]["init"] is None:
-                del metadata["loss1"]["logits"]["bce"]["bias"]
+            # whole bias block is a no-op (logits = sim * scale.exp() + 0)
+            if not is_siglip and loss["logits"]["bce"]["bias"]["init"] is None:
+                del loss["logits"]["bce"]["bias"]
 
-            # per-loss weighting: drop params the loss type never reads (the bce sub-block is
-            # BCE-only -- absent from InfoNCE's 1D weighting),
-            # params their own toggle disables (cls_imb.type null; focal.gamma 0.0 is already
-            # pruned from the working config at load), and the scalar
-            # cancellation noted in train.yaml: the unitless rescale (loss / loss.detach()) cancels
-            # any per-batch scalar factor on a loss, making cls_imb.norm's rescale inert under
-            # loss.unitless: true (blended or lone)
-            unit_scaled = metadata["loss"]["unitless"]
+            # per-target infonce sub-block: the BCE losses never read it, and under sp the linear tsm
+            # mapping is an identical no-op (row sums already 1)
             for key in ("loss1", "loss2"):
-                if key not in metadata:
-                    continue
-                wting = metadata[key]["wting"]
-                crit = metadata[key]["crit"]
-                is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
-
-                # infonce sub-block: the BCE losses never read it, and under sp the linear tsm
-                # mapping is an identical no-op (row sums already 1)
-                if is_bce_family or metadata[key]["targ"] == "sp":
+                if key in metadata and (is_bce_family or metadata[key]["targ"] == "sp"):
                     del metadata[key]["infonce"]
-                # bce sub-block (targ_mass_neut): read only by the bifurcated variant
-                if crit != "bif_bce":
-                    del metadata[key]["bce"]
 
-                cls_imb_on = wting["cls_imb"]["type"] is not None
-                focal_on = "focal" in wting
-                dsmr_on = is_bce_family and wting["bce"]["dsmr"]
-                if not (cls_imb_on or focal_on or dsmr_on):
-                    del metadata[key]["wting"]  # no active weight factor -> W == ones -> whole block inert
-                    continue
+            # bce sub-block (targ_mass_neut): read only by the bifurcated variant
+            if crit != "bif_bce":
+                del loss["bce"]
 
+            # weighting: drop params the loss type never reads (the bce sub-block is BCE-only -- absent
+            # from InfoNCE's 1D weighting), params their own toggle disables (cls_imb.type null;
+            # focal.gamma 0.0 is already pruned from the working config at load), and cls_imb.norm under
+            # loss.unitless: the unitless rescale (loss / loss.detach()) cancels any per-batch scalar
+            # factor on a loss term
+            wting = loss["wting"]
+            cls_imb_on = wting["cls_imb"]["type"] is not None
+            focal_on = "focal" in wting
+            dsmr_on = is_bce_family and wting["bce"]["dsmr"]
+            if not (cls_imb_on or focal_on or dsmr_on):
+                del loss["wting"]  # no active weight factor -> W == ones -> whole block inert
+            else:
                 cls_imb = wting["cls_imb"]
                 if not cls_imb_on:
                     del wting["cls_imb"]
-                else:
-                    if cls_imb["type"] == "inv_freq":
-                        del cls_imb["class_bal"]
-                    elif cls_imb["type"] == "class_bal":
-                        del cls_imb["inv_freq"]
-                    if unit_scaled:
-                        del cls_imb["norm"]
+                elif cls_imb["type"] == "inv_freq":
+                    del cls_imb["class_bal"]
+                elif cls_imb["type"] == "class_bal":
+                    del cls_imb["inv_freq"]
+                if cls_imb_on and loss["unitless"]:
+                    del cls_imb["norm"]
 
                 if not is_bce_family:
                     del wting["bce"]

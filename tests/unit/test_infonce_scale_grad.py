@@ -133,15 +133,15 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     Q, Y = _targets(B, 4, seed=6)
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=2)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
-    assert set(stats) == {f"{prefix}2_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
-        "kl2", "kl2_s", "kl2_ir", "kl2_sr", "alpha_req2_min", "alpha_req2_mean", "alpha_req2_max"}
+    assert set(stats) == {f"{prefix}_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
+        "kl", "kl_s", "kl_ir", "kl_sr", "alpha_req_min", "alpha_req_mean", "alpha_req_max"}
     # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same C
     for comp in comps:
         for agg in aggs[:2]:
-            assert stats[f"dlogalpha2_{agg}_{comp}"] == pytest.approx([alpha * v for v in stats[f"dalpha2_{agg}_{comp}"]], rel=1e-12)
-        assert stats[f"dlogalpha2_C_{comp}"] == pytest.approx(stats[f"dalpha2_C_{comp}"], rel=1e-12)
+            assert stats[f"dlogalpha_{agg}_{comp}"] == pytest.approx([alpha * v for v in stats[f"dalpha_{agg}_{comp}"]], rel=1e-12)
+        assert stats[f"dlogalpha_C_{comp}"] == pytest.approx(stats[f"dalpha_C_{comp}"], rel=1e-12)
     Sf, Qf, Yf = S.float().double(), Q.float().double(), Y.float().double()
     P_opt = L.infonce_p_opt(Yf, alpha)
     i2t = L.infonce_scale_grad_sums(Sf, Qf, Yf, torch.softmax(logits.double(), dim=1), P_opt)
@@ -149,18 +149,18 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     expected = 0.5 * (i2t + t2i)
     for a, agg in enumerate(aggs[:2]):
         for c, comp in enumerate(comps):
-            assert stats[f"dalpha2_{agg}_{comp}"] == pytest.approx(expected[a, c].tolist(), rel=1e-9, abs=1e-12)
+            assert stats[f"dalpha_{agg}_{comp}"] == pytest.approx(expected[a, c].tolist(), rel=1e-9, abs=1e-12)
     for c, comp in enumerate(comps):
-        C = stats[f"dalpha2_C_{comp}"]
+        C = stats[f"dalpha_C_{comp}"]
         assert C == pytest.approx((expected[0, c].abs() / (expected[1, c] + 1e-30)).tolist(), rel=1e-9, abs=1e-12)
         assert all(0.0 <= v <= 1.0 for v in C)
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
-    stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False, idx=1)
+    stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False)
     one_dir = L.infonce_scale_grad_sums(S_sym, Q, Y, torch.softmax(alpha * S_sym, dim=1), L.infonce_p_opt(Y, alpha))
     for c, comp in enumerate(comps):
-        assert stats_sym[f"dalpha1_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
-        assert stats_sym[f"dalpha1_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
+        assert stats_sym[f"dalpha_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
+        assert stats_sym[f"dalpha_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
 
 
 def test_batch_stats_row_wise_scale_bounds():
@@ -174,20 +174,20 @@ def test_batch_stats_row_wise_scale_bounds():
     S = _sims(B, seed=7)
     logits = (alpha * S).float()
     Y = torch.softmax(2.0 * Q * 3.0, dim=1)  # the softmax tsm at sm_scale 3: zero-free, every row finite
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
     Yf = Y.float().double()
     alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))  # == 3 * (max_j Q_ij - min_j Q_ij) per row
-    assert stats["alpha_req1_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
-    assert stats["alpha_req1_mean"] == pytest.approx(alpha_req.mean().item(), rel=1e-9)
-    assert stats["alpha_req1_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
+    assert stats["alpha_req_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
+    assert stats["alpha_req_mean"] == pytest.approx(alpha_req.mean().item(), rel=1e-9)
+    assert stats["alpha_req_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
     # under the linear tsm a row with an exact zero (the mp rows of _targets) sits at infinity, taking
     # the max and the mean with it, while the min still reads off the graded rows
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, _log_scale(alpha), False, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, _log_scale(alpha), False)
     Yf = Y_lin.float().double()
     alpha_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))
     assert math.isinf(alpha_req.max()) and torch.isfinite(alpha_req).any()
-    assert stats["alpha_req1_min"] == pytest.approx(alpha_req[torch.isfinite(alpha_req)].min().item(), rel=1e-9)
-    assert math.isinf(stats["alpha_req1_mean"]) and math.isinf(stats["alpha_req1_max"])
+    assert stats["alpha_req_min"] == pytest.approx(alpha_req[torch.isfinite(alpha_req)].min().item(), rel=1e-9)
+    assert math.isinf(stats["alpha_req_mean"]) and math.isinf(stats["alpha_req_max"])
 
 
 def _grad_log_scale(S, Y, log_alpha_raw, clamp):
@@ -217,13 +217,13 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
     log_alpha_eff = min(log_alpha_raw, math.log(100))
     logits = math.exp(log_alpha_eff) * S
     log_scale = torch.tensor(log_alpha_raw, dtype=torch.float64)
-    on = L.infonce_batch_stats(S, Q, Y, logits, log_scale, True, idx=1)
-    off_eff = L.infonce_batch_stats(S, Q, Y, logits, torch.tensor(log_alpha_eff, dtype=torch.float64), False, idx=1)
+    on = L.infonce_batch_stats(S, Q, Y, logits, log_scale, True)
+    off_eff = L.infonce_batch_stats(S, Q, Y, logits, torch.tensor(log_alpha_eff, dtype=torch.float64), False)
     for key in on:
         if not key.startswith("dlogalpha"):
             assert on[key] == pytest.approx(off_eff[key], rel=1e-12), key
     grad_ref = _grad_log_scale(S, Y, log_alpha_raw, clamp=True)
-    assert on["dlogalpha1_sum_full"][0] == pytest.approx(grad_ref, rel=1e-9, abs=1e-12)
+    assert on["dlogalpha_sum_full"][0] == pytest.approx(grad_ref, rel=1e-9, abs=1e-12)
     held = grad_ref == 0.0
     if log_alpha_raw > math.log(100):
         assert held
@@ -231,19 +231,19 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
         assert not held
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
     if held:
-        assert any(v != 0.0 for v in on["dalpha1_sum_full"])
+        assert any(v != 0.0 for v in on["dalpha_sum_full"])
         for agg in aggs:
             for comp in comps:
-                assert on[f"dlogalpha1_{agg}_{comp}"] == [0.0, 0.0, 0.0]
+                assert on[f"dlogalpha_{agg}_{comp}"] == [0.0, 0.0, 0.0]
     else:
         alpha = math.exp(log_alpha_raw)
         for comp in comps:
             for agg in aggs[:2]:
-                assert on[f"dlogalpha1_{agg}_{comp}"] == pytest.approx([alpha * v for v in on[f"dalpha1_{agg}_{comp}"]], rel=1e-12)
-            assert on[f"dlogalpha1_C_{comp}"] == pytest.approx(on[f"dalpha1_C_{comp}"], rel=1e-12)
+                assert on[f"dlogalpha_{agg}_{comp}"] == pytest.approx([alpha * v for v in on[f"dalpha_{agg}_{comp}"]], rel=1e-12)
+            assert on[f"dlogalpha_C_{comp}"] == pytest.approx(on[f"dalpha_C_{comp}"], rel=1e-12)
     # with the clamp off the parameter's gradient follows the raw scale wherever it sits
-    off_raw = L.infonce_batch_stats(S, Q, Y, math.exp(log_alpha_raw) * S, log_scale, False, idx=1)
-    assert off_raw["dlogalpha1_sum_full"][0] == pytest.approx(_grad_log_scale(S, Y, log_alpha_raw, clamp=False), rel=1e-9, abs=1e-12)
+    off_raw = L.infonce_batch_stats(S, Q, Y, math.exp(log_alpha_raw) * S, log_scale, False)
+    assert off_raw["dlogalpha_sum_full"][0] == pytest.approx(_grad_log_scale(S, Y, log_alpha_raw, clamp=False), rel=1e-9, abs=1e-12)
 
 
 def _kl_rows(A, B):
@@ -312,19 +312,19 @@ def test_batch_stats_kl_keys_average_directions():
     Q, Y = _targets(B, 4, seed=12)
     S = _sims(B, seed=13)
     logits = (alpha * S).float() - 0.7  # a bias is inert under the row softmax
-    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False, idx=1)
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
     Yf, Z = Y.float().double(), logits.double()
     P_opt = L.infonce_p_opt(Yf, alpha)
     i2t = L.infonce_kl_terms(Yf, torch.log_softmax(Z, dim=1), P_opt)
     t2i = L.infonce_kl_terms(Yf, torch.log_softmax(Z.T, dim=1), P_opt)
     expected = 0.5 * (i2t + t2i)
-    for k, key in enumerate(("kl1", "kl1_s", "kl1_ir", "kl1_sr")):
+    for k, key in enumerate(("kl", "kl_s", "kl_ir", "kl_sr")):
         assert stats[key] == pytest.approx(expected[k].item(), rel=1e-9, abs=1e-12)
-    assert stats["kl1"] == pytest.approx(stats["kl1_s"] + stats["kl1_ir"] + stats["kl1_sr"], rel=1e-9, abs=1e-12)
+    assert stats["kl"] == pytest.approx(stats["kl_s"] + stats["kl_ir"] + stats["kl_sr"], rel=1e-9, abs=1e-12)
     # the irreducible part depends on the targets and alpha alone, not on the anchor direction
     assert i2t[2] == t2i[2]
-    # kl1 is the criterion's loss_raw (the two directions' per-anchor CE means, averaged) less the
+    # kl is the criterion's loss_raw (the two directions' per-anchor CE means, averaged) less the
     # targets' mean entropy
     ce = 0.5 * sum(-(Yf * torch.log_softmax(M, dim=1)).sum(dim=1).mean() for M in (Z, Z.T))
     H = -torch.xlogy(Yf, Yf).sum(dim=1).mean()
-    assert stats["kl1"] == pytest.approx((ce - H).item(), rel=1e-9, abs=1e-12)
+    assert stats["kl"] == pytest.approx((ce - H).item(), rel=1e-9, abs=1e-12)

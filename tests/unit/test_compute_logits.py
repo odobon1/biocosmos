@@ -1,5 +1,5 @@
 """
-Contract tests for VLMWrapper.compute_logits's `center` modes (loss1.logits.bce.center).
+Contract tests for VLMWrapper.compute_logits's `center` modes (loss.logits.bce.center).
 
 - None --------- plain scale + bias.
 - "sim" -------- forward centering of the scaled sims (changes the operating point); dL/dsim zero-sum.
@@ -19,28 +19,24 @@ from models import VLMWrapper
 B = 64
 
 
-def _make_stub(shared_scalars=False):
+def _make_stub():
     model = SimpleNamespace(
         logit_scale=torch.nn.Parameter(torch.tensor(2.3)),
         logit_bias=torch.nn.Parameter(torch.tensor(-0.5)),
-        logit_scale2=torch.nn.Parameter(torch.tensor(1.7)),
-        logit_bias2=torch.nn.Parameter(torch.tensor(0.2)),
     )
-    return SimpleNamespace(model=model, _unwrapped_model=model, cfg=SimpleNamespace(shared_scalars=shared_scalars))
+    return SimpleNamespace(model=model, _unwrapped_model=model, cfg=SimpleNamespace())
 
 
-def _run(center, secondary=False, center_global=None):
+def _run(center, center_global=None):
     """Forward + backward through a BCE loss; returns (logits, dL/dsim, scale.grad, bias.grad)."""
     torch.manual_seed(0)
     stub = _make_stub()
     sim = torch.randn(B, B).requires_grad_(True)
     targs = (torch.rand(B, B) < 0.05).float()
-    logits = VLMWrapper.compute_logits(stub, sim, False, center, secondary=secondary, center_global=center_global)
+    logits = VLMWrapper.compute_logits(stub, sim, False, center, center_global=center_global)
     loss = F.binary_cross_entropy_with_logits(logits, targs)
     loss.backward()
-    scale = stub.model.logit_scale2 if secondary else stub.model.logit_scale
-    bias = stub.model.logit_bias2 if secondary else stub.model.logit_bias
-    return logits.detach(), sim.grad, scale.grad, bias.grad
+    return logits.detach(), sim.grad, stub.model.logit_scale.grad, stub.model.logit_bias.grad
 
 
 def test_none_plain():
@@ -96,27 +92,6 @@ def test_grad_proj2_bias_raw_scale_projected():
     assert not torch.allclose(g_scale_gs, g_scale_none)
 
 
-def test_secondary_honors_own_flag():
-    logits, g_sim, _, _ = _run("grad_proj", secondary=True)
-    torch.manual_seed(0)
-    sim = torch.randn(B, B)
-    assert torch.allclose(logits, sim * torch.tensor(1.7).exp() + 0.2)  # forward untouched
-    assert abs(g_sim.sum().item()) < 1e-5
-
-
-def test_secondary_shared_scalars_runs_on_loss1_pair():
-    # loss.shared_scalars: the secondary criterion's logits use logit_scale / logit_bias (loss2 has no pair
-    # of its own), and their grads land there
-    torch.manual_seed(0)
-    stub = _make_stub(shared_scalars=True)
-    sim = torch.randn(B, B).requires_grad_(True)
-    logits = VLMWrapper.compute_logits(stub, sim, False, None, secondary=True)
-    assert torch.allclose(logits, sim * torch.tensor(2.3).exp() - 0.5)
-    F.binary_cross_entropy_with_logits(logits, (torch.rand(B, B) < 0.05).float()).backward()
-    assert stub.model.logit_scale.grad is not None and stub.model.logit_bias.grad is not None
-    assert stub.model.logit_scale2.grad is None and stub.model.logit_bias2.grad is None
-
-
 def test_grad_proj_center_global_subtracts_constant():
     # chunked path: the precomputed full-batch grad mean is subtracted as a constant at the sim node;
     # scale/bias grads stay raw exactly as in the per-matrix mode
@@ -148,5 +123,3 @@ def test_sim_center_global_matches_full_forward_and_scalar_grads():
     torch.testing.assert_close(logits_cg, logits_full)
     torch.testing.assert_close(g_scale_cg, g_scale_full)
     torch.testing.assert_close(g_bias_cg, g_bias_full)
-
-

@@ -21,6 +21,7 @@ from utils.loss import (
     infonce_batch_stats,
     HIST_BINS,
     pos_prevalence,
+    sep_logit_scalars,
 )
 from utils.head import compute_sim
 from utils.data import make_image_preprocessor_inference, make_image_preprocessor_train, normalize_imgs_u8
@@ -29,18 +30,18 @@ from utils.config import TrainConfig
 import pdb
 
 
-def resolve_bias_init(cfg_loss, config, tag):
+def resolve_bias_init(config):
     """
-    A loss's logits.bce.bias.init as a float (or None): pos_prevalence -> logit of the loss's expected
-    weighted positive prevalence (utils.loss.pos_prevalence), so the initial sigmoid matches the target
-    prior where the scaled sims average to zero.
+    loss.logits.bce.bias.init as a float (or None): pos_prevalence -> logit of the loss's expected weighted
+    positive prevalence over its blended target matrix (utils.loss.pos_prevalence), so the initial sigmoid
+    matches the target prior where the scaled sims average to zero.
     """
-    init = cfg_loss["logits"]["bce"]["bias"]["init"]
+    init = config.loss["logits"]["bce"]["bias"]["init"]
     if init == "pos_prevalence":
-        p = pos_prevalence(cfg_loss, config.dataset, config.split, config.train_pt, config.batch_size)
+        p = pos_prevalence(config.loss, config.loss1, config.loss2, config.dataset, config.split, config.train_pt, config.batch_size)
         init = math.log(p / (1 - p))
         if dist.get_rank() == 0:
-            print(f"loss{tag} logit bias init from positive prevalence: p = {p:.4g} -> bias = {init:.4f}")
+            print(f"logit bias init from positive prevalence: p = {p:.4g} -> bias = {init:.4f}")
     return init
 
 
@@ -122,7 +123,7 @@ class _ZeroSumGradConst(torch.autograd.Function):
     def backward(ctx: Any, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         return g - ctx.c, None
 
-def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: List[float], idx: Optional[int] = None,
+def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: List[float],
                          logits: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """
     Per-batch distribution stats over the full BxB similarity and target matrices; drives
@@ -130,11 +131,9 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
     (per-chunk, averaged across chunks).
 
     - sim ----- similarity matrix, already on [-1, 1] (cosine / geodesic-mapped)
-    - targs --- target matrix on [0, 1]
-    - idx ----- loss-branch index; suffixes the key prefixes (sim1_*/targ1_*) so the two
-                branches' stats coexist in one flat dict. None (eval) keeps sim_*/targ_*.
-    - logits -- the branch's logits (scale/bias applied to sim), or None to skip the p{tag}_hist
-                entry. Pass them only for BCE-family branches, where sigmoid(logits) is the
+    - targs --- the blended target matrix on [0, 1] (Criterion.targ_memb)
+    - logits -- the logits (scale/bias applied to sim), or None to skip the p_hist entry. Pass
+                them only for a BCE-family loss, where sigmoid(logits) is the
                 predicted pair probability -- on [0, 1] like the targets, so the P and Q strips
                 are directly comparable. Under InfoNCE the row-softmax carries no such reading.
     - hpsm_kappas -- the kappa values the mean hard-pair similarity margins are reported at
@@ -142,10 +141,10 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
 
     Returns min/max/median/mean for sim/targ as flat keys (the batch logs read those), the mean
     hard-pair similarity margins (hard_pair_similarity_margin averaged over anchors, each a list
-    with one entry per hpsm_kappas value): sim{tag}_margin_i2t over S (image anchors),
-    sim{tag}_margin_t2i over S.T (text anchors) and sim{tag}_margin, their mean -- the
-    bidirectional reading; each its own curve strip -- plus targ{tag}_hist and
-    -- when logits are given -- p{tag}_hist: the targets and predicted probabilities as HIST_BINS
+    with one entry per hpsm_kappas value): sim_margin_i2t over S (image anchors), sim_margin_t2i
+    over S.T (text anchors) and sim_margin, their mean -- the bidirectional reading; each its own
+    curve strip -- plus targ_hist and -- when logits are given -- p_hist: the targets and predicted
+    probabilities as HIST_BINS
     fractions over [0, 1] (distributions, not point stats; the curve strips render them as heatmap
     columns). Reductions are stacked so the device->host transfer is a single .cpu() sync.
     """
@@ -165,30 +164,29 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
             p = logits.detach().float().sigmoid()
             packed = torch.cat([packed, torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()])
         vals = packed.cpu().tolist()
-    tag = "" if idx is None else str(idx)
     n_kappas = len(hpsm_kappas)
     margin_i2t = vals[8:8 + 2 * n_kappas:2]
     margin_t2i = vals[9:8 + 2 * n_kappas:2]
     stats = {
-        f"sim{tag}_min":     vals[0],
-        f"sim{tag}_max":     vals[1],
-        f"sim{tag}_median":  vals[2],
-        f"sim{tag}_mean":    vals[3],
-        f"targ{tag}_min":    vals[4],
-        f"targ{tag}_max":    vals[5],
-        f"targ{tag}_median": vals[6],
-        f"targ{tag}_mean":   vals[7],
-        f"sim{tag}_margin_i2t": margin_i2t,
-        f"sim{tag}_margin_t2i": margin_t2i,
-        f"sim{tag}_margin":     [0.5 * (a + b) for a, b in zip(margin_i2t, margin_t2i)],
-        f"targ{tag}_hist":      vals[8 + 2 * n_kappas:8 + 2 * n_kappas + HIST_BINS],
+        "sim_min":     vals[0],
+        "sim_max":     vals[1],
+        "sim_median":  vals[2],
+        "sim_mean":    vals[3],
+        "targ_min":    vals[4],
+        "targ_max":    vals[5],
+        "targ_median": vals[6],
+        "targ_mean":   vals[7],
+        "sim_margin_i2t": margin_i2t,
+        "sim_margin_t2i": margin_t2i,
+        "sim_margin":     [0.5 * (a + b) for a, b in zip(margin_i2t, margin_t2i)],
+        "targ_hist":      vals[8 + 2 * n_kappas:8 + 2 * n_kappas + HIST_BINS],
     }
     if logits is not None:
-        stats[f"p{tag}_hist"] = vals[8 + 2 * n_kappas + HIST_BINS:]
+        stats["p_hist"] = vals[8 + 2 * n_kappas + HIST_BINS:]
     return stats
 
 def stat_logits(logits, cfg_loss):
-    """The logits sim_targ_batch_stats should derive p{tag}_* from: the branch tuple's first entry
+    """The logits sim_targ_batch_stats should derive p_hist from: the branch tuple's first entry
     (identical values across branches) for a BCE-family loss, else None -- sigmoid is only the
     model's pair probability under the sigmoid-BCE path."""
     return logits[0] if cfg_loss["crit"] in ("bce", "bif_bce") else None
@@ -287,13 +285,13 @@ class VLMWrapper(abc.ABC):
         if config.hw.act_chkpt:
             self.model.set_grad_checkpointing(True)
 
-        if hasattr(config, "loss1"):
-            cfg_logits = config.loss1["logits"]
+        if hasattr(config, "loss"):
+            cfg_logits = config.loss["logits"]
             if cfg_logits["scale"]["init"] is not None:  # scale.init set in config
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
                         self.model.logit_scale.fill_(math.log(cfg_logits["scale"]["init"]))  # alpha -> log(alpha)
-            bias_init = resolve_bias_init(config.loss1, config, "1")
+            bias_init = resolve_bias_init(config)
             if bias_init is None:  # (bias.init: null) in config
                 if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
                     delattr(self.model, "logit_bias")
@@ -310,23 +308,16 @@ class VLMWrapper(abc.ABC):
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
                 self.model.logit_bias.requires_grad_(False)
 
-        # loss2's own scalar pair; under loss.shared_scalars loss2 runs on logit_scale / logit_bias instead
-        # (compute_logits routes it there), so no second pair is registered
-        if hasattr(config, "loss") and config.loss["mix"] != 0.0 and not config.shared_scalars:
-            cfg_logits2 = config.loss2["logits"]
-            if cfg_logits2["scale"]["init"] is None:  # (scale.init: null) in config
-                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(self.model.logit_scale.detach().item(), device=self.device)))
-            else:  # scale.init set in config
-                self.model.register_parameter("logit_scale2", nn.Parameter(torch.tensor(math.log(cfg_logits2["scale"]["init"]), device=self.device)))  # alpha -> log(alpha)
-            bias_init2 = resolve_bias_init(config.loss2, config, "2")
-            if bias_init2 is None:
-                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(self.model.logit_bias.detach().item(), device=self.device)))
-            else:
-                self.model.register_parameter("logit_bias2", nn.Parameter(torch.tensor(bias_init2, device=self.device)))
-            if cfg_logits2["scale"]["freeze"]:
-                self.model.logit_scale2.requires_grad_(False)
-            if cfg_logits2["bce"]["bias"]["freeze"]:
-                self.model.logit_bias2.requires_grad_(False)
+            # separate logit scalars (loss.logits.shared false under a live loss blend): loss2's term runs on
+            # its own pair, logit_scale2 / logit_bias2 (compute_logits' secondary) -- a copy of the first
+            # pair as just initialized, so the two share loss.logits.* (init, freeze) and part ways in training
+            if sep_logit_scalars(config.loss):
+                for attr in ("logit_scale", "logit_bias"):
+                    scalar = getattr(self.model, attr)
+                    if isinstance(scalar, nn.Parameter):
+                        self.model.register_parameter(f"{attr}2", nn.Parameter(scalar.detach().clone(), requires_grad=scalar.requires_grad))
+                    else:
+                        self.model.register_buffer(f"{attr}2", scalar.detach().clone())
 
     @classmethod
     def build(cls, config: TrainConfig, verbose: bool) -> Any:
@@ -441,15 +432,16 @@ class VLMWrapper(abc.ABC):
         sim: torch.Tensor,
         clamp_scale: bool,
         center: Optional[str],
-        secondary: bool = False,
         center_global: Optional[torch.Tensor] = None,
-        half_live: bool = False
+        half_live: bool = False,
+        secondary: bool = False,
     ) -> torch.Tensor:
         """
         Scales similarity matrix by exp(learnable logit scale) (alpha = 1 / tau) and adds logit bias if applicable (BCE).
 
-        `secondary` selects loss2's own scale/bias pair (logit_scale2 / logit_bias2); under
-        loss.shared_scalars loss2 has none and runs on loss1's pair.
+        `secondary` selects the second logit-scalar pair (logit_scale2 / logit_bias2), loss2's term's own
+        under separate logit scalars (loss.logits.shared false; utils.loss.sep_logit_scalars) -- the pair
+        exists only then.
 
         `half_live` (bifurcated branches): uses 0.5*p + 0.5*p.detach() for the logit scale/bias, so
         each of the two un-halved branch calls contributes exactly half their grad -- the branch sum
@@ -459,7 +451,7 @@ class VLMWrapper(abc.ABC):
         `clamp_scale` caps the logit scale at ln(100) before exp() (scale multiplier <= 100, CLIP's stability
         cap); otherwise exp() is unbounded and can overflow to +inf and amplify the bf16 quantization of sim.
 
-        `center` (the criterion's logits.bce.center) makes dL/dsim zero-sum:
+        `center` (loss.logits.bce.center) makes dL/dsim zero-sum:
         - None ---------- no centering (plain scale + bias).
         - "sim" --------- centers the scaled sims about their mean before the bias; changes the forward
           (batch-dependent operating-point shift), and the zero-sum backward follows from it.
@@ -477,7 +469,7 @@ class VLMWrapper(abc.ABC):
         -> the full BxB reductions computed here.
         """
         model = self._unwrapped_model
-        if secondary and not self.cfg.shared_scalars:
+        if secondary:
             logit_scale, logit_bias = model.logit_scale2, model.logit_bias2
         else:
             logit_scale, logit_bias = model.logit_scale, model.logit_bias
@@ -526,17 +518,15 @@ class VLMWrapper(abc.ABC):
         """
         raise NotImplementedError
 
-    def _loss_for_crit_full_batch(
+    def _loss_full_batch(
         self,
         embs_img_all: torch.Tensor,
         embs_txt_all: torch.Tensor,
         class_encs_all: torch.Tensor,
         targ_data_all: List[Any],
-        crit: Criterion,
-        secondary: bool = False,
     ) -> torch.Tensor:
         """
-        Computes loss for the full global batch under a given criterion (primary or secondary).
+        Computes the loss for the full global batch under the criterion (self.crit).
 
         The similarity/logit matrices are returned as branch tuples, every branch [img-row,
         txt-col], so downstream grad logging sums branches elementwise regardless of variant:
@@ -550,54 +540,67 @@ class VLMWrapper(abc.ABC):
           non-bifurcated 1x: towers live in one branch each, and the logit scale/bias are
           half-live (see compute_logits) so their two branch contributions sum to 1x. Branch
           values are identical up to fp; grads bifurcate.
+
+        Under separate logit scalars (Criterion.sep_scalars) the sims are scaled once per loss term, each
+        under its own scalar pair (compute_logits' secondary), and the criterion takes the terms' logits and
+        log-scales; the returned `logits` are the primary term's (loss1's), which the logit grad-norm log and
+        the logit-dependent batch stats then read.
+
+        Returns (loss, loss_raw, logits, sims, targs, y): targs the blended target matrix Q the batch
+        stats read (Criterion.targ_memb), y the blended target distribution the criterion trained
+        against (Criterion.targ_dist; under loss.unitless a training InfoNCE loss returns the terms'
+        distributions under their normalized blend coefficients -- the distribution its gradient follows;
+        under separate logit scalars the primary term's distribution).
         """
         model = self._unwrapped_model
-        logit_scale = model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale
+        crit = self.crit
         clamp = crit.cfg["logits"]["scale"]["clamp"]
         center = crit.cfg["logits"]["bce"]["center"]
+        secondaries = (False, True) if crit.sep_scalars else (False,)
 
         if crit.bifurcated:
             sims = (
                 compute_sim(embs_img_all, embs_txt_all.detach(), crit.cfg["sim"]),
                 compute_sim(embs_img_all.detach(), embs_txt_all, crit.cfg["sim"]),
             )
-            logits = tuple(self.compute_logits(sim, clamp, center, secondary=secondary, half_live=True) for sim in sims)
-            crit_logits = logits
+            logits_terms = [tuple(self.compute_logits(sim, clamp, center, half_live=True, secondary=secondary) for sim in sims) for secondary in secondaries]
+            crit_logits = logits_terms
         else:
             sims = (compute_sim(embs_img_all, embs_txt_all, crit.cfg["sim"]),)
-            logits = (self.compute_logits(sims[0], clamp, center, secondary=secondary),)
-            crit_logits = logits[0]
+            logits_terms = [(self.compute_logits(sims[0], clamp, center, secondary=secondary),) for secondary in secondaries]
+            crit_logits = [logits[0] for logits in logits_terms]
+        logits = logits_terms[0]
 
-        loss, loss_raw, targs = crit(crit_logits, class_encs_all, targ_data_all, self.model.training, logit_scale)
-        y = crit.targ_dist(targs, logit_scale)  # the target distribution the criterion trained against
+        if crit.sep_scalars:
+            logit_scale = (model.logit_scale, model.logit_scale2)
+        else:
+            crit_logits, logit_scale = crit_logits[0], model.logit_scale
+
+        loss, loss_raw, targs, y = crit(crit_logits, class_encs_all, targ_data_all, self.model.training, logit_scale)
 
         return loss, loss_raw, logits, sims, targs, y
 
-    def _branch_batch_stats(
+    def _batch_stats(
         self,
         sims: Tuple[torch.Tensor, ...],
         targs: torch.Tensor,
         y: torch.Tensor,
         logits: Tuple[torch.Tensor, ...],
-        crit: Criterion,
-        secondary: bool,
-        idx: int,
     ) -> Dict[str, Any]:
         """
-        One loss branch's per-batch stats: sim_targ_batch_stats (sims[0] / logits[0]: branch values are
-        identical, so the first branch carries them) plus, for an InfoNCE branch, the reachable-optimum
-        diagnostics (infonce_batch_stats: the logit-scale gradient and the KL decompositions, and the
-        row-wise target-implied scale bounds), which take the criterion's raw log-scale parameter and
-        its clamp flag: from them the alpha its logits carry (post-clamp, as compute_logits applies it)
-        and, for the parameter's own gradient, whether the clamp holds it.
+        The batch's stats: sim_targ_batch_stats (sims[0] / logits[0]: branch values are identical, so
+        the first branch carries them) plus, for an InfoNCE loss, the reachable-optimum diagnostics
+        (infonce_batch_stats: the logit-scale gradient and the KL decompositions, and the row-wise
+        target-implied scale bounds), which take the raw log-scale parameter and its clamp flag: from
+        them the alpha the logits carry (post-clamp, as compute_logits applies it) and, for the
+        parameter's own gradient, whether the clamp holds it.
         """
-        cfg_loss = self.cfg.loss2 if secondary else self.cfg.loss1
+        cfg_loss = self.cfg.loss
         kappas = self.cfg.dev["reporting"]["learning_curves"]["hpsm"]["kappas"]
-        stats = sim_targ_batch_stats(sims[0], targs, kappas, idx=idx, logits=stat_logits(logits, cfg_loss))
+        stats = sim_targ_batch_stats(sims[0], targs, kappas, logits=stat_logits(logits, cfg_loss))
         if cfg_loss["crit"] == "infonce":
-            model = self._unwrapped_model
-            logit_scale = model.logit_scale2 if secondary and not self.cfg.shared_scalars else model.logit_scale
-            stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), crit.cfg["logits"]["scale"]["clamp"], idx))
+            logit_scale = self._unwrapped_model.logit_scale
+            stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), cfg_loss["logits"]["scale"]["clamp"]))
         return stats
 
     def _global_batch_loss(
@@ -611,7 +614,7 @@ class VLMWrapper(abc.ABC):
         """
         Compute loss using the full global batch:
         - gathers embeddings + targets across GPUs,
-        - applies primary + secondary loss configs.
+        - applies the criterion over its blended targets.
         Works for single GPU as well (gather is a no-op).
         """
         embs_img_b, embs_txt_b, class_encs_b, targ_data_b = self._gather_batch(
@@ -630,63 +633,17 @@ class VLMWrapper(abc.ABC):
                 embs_txt_b.retain_grad()
 
         if not loss_flag:
-            return None, None, embs_img_b, embs_txt_b, (None, None), class_encs_b, None, (None, None)
+            return None, None, embs_img_b, embs_txt_b, None, class_encs_b, None, None
 
-        loss1, loss1_raw, logits1, sims1, targs1, y1 = self._loss_for_crit_full_batch(
-            embs_img_b,
-            embs_txt_b,
-            class_encs_b,
-            targ_data_b,
-            self.crit1,
-            secondary=False,
-        )
+        loss, loss_raw, logits, sims, targs, y = self._loss_full_batch(embs_img_b, embs_txt_b, class_encs_b, targ_data_b)
         # retain every branch's grad for the aggregate (branch-summed) grad logging: logits for the
-        # logit= log field, sims for the sim-grad-sum curve strips
-        for t in (*(logits1 if diag["emb_logit_grads"] else ()), *(sims1 if diag["sim_grad_sums"] else ())):
+        # logit= log field, sims for the sim-grad-sum curve strip
+        for t in (*(logits if diag["emb_logit_grads"] else ()), *(sims if diag["sim_grad_sums"] else ())):
             if t.requires_grad:
                 t.retain_grad()
 
-        mix = self.cfg.loss["mix"]
-        unitless = self.cfg.loss["unitless"]
-        if unitless:
-            # rescale each loss by its detached magnitude (loss / loss.detach()). Under a blend this
-            # equalizes the two losses' magnitudes so `mix` controls their true gradient-contribution
-            # ratio: Adam cancels a global loss scale but NOT the relative scale between the blended
-            # losses, which can differ by orders of magnitude and drift over training. A lone loss just
-            # reads a constant 1.0. A bifurcated loss reads 2x its gradient scale (un-halved branch sum,
-            # 1x grads), so its normalizer is L/2 -- the gradient-scale-equivalent value -- keeping the
-            # ratio true across bif/non-bif blends (a lone bif loss reads 2.0).
-            loss1 = loss1 / (loss1.detach() / (2.0 if self.crit1.bifurcated else 1.0)).clamp_min(1e-12)
-        if mix != 0.0:
-            loss2, loss2_raw, logits2, sims2, targs2, y2 = self._loss_for_crit_full_batch(
-                embs_img_b,
-                embs_txt_b,
-                class_encs_b,
-                targ_data_b,
-                self.crit2,
-                secondary=True,
-            )
-            for t in (*(logits2 if diag["emb_logit_grads"] else ()), *(sims2 if diag["sim_grad_sums"] else ())):
-                if t.requires_grad:
-                    t.retain_grad()
-
-            if unitless:
-                loss2 = loss2 / (loss2.detach() / (2.0 if self.crit2.bifurcated else 1.0)).clamp_min(1e-12)
-
-            loss = (1.0 - mix) * loss1 + mix * loss2
-            loss_raw = (1.0 - mix) * loss1_raw + mix * loss2_raw
-
-            # each branch's sim/target matrices are tracked separately (learning-curve strips split
-            # the two losses' stats)
-            batch_stats = {
-                **self._branch_batch_stats(sims1, targs1, y1, logits1, self.crit1, False, idx=1),
-                **self._branch_batch_stats(sims2, targs2, y2, logits2, self.crit2, True, idx=2),
-            } if diag["sim_targ_stats"] else None
-
-            return loss, loss_raw, embs_img_b, embs_txt_b, (logits1, logits2), class_encs_b, batch_stats, (sims1, sims2)
-
-        batch_stats = self._branch_batch_stats(sims1, targs1, y1, logits1, self.crit1, False, idx=1) if diag["sim_targ_stats"] else None
-        return loss1, loss1_raw, embs_img_b, embs_txt_b, (logits1, None), class_encs_b, batch_stats, (sims1, None)
+        batch_stats = self._batch_stats(sims, targs, y, logits) if diag["sim_targ_stats"] else None
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, class_encs_b, batch_stats, sims
 
     def _gather_batch(
         self,
@@ -777,14 +734,12 @@ class VLMWrapper(abc.ABC):
         - loss ----------- Scalar loss (or None)
         - embs_img_b ----- Batch of normalized image embeddings; pt[B, D]
         - embs_txt_b ----- Batch of normalized text embeddings; pt[B, D]
-        - logits --------- (logits1, logits2); each a per-loss branch tuple of [img-row, txt-col]
-                           logit matrices ((logits,) non-bifurcated, (i2t, t2i) bifurcated -- see
-                           _loss_for_crit_full_batch), grads retained for the logit-grad-norm log;
-                           logits2 None at mix 0
+        - logits --------- Branch tuple of [img-row, txt-col] logit matrices ((logits,) non-bifurcated,
+                           (i2t, t2i) bifurcated -- see _loss_full_batch), grads retained for the
+                           logit-grad-norm log; None if loss_flag is False
         - class_encs_b --- Batch of class encodings; pt[B]
         - batch_stats ---- Per-batch sim/target distribution stats (flat dict), or None if loss_flag is False
-        - sims ----------- (sims1, sims2); branch tuples mirroring `logits`, grads retained for
-                           the sim-grad-sum strip
+        - sims ----------- Branch tuple mirroring `logits`, grads retained for the sim-grad-sum strip
         """
         toks_sb = self.txt_pp(txts_sb)
         output = self.model(imgs_sb, toks_sb)
@@ -805,8 +760,7 @@ class VLMWrapper(abc.ABC):
     def batch_step_chunked(self, imgs_sb, txts_sb, class_encs_sb, targ_data_sb):
         """
         Memory-tiled training step for the global-batch BCE-family loss (bce/bif_bce;
-        hardware.loss_chunk_size), incl. a BCE-family loss2 mix, used in place of batch_step +
-        loss.backward() when chunking is on. Does the
+        hardware.loss_chunk_size), used in place of batch_step + loss.backward() when chunking is on. Does the
         encoder forward, the tiled loss, AND the full backward internally, so the caller must NOT call
         loss.backward() afterwards.
 
@@ -823,13 +777,13 @@ class VLMWrapper(abc.ABC):
         logit scale/bias params via their direct band partials -- are disjoint-band contributions that
         SUM to the full-batch value, so there is no /world_size (unlike DDP's replicated-loss averaging).
 
-        Returns batch_step's tuple shape, with loss/loss_raw detached, logits = (None, None) (no full
-        logit matrix is formed, so its grad-norm diagnostic is unavailable), the embedding leaves
+        Returns batch_step's tuple shape, with loss/loss_raw detached, logits None (no full logit
+        matrix is formed, so its grad-norm diagnostic is unavailable), the embedding leaves
         (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
         embs_img_b / embs_txt_b for grad-norm logging, and -- since the backward already ran and the
-        sim matrices are gone -- the sims slot carries the (grad_sum_sim1, grad_sum_sim2) floats
-        accumulated tile-by-tile by chunked_bce_loss_backward. With dev.reporting.batch_diagnostics.sim_targ_stats
-        off batch_stats is None; with .sim_grad_sums off the sims slot carries (None, None).
+        sim matrices are gone -- the sims slot carries the grad_sum_sim float accumulated
+        tile-by-tile by chunked_bce_loss_backward. With dev.reporting.batch_diagnostics.sim_targ_stats
+        off batch_stats is None; with .sim_grad_sums off the sims slot carries None.
         """
         chunk = self.cfg.hw.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
@@ -855,9 +809,8 @@ class VLMWrapper(abc.ABC):
             txt = embs_txt_b.detach().requires_grad_(True)
 
             rank = dist.get_rank() if self.world_size > 1 else 0
-            loss, loss_raw, batch_stats, grad_sum_sims = chunked_bce_loss_backward(
-                img, txt, class_encs_b, targ_data_b, self.crit1, self.crit2, self.cfg.loss["mix"],
-                self.cfg.loss["unitless"], self.compute_logits, chunk, mixed_prec, device,
+            loss, loss_raw, batch_stats, grad_sum_sim = chunked_bce_loss_backward(
+                img, txt, class_encs_b, targ_data_b, self.crit, self.compute_logits, chunk, mixed_prec, device,
                 rank, self.world_size, sim_grad_sums=diag["sim_grad_sums"],
                 sim_targ_stats=diag["sim_targ_stats"], hpsm_kappas=kappas
             )
@@ -889,7 +842,7 @@ class VLMWrapper(abc.ABC):
                 dist.all_reduce(img.grad)
                 dist.all_reduce(txt.grad)
 
-        return loss, loss_raw, img, txt, (None, None), class_encs_b, batch_stats, grad_sum_sims
+        return loss, loss_raw, img, txt, None, class_encs_b, batch_stats, grad_sum_sim
 
     def batch_step_local(
         self,
@@ -957,22 +910,8 @@ class VLMWrapper(abc.ABC):
         kappas = self.cfg.dev["reporting"]["learning_curves"]["hpsm"]["kappas"]
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
-            _, loss_raw, _, sims1, targs1, _ = self._loss_for_crit_full_batch(
-                embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit1, secondary=False,
-            )
-            mix = self.cfg.loss["mix"]
-            if mix != 0.0:
-                _, loss2_raw, _, _, targs2, _ = self._loss_for_crit_full_batch(
-                    embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl], self.crit2, secondary=True,
-                )
-                loss_raw = (1.0 - mix) * loss_raw + mix * loss2_raw
-                # the eval sim/targ section stays a single summary: the primary config's sim and
-                # the mix-blend of the two configs' targets (unlike the train learning curves,
-                # which track the two branches' stats separately)
-                targs_stat = (1.0 - mix) * targs1 + mix * targs2
-            else:
-                targs_stat = targs1
-            chunk_stats.append(sim_targ_batch_stats(sims1[0], targs_stat, kappas))
+            _, loss_raw, _, sims, targs, _ = self._loss_full_batch(embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl])
+            chunk_stats.append(sim_targ_batch_stats(sims[0], targs, kappas))
             loss_total += loss_raw.item()
 
         return loss_total / len(chunk_stats), chunk_stats

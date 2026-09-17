@@ -1350,13 +1350,13 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     # Overrides" with one column per param declared in ablation_arms (union of the rows' overrides.json
     # 'arm' keys, first-seen order) and, in the arm_coords workbooks, "Coord Overrides" likewise for
     # hpo_coords. Values resolve from each row's config.json -- "-" when the param is absent there
-    # (inert under that config: mp has loss.mix 0.0, so clean_metadata dropped its loss2 subtree).
+    # (inert under that config: mp has loss.lambda 0.0, so clean_metadata dropped its loss2 subtree).
     # loss1.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
     # differentiate nothing). Config cells get no winner-bold/heatmap styling despite
     # bold_high/heatmap on. The arms workbooks get the arm band only: an arm's coord is picked per
     # dataset, so it has no single coord config to show.
     arms = {
-        "hp": ({"loss.mix": 0.3, "loss2.targ": "phylo"}, {"loss": {"mix": 0.3}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}),
+        "hp": ({"loss.lambda": 0.3, "loss2.targ": "phylo"}, {"loss": {"lambda": 0.3}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}),
         "mp": ({"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}),
     }
     coords = {"lo": 1.0e-5, "hi": 1.0e-4}
@@ -1388,7 +1388,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[9][5] == "Mean"
     assert grid[9][0] == "Arm Overrides" and grid[9][3] == "Coord Overrides"
     assert "A10:B10" in merged and "D10:D10" not in merged  # a 1-wide band title is not merged
-    assert grid[10][:2] == ["loss.mix", "loss2.targ"]
+    assert grid[10][:2] == ["loss.lambda", "loss2.targ"]
     assert grid[10][3] == "opt.lr.init"
     assert not any(v == "loss1.targ" for r in grid for v in r)
     assert grid[10][5:7] == ["Arm", "Coord"]  # Mean header shares the row
@@ -1413,7 +1413,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert agrid[2][5] == "CUB"
     assert agrid[9][5] == "Mean"
     assert agrid[9][0] == "Arm Overrides" and agrid[9][3] == "Coord Overrides"
-    assert agrid[10][:2] == ["loss.mix", "loss2.targ"] and agrid[10][3] == "opt.lr.init"
+    assert agrid[10][:2] == ["loss.lambda", "loss2.targ"] and agrid[10][3] == "opt.lr.init"
     assert agrid[11][:2] == ["0.3", "phylo"]
     assert agrid[13][:2] == ["-", "-"]
     assert agrid[0][9] == "seed 42"
@@ -1427,7 +1427,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[4][3:6] == ["hp", "lo (1)", "50.00"]
     assert grid[5][3:6] == ["mp", "lo (1)", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][3] == "Mean"
-    assert grid[8][:2] == ["loss.mix", "loss2.targ"] and grid[8][3:5] == ["Arm", "Coord"]
+    assert grid[8][:2] == ["loss.lambda", "loss2.targ"] and grid[8][3:5] == ["Arm", "Coord"]
     assert grid[9][:2] == ["0.3", "phylo"] and grid[9][3:5] == ["hp", "-"]
     assert grid[10][:2] == ["-", "-"] and grid[10][3:5] == ["mp", "-"]
     assert all(r[2] is None for r in grid)
@@ -1552,8 +1552,8 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     # the per-dataset coord files: overrides/config identical across a coord's datasets, the
     # crash counters per dataset (hp's 2/1/0 total is split across cub and bryo)
     for arm, dataset, overrides, meta, crashes in (
-        ("hp", "cub", {"loss.mix": 0.3}, {"loss": {"mix": 0.3}}, {"ram": 1, "vram": 1, "other": 0}),
-        ("hp", "bryo", {"loss.mix": 0.3}, {"loss": {"mix": 0.3}}, {"ram": 1, "vram": 0, "other": 0}),
+        ("hp", "cub", {"loss.lambda": 0.3}, {"loss": {"lambda": 0.3}}, {"ram": 1, "vram": 1, "other": 0}),
+        ("hp", "bryo", {"loss.lambda": 0.3}, {"loss": {"lambda": 0.3}}, {"ram": 1, "vram": 0, "other": 0}),
         ("mp", "cub", {"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
         dpath_coord = _dpath_coord(tmp_path, dataset, arm, "c0")
@@ -1577,7 +1577,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[12][0] == "Arm Overrides"
     assert "A13:B13" in merged
-    assert grid[13][:2] == ["loss.mix", "loss1.targ"]
+    assert grid[13][:2] == ["loss.lambda", "loss1.targ"]
     assert grid[14][:2] == ["0.3", "-"]
     assert grid[15][:2] == ["-", "mp"]
     # CUB table: merged title banner, Arm + Coord (the dataset's pick) + hw header, '<coord> (n)'

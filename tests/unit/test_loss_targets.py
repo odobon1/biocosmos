@@ -95,9 +95,15 @@ def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
     assert torch.equal(targs, torch.full((2, 2), 0.25))
 
 
-def _infonce(loss_mod, tsm_type, sm_scale, clamp=True):
+def _spec(tsm_type, sm_scale):
+    return {"targ": "phylo", "infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
+
+
+def _infonce(loss_mod, specs, clamp=True):
+    """An InfoNCE criterion over explicit (weight, target spec) pairs (Criterion.targ_specs)."""
     crit = loss_mod.InfoNCECriterion.__new__(loss_mod.InfoNCECriterion)  # bypass build_wting (no dataset needed)
-    crit.cfg = {"infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}, "logits": {"scale": {"clamp": clamp}}}
+    crit.cfg = {"logits": {"scale": {"clamp": clamp}}}
+    crit.targ_specs = specs
     return crit
 
 
@@ -110,13 +116,37 @@ def test_targ_dist_is_q_for_bce_and_the_tsm_row_transform_for_infonce() -> None:
     logit_scale = torch.tensor(5.0)  # exp(5) > 100, so the clamped pinned scale reads 100
 
     bce = loss_mod.BCECriterion.__new__(loss_mod.BCECriterion)
-    assert bce.targ_dist(Q, logit_scale) is Q
+    bce.targ_specs = [(1.0, {"targ": "phylo"})]
+    assert torch.equal(bce.targ_dist([Q], [logit_scale]), Q)
 
-    Y = _infonce(loss_mod, "linear", "pinned").targ_dist(Q, logit_scale)
+    Y = _infonce(loss_mod, [(1.0, _spec("linear", "pinned"))]).targ_dist([Q], [logit_scale])
     assert torch.allclose(Y, Q / Q.sum(dim=1, keepdim=True))  # rows sum to 1, zeros stay zero
-    Y = _infonce(loss_mod, "softmax", "pinned").targ_dist(Q, logit_scale)
+    Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned"))]).targ_dist([Q], [logit_scale])
     assert torch.allclose(Y, torch.softmax(2 * Q * 100.0, dim=1))
-    Y = _infonce(loss_mod, "softmax", "pinned1", clamp=False).targ_dist(Q, logit_scale)
+    Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned1"))], clamp=False).targ_dist([Q], [logit_scale])
     assert torch.allclose(Y, torch.softmax(Q * torch.exp(logit_scale), dim=1))
-    Y = _infonce(loss_mod, "softmax", 3.0).targ_dist(Q, logit_scale)
+    Y = _infonce(loss_mod, [(1.0, _spec("softmax", 3.0))]).targ_dist([Q], [logit_scale])
     assert torch.allclose(Y, torch.softmax(2 * Q * 3.0, dim=1))
+
+
+def test_targ_dist_blends_each_spec_under_its_own_tsm() -> None:
+    # a blend maps every spec's Q through ITS tsm first, then mixes the distributions: Y = sum_k w_k tsm_k(Q_k);
+    # the blended membership matrix (targ_memb) mixes the raw Q's instead
+    loss_mod = import_loss_module()
+    Q1 = torch.tensor([[1.0, 0.5, 0.0], [0.5, 1.0, 0.25], [0.0, 0.25, 1.0]])
+    Q2 = torch.eye(3)
+    logit_scale = torch.tensor(1.0)
+    specs = loss_mod.targ_specs(0.3, _spec("linear", "pinned"), _spec("softmax", 3.0))
+    assert [w for w, _ in specs] == [0.7, 0.3]
+    crit = _infonce(loss_mod, specs)
+    Y = crit.targ_dist([Q1, Q2], [logit_scale] * 2)
+    assert torch.allclose(Y, 0.7 * Q1 / Q1.sum(dim=1, keepdim=True) + 0.3 * torch.softmax(2 * Q2 * 3.0, dim=1))
+    assert torch.allclose(crit.targ_memb([Q1, Q2]), 0.7 * Q1 + 0.3 * Q2)
+
+
+def test_targ_specs_drop_zero_weight_specs() -> None:
+    loss_mod = import_loss_module()
+    s1, s2 = _spec("linear", "pinned"), _spec("softmax", "pinned")
+    assert loss_mod.targ_specs(0.0, s1, s2) == [(1.0, s1)]
+    assert loss_mod.targ_specs(1.0, s1, s2) == [(1.0, s2)]
+    assert loss_mod.targ_specs(0.25, s1, s2) == [(0.75, s1), (0.25, s2)]

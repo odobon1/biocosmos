@@ -37,10 +37,11 @@ class FakePhyloVCV:
         return targs
 
 
-def make_cfg_loss(crit="bce", targ="mp", wting_type=None, gamma=1.0, dsmr=False, targ_mass_neut=False):
+def make_cfg_loss(crit="bce", wting_type=None, gamma=1.0, dsmr=False, targ_mass_neut=False, lambda_=0.0, blend_type="targ"):
     return {
         "crit": crit,
-        "targ": targ,
+        "lambda": lambda_,
+        "blend_type": blend_type,
         "bce": {"targ_mass_neut": targ_mass_neut},
         "wting": {
             "cls_imb": {"type": wting_type, "inv_freq": {"gamma": gamma}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -56,8 +57,8 @@ def patch_metadata(monkeypatch):
     monkeypatch.setattr(loss_mod, "get_phylo_vcv", lambda dataset: FakePhyloVCV())
 
 
-def prevalence(cfg_loss):
-    return loss_mod.pos_prevalence(cfg_loss, "cub", "D10", "train", BATCH_SIZE)
+def prevalence(cfg_loss, targ, targ2="sp"):
+    return loss_mod.pos_prevalence(cfg_loss, {"targ": targ}, {"targ": targ2}, "cub", "D10", "train", BATCH_SIZE)
 
 
 def present_counts():
@@ -88,12 +89,12 @@ def monte_carlo_prevalence(targ, n_batches=20000, seed=0):
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce"])
 def test_sp_is_one_over_batch_size(crit):
-    assert prevalence(make_cfg_loss(crit=crit, targ="sp")) == pytest.approx(1 / BATCH_SIZE)
+    assert prevalence(make_cfg_loss(crit=crit), "sp") == pytest.approx(1 / BATCH_SIZE)
 
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce"])
 def test_mp_is_same_class_pair_probability(crit):
-    assert prevalence(make_cfg_loss(crit=crit, targ="mp")) == pytest.approx(homog_pair_prob_sum() / BATCH_SIZE)
+    assert prevalence(make_cfg_loss(crit=crit), "mp") == pytest.approx(homog_pair_prob_sum() / BATCH_SIZE)
 
 
 def test_mp_reduces_to_sp_with_singleton_classes(monkeypatch):
@@ -103,18 +104,18 @@ def test_mp_reduces_to_sp_with_singleton_classes(monkeypatch):
             self.class_counts = {"train": np.array([1.0, 1.0, 1.0, float("nan"), 1.0])}
 
     monkeypatch.setattr(loss_mod, "load_split", lambda dataset, split: SingletonSplit())
-    assert prevalence(make_cfg_loss(targ="mp")) == pytest.approx(1 / BATCH_SIZE)
+    assert prevalence(make_cfg_loss(), "mp") == pytest.approx(1 / BATCH_SIZE)
 
 
 @pytest.mark.parametrize("targ", ["mp", "tax", "phylo"])
 def test_matches_monte_carlo_batch_sampling(targ):
-    assert prevalence(make_cfg_loss(targ=targ)) == pytest.approx(monte_carlo_prevalence(targ), abs=5e-3)
+    assert prevalence(make_cfg_loss(), targ) == pytest.approx(monte_carlo_prevalence(targ), abs=5e-3)
 
 
 def test_soft_targets_exceed_binary_and_stay_in_range():
-    p_mp = prevalence(make_cfg_loss(targ="mp"))
-    p_tax = prevalence(make_cfg_loss(targ="tax"))
-    p_phylo = prevalence(make_cfg_loss(targ="phylo"))
+    p_mp = prevalence(make_cfg_loss(), "mp")
+    p_tax = prevalence(make_cfg_loss(), "tax")
+    p_phylo = prevalence(make_cfg_loss(), "phylo")
     assert p_mp < p_tax < 1.0
     assert p_mp < p_phylo < 1.0
 
@@ -122,7 +123,7 @@ def test_soft_targets_exceed_binary_and_stay_in_range():
 def test_inv_freq_gamma_one_pair_weighting_equalizes_class_pairs():
     # W = 1 / P_full on every class pair -> every (present) class pair counts equally -> 1 / K under mp
     K = len(present_counts())
-    assert prevalence(make_cfg_loss(crit="bce", targ="mp", wting_type="inv_freq", gamma=1.0)) == pytest.approx(1 / K)
+    assert prevalence(make_cfg_loss(crit="bce", wting_type="inv_freq", gamma=1.0), "mp") == pytest.approx(1 / K)
 
 
 def test_inv_freq_gamma_one_anchor_weighting_equalizes_anchor_classes():
@@ -131,18 +132,18 @@ def test_inv_freq_gamma_one_anchor_weighting_equalizes_anchor_classes():
     n = np.array(present_counts())
     N = n.sum()
     expected = float(np.mean((1 + (BATCH_SIZE - 1) * (n - 1) / (N - 1)) / BATCH_SIZE))
-    assert prevalence(make_cfg_loss(crit="bif_bce", targ="mp", wting_type="inv_freq", gamma=1.0)) == pytest.approx(expected)
+    assert prevalence(make_cfg_loss(crit="bif_bce", wting_type="inv_freq", gamma=1.0), "mp") == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce"])
 @pytest.mark.parametrize("targ", ["sp", "mp"])
 def test_dsmr_balances_binary_targets_to_half(crit, targ):
-    assert prevalence(make_cfg_loss(crit=crit, targ=targ, dsmr=True)) == pytest.approx(0.5)
+    assert prevalence(make_cfg_loss(crit=crit, dsmr=True), targ) == pytest.approx(0.5)
 
 
 def test_dsmr_on_soft_targets_is_not_half():
     # DSMR equalizes the Y-weighted and (1 - Y)-weighted masses, which is a 1/2 prevalence only for binary Y
-    assert prevalence(make_cfg_loss(crit="bce", targ="phylo", dsmr=True)) != pytest.approx(0.5)
+    assert prevalence(make_cfg_loss(crit="bce", dsmr=True), "phylo") != pytest.approx(0.5)
 
 
 def test_targ_mass_neut_weights_rows_by_inverse_expected_mass():
@@ -152,8 +153,40 @@ def test_targ_mass_neut_weights_rows_by_inverse_expected_mass():
     N = n.sum()
     m = 1 + (BATCH_SIZE - 1) * (n - 1) / (N - 1)
     expected = 1 / (BATCH_SIZE * float(((n / N) / m).sum()))
-    assert prevalence(make_cfg_loss(crit="bif_bce", targ="mp", targ_mass_neut=True)) == pytest.approx(expected)
+    assert prevalence(make_cfg_loss(crit="bif_bce", targ_mass_neut=True), "mp") == pytest.approx(expected)
 
 
 def test_targ_mass_neut_is_inert_under_sp():
-    assert prevalence(make_cfg_loss(crit="bif_bce", targ="sp", targ_mass_neut=True)) == pytest.approx(1 / BATCH_SIZE)
+    assert prevalence(make_cfg_loss(crit="bif_bce", targ_mass_neut=True), "sp") == pytest.approx(1 / BATCH_SIZE)
+
+
+@pytest.mark.parametrize("blend_type", ["targ", "loss"])
+@pytest.mark.parametrize("crit", ["bce", "bif_bce"])
+def test_blend_is_linear_in_the_targets_under_constant_weights(crit, blend_type):
+    # the blended matrix Y = (1 - lambda) Y1 + lambda Y2 enters p = sum(W * Y) / sum(W) linearly when W is
+    # target-independent (no DSMR / neutralization), so the prevalence is the blend of the two prevalences --
+    # under either blend type (a loss blend's terms then share W)
+    lambda_ = 0.3
+    p_mp, p_phylo = prevalence(make_cfg_loss(crit=crit), "mp"), prevalence(make_cfg_loss(crit=crit), "phylo")
+    assert prevalence(make_cfg_loss(crit=crit, lambda_=lambda_, blend_type=blend_type), "mp", "phylo") == pytest.approx((1 - lambda_) * p_mp + lambda_ * p_phylo)
+    # lambda 1.0 drops the primary target outright
+    assert prevalence(make_cfg_loss(crit=crit, lambda_=1.0), "mp", "phylo") == pytest.approx(p_phylo)
+
+
+def test_blend_dsmr_reads_the_blended_masses():
+    # under DSMR the weights read the (blended) target masses, so the prevalence is no longer the blend of
+    # the two prevalences (nor the 1/2 that binary targets give): the blended matrix is soft
+    lambda_ = 0.3
+    p_sp, p_phylo = prevalence(make_cfg_loss(dsmr=True), "sp"), prevalence(make_cfg_loss(dsmr=True), "phylo")
+    p_blend = prevalence(make_cfg_loss(dsmr=True, lambda_=lambda_), "sp", "phylo")
+    assert p_blend != pytest.approx((1 - lambda_) * p_sp + lambda_ * p_phylo)
+    assert p_blend != pytest.approx(0.5)
+    assert 0.0 < p_blend < 1.0
+
+
+@pytest.mark.parametrize("crit", ["bce", "bif_bce"])
+def test_loss_blend_dsmr_reads_each_terms_own_masses(crit):
+    # blend_type loss: each term's DSMR weights read its own target, so the binary sp / mp terms each balance to
+    # 1/2 and so does their blend -- where the target blend's soft sp / mp matrix (test above) does not
+    assert prevalence(make_cfg_loss(crit=crit, dsmr=True, lambda_=0.3, blend_type="loss"), "sp", "mp") == pytest.approx(0.5)
+    assert prevalence(make_cfg_loss(crit=crit, dsmr=True, lambda_=0.3), "sp", "mp") != pytest.approx(0.5)

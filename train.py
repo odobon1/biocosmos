@@ -25,7 +25,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.config import get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
-from utils.loss import configure_phylo_targs, Criterion
+from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, targ_specs
 from utils.eval import EvaluationPipeline
 from utils.manif_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
@@ -187,22 +187,16 @@ class TrainPipeline:
 
     def init_opt_and_lr_sched(self):
 
-        # logit scalars (scale/bias) train at lr * their loss's logits.scalar_lr_factor, decay-decoupled
-        scalar_factors = {
-            "logit_scale":  self.cfg.loss1["logits"]["scalar_lr_factor"],
-            "logit_bias":   self.cfg.loss1["logits"]["scalar_lr_factor"],
-            "logit_scale2": self.cfg.loss2["logits"]["scalar_lr_factor"],
-            "logit_bias2":  self.cfg.loss2["logits"]["scalar_lr_factor"],
-        }
+        # logit scalars (scale/bias) train at lr * loss.logits.scalar_lr_factor, decay-decoupled
+        scalar_factor = self.cfg.loss["logits"]["scalar_lr_factor"]
 
-        params_decay, params_no_decay = [], []
-        params_scalar = {}  # scalar_lr_factor -> params
+        params_decay, params_no_decay, params_scalar = [], [], []
         for name, param in self.modelw.model.named_parameters():
             if not param.requires_grad:
                 continue
             leaf = name.split(".")[-1]  # DDP prefixes names with "module."
-            if leaf in scalar_factors:
-                params_scalar.setdefault(scalar_factors[leaf], []).append(param)
+            if leaf in ("logit_scale", "logit_bias", "logit_scale2", "logit_bias2"):
+                params_scalar.append(param)
             # decoupled weight decay ~ decoupling biases & affine params
             elif name.endswith(".bias") or param.ndim == 1 or "norm" in name.lower():
                 params_no_decay.append(param)
@@ -214,10 +208,8 @@ class TrainPipeline:
             {"params": params_decay,    "weight_decay": self.cfg.opt["wd"], "lr": lr_init_nom},
             {"params": params_no_decay, "weight_decay": 0.0,                "lr": lr_init_nom},
         ]
-        param_groups += [
-            {"params": params, "weight_decay": 0.0, "lr": lr_init_nom * factor}
-            for factor, params in params_scalar.items()
-        ]
+        if params_scalar:
+            param_groups.append({"params": params_scalar, "weight_decay": 0.0, "lr": lr_init_nom * scalar_factor})
 
         self.opt = torch.optim.AdamW(
             param_groups, 
@@ -269,69 +261,55 @@ class TrainPipeline:
     @rank0
     def _tracked_logit_scalars(self):
         """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
-        a loss's scale whenever it's learnable, its bias only when the loss is BCE-family (inert under
-        InfoNCE) and learnable; loss2's only when loss2 is active and has its own pair -- under
-        loss.shared_scalars it runs on loss1's, tracked once as scale1/bias1 (the shared bias is live
-        when either loss is BCE-family). Frozen scalars (and non-parameter buffers) are left out -- a
-        flat line says nothing."""
+        the scale whenever it's learnable, the bias only when the loss is BCE-family (inert under
+        InfoNCE) and learnable. Frozen scalars (and non-parameter buffers) are left out -- a flat line
+        says nothing. Under separate logit scalars (utils.loss.sep_logit_scalars) loss2's term's pair is
+        tracked alike, as scale2 / bias2."""
         model = self.modelw._unwrapped_model
-        shared = self.cfg.shared_scalars
         tracked = {}
-        for tag, cfg_loss, attr_scale, attr_bias in (
-            ("1", self.cfg.loss1, "logit_scale", "logit_bias"),
-            ("2", self.cfg.loss2, "logit_scale2", "logit_bias2"),
-        ):
-            if tag == "2" and (self.cfg.loss["mix"] == 0.0 or shared):
-                continue
-            if getattr(model, attr_scale).requires_grad:
-                tracked[f"scale{tag}"] = attr_scale
-            bias_live = cfg_loss["crit"] in ("bce", "bif_bce") or (shared and self.cfg.loss2["crit"] in ("bce", "bif_bce"))
-            if bias_live and getattr(model, attr_bias).requires_grad:
-                tracked[f"bias{tag}"] = attr_bias
+        for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
+            if getattr(model, f"logit_scale{suffix}").requires_grad:
+                tracked[f"scale{suffix}"] = f"logit_scale{suffix}"
+            if self.cfg.loss["crit"] in ("bce", "bif_bce") and getattr(model, f"logit_bias{suffix}").requires_grad:
+                tracked[f"bias{suffix}"] = f"logit_bias{suffix}"
         return tracked
 
     @rank0
     def _logit_scalar_values(self):
-        # scale series carry the alpha the logits carry: exp(logit_scale) (the quantity scale.init specifies),
-        # capped at 100 under the loss's logits.scale.clamp as compute_logits applies it -- so a held clamp
-        # reads as the series pinned at the cap (the raw parameter above it, its gradient zero); bias series
-        # the raw bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the
-        # value the batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under,
-        # not the post-update one.
+        # the scale series carries the alpha the logits carry: exp(logit_scale) (the quantity scale.init specifies),
+        # capped at 100 under loss.logits.scale.clamp as compute_logits applies it -- so a held clamp reads as
+        # the series pinned at the cap (the raw parameter above it, its gradient zero); the bias series the raw
+        # bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the value the
+        # batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under, not the
+        # post-update one.
         model = self.modelw._unwrapped_model
         values = {}
         for key, attr in self._logit_scalars_tracked.items():
             value = getattr(model, attr).detach()
             if key.startswith("scale"):
-                cfg_loss = self.cfg.loss2 if key == "scale2" else self.cfg.loss1
-                if cfg_loss["logits"]["scale"]["clamp"]:
+                if self.cfg.loss["logits"]["scale"]["clamp"]:
                     value = value.clamp(max=math.log(100))
                 value = value.exp()
             values[key] = value.item()
         return values
 
     def _tracked_targ_stats(self):
-        """Batch-stat key prefixes ('targ1'/'targ2') for the target distributions worth curving: phylo
-        and tax targets are graded, so their min/max/mean/median carry signal, while sp/mp targets are
-        0/1 indicators whose spread says nothing. loss2's only when loss2 is mixed in. Untracked
-        branches are dropped before TrialData records them, so they get no learning-curve panel."""
-        tracked = set()
-        for tag, cfg_loss in (("1", self.cfg.loss1), ("2", self.cfg.loss2)):
-            if tag == "2" and self.cfg.loss["mix"] == 0.0:
-                continue
-            if cfg_loss["targ"] in ("phylo", "tax"):
-                tracked.add(f"targ{tag}")
-        return tracked
+        """Whether the blended target matrix is worth curving (the Q panel): graded when a live target is
+        phylo or tax, or when two distinct targets are blended (0 < lambda < 1 puts their disagreements at
+        lambda / 1 - lambda). A lone sp / mp target is a 0/1 indicator whose spread says nothing. When untracked,
+        the targ stats are dropped before TrialData records them, so they get no learning-curve panel."""
+        live = [cfg_targ["targ"] for _, cfg_targ in targ_specs(self.cfg.loss["lambda"], self.cfg.loss1, self.cfg.loss2)]
+        return any(targ in ("phylo", "tax") for targ in live) or len(set(live)) > 1
 
     @rank0
     def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
-                            grad_sum_sim1, grad_sum_sim2, logit_scalars):
+                            grad_sum_sim, logit_scalars):
         # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the
-        # curve series keep only the histogram, and only for branches whose targets are worth curving
+        # curve series keep only the histogram, and only when the targets are worth curving
         if batch_stats is not None:
             batch_stats = {
                 key: val for key, val in batch_stats.items()
-                if not key.startswith("targ") or (key.endswith("_hist") and key[:-len("_hist")] in self._targ_stats_tracked)
+                if not key.startswith("targ") or (key == "targ_hist" and self._targ_stats_tracked)
             }
         self.data.update_train_batch(
             self.n_samps_seen,
@@ -341,8 +319,7 @@ class TrainPipeline:
             grad_norm_model=grad_norm_model,
             delta_norm_model=delta_norm_model,
             batch_stats=batch_stats,
-            grad_sum_sim1=grad_sum_sim1,
-            grad_sum_sim2=grad_sum_sim2,
+            grad_sum_sim=grad_sum_sim,
             logit_scalars=logit_scalars,
         )
 
@@ -454,11 +431,11 @@ class TrainPipeline:
         if self.cfg.hw.loss_chunk_size is not None:
             # tiled path: encoder forward, loss, AND backward happen inside (representation gradients),
             # so no loss.backward() here. Autocast + DDP grad sync are handled internally. The sims slot
-            # already carries the (grad_sum_sim1, grad_sum_sim2) floats, accumulated tile-by-tile.
-            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, grad_sum_sims = self.modelw.batch_step_chunked(
+            # already carries the grad_sum_sim float, accumulated tile-by-tile.
+            loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, grad_sum_sim = self.modelw.batch_step_chunked(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )
-            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
+            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sim
         if self.cfg.hw.mixed_prec:
             with autocast(device_type=self.cfg.device.type, dtype=torch.bfloat16):
                 loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, sims = self.modelw.batch_step(
@@ -470,21 +447,16 @@ class TrainPipeline:
             )
         loss.backward()
         if not self._batch_diag["sim_grad_sums"]:  # no grads were retained on the sims
-            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, (None, None)
+            return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, None
         with torch.no_grad():
             # .float(): the retained grads are bf16 under mixed_prec, and casting the SUM result back
             # to bf16 quantizes it (~3 significant digits)
-            # aggregate over a loss's branch tuple: one branch non-bifurcated; for bif_bce the two
+            # aggregate over the branch tuple: one branch non-bifurcated; for bif_bce the two
             # un-halved branches each carry the full incoming grad, so the aggregate reads 2x the
             # non-bifurcated sum(dL/dsim) -- consistent with the 2x loss reading. A branch with no
             # retained grad (e.g. the t2i branch under a frozen text tower) contributes nothing.
-            def sim_grad_sum(branches):
-                return sum(s.grad.float().sum().item() for s in branches if s.grad is not None)
-            grad_sum_sims = (
-                sim_grad_sum(sims[0]),
-                sim_grad_sum(sims[1]) if sims[1] is not None else None,
-            )
-        return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims
+            grad_sum_sim = sum(s.grad.float().sum().item() for s in sims if s.grad is not None)
+        return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sim
 
     def _step_optimizer(self):
         """Take the optimizer step and return ||delta theta||, the L2 norm of the resulting parameter
@@ -634,7 +606,7 @@ class TrainPipeline:
                     lr = self._update_lr_warmup() if self.lr_warmup > 0 else self.opt.param_groups[0]["lr"]
 
                     self.opt.zero_grad(set_to_none=True)
-                    loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sims = self._step_train(
+                    loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sim = self._step_train(
                         imgs_sb,
                         texts_sb,
                         class_encs_sb,
@@ -667,7 +639,7 @@ class TrainPipeline:
                         self.n_batches_seen += 1
 
                     self._record_train_batch(lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
-                                             grad_sum_sims[0], grad_sum_sims[1], logit_scalars)
+                                             grad_sum_sim, logit_scalars)
 
                     if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()
@@ -785,8 +757,7 @@ def run_training(cfg):
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
-    modelw.crit1 = Criterion.build(cfg.loss1, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
-    modelw.crit2 = Criterion.build(cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size) if cfg.loss["mix"] != 0.0 else None
+    modelw.crit = Criterion.build(cfg.loss, cfg.loss1, cfg.loss2, cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
 
     resume_state = None
     trial_state = None

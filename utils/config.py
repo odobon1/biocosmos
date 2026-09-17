@@ -18,19 +18,16 @@ import pdb
 CFG_PARAM_ALIASES = {
     "n_epochs": "E",
     "batch_size": "BS",
-    "loss.mix": "Mix",
+    "loss.lambda": "Lambda",
+    "loss.blend_type": "Blend",
     "loss.unitless": "Unit",
-    "loss.shared_scalars": "ShSc",
+    "loss.logits.shared": "ShSc",
+    "loss.wting.bce.dsmr": "DSMR",
+    "loss.logits.scale.init": "Alpha",
+    "loss.logits.bce.bias.init": "Binit",
+    "loss.logits.bce.center": "Bcent",
     "loss1.targ": "Targ",
-    "loss1.wting.bce.dsmr": "DSMR",
-    "loss1.logits.scale.init": "Alpha",
-    "loss1.logits.bce.bias.init": "Binit",
-    "loss1.logits.bce.bias.center": "Bcent",
     "loss2.targ": "Targ2",
-    "loss2.wting.bce.dsmr": "DSMR2",
-    "loss2.logits.scale.init": "Alpha2",
-    "loss2.logits.bce.bias.init": "B2init",
-    "loss2.logits.bce.bias.center": "B2cent",
     "opt.lr.init": "LR",
     "opt.wd": "WD",
 }
@@ -207,8 +204,7 @@ class TrainConfig:
         for key, val in (
             ("opt.lr.init", self.opt["lr"]["init"]),
             ("opt.wd", self.opt["wd"]),
-            ("loss1.logits.scalar_lr_factor", self.loss1["logits"]["scalar_lr_factor"]),
-            ("loss2.logits.scalar_lr_factor", self.loss2["logits"]["scalar_lr_factor"]),
+            ("loss.logits.scalar_lr_factor", self.loss["logits"]["scalar_lr_factor"]),
         ):
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 raise ValueError(
@@ -245,58 +241,57 @@ class TrainConfig:
         if isinstance(htarg_beta, bool) or not isinstance(htarg_beta, (int, float)) or htarg_beta <= 0:
             raise ValueError(f"htarg.exp.beta must be a positive number, got {htarg_beta!r}")
 
+        lambda_ = self.loss["lambda"]
+        if not 0.0 <= lambda_ <= 1.0:
+            raise ValueError(f"loss.lambda out of bounds: {lambda_}, must be between 0.0 and 1.0")
+        # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
+        live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, self.loss1), (lambda_, self.loss2)) if w != 0.0]
+
         if self.htarg["shuffle"]:
-            phylo_active = self.loss1["targ"] == "phylo" or (self.loss2["targ"] == "phylo" and self.loss["mix"] != 0.0)
-            if not phylo_active:
+            if "phylo" not in live_targs:
                 raise ValueError(
-                    "htarg.shuffle=True requires an active phylo target: "
-                    "loss1.targ must be 'phylo', or loss2.targ must be 'phylo' with loss.mix != 0.0"
+                    "htarg.shuffle=True requires a live phylo target: "
+                    "loss1.targ 'phylo' under loss.lambda != 1.0, or loss2.targ 'phylo' under loss.lambda != 0.0"
                 )
             if self.seed is None:
                 raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss1["crit"] not in ("infonce", "bce", "bif_bce"):
-            raise ValueError(f"Unknown Loss 1 crit: '{self.loss1['crit']}', must be one of {{infonce, bce, bif_bce}}")
-        if self.loss2["crit"] not in ("infonce", "bce", "bif_bce"):
-            raise ValueError(f"Unknown Loss 2 crit: '{self.loss2['crit']}', must be one of {{infonce, bce, bif_bce}}")
-        
-        if self.loss1["sim"] not in ("cos", "geo1", "geo2"):
-            raise ValueError(f"Unknown Loss 1 sim_type: '{self.loss1['sim']}', must be one of {{cos, geo1, geo2}}")
-        if self.loss2["sim"] not in ("cos", "geo1", "geo2"):
-            raise ValueError(f"Unknown Loss 2 sim_type: '{self.loss2['sim']}', must be one of {{cos, geo1, geo2}}")
-        
-        if self.loss1["targ"] not in ("sp", "mp", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 1 targ_type: '{self.loss1['targ']}', must be one of {{sp, mp, tax, phylo}}")
-        if self.loss2["targ"] not in ("sp", "mp", "tax", "phylo"):
-            raise ValueError(f"Unknown Loss 2 targ_type: '{self.loss2['targ']}', must be one of {{sp, mp, tax, phylo}}")
+        if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
+            raise ValueError(f"Unknown loss.crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")
 
-        if self.loss1["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
-            raise ValueError(f"Unknown Loss 1 logits.bce.center: '{self.loss1['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
-        if self.loss2["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
-            raise ValueError(f"Unknown Loss 2 logits.bce.center: '{self.loss2['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
+        if self.loss["sim"] not in ("cos", "geo1", "geo2"):
+            raise ValueError(f"Unknown loss.sim: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
 
-        for name, cfg_loss in (("Loss 1", self.loss1), ("Loss 2", self.loss2)):
-            bias_init = cfg_loss["logits"]["bce"]["bias"]["init"]
-            if bias_init == "pos_prevalence":
-                if cfg_loss["crit"] not in ("bce", "bif_bce"):
-                    raise ValueError(f"{name} logits.bce.bias.init: pos_prevalence requires a BCE-family crit (bce, bif_bce), got '{cfg_loss['crit']}'")
-            elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
-                raise ValueError(f"Unknown {name} logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
+        for name, cfg_targ in (("loss1", self.loss1), ("loss2", self.loss2)):
+            if cfg_targ["targ"] not in ("sp", "mp", "tax", "phylo"):
+                raise ValueError(f"Unknown {name}.targ: '{cfg_targ['targ']}', must be one of {{sp, mp, tax, phylo}}")
 
-        if not 0.0 <= self.loss["mix"] <= 1.0:
-            raise ValueError(f"loss.mix out of bounds: {self.loss['mix']}, must be between 0.0 and 1.0")
+        # a blend of two identical target distributions is that distribution: lambda would do nothing. Under InfoNCE
+        # the same targ type still blends two distributions when the specs' tsm differ
+        if 0.0 < lambda_ < 1.0 and self.loss1["targ"] == self.loss2["targ"] and (
+            self.loss["crit"] != "infonce" or self.loss1["infonce"]["tsm"] == self.loss2["infonce"]["tsm"]
+        ):
+            raise ValueError(
+                f"loss1 and loss2 specify the same target distribution (targ '{self.loss1['targ']}') under loss.lambda "
+                f"{lambda_}: the blend is that target itself, so loss.lambda is inert"
+            )
+
+        if self.loss["blend_type"] not in ("targ", "loss"):
+            raise ValueError(f"Unknown loss.blend_type: '{self.loss['blend_type']}', must be one of {{targ, loss}}")
         if not isinstance(self.loss["unitless"], bool):
             raise ValueError(f"loss.unitless must be a bool, got {self.loss['unitless']!r}")
-        if not isinstance(self.loss["shared_scalars"], bool):
-            raise ValueError(f"loss.shared_scalars must be a bool, got {self.loss['shared_scalars']!r}")
-        # shared logit scalars need two live losses (a lone loss keeps its own pair). Under sharing loss2 runs
-        # on loss1's scale/bias params, so its logits block is replaced by loss1's outright: every reader of
-        # loss2.logits.* (clamp / center via crit.cfg, scalar_lr_factor) then follows loss1's settings.
-        # Placed after the per-loss validation above -- loss1's block is validated against loss1's crit only
-        # (a pos_prevalence bias init shared with an InfoNCE loss2 is fine: the bias is inert there)
-        self.shared_scalars = self.loss["shared_scalars"] and 0.0 < self.loss["mix"] < 1.0
-        if self.shared_scalars:
-            self.loss2["logits"] = deepcopy(self.loss1["logits"])
+        if not isinstance(self.loss["logits"]["shared"], bool):
+            raise ValueError(f"loss.logits.shared must be a bool, got {self.loss['logits']['shared']!r}")
+
+        if self.loss["logits"]["bce"]["center"] not in (None, "sim", "grad_proj", "grad_proj2"):
+            raise ValueError(f"Unknown loss.logits.bce.center: '{self.loss['logits']['bce']['center']}', must be one of {{null, sim, grad_proj, grad_proj2}}")
+
+        bias_init = self.loss["logits"]["bce"]["bias"]["init"]
+        if bias_init == "pos_prevalence":
+            if self.loss["crit"] not in ("bce", "bif_bce"):
+                raise ValueError(f"loss.logits.bce.bias.init: pos_prevalence requires a BCE-family crit (bce, bif_bce), got '{self.loss['crit']}'")
+        elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
+            raise ValueError(f"Unknown loss.logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
 
         if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
             self.aug.pop("cjit", None)
@@ -306,9 +301,8 @@ class TrainConfig:
             self.aug.pop("gblur", None)
 
         # focal toggle: gamma 0.0 disables -> block dropped from the working config; downstream keys off presence
-        for cfg_loss in (self.loss1, self.loss2):
-            if cfg_loss["wting"]["focal"]["gamma"] == 0.0:
-                del cfg_loss["wting"]["focal"]
+        if self.loss["wting"]["focal"]["gamma"] == 0.0:
+            del self.loss["wting"]["focal"]
 
         self.hw = HardwareConfig(**self.hw)
         self.use_img_cache = self.hw.use_img_cache
@@ -324,22 +318,19 @@ class TrainConfig:
 
         if self.hw.loss_chunk_size is not None:
             from utils.loss import chunking_supported  # local: avoid importing Bio.Phylo at config load
-            if not chunking_supported(self.loss1, self.loss2, self.loss["mix"]):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
+            if not chunking_supported(self.loss):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
                 self.hw.loss_chunk_size = None
             else:
                 # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
                 # exactly only through the cos-sim mean factorization mean(sim) = mean(img) . mean(txt)
                 # (see utils/loss.py) -- geo sims have no such closed form
-                for name, cfg_l in (("loss1", self.loss1), ("loss2", self.loss2)):
-                    if name == "loss2" and self.loss["mix"] == 0.0:
-                        continue
-                    if cfg_l["logits"]["bce"]["center"] == "sim" and cfg_l["sim"] != "cos":
-                        raise ValueError(
-                            f"{name}.logits.bce.center: sim requires {name}.sim: cos under hardware.loss_chunk_size "
-                            f"(got {name}.sim: {cfg_l['sim']}): the tiled loss reproduces full-batch sim-centering "
-                            f"exactly only via the cos mean factorization; use center: grad_proj/grad_proj2 or "
-                            f"disable chunking"
-                        )
+                if self.loss["logits"]["bce"]["center"] == "sim" and self.loss["sim"] != "cos":
+                    raise ValueError(
+                        f"loss.logits.bce.center: sim requires loss.sim: cos under hardware.loss_chunk_size "
+                        f"(got loss.sim: {self.loss['sim']}): the tiled loss reproduces full-batch sim-centering "
+                        f"exactly only via the cos mean factorization; use center: grad_proj/grad_proj2 or "
+                        f"disable chunking"
+                    )
                 world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
                 if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
                     raise ValueError(
@@ -360,38 +351,51 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
     render inert keeps the first-listed reason."""
     is_siglip = "siglip" in cfg.arch["model_type"].lower()
-    mix = cfg.loss["mix"]
-    phylo_active = cfg.loss1["targ"] == "phylo" or (cfg.loss2["targ"] == "phylo" and mix != 0.0)
+    lambda_ = cfg.loss["lambda"]
+    crit = cfg.loss["crit"]
+    cls_imb_type = cfg.loss["wting"]["cls_imb"]["type"]
+    # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
+    live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, cfg.loss1), (lambda_, cfg.loss2)) if w != 0.0]
+    # what sets a loss blend apart from the target blend (utils.loss.Criterion): a loss factor that reads the
+    # target -- without one the loss is affine in the target (focal gamma 0.0 drops its block from the working
+    # config) -- or separate logit scalars, each term then scored on its own logits
+    targ_dep = (
+        cfg.loss["unitless"] or "focal" in cfg.loss["wting"] or not cfg.loss["logits"]["shared"]
+        or (crit != "infonce" and cfg.loss["wting"]["bce"]["dsmr"])
+        or (crit == "bif_bce" and cfg.loss["bce"]["targ_mass_neut"])
+    )
     rules = [
         ("arch.clip", is_siglip, "arch.model_type is a SigLIP model"),
         ("arch.siglip", not is_siglip, "arch.model_type is a CLIP model"),
         ("dropout.siglip", not is_siglip, "arch.model_type is a CLIP model"),
         ("dropout.siglip.proj_head", cfg.arch["siglip"]["vis_proj_head"] is None, "arch.siglip.vis_proj_head is null"),
-        ("htarg", not phylo_active, "no live loss has targ: phylo"),
+        ("htarg", "phylo" not in live_targs, "no live target is phylo"),
         ("htarg.exp", cfg.htarg["kernel"] == "bm", "htarg.kernel is bm"),
-        ("loss.shared_scalars", not 0.0 < mix < 1.0, f"loss.mix is {mix} (sharing needs two live losses)"),
-        ("loss2", mix == 0.0, "loss.mix is 0.0"),
-        ("loss2.logits", cfg.shared_scalars, "loss.shared_scalars is true (loss2 runs on loss1's scalars)"),
-        # CLIP + bias.init null: logit_bias is a fixed 0.0 buffer (models.py), never learnable; loss2's own
-        # pair is always fresh learnable Parameters
-        ("loss1.logits.bce.bias.freeze", not is_siglip and cfg.loss1["logits"]["bce"]["bias"]["init"] is None,
-         "the CLIP logit bias is a fixed 0.0 buffer under loss1.logits.bce.bias.init: null"),
+        ("loss1", lambda_ == 1.0, "loss.lambda is 1.0"),
+        ("loss2", lambda_ == 0.0, "loss.lambda is 0.0"),
+        ("loss.blend_type", lambda_ in (0.0, 1.0), f"loss.lambda is {lambda_} (a lone target)"),
+        ("loss.blend_type", not targ_dep,
+         "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut) on shared logit scalars: "
+         "the blend types coincide"),
+        ("loss.logits.shared", lambda_ in (0.0, 1.0), f"loss.lambda is {lambda_} (a lone target)"),
+        ("loss.logits.shared", cfg.loss["blend_type"] == "targ", "loss.blend_type is targ (one loss on one set of logits)"),
+        ("loss.bce", crit != "bif_bce", f"loss.crit is {crit}"),
+        ("loss.bce", all(targ == "sp" for targ in live_targs), "every live target is sp (row mass already 1)"),
+        ("loss.wting.bce", crit == "infonce", "loss.crit is infonce"),
+        ("loss.wting.cls_imb.inv_freq", cls_imb_type != "inv_freq", f"loss.wting.cls_imb.type is {cls_imb_type}"),
+        ("loss.wting.cls_imb.class_bal", cls_imb_type != "class_bal", f"loss.wting.cls_imb.type is {cls_imb_type}"),
+        ("loss.wting.cls_imb.norm", cls_imb_type is None, f"loss.wting.cls_imb.type is {cls_imb_type}"),
+        ("loss.wting.cls_imb.norm", cfg.loss["unitless"], "loss.unitless is true (its rescale cancels the per-batch normalizer)"),
+        ("loss.logits.bce", crit == "infonce", "loss.crit is infonce (sigmoid/BCE-path logit params)"),
+        # CLIP + bias.init null: logit_bias is a fixed 0.0 buffer (models.py), never learnable
+        ("loss.logits.bce.bias.freeze", not is_siglip and cfg.loss["logits"]["bce"]["bias"]["init"] is None,
+         "the CLIP logit bias is a fixed 0.0 buffer under loss.logits.bce.bias.init: null"),
     ]
     for key in ("loss1", "loss2"):
-        cfg_loss = getattr(cfg, key)
-        crit, targ = cfg_loss["crit"], cfg_loss["targ"]
-        cls_imb_type = cfg_loss["wting"]["cls_imb"]["type"]
+        cfg_targ = getattr(cfg, key)
         rules += [
-            (f"{key}.infonce", crit != "infonce", f"{key}.crit is {crit}"),
-            (f"{key}.infonce.tsm.sm_scale", cfg_loss["infonce"]["tsm"]["type"] == "linear", f"{key}.infonce.tsm.type is linear"),
-            (f"{key}.bce", crit != "bif_bce", f"{key}.crit is {crit}"),
-            (f"{key}.bce", targ == "sp", f"{key}.targ is sp (row mass already 1)"),
-            (f"{key}.wting.bce", crit == "infonce", f"{key}.crit is infonce"),
-            (f"{key}.wting.cls_imb.inv_freq", cls_imb_type != "inv_freq", f"{key}.wting.cls_imb.type is {cls_imb_type}"),
-            (f"{key}.wting.cls_imb.class_bal", cls_imb_type != "class_bal", f"{key}.wting.cls_imb.type is {cls_imb_type}"),
-            (f"{key}.wting.cls_imb.norm", cls_imb_type is None, f"{key}.wting.cls_imb.type is null"),
-            (f"{key}.wting.cls_imb.norm", cfg.loss["unitless"], "loss.unitless is true (its rescale cancels the per-batch normalizer)"),
-            (f"{key}.logits.bce", crit == "infonce", f"{key}.crit is infonce (sigmoid/BCE-path logit params)"),
+            (f"{key}.infonce", crit != "infonce", f"loss.crit is {crit}"),
+            (f"{key}.infonce.tsm.sm_scale", cfg_targ["infonce"]["tsm"]["type"] == "linear", f"{key}.infonce.tsm.type is linear"),
         ]
     # an aug block whose prob is 0.0 is dropped from the working config (__post_init__): its other params are unread
     for block, params in (("cjit", ("brightness", "contrast", "saturation", "hue")), ("sharpness", ("factor",)),

@@ -17,13 +17,16 @@ asserts three paths agree to fp32 precision on every rank, per config case:
   (REF)   standard DDP: batch_step + loss.backward()      -- production path
   (CHUNK) batch_step_chunked                              -- no_sync + tiled backward + manual all-reduce
 
-Cases: a plain BCE step, a lone unitless BCE step (norm scalar folded into the unit coeff), a BCE+BCE mix with norm.agg + unitless: true (exercises the secondary logit
-params and the embedding-dependent precompute sweeps under DDP), a tax-target case (exercises the
-banded soft-target dsmr-mass all-reduce and the tax target tiles under sharding), and two bif_bce
-cases (the banded two-branch tiles with row-wise dsmr + targ_mass_neut, and a bif+bce unit
-mix with per-branch grad-proj constants -- the branch grad-mean all-reduce under sharding). The 2-rank test
-requires >= 2 CUDA devices; skipped otherwise. An assertion failure in any rank propagates out of
-mp.spawn and fails the test.
+Cases: a plain BCE step, a BCE step with cls_imb.norm (the embedding-free banded weight-mean sweep), an
+mp / phylo target blend (the blended target tiles and the banded soft-target dsmr-mass all-reduce), a
+tax-target case (the tax target tiles under sharding), two centering cases, two bif_bce cases (the
+banded two-branch tiles with row-wise dsmr + targ_mass_neut, and a blend with per-branch grad-proj
+constants -- the branch grad-mean all-reduce under sharding), two unitless loss blends (loss.blend_type
+loss + loss.unitless: the per-term dsmr masses and the banded term-magnitude pre-sweep's all-reduce, bce and
+bif_bce + grad-proj), and two loss blends on separate logit scalars (loss.logits.shared false: the second
+scalar pair's band-partial grads under the manual all-reduce, per-pair grad-proj constants, bce and bif_bce).
+The 2-rank test requires >= 2 CUDA devices;
+skipped otherwise. An assertion failure in any rank propagates out of mp.spawn and fails the test.
 
 test_chunked_ddp_single_rank_matches_full_batch runs the same harness at world_size=1 (>= 1 CUDA device):
 torchrun with one GPU still wraps the model in DDP, and DDP's reducer arms on any forward taken outside
@@ -44,9 +47,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-def cfg_loss(targ="mp", cls_imb_norm=False, center=None, crit="bce", neut=False):
+def cfg_loss(lambda_=0.0, cls_imb_norm=False, center=None, crit="bce", neut=False, blend_type="targ", unitless=False, shared=True):
+    """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
-        "crit": crit, "sim": "cos", "targ": targ,
+        "crit": crit, "sim": "cos", "lambda": lambda_, "blend_type": blend_type, "unitless": unitless,
         "bce": {"targ_mass_neut": neut},  # read by bif_bce only
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5},
@@ -54,8 +58,13 @@ def cfg_loss(targ="mp", cls_imb_norm=False, center=None, crit="bce", neut=False)
             "focal": {"gamma": 2.0},
             "bce": {"dsmr": True},
         },
-        "logits": {"scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
+        "logits": {"shared": shared, "scale": {"clamp": False}, "bce": {"center": center, "bias": {}}},
     }
+
+
+def targ_spec(targ):
+    """A target spec (train.yaml's loss1 / loss2 block); the tsm is read by InfoNCE only."""
+    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 class _ZSG(torch.autograd.Function):
@@ -69,34 +78,37 @@ class _ZSG(torch.autograd.Function):
         return g - g.mean()
 
 
-# (name, cfg1, cfg2, mix, unitless)
+# (name, cfg, targ1, targ2)
 CASES = [
-    ("plain", cfg_loss("mp"), None, 0.0, False),
-    ("plain_unitless", cfg_loss("mp", cls_imb_norm=True), None, 0.0, True),
-    ("mix_normci_unitscale", cfg_loss("mp", cls_imb_norm=True), cfg_loss("mp", cls_imb_norm=True), 0.3, True),
-    ("tax_dsmr", cfg_loss("tax"), None, 0.0, False),
-    ("center_sim", cfg_loss("mp", center="sim"), None, 0.0, False),
-    ("center_gp2_sim_mix", cfg_loss("mp", center="grad_proj2"), cfg_loss("mp", center="sim"), 0.3, False),
-    # bif_bce: banded two-branch tiles (row-wise dsmr + neut), and a bif+bce unit mix
-    # with per-branch grad-proj constants (exercises the branch grad-mean all-reduce under sharding)
-    ("bif_dsmr_neut", cfg_loss("mp", crit="bif_bce", neut=True), None, 0.0, False),
-    ("bif_gp_mix_unitscale", cfg_loss("mp", crit="bif_bce", center="grad_proj"), cfg_loss("mp", center="sim"), 0.3, True),
+    ("plain", cfg_loss(), "mp", "sp"),
+    ("normci", cfg_loss(cls_imb_norm=True), "mp", "sp"),
+    ("blend_phylo", cfg_loss(lambda_=0.3), "mp", "phylo"),
+    ("tax_dsmr", cfg_loss(), "tax", "sp"),
+    ("center_sim", cfg_loss(center="sim"), "mp", "sp"),
+    ("center_gp2_blend", cfg_loss(lambda_=0.3, center="grad_proj2"), "mp", "sp"),
+    # bif_bce: banded two-branch tiles (row-wise dsmr + neut), and a blend with per-branch grad-proj
+    # constants (exercises the branch grad-mean all-reduce under sharding)
+    ("bif_dsmr_neut", cfg_loss(crit="bif_bce", neut=True), "mp", "sp"),
+    ("bif_gp_blend", cfg_loss(lambda_=0.3, crit="bif_bce", center="grad_proj"), "mp", "phylo"),
+    # loss blend: per-term DSMR masses + the unitless term magnitudes (pre-sweep all-reduce) under sharding
+    ("loss_blend_unitless", cfg_loss(lambda_=0.3, blend_type="loss", unitless=True), "mp", "phylo"),
+    ("bif_loss_blend_unitless_gp", cfg_loss(lambda_=0.3, crit="bif_bce", center="grad_proj", neut=True, blend_type="loss", unitless=True), "mp", "phylo"),
+    # separate logit scalars: the second pair's band-partial grads (manual all-reduce) and per-pair grad-proj constants
+    ("sep_scalars_gp2", cfg_loss(lambda_=0.3, center="grad_proj2", blend_type="loss", shared=False), "mp", "phylo"),
+    ("bif_sep_scalars_unitless", cfg_loss(lambda_=0.3, crit="bif_bce", neut=True, blend_type="loss", unitless=True, shared=False), "mp", "phylo"),
 ]
 
 
 class ToyDualEncoder(nn.Module):
-    def __init__(self, d_in, d, with_secondary):
+    def __init__(self, d_in, d, sep_scalars=False):
         super().__init__()
         self.img_enc = nn.Linear(d_in, d)
         self.txt_enc = nn.Linear(d_in, d)
         self.logit_scale = nn.Parameter(torch.tensor(2.3))
         self.logit_bias = nn.Parameter(torch.tensor(-0.5))
-        # secondary logit params exist only when the mix uses them: the logit params are applied AFTER
-        # DDP.forward (in compute_logits, post-gather), so DDP's default reducer requires every param to
-        # receive a gradient -- an unused param would desync grads. Register them only when mix != 0.
-        if with_secondary:
+        if sep_scalars:  # loss2's term's own pair (registered only when used: DDP flags unused params)
             self.logit_scale2 = nn.Parameter(torch.tensor(1.7))
-            self.logit_bias2 = nn.Parameter(torch.tensor(0.2))
+            self.logit_bias2 = nn.Parameter(torch.tensor(-0.9))
 
     def forward(self, imgs, toks):
         return self.img_enc(imgs), self.txt_enc(toks)
@@ -107,9 +119,22 @@ class Harness:
     _unwrapped_model = None  # set below from VLMWrapper (deferred import)
 
 
-def make_crit(BCECriterion, cfg, K, B, device):
-    crit = BCECriterion.__new__(BCECriterion)
+class DummyPhyloVCV:
+    """Constant soft target (0.25) in place of the tree-derived matrix; block builder agrees with the
+    full matrix by construction."""
+    def get_targs_batch(self, targ_data_b):
+        n = len(targ_data_b)
+        return torch.full((n, n), 0.25)
+
+    def make_targ_block_fn(self, targ_data_b, device):
+        B = len(targ_data_b)
+        return lambda rs, re: torch.full((re - rs, B), 0.25, device=device)
+
+
+def make_crit(crit_cls, cfg, targ1, targ2, K, B, device, targ_specs):
+    crit = crit_cls.__new__(crit_cls)
     crit.cfg = cfg
+    crit.targ_specs = targ_specs(cfg["lambda"], targ_spec(targ1), targ_spec(targ2))
     crit.device = device
     crit.batch_size = B
     g = torch.Generator().manual_seed(12345)  # rank-independent -> identical counts on all ranks
@@ -118,44 +143,36 @@ def make_crit(BCECriterion, cfg, K, B, device):
     return crit
 
 
-def build_harness(model_ddp, crit1, crit2, mix, unitless, world_size, device):
+def build_harness(model_ddp, crit, world_size, device):
     h = Harness()
     h.model = model_ddp
-    h.crit1 = crit1
-    h.crit2 = crit2
+    h.crit = crit
     h.world_size = world_size
     h.device = device
     h.txt_pp = lambda x: x  # identity: toy "text" is already a feature tensor
     h.cfg = SimpleNamespace(
-        loss={"mix": mix, "unitless": unitless},
-        loss1=crit1.cfg,
-        # production loss2 is the full loss config (batch_step's stats read loss2["crit"]); at mix == 0 it is never read
-        loss2=crit2.cfg if crit2 is not None else {},
+        loss=crit.cfg,
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
         dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
                            "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}}},
         device=device,
-        shared_scalars=False,  # each loss on its own scalar pair (compute_logits routing)
     )
     return h
 
 
-def full_batch_blended(toy, compute_sim, crit1, crit2, mix, unitless, fi, ft, fc, ftd):
-    """Single-process full-batch blended loss on `toy` -- the ground truth. Returns the normalized
-    embeddings (grads retained: their post-backward .grad is the full-batch dL/dembs that the
-    chunked path's returned leaves must carry for grad-norm logging) and the per-criterion sim
-    branch tuples ((sim,) non-bifurcated, (i2t, t2i) bifurcated, mirroring
-    _loss_for_crit_full_batch; grads retained: their post-backward branch-summed .grad.sum() is the
-    ground truth for the chunked path's tile-accumulated grad_sum_sims)."""
+def full_batch_reference(toy, compute_sim, crit, fi, ft, fc, ftd):
+    """Single-process full-batch loss on `toy` -- the ground truth. Returns the normalized embeddings
+    (grads retained: their post-backward .grad is the full-batch dL/dembs that the chunked path's
+    returned leaves must carry for grad-norm logging) and the sim branch tuple ((sim,) non-bifurcated,
+    (i2t, t2i) bifurcated, mirroring _loss_full_batch; grads retained: their post-backward
+    branch-summed .grad.sum() is the ground truth for the chunked path's tile-accumulated grad_sum_sim)."""
     img = F.normalize(toy.img_enc(fi), dim=1)
     txt = F.normalize(toy.txt_enc(ft), dim=1)
     img.retain_grad()
     txt.retain_grad()
-    sims_ref = []
 
-    def clogits(sim, clamp, center, secondary, half_live=False):
-        s = toy.logit_scale2 if secondary else toy.logit_scale
-        b = toy.logit_bias2 if secondary else toy.logit_bias
+    def clogits(sim, clamp, center, half_live=False, secondary=False):
+        s, b = (toy.logit_scale2, toy.logit_bias2) if secondary else (toy.logit_scale, toy.logit_bias)
         if half_live:
             s = 0.5 * s + 0.5 * s.detach()
             b = 0.5 * b + 0.5 * b.detach()
@@ -170,34 +187,26 @@ def full_batch_blended(toy, compute_sim, crit1, crit2, mix, unitless, fi, ft, fc
             sim_scaled = sim_scaled - sim_scaled.mean()
         return sim_scaled + b
 
-    def crit_loss(crit, secondary):
-        clamp = crit.cfg["logits"]["scale"]["clamp"]
-        center = crit.cfg["logits"]["bce"]["center"]
-        if crit.bifurcated:
-            sims = (
-                compute_sim(img, txt.detach(), crit.cfg["sim"]),
-                compute_sim(img.detach(), txt, crit.cfg["sim"]),
-            )
-            crit_logits = tuple(clogits(s, clamp, center, secondary, half_live=True) for s in sims)
-        else:
-            sims = (compute_sim(img, txt, crit.cfg["sim"]),)
-            crit_logits = clogits(sims[0], clamp, center, secondary)
-        for s in sims:
-            s.retain_grad()
-        sims_ref.append(sims)
-        loss, loss_raw, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=toy.logit_scale2 if secondary else toy.logit_scale)
-        return loss, loss_raw
-
-    loss1, loss1_raw = crit_loss(crit1, False)
-    if unitless:
-        loss1 = loss1 / (loss1.detach() / (2.0 if crit1.bifurcated else 1.0)).clamp_min(1e-12)
-    if mix == 0.0:
-        return loss1, loss1_raw, img, txt, sims_ref
-    loss2, loss2_raw = crit_loss(crit2, True)
-    if unitless:
-        loss2 = loss2 / (loss2.detach() / (2.0 if crit2.bifurcated else 1.0)).clamp_min(1e-12)
-    loss = (1.0 - mix) * loss1 + mix * loss2
-    return loss, (1.0 - mix) * loss1_raw + mix * loss2_raw, img, txt, sims_ref
+    clamp = crit.cfg["logits"]["scale"]["clamp"]
+    center = crit.cfg["logits"]["bce"]["center"]
+    secondaries = (False, True) if crit.sep_scalars else (False,)  # per-term logits, as _loss_full_batch builds them
+    if crit.bifurcated:
+        sims = (
+            compute_sim(img, txt.detach(), crit.cfg["sim"]),
+            compute_sim(img.detach(), txt, crit.cfg["sim"]),
+        )
+        crit_logits = [tuple(clogits(s, clamp, center, half_live=True, secondary=sec) for s in sims) for sec in secondaries]
+    else:
+        sims = (compute_sim(img, txt, crit.cfg["sim"]),)
+        crit_logits = [clogits(sims[0], clamp, center, secondary=sec) for sec in secondaries]
+    for s in sims:
+        s.retain_grad()
+    if crit.sep_scalars:
+        logit_scale = (toy.logit_scale, toy.logit_scale2)
+    else:
+        crit_logits, logit_scale = crit_logits[0], toy.logit_scale
+    loss, loss_raw, _, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=logit_scale)
+    return loss, loss_raw, img, txt, sims
 
 
 def grads(model):
@@ -206,15 +215,17 @@ def grads(model):
 
 
 def run(rank, world_size, port):
+    import utils.loss as L
     from models import VLMWrapper
     from utils.head import compute_sim
-    from utils.loss import BCECriterion, BifurcatedBCECriterion
-    crit_cls = {"bce": BCECriterion, "bif_bce": BifurcatedBCECriterion}
+    crit_cls = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}
+    L.get_phylo_vcv = lambda dataset: DummyPhyloVCV()  # phylo targets without a tree
 
     Harness._unwrapped_model = VLMWrapper._unwrapped_model
     Harness.compute_logits = VLMWrapper.compute_logits
     Harness._gather_batch = VLMWrapper._gather_batch
-    Harness._loss_for_crit_full_batch = VLMWrapper._loss_for_crit_full_batch
+    Harness._loss_full_batch = VLMWrapper._loss_full_batch
+    Harness._batch_stats = VLMWrapper._batch_stats
     Harness._global_batch_loss = VLMWrapper._global_batch_loss
     Harness.batch_step = VLMWrapper.batch_step
     Harness.batch_step_chunked = VLMWrapper.batch_step_chunked
@@ -233,18 +244,18 @@ def run(rank, world_size, port):
     full_imgs = torch.randn(B, d_in, generator=g)
     full_txts = torch.randn(B, d_in, generator=g)
     full_cls = torch.randint(0, K, (B,), generator=g)
-    full_td = [{"rank_encs": torch.randint(0, 3, (4,), generator=g).tolist()} for _ in range(B)]  # for tax
+    full_td = [{"rank_encs": torch.randint(0, 3, (4,), generator=g).tolist(), "cid": f"c{int(full_cls[i])}", "dataset": "cub"}
+               for i in range(B)]  # rank_encs for tax, cid/dataset for phylo
     sl = slice(rank * SB, (rank + 1) * SB)
     imgs_sb, txts_sb, cls_sb = full_imgs[sl].to(device), full_txts[sl].to(device), full_cls[sl].to(device)
     targ_sb = full_td[sl]
 
-    for name, cfg1, cfg2, mix, unitless in CASES:
+    for name, cfg, targ1, targ2 in CASES:
         for chunk_size in (SB // 3, SB):  # multi-tile + single-tile per band; both divide the per-rank band (B/world_size = SB)
-            crit1 = make_crit(crit_cls[cfg1["crit"]], cfg1, K, B, device)
-            crit2 = make_crit(crit_cls[cfg2["crit"]], cfg2, K, B, device) if mix != 0.0 else None
+            crit = make_crit(crit_cls[cfg["crit"]], cfg, targ1, targ2, K, B, device, L.targ_specs)
 
             torch.manual_seed(0)
-            base = ToyDualEncoder(d_in, D, with_secondary=(mix != 0.0))
+            base = ToyDualEncoder(d_in, D, sep_scalars=crit.sep_scalars)
             toy_gt = copy.deepcopy(base).to(device).train()
             toy_ref = copy.deepcopy(base).to(device).train()
             toy_chunk = copy.deepcopy(base).to(device).train()
@@ -253,22 +264,22 @@ def run(rank, world_size, port):
 
             # (GT) single-process full-batch ground truth
             fi, ft, fc = full_imgs.to(device), full_txts.to(device), full_cls.to(device)
-            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt, sims_gt = full_batch_blended(
-                toy_gt, compute_sim, crit1, crit2, mix, unitless, fi, ft, fc, full_td)
+            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt, sims_gt = full_batch_reference(
+                toy_gt, compute_sim, crit, fi, ft, fc, full_td)
             toy_gt.zero_grad(set_to_none=True)
             loss_gt.backward()
             g_gt = grads(toy_gt)
-            gsum_gt = [sum(s.grad.double().sum().item() for s in branches) for branches in sims_gt]
+            gsum_gt = sum(s.grad.double().sum().item() for s in sims_gt)
 
             # (REF) standard DDP path (chunking off)
-            h_ref = build_harness(ddp_ref, crit1, crit2, mix, unitless, world_size, device)
+            h_ref = build_harness(ddp_ref, crit, world_size, device)
             ddp_ref.zero_grad(set_to_none=True)
             loss_ref, _, *_ = Harness.batch_step(h_ref, imgs_sb, txts_sb, cls_sb, targ_sb)
             loss_ref.backward()
             g_ref = grads(toy_ref)
 
             # (CHUNK) tiled path (its own backward + manual all-reduce internally)
-            h_chunk = build_harness(ddp_chunk, crit1, crit2, mix, unitless, world_size, device)
+            h_chunk = build_harness(ddp_chunk, crit, world_size, device)
             h_chunk.cfg.hw.loss_chunk_size = chunk_size
             ddp_chunk.zero_grad(set_to_none=True)
             loss_chunk, _, img_leaf, txt_leaf, _, _, _, gsum_chunk = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
@@ -285,16 +296,11 @@ def run(rank, world_size, port):
             r_tl = rel(txt_leaf.grad, embs_txt_gt.grad)
             assert r_il < 3e-4, f"{tag} leaf img-grad mismatch: rel={r_il:.2e}"
             assert r_tl < 3e-4, f"{tag} leaf txt-grad mismatch: rel={r_tl:.2e}"
-            # tile-accumulated (all-reduced) sim-grad sums must match the full-batch retained-grad sums
-            for k, gs_gt in enumerate(gsum_gt):
-                assert abs(gsum_chunk[k] - gs_gt) < 1e-4 * (abs(gs_gt) + 1.0), \
-                    f"{tag} grad_sum_sim{k + 1}: CHUNK {gsum_chunk[k]} != GT {gs_gt}"
-            if mix == 0.0:
-                assert gsum_chunk[1] is None, f"{tag} grad_sum_sim2 set at mix==0"
+            # the tile-accumulated (all-reduced) sim-grad sum must match the full-batch retained-grad sum
+            assert abs(gsum_chunk - gsum_gt) < 1e-4 * (abs(gsum_gt) + 1.0), \
+                f"{tag} grad_sum_sim: CHUNK {gsum_chunk} != GT {gsum_gt}"
             for n in g_gt:
-                if g_gt[n] is None:  # param unused this case (e.g. secondary logits at mix==0)
-                    assert g_chunk[n] is None, f"{tag} {n}: CHUNK grad set but GT is None"
-                    continue
+                assert g_gt[n] is not None, f"{tag} GT grad missing for {n}"
                 assert g_chunk[n] is not None and g_ref[n] is not None, f"{tag} None grad for used param {n}"
                 r_cg = rel(g_chunk[n], g_gt[n])   # chunked vs full-batch ground truth
                 r_rg = rel(g_ref[n], g_gt[n])     # production DDP path vs ground truth

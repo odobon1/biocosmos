@@ -423,13 +423,13 @@ class PrintLog:
     @staticmethod
     @rank0
     def batch_logit_scalars(model):
-        """The scale_bias.log line's values, {s1 / s2 / b1 / b2 -> float} for every logit scalar the model
-        carries (frozen ones included; the scales as the raw exp(logit_scale), which sits above 100 while
+        """The scale_bias.log line's values, {s / b -> float} for the logit scalars the model carries
+        (frozen ones included; the scale as the raw exp(logit_scale), which sits above 100 while
         logits.scale.clamp holds). Read by the train loop BEFORE the batch's optimizer step, so the line
         carries the values the batch's grad_norm / sim_targ lines were computed under, then handed to
         .batch, which writes after the step (its grad_norm line carries the update norm)."""
         values = {}
-        for key, attr in (("s1", "logit_scale"), ("s2", "logit_scale2"), ("b1", "logit_bias"), ("b2", "logit_bias2")):
+        for key, attr in (("s", "logit_scale"), ("b", "logit_bias"), ("s2", "logit_scale2"), ("b2", "logit_bias2")):
             scalar = getattr(model.module, attr, None)
             if scalar is None:
                 continue
@@ -452,7 +452,7 @@ class PrintLog:
             return x.grad.detach().pow(2).sum().sqrt().item()
 
         def branch_grad_l2_norm(branches) -> float:
-            # aggregate over a loss's branch tuple ([img-row, txt-col] each): norm of the
+            # aggregate over the branch tuple ([img-row, txt-col] each): norm of the
             # elementwise-summed branch grads. One branch non-bifurcated (== its grad norm); for
             # bif_bce the two un-halved branches each carry the full incoming grad, so the
             # aggregate reads 2x the non-bifurcated norm -- consistent with the 2x loss reading.
@@ -468,17 +468,11 @@ class PrintLog:
         if diag["emb_logit_grads"]:
             fields_grad_norm.append(f"img={tensor_grad_l2_norm(embs_img_b):.2e}")
             fields_grad_norm.append(f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}")
-            logits1 = logits[0]  # per-loss branch tuple | None (chunked path)
-            logits2 = logits[1]
-            if logits1 is None:
-                # chunked path (loss_chunk_size != null): no full logit matrix exists, so the
-                # diagnostic is structurally unavailable -- omit the field rather than log nan
-                pass
-            elif logits2 is None:
-                fields_grad_norm.append(f"logit={branch_grad_l2_norm(logits1):.2e}")
-            else:
-                fields_grad_norm.append(f"logit1={branch_grad_l2_norm(logits1):.2e}")
-                fields_grad_norm.append(f"logit2={branch_grad_l2_norm(logits2):.2e}")
+            # logits: the branch tuple, or None on the chunked path (loss_chunk_size != null), where no
+            # full logit matrix exists, so the diagnostic is structurally unavailable -- omit the field
+            # rather than log nan
+            if logits is not None:
+                fields_grad_norm.append(f"logit={branch_grad_l2_norm(logits):.2e}")
         if diag["grad_norm_model"]:
             fields_grad_norm.append(f"model={grad_norm_model:.2e}")
         if diag["delta_norm_model"]:
@@ -508,7 +502,7 @@ class PrintLog:
                 f"\n"
             )
             if batch_stats is not None:
-                stat_groups = ["sim1", "targ1"] + (["sim2", "targ2"] if "sim2_min" in batch_stats else [])
+                stat_groups = ["sim", "targ"]
                 PrintLog.log_batch_similarity.write(
                     f"{batch_str:<10} "
                     + " | ".join(
@@ -653,10 +647,7 @@ class PrintLog:
             "",
         ])
 
-        lines.extend(PrintLog._format_loss_block(cfg_train.loss1))  # primary loss block
-
-        if cfg_train.loss["mix"] != 0.0:
-            lines.extend(PrintLog._format_loss_block(cfg_train.loss2, secondary=True, mix=cfg_train.loss["mix"]))  # secondary loss block (if enabled)
+        lines.extend(PrintLog._format_loss_block(cfg_train.loss, cfg_train.loss1, cfg_train.loss2))  # loss block
 
         lines.extend(PrintLog._format_aug_block(cfg_train.aug))  # image augmentation block
 
@@ -715,23 +706,20 @@ class PrintLog:
         return lines_hw
 
     @staticmethod
-    def _format_loss_block(
-        cfg_loss: dict,
-        secondary: bool = False,
-        mix: float | None = None,
-    ) -> list[str]:
+    def _format_loss_block(cfg_loss: dict, cfg_loss1: dict, cfg_loss2: dict) -> list[str]:
 
-        lines = []
-        info = []
-        if not secondary:
-            lines.append("=== Loss (Primary) ===")
-        else:
-            lines.append("=== Loss (Secondary) ===")
-            info.append(("Mix", str(mix)))
-        
-        info.append(("Crit", cfg_loss["crit"]))
-        info.append(("Sim", cfg_loss["sim"]))
-        info.append(("Targs", cfg_loss["targ"]))
+        lines = ["=== Loss ==="]
+        # the live target specs with their blend weights (utils.loss.targ_specs)
+        lambda_ = cfg_loss["lambda"]
+        targs = [(w, cfg_targ["targ"]) for w, cfg_targ in ((1.0 - lambda_, cfg_loss1), (lambda_, cfg_loss2)) if w != 0.0]
+        info = [
+            ("Crit", cfg_loss["crit"]),
+            ("Sim", cfg_loss["sim"]),
+            ("Targs", " + ".join(f"{w:g} {targ}" for w, targ in targs) if len(targs) > 1 else targs[0][1]),
+            *((("Blend Type", cfg_loss["blend_type"]),) if len(targs) > 1 else ()),
+            *((("Shared Logit Scalars", cfg_loss["logits"]["shared"]),) if len(targs) > 1 and cfg_loss["blend_type"] == "loss" else ()),
+            ("Unitless", cfg_loss["unitless"]),
+        ]
         lines.append(PrintLog._dash_aligned_lines(info))
 
         wting = cfg_loss.get("wting", {}).get("cls_imb", {}).get("type") is not None

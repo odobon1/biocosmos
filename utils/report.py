@@ -1004,7 +1004,7 @@ def update_phase_stats(spread_type, bold_high, ordered, heatmap, supp_scores, ov
     (ablation_arms for the arm band, hpo_coords for the coord band: the union of the rows' overrides.json
     'arm' / 'coord' keys, first-seen order), each cell the row's effective value resolved from its
     config.json (an arms/ row reads its arm's first (arm, coord) row's) -- '-' when the param is
-    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.mix
+    absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.lambda
     0.0). Params whose effective value is identical across every row of the workbook are omitted
     (they differentiate nothing); a band all of whose params are uniform is omitted entirely. These
     tables get no winner-bold/heatmap styling. The third sheet, 'Hardware Performance', mirrors the
@@ -1424,87 +1424,66 @@ def plot_composite_metrics(
     # height slot are omitted outright: model grad norm, ||delta theta||, sim-grad sums, the S stats panel
     has_grad_norm = len(data_epoch["grad_norm_model"]) == len(x_train)
     has_delta_norm = len(data_epoch["delta_norm_model"]) == len(x_train)
-    has_grad_sum_sim = len(data_epoch["grad_sum_sim1"]) == len(x_train)
-    has_grad_sum_sim2 = len(data_epoch["grad_sum_sim2"]) == len(x_train)  # sim-grad sums + loss2 active
-    has_sim_stats = len(data_epoch["sim1_min"]) == len(x_train)
-    # loss2 active (mix != 0) -> per-loss subscripted labels, and its sim-grad sum gets its own strip
-    # between the loss1 strip and the S panel, so each series keeps its own y-scale. Checked over every
-    # loss2 series that can exist, since with diagnostics off only its logit scalars survive (the
-    # subscripted labels still apply)
-    has_loss2 = any(len(data_epoch[key]) == len(x_train) for key in ("grad_sum_sim2", "sim2_min", "scale2", "bias2"))
-    # base slots 6-9 (grad/step/sim-grad-sum/S) are kept per enabled component, the loss2 sim-grad-sum
-    # strip slotted after loss1's
+    has_grad_sum_sim = len(data_epoch["grad_sum_sim"]) == len(x_train)
+    has_sim_stats = len(data_epoch["sim_min"]) == len(x_train)
+    # base slots 6-9 (grad/step/sim-grad-sum/S) are kept per enabled component
     height_ratios = [
         *height_ratios[:6],
         *([height_ratios[6]] if has_grad_norm else []),
         *([height_ratios[7]] if has_delta_norm else []),
         *([height_ratios[8]] if has_grad_sum_sim else []),
-        *([0.5] if has_grad_sum_sim2 else []),
         *([height_ratios[9]] if has_sim_stats else []),
         *height_ratios[10:],
     ]
-    # one Q-stats panel per loss branch whose targets carry distributional signal -- TrainPipeline
-    # records targ stats only for phylo/tax branches (sp/mp targets are 0/1 indicators), so a branch
-    # with no series gets no panel, and neither qualifying leaves none at all. Subscripted per loss
-    # whenever loss2 is active, even when only one branch qualifies. The base list's single Q slot
-    # (second to last, before LR) is replaced by one per panel.
-    targ_panels = [
-        (f"targ{tag}_hist", f"Q{sub}" if has_loss2 else "Q")
-        for tag, sub in (("1", "₁"), ("2", "₂"))
-        if len(data_epoch[f"targ{tag}_hist"]) == len(x_train)
-    ]
-    # P strips (sigmoid(logits), the predicted pair probabilities) sit between S and Q, on Q's [0, 1]
-    # axis so predictions and targets read against each other. Recorded only for BCE-family branches,
-    # so an InfoNCE branch has no series and gets no panel.
-    p_panels = [
-        (f"p{tag}_hist", f"P{sub}" if has_loss2 else "P")
-        for tag, sub in (("1", "₁"), ("2", "₂"))
-        if len(data_epoch[f"p{tag}_hist"]) == len(x_train)
-    ]
+    # the Q-stats panel, when the blended targets carry distributional signal -- TrainPipeline records
+    # targ stats only for graded targets (a lone sp/mp target is a 0/1 indicator), so an empty series
+    # gets no panel. The base list's single Q slot (second to last, before LR) is replaced by the P and
+    # Q panels present.
+    targ_panels = [("targ_hist", "Q")] if len(data_epoch["targ_hist"]) == len(x_train) else []
+    # the P strip (sigmoid(logits), the predicted pair probabilities) sits between S and Q, on Q's [0, 1]
+    # axis so predictions and targets read against each other. Recorded only for a BCE-family loss,
+    # so under InfoNCE there is no series and no panel.
+    p_panels = [("p_hist", "P")] if len(data_epoch["p_hist"]) == len(x_train) else []
     height_ratios = [
         *height_ratios[:-2],
         *[height_ratios[-2]] * (len(p_panels) + len(targ_panels)),
         height_ratios[-1],
     ]
-    # each tracked logit scalar (TrialData scale*/bias* series; empty when untracked) gets an LR-height
-    # strip between the Q panels and LR, scales first; labels are subscripted per loss whenever loss2 is
-    # active, even if only one of the pair is tracked
+    # each tracked logit scalar (TrialData scale/bias series; empty when untracked) gets an LR-height
+    # strip between the Q panels and LR, the scales first -- scale2 / bias2 are loss2's term's own pair
+    # under separate logit scalars (loss.logits.shared false)
     scalar_panels = [
-        (key, rf"${sym}_{tag}$" if has_loss2 else rf"${sym}$", tag)
-        for key, sym, tag in (("scale1", r"\alpha", 1), ("scale2", r"\alpha", 2), ("bias1", "b", 1), ("bias2", "b", 2))
+        (key, rf"${sym}$")
+        for key, sym in (("scale", r"\alpha"), ("scale2", r"\alpha_2"), ("bias", "b"), ("bias2", "b_2"))
         if len(data_epoch[key]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[0.5] * len(scalar_panels), height_ratios[-1]]
     # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above LR, S-height
-    # panels each drawing one line per dev.reporting.learning_curves.hpsm.kappas value. Per loss branch
-    # (unlike S the margin depends on the targets): with hpsm.multimodal the I2T and T2I directions and
-    # then their mean, else the mean alone
+    # panels each drawing one line per dev.reporting.learning_curves.hpsm.kappas value: with
+    # hpsm.multimodal the I2T and T2I directions and then their mean, else the mean alone
     hpsm_kappas = hpsm["kappas"]
     margin_dirs = [("_i2t", "I2T "), ("_t2i", "T2I ")] if hpsm["multimodal"] else []
     margin_panels = [
-        (f"sim{tag}_margin{suffix}", rf"{prefix}$\overline{{\Delta S}}_{{\kappa{sub}}}$")
-        for tag, sub in (("1", ",1" if has_loss2 else ""), ("2", ",2"))
+        (f"sim_margin{suffix}", rf"{prefix}$\overline{{\Delta S}}_{{\kappa}}$")
         for suffix, prefix in (*margin_dirs, ("", ""))
-        if len(data_epoch[f"sim{tag}_margin{suffix}"]) == len(x_train)
+        if len(data_epoch[f"sim_margin{suffix}"]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[1] * len(margin_panels), height_ratios[-1]]
-    # the InfoNCE logit-scale gradient decomposition strips (sim_targ_stats on; InfoNCE branches only,
-    # since only they record the series) sit directly above LR, nine S-height panels per branch: the
-    # per-pair dL/dalpha terms summed, summed in magnitude, and their coherence ratio C = |sum| / sum|.|,
-    # each for the full gradient and its structural / residual parts (utils.loss
-    # .infonce_batch_stats), every panel drawing the all / positive-mass / negative-mass
-    # attributions; then the same nine for the log-scale parameter the model learns (dlogalpha*),
-    # below them -- flat zero wherever logits.scale.clamp holds the parameter above its cap, the
-    # dalpha* strips still carrying the pressure on the effective scale. Subscripted per loss
-    # whenever loss2 is active. The figure grows by a strip's worth of height per panel, so the base
-    # panels keep their size.
+    # the InfoNCE logit-scale gradient decomposition strips (sim_targ_stats on; an InfoNCE loss only,
+    # since only it records the series) sit directly above LR, nine S-height panels: the per-pair
+    # dL/dalpha terms summed, summed in magnitude, and their coherence ratio C = |sum| / sum|.|, each
+    # for the full gradient and its structural / residual parts (utils.loss.infonce_batch_stats),
+    # every panel drawing the all / positive-mass / negative-mass attributions; then the same nine
+    # for the log-scale parameter the model learns (dlogalpha*), below them -- flat zero wherever
+    # logits.scale.clamp holds the parameter above its cap, the dalpha* strips still carrying the
+    # pressure on the effective scale. The figure grows by a strip's worth of height per panel, so
+    # the base panels keep their size.
 
-    def dalpha_label(sym, agg, comp, tag):
-        sub = f"_{tag}" if has_loss2 else ""
+    def dalpha_label(sym, agg, comp):
         if agg == "C":
-            base = rf"C_{{{sym}{',' + tag if has_loss2 else ''}}}"
+            base = rf"C_{{{sym}}}"
             return rf"${base}$" if comp == "full" else rf"${base}^{{\text{{{comp}}}}}$"
-        term = rf"\frac{{\partial L{sub}}}{{\partial {sym}}}"
+        term = rf"\frac{{\partial L}}{{\partial {sym}}}"
         if comp != "full":
             term = rf"({term})^{{\text{{{comp}}}}}"
         if agg == "sum_abs":
@@ -1512,38 +1491,29 @@ def plot_composite_metrics(
         return rf"$\sum {term}$"
 
     dalpha_panels = [
-        (f"{prefix}{tag}_{agg}_{comp}", dalpha_label(sym, agg, comp, tag), agg)
+        (f"{prefix}_{agg}_{comp}", dalpha_label(sym, agg, comp), agg)
         for prefix, sym in (("dalpha", r"\alpha"), ("dlogalpha", r"\log \alpha"))
-        for tag in ("1", "2")
         for agg in ("sum", "sum_abs", "C")
         for comp in ("full", "struct", "res")
-        if len(data_epoch[f"{prefix}{tag}_{agg}_{comp}"]) == len(x_train)
+        if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
-    # the InfoNCE KL decomposition strips (sim_targ_stats on; InfoNCE branches only) sit directly
-    # above LR, four S-height panels per branch (utils.loss.infonce_kl_terms, both anchor directions
-    # averaged, batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then its three
-    # parts, the structural E_s = D_KL(p* || p) (what the model could still remove at this alpha), the
+    # the InfoNCE KL decomposition strips (sim_targ_stats on; an InfoNCE loss only) sit directly
+    # above LR, four S-height panels (utils.loss.infonce_kl_terms, both anchor directions averaged,
+    # batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then its three parts,
+    # the structural E_s = D_KL(p* || p) (what the model could still remove at this alpha), the
     # irreducible E_ir = D_KL(y || p*) (the target outside the reachable set) and the cross term E_sr.
     # All four are >= 0 (E_sr because p is itself reachable; bf16 logit rounding can dip it a hair
     # below), so each panel draws a zero reference line and autoscales -- the line hugs the bottom
-    # while the series stays positive, and any dip below it shows. Subscripted per loss whenever
-    # loss2 is active.
-
-    def kl_labels(tag):
-        y, p, p_opt = (f"y_{tag}", f"p_{tag}", f"p_{tag}^*") if has_loss2 else ("y", "p", "p^*")
-        sub = f",{tag}" if has_loss2 else ""
-        return (
-            ("", rf"$D_{{\mathrm{{KL}}}}({y}\|{p})$"),
-            ("_s", rf"$\mathcal{{E}}_{{s{sub}}} = D_{{\mathrm{{KL}}}}({p_opt}\|{p})$"),
-            ("_ir", rf"$\mathcal{{E}}_{{\text{{ir}}{sub}}} = D_{{\mathrm{{KL}}}}({y}\|{p_opt})$"),
-            ("_sr", rf"$\mathcal{{E}}_{{\text{{sr}}{sub}}}$"),
-        )
-
+    # while the series stays positive, and any dip below it shows.
     kl_panels = [
-        (f"kl{tag}{suffix}", label)
-        for tag in ("1", "2")
-        for suffix, label in kl_labels(tag)
-        if len(data_epoch[f"kl{tag}{suffix}"]) == len(x_train)
+        (f"kl{suffix}", label)
+        for suffix, label in (
+            ("", r"$D_{\mathrm{KL}}(y\|p)$"),
+            ("_s", r"$\mathcal{E}_{s} = D_{\mathrm{KL}}(p^*\|p)$"),
+            ("_ir", r"$\mathcal{E}_{\text{ir}} = D_{\mathrm{KL}}(y\|p^*)$"),
+            ("_sr", r"$\mathcal{E}_{\text{sr}}$"),
+        )
+        if len(data_epoch[f"kl{suffix}"]) == len(x_train)
     ]
     height_ratios = [*height_ratios[:-1], *[1] * (len(dalpha_panels) + len(kl_panels)), height_ratios[-1]]
     figsize = (figsize[0], figsize[1] + 0.8 * (len(dalpha_panels) + len(kl_panels)))
@@ -1691,25 +1661,15 @@ def plot_composite_metrics(
 
     if has_grad_sum_sim:
         ax7 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax7.plot(x_train, data_epoch["grad_sum_sim1"], color="tab:orange", linewidth=1.0)
+        ax7.plot(x_train, data_epoch["grad_sum_sim"], color="tab:orange", linewidth=1.0)
         ax7.axhline(0.0, color="gray", linewidth=0.5)
-        ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}_1$" if has_loss2 else r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
+        ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
         ax7.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
         ax7.grid(True)
         ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax7)
 
-    if has_grad_sum_sim2:
-        ax7b = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax7b.plot(x_train, data_epoch["grad_sum_sim2"], color="tab:orange", linewidth=1.0)
-        ax7b.axhline(0.0, color="gray", linewidth=0.5)
-        ax7b.set_ylabel(r"$\sum \nabla_S \mathcal{L}_2$", fontsize=fontsize_axes - 1)
-        ax7b.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.6, foreground="black")])
-        ax7b.grid(True)
-        ax7b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax7b)
-
-    # sim1/sim2 are always identical in practice, so the one S panel shows loss1's. Min/max solid,
+    # the S panel: min/max solid,
     # mean dashed, median dotted; teal/rose is a dark, mutually contrasting pair that also stays
     # clear of the orange gradient panels above and the purple scale panels below.
     axes_hist = []  # the heatmap strips, which keep the colormap's own background
@@ -1732,7 +1692,7 @@ def plot_composite_metrics(
         axes.append(ax)
 
     def add_hist_panel(hist_key, ylabel, cmap):
-        """The branch's per-batch distribution histograms as a density heatmap strip."""
+        """The per-batch distribution histograms as a density heatmap strip."""
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         axes_hist.append(ax)
         grid, stride = _fold_hist_columns(data_epoch[hist_key], P_HEATMAP_HORIZONTAL_THRESHOLD)
@@ -1752,21 +1712,21 @@ def plot_composite_metrics(
         axes.append(ax)
 
     if has_sim_stats:
-        add_stat_panel("sim1", "S", (-1.0, 1.0), "#008080")
+        add_stat_panel("sim", "S", (-1.0, 1.0), "#008080")
     for hist_key, label in p_panels:
         add_hist_panel(hist_key, label, _P_CMAP)
     for hist_key, label in targ_panels:
         add_hist_panel(hist_key, label, _Q_CMAP)
 
-    for key, label, tag in scalar_panels:
+    for key, label in scalar_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         ax.plot(x_train, data_epoch[key], color="tab:purple" if key.startswith("scale") else "blue")
-        if key.startswith("scale") and len(data_epoch[f"alpha_req{tag}_max"]) == len(x_train):
+        if key == "scale" and len(data_epoch["alpha_req_max"]) == len(x_train):
             # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
-            # alpha_req; InfoNCE branches only, so a BCE-family branch's panel gets no lines), read
+            # alpha_req; an InfoNCE loss only, so a BCE-family loss's panel gets no lines), read
             # against the alpha the logits carry (the series sits at 100 while logits.scale.clamp
             # holds): for row i, the smallest alpha whose logit range alpha * S over S in [-1, 1]
-            # spans the branch's
+            # spans the blended
             # target distribution Y_i as optimal logits log(Y_i) (up to a constant), 0.5 * log(max_j Y_ij
             # / min_j Y_ij). Softmax feasibility is row-wise, so the batch's requirement is the max over
             # rows (solid), drawn with the min (solid) and the mean (dashed). A row holding a zero sits
@@ -1774,7 +1734,7 @@ def plot_composite_metrics(
             # under graded targets (a tax top-rank split, a bm-kernel pair meeting at the root), every
             # row under sp/mp targets with the linear tsm, which then draws nothing
             for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
-                ax.plot(x_train, data_epoch[f"alpha_req{tag}_{stat}"], color="red", linestyle=linestyle, linewidth=1.0)
+                ax.plot(x_train, data_epoch[f"alpha_req_{stat}"], color="red", linestyle=linestyle, linewidth=1.0)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.yaxis.label.set_path_effects([patheffects.withStroke(linewidth=0.7, foreground="black")])
         ax.grid(True)

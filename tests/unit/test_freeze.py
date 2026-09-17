@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from models import CLIPWrapper, SigLIPWrapper
 
-SCALARS = ["logit_scale", "logit_bias"]
+SCALARS = ["logit_scale", "logit_bias", "logit_scale2", "logit_bias2"]  # the second pair: separate logit scalars (loss.logits.shared false)
 # open_clip parameter names, one per name pattern the freeze loops key on
 CLIP_TOWERS = [
     "visual.conv1.weight", "visual.proj",

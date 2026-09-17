@@ -73,9 +73,10 @@ class TrialData:
             "grad_sum_sim1": [],
             "grad_sum_sim2": [],
             # learnable logit scalars, scale as the alpha the logits carry -- exp(logit_scale), capped at
-            # 100 under the loss's logits.scale.clamp (TrainPipeline._logit_scalar_values); a series stays
-            # empty when its scalar is untracked (TrainPipeline._tracked_logit_scalars) and then gets no
-            # curve panel
+            # 100 under the loss's logits.scale.clamp (TrainPipeline._logit_scalar_values), read before
+            # the batch's optimizer step so a point is the value the batch's logits and batch stats were
+            # computed under; a series stays empty when its scalar is untracked
+            # (TrainPipeline._tracked_logit_scalars) and then gets no curve panel
             "scale1": [],
             "bias1": [],
             "scale2": [],

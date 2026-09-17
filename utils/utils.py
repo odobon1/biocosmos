@@ -422,7 +422,26 @@ class PrintLog:
 
     @staticmethod
     @rank0
-    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, model, grad_norm_model,
+    def batch_logit_scalars(model):
+        """The scale_bias.log line's values, {s1 / s2 / b1 / b2 -> float} for every logit scalar the model
+        carries (frozen ones included; the scales as the raw exp(logit_scale), which sits above 100 while
+        logits.scale.clamp holds). Read by the train loop BEFORE the batch's optimizer step, so the line
+        carries the values the batch's grad_norm / sim_targ lines were computed under, then handed to
+        .batch, which writes after the step (its grad_norm line carries the update norm)."""
+        values = {}
+        for key, attr in (("s1", "logit_scale"), ("s2", "logit_scale2"), ("b1", "logit_bias"), ("b2", "logit_bias2")):
+            scalar = getattr(model.module, attr, None)
+            if scalar is None:
+                continue
+            if key.startswith("s"):
+                values[key] = scalar.detach().exp().item()
+            else:
+                values[key] = scalar.detach().item() if isinstance(scalar, torch.Tensor) else float(scalar)
+        return values
+
+    @staticmethod
+    @rank0
+    def batch(idx_batch, lr, loss_batch, embs_img_b, embs_txt_b, logits, logit_scalars, grad_norm_model,
               delta_norm_model, batch_stats, diag):
 
         def tensor_grad_l2_norm(x: torch.Tensor | None) -> float:
@@ -431,13 +450,6 @@ class PrintLog:
             if x.grad is None:
                 return float("nan")
             return x.grad.detach().pow(2).sum().sqrt().item()
-
-        def tensor_scalar_item(x) -> float:
-            if x is None:
-                return float("nan")
-            if isinstance(x, torch.Tensor):
-                return x.detach().item()
-            return float(x)
 
         def branch_grad_l2_norm(branches) -> float:
             # aggregate over a loss's branch tuple ([img-row, txt-col] each): norm of the
@@ -473,16 +485,8 @@ class PrintLog:
             fields_grad_norm.append(f"step={delta_norm_model:.2e}")  # ||delta theta||: the update the optimizer actually applied
         line_grad_norm = " ".join(fields_grad_norm)
 
-        line_logits_param = ""
-        if hasattr(model.module, "logit_scale") and model.module.logit_scale is not None:
-            line_logits_param += f"s1={model.module.logit_scale.detach().exp().item():.2e} "
-        if hasattr(model.module, "logit_scale2") and model.module.logit_scale2 is not None:
-            line_logits_param += f"s2={model.module.logit_scale2.detach().exp().item():.2e} "
-        if hasattr(model.module, "logit_bias") and model.module.logit_bias is not None:
-            line_logits_param += f"b1={tensor_scalar_item(model.module.logit_bias):.2e} "
-        if hasattr(model.module, "logit_bias2") and model.module.logit_bias2 is not None:
-            line_logits_param += f"b2={tensor_scalar_item(model.module.logit_bias2):.2e} "
-        line_logits_param = line_logits_param.rstrip(" ")
+        # the pre-step read (batch_logit_scalars), so the line sits on the batch's own alpha / bias
+        line_logits_param = " ".join(f"{key}={value:.2e}" for key, value in logit_scalars.items())
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:

@@ -290,11 +290,14 @@ class TrainPipeline:
                 tracked[f"bias{tag}"] = attr_bias
         return tracked
 
+    @rank0
     def _logit_scalar_values(self):
         # scale series carry the alpha the logits carry: exp(logit_scale) (the quantity scale.init specifies),
         # capped at 100 under the loss's logits.scale.clamp as compute_logits applies it -- so a held clamp
         # reads as the series pinned at the cap (the raw parameter above it, its gradient zero); bias series
-        # the raw bias
+        # the raw bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the
+        # value the batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under,
+        # not the post-update one.
         model = self.modelw._unwrapped_model
         values = {}
         for key, attr in self._logit_scalars_tracked.items():
@@ -322,7 +325,7 @@ class TrainPipeline:
 
     @rank0
     def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
-                            grad_sum_sim1, grad_sum_sim2):
+                            grad_sum_sim1, grad_sum_sim2, logit_scalars):
         # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the
         # curve series keep only the histogram, and only for branches whose targets are worth curving
         if batch_stats is not None:
@@ -340,7 +343,7 @@ class TrainPipeline:
             batch_stats=batch_stats,
             grad_sum_sim1=grad_sum_sim1,
             grad_sum_sim2=grad_sum_sim2,
-            logit_scalars=self._logit_scalar_values(),
+            logit_scalars=logit_scalars,
         )
 
     @rank0
@@ -641,10 +644,16 @@ class TrainPipeline:
                     if self._batch_diag["grad_norm_model"]:
                         with torch.no_grad():
                             grad_norm_model = model_grad_l2_norm(self.modelw.model)
+                    # the logit scalars are read before the step: batch_stats came out of the forward pass
+                    # under this alpha, so the scale / bias series (and scale_bias.log's line) line up with
+                    # the dalpha / KL / alpha_req points (and the grad_norm / sim_targ lines) of the same
+                    # batch rather than sitting one update ahead of them
+                    logit_scalars = self._logit_scalar_values()
+                    logit_scalars_log = PrintLog.batch_logit_scalars(self.modelw.model)
                     # the step is taken before logging so the line can carry the update norm too;
                     # grads survive it (zero_grad only runs at the top of the next iteration)
                     delta_norm_model = self._step_optimizer()
-                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, self.modelw.model,
+                    PrintLog.batch(idx_batch, lr, loss, embs_img_b, embs_txt_b, logits, logit_scalars_log,
                                    grad_norm_model, delta_norm_model, batch_stats, self._batch_diag)
 
                     if self.n_samps_seen >= self.lr_warmup:
@@ -658,7 +667,7 @@ class TrainPipeline:
                         self.n_batches_seen += 1
 
                     self._record_train_batch(lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
-                                             grad_sum_sims[0], grad_sum_sims[1])
+                                             grad_sum_sims[0], grad_sum_sims[1], logit_scalars)
 
                     if self.n_samps_seen >= self.chkpt_thresh:
                         pbar.clear()

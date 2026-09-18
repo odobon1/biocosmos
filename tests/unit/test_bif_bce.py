@@ -270,10 +270,10 @@ def test_infonce_stats():
 
     assert "p_hist" not in batch_stats
     assert "sim_min" in batch_stats and "targ_min" in batch_stats  # sim/targ still reported
-    prefixes, aggs, comps = ("dalpha", "dlogalpha"), ("sum", "sum_abs", "C"), ("full", "struct", "res")
+    prefixes, aggs, comps = ("dalpha", "dlogalpha"), ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
     assert {key for key in batch_stats if "alpha" in key} == {
         f"{prefix}_{agg}_{comp}" for prefix in prefixes for agg in aggs for comp in comps
-    } | {f"alpha_req_{stat}" for stat in ("min", "mean", "max")}
+    } | {f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")}
     for prefix in prefixes:
         for agg in aggs:
             for comp in comps:

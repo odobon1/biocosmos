@@ -4,9 +4,7 @@ n_trials_screen: 3
 n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
 trainval: false  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
 
-baseline_overrides: {}  # nameless overrides applied to every trial of the campaign; arm / coord names read
-# as if this were empty. Scalars only -- no combo groups or combo lists -- and no key here may also appear
-# in ablation_arms or hpo_coords
+baseline_overrides: {}
 
 ablation_arms:
   - - {loss.blend.lambda: 0.3, loss.loss2.targ: phylo, htarg.shuffle: true, name: shuffle}

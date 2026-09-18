@@ -740,7 +740,30 @@ def infonce_p_opt(Y, alpha, n_iter=40):
     return log_Y.clamp(min=eta, max=eta + 2 * alpha).exp()
 
 
-def infonce_scale_grad_sums(S, Q, Y, P, P_opt):
+def infonce_s_opt(P_opt, alpha):
+    """
+    The row geometry that realizes the reachable optimum p* = infonce_p_opt(Y, alpha) at that alpha:
+    invert the row softmax (p* is full-support -- its floor lam > 0 -- so its log is finite) and
+    recenter each row on its own midrange,
+
+        s* = (log(p*) - (max_j log(p*_j) + min_j log(p*_j)) / 2) / alpha
+
+    The softmax is shift-invariant per row, so the recentering leaves p* untouched and is the one
+    choice symmetric about zero; p*'s log range is at most 2 * alpha by construction, so the
+    recentered logits sit in [-alpha, alpha] and s* in [-1, 1] -- a bounded-cosine geometry. It is a
+    row-wise construct, not a Gram matrix: nothing makes it symmetric or realizable by actual
+    embeddings, it is just the similarity row that would put the model exactly at p*.
+
+    - P_opt -- [R, B] infonce_p_opt(Y, alpha)
+    - alpha -- the logit scale the logits carry (post-clamp), as passed to infonce_p_opt
+
+    Returns s* in P_opt's shape, float64.
+    """
+    log_P_opt = P_opt.log()
+    return (log_P_opt - 0.5 * (log_P_opt.amax(1, keepdim=True) + log_P_opt.amin(1, keepdim=True))) / alpha
+
+
+def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt):
     """
     One anchor direction's per-pair InfoNCE logit-scale gradient terms, decomposed and aggregated:
 
@@ -750,27 +773,36 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt):
     with p the row softmax of the logits and p* = infonce_p_opt(Y, alpha). 'struct' is the part the
     model could still remove at this alpha (its p is not the reachable optimum p*), 'res' the part
     no similarity geometry can (the target lies outside the reachable set: sp / mp zeros, or graded
-    targets steeper than exp(2 * alpha) allows). Each term is also attributed to the positive and
-    negative target mass by the soft masks q_ij and 1 - q_ij (generalizing the binary split over
-    graded targets).
+    targets steeper than exp(2 * alpha) allows). The residual splits again along s* =
+    infonce_s_opt(P_opt, alpha), the geometry that realizes p*:
 
-    - S, Q, Y, P, P_opt -- [R, B]: sims, target memberships, target distributions, the predicted row
-      distributions and the reachable optimum, rows = anchors (image anchors on the batch's S / Q / Y
-      / softmax(logits); text anchors on S.T / Q.T / Y / softmax(logits.T), Y serving both directions
-      as in InfoNCECriterion)
+        (p*_ij - y_ij) s_ij = (p*_ij - y_ij)(s_ij - s*_ij) + (p*_ij - y_ij) s*_ij    (sres + ires)
 
-    Returns [2, 3, 3]: (sum, sum of |.|) x (full, struct, res) x (all, positive, negative mass), each
-    a per-anchor row sum averaged over the anchors -- so the full / all sum is exactly this
-    direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
+    -- 'sres' the part carried by the model's geometry standing off the optimal one (it vanishes as
+    s approaches s*, however unreachable the target is), 'ires' what the optimal geometry itself
+    still pushes on alpha, the pressure that survives at p = p*. Each term is also attributed to the
+    positive and negative target mass by the soft masks q_ij and 1 - q_ij (generalizing the binary
+    split over graded targets).
+
+    - S, Q, Y, P, P_opt, S_opt -- [R, B]: sims, target memberships, target distributions, the
+      predicted row distributions, the reachable optimum and its geometry, rows = anchors (image
+      anchors on the batch's S / Q / Y / softmax(logits); text anchors on S.T / Q.T / Y /
+      softmax(logits.T), Y -- and with it p* and s* -- serving both directions as in
+      InfoNCECriterion)
+
+    Returns [2, 5, 3]: (sum, sum of |.|) x (full, struct, res, sres, ires) x (all, positive,
+    negative mass), each a per-anchor row sum averaged over the anchors -- so the full / all sum is
+    exactly this direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
     """
-    terms = ((P - Y) * S, (P - P_opt) * S, (P_opt - Y) * S)
+    R = P_opt - Y
+    terms = ((P - Y) * S, (P - P_opt) * S, R * S, R * (S - S_opt), R * S_opt)
     masks = (None, Q, 1.0 - Q)
     sums = []
     for G in terms:
         for M in masks:
             GM = G if M is None else G * M
             sums.append(torch.stack([GM.sum(), GM.abs().sum()]))
-    return torch.stack(sums).view(3, 3, 2).permute(2, 0, 1) / S.size(0)
+    return torch.stack(sums).view(5, 3, 2).permute(2, 0, 1) / S.size(0)
 
 
 def infonce_kl_terms(Y, log_P, P_opt):
@@ -835,15 +867,19 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       a constant), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as its min / mean / max over rows.
       Softmax feasibility is row-wise, so the batch's requirement is the max (a global max(Y) / min(Y)
       would pair extremes from different rows and overstate it); a row holding a zero sits at
-      infinity. One statistic for both directions, which train against Y's rows alike.
+      infinity. One statistic for both directions, which train against Y's rows alike. The
+      log_alpha_req_* trio is the same three reductions taken over log(alpha_req) instead, for the
+      logalpha panel, which plots the log parameter: the min and max are the logs of the alpha_req
+      ones (log is monotone) but the mean is not -- it is the mean of the rows' logs, the log of
+      their geometric mean.
 
     - sim, targs, y, logits -- the batch's BxB S, Q (the blended target matrix), Y (the blended target
       distribution) and logits (first branch), as passed to sim_targ_batch_stats
     - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
     - clamp ---------------- logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
 
-    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C}_{full,struct,res}: [all, pos, neg]} plus
-    {kl, kl_s, kl_ir, kl_sr: scalar} and {alpha_req_{min,mean,max}: scalar}; the reductions are stacked
+    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C}_{full,struct,res,sres,ires}: [all, pos, neg]} plus
+    {kl, kl_s, kl_ir, kl_sr: scalar} and {{alpha_req,log_alpha_req}_{min,mean,max}: scalar}; the reductions are stacked
     so the device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
@@ -857,17 +893,20 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
             (dalpha_dlog,) = torch.autograd.grad(alpha, log_alpha)
         alpha, dalpha_dlog = alpha.detach().double(), dalpha_dlog.double()
         P_opt = infonce_p_opt(Y, alpha)
+        S_opt = infonce_s_opt(P_opt, alpha)  # one geometry for both directions, as p* is
         log_P_i2t, log_P_t2i = torch.log_softmax(Z, dim=1), torch.log_softmax(Z.T, dim=1)
-        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt)
-                      + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt))
+        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt, S_opt)
+                      + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt, S_opt))
         kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt) + infonce_kl_terms(Y, log_P_t2i, P_opt))
         alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
-        bounds = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
+        log_alpha_req = alpha_req.log()  # the logalpha panel's own bounds: the reductions over the logs
+        bounds = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max(),
+                              log_alpha_req.min(), log_alpha_req.mean(), log_alpha_req.max()])
         families = []
         for scaled in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
             C = scaled[0].abs() / (scaled[1] + 1e-30)
             families.append(torch.cat([scaled, C[None]]))
-        grad = torch.stack(families)  # [2, 3, 3, 3]
+        grad = torch.stack(families)  # [2, 3, 5, 3]
         packed = torch.cat([grad.flatten(), kl, bounds]).cpu()
         vals = packed[:grad.numel()].view_as(grad).tolist()
         kl_vals = packed[grad.numel():grad.numel() + kl.numel()].tolist()
@@ -877,10 +916,11 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
             f"{prefix}_{agg}_{comp}": vals[f][a][c]
             for f, prefix in enumerate(("dalpha", "dlogalpha"))
             for a, agg in enumerate(("sum", "sum_abs", "C"))
-            for c, comp in enumerate(("full", "struct", "res"))
+            for c, comp in enumerate(("full", "struct", "res", "sres", "ires"))
         },
         **dict(zip(("kl", "kl_s", "kl_ir", "kl_sr"), kl_vals)),
-        **dict(zip(("alpha_req_min", "alpha_req_mean", "alpha_req_max"), bound_vals)),
+        **dict(zip(("alpha_req_min", "alpha_req_mean", "alpha_req_max",
+                    "log_alpha_req_min", "log_alpha_req_mean", "log_alpha_req_max"), bound_vals)),
     }
 
 

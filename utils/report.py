@@ -1802,23 +1802,27 @@ def plot_alpha_curves(
         for suffix, sub in (("", ""), ("2", "_2"))
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     ]
+    req_key = {"scale": "alpha_req", "logit_scale": "log_alpha_req"}[scale_key]  # the bounds in this figure's units
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
-    # since only it records the series), nine panels: the per-pair dL/dalpha terms summed, summed in
-    # magnitude, and their coherence ratio C = |sum| / sum|.|, each for the full gradient and its
-    # structural / residual parts (utils.loss.infonce_batch_stats), every panel drawing the all /
-    # positive-mass / negative-mass attributions. dlogalpha* is flat zero wherever logits.scale.clamp
+    # since only it records the series), fifteen panels: the per-pair dL/dalpha terms summed, summed in
+    # magnitude, and their coherence ratio C = |sum| / sum|.|, each for the full gradient, its
+    # structural / residual parts and the residual's own structural / irreducible split
+    # (utils.loss.infonce_batch_stats), every panel drawing the all /
+    # positive-mass / negative-mass attributions -- bar the logalpha figure's five C panels, which
+    # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
     # holds the parameter above its cap, dalpha* still carrying the pressure on the effective scale.
 
     def dalpha_label(agg, comp):
-        sup = {"full": "", "struct": "^S", "res": "^R"}[comp]
+        sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
+               "sres": r"^{\text{SR}}", "ires": r"^{\text{IR}}"}[comp]
         if agg == "sum":
             return rf"$\nabla_{{{sym}}}{sup} \mathcal{{L}}$"
-        return rf"${'A' if agg == 'sum_abs' else 'C'}_{{{sym}}}{sup}$"
+        return rf"$\text{{{'A' if agg == 'sum_abs' else 'C'}}}_{{{sym}}}{sup}$"
 
     dalpha_panels = [
         (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg)
         for agg in ("sum", "sum_abs", "C")
-        for comp in ("full", "struct", "res")
+        for comp in ("full", "struct", "res", "sres", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
     n_panels = len(scale_panels) + len(dalpha_panels)
@@ -1832,21 +1836,27 @@ def plot_alpha_curves(
 
     for key, label in scale_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        ax.plot(x_train, data_epoch[key], color="tab:purple")
-        if key == "scale" and len(data_epoch["alpha_req_max"]) == len(x_train):
+        ax.plot(x_train, data_epoch[key], color="tab:purple", label=rf"${sym}$")
+        if key == scale_key and len(data_epoch[f"{req_key}_max"]) == len(x_train):
             # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
             # alpha_req; an InfoNCE loss only, so a BCE-family loss's panel gets no lines), read
-            # against the alpha the logits carry (the series sits at 100 while logits.scale.clamp
-            # holds): for row i, the smallest alpha whose logit range alpha * S over S in [-1, 1]
-            # spans the blended
+            # against the scale this figure plots -- alpha_req on the alpha panel (the series sits at
+            # 100 while logits.scale.clamp holds), log(alpha_req) on the logalpha one, each reduced
+            # over rows in its own units: for row i, the smallest alpha whose logit range alpha * S
+            # over S in [-1, 1] spans the blended
             # target distribution Y_i as optimal logits log(Y_i) (up to a constant), 0.5 * log(max_j Y_ij
             # / min_j Y_ij). Softmax feasibility is row-wise, so the batch's requirement is the max over
             # rows (solid), drawn with the min (solid) and the mean (dashed). A row holding a zero sits
             # at infinity and leaves a gap in the lines it reaches (the max and the mean): a stray one
             # under graded targets (a tax top-rank split, a bm-kernel pair meeting at the root), every
             # row under sp/mp targets with the linear tsm, which then draws nothing
+            # the min and max bracket the band in the same solid style, so one entry covers the pair
+            # and the max line goes unlabelled (an unlabelled line is left out of the legend)
+            labels_req = {"min": rf"${sym}_{{\text{{req}}}}$ (min, max)", "mean": rf"${sym}_{{\text{{req}}}}$ (mean)"}
             for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
-                ax.plot(x_train, data_epoch[f"alpha_req_{stat}"], color="red", linestyle=linestyle, linewidth=1.0)
+                ax.plot(x_train, data_epoch[f"{req_key}_{stat}"], color="red", linestyle=linestyle, linewidth=1.0,
+                        label=labels_req.get(stat))
+            legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1854,16 +1864,23 @@ def plot_alpha_curves(
 
     for key, label, agg in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        vals = np.array(data_epoch[key])  # [batch, (all, pos, neg)]
-        for idx_attr, (attr_label, color) in enumerate(_DALPHA_ATTRIBUTIONS):
-            ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
-        if agg == "C":
-            ax.set_ylim(0.0, 1.0)  # a cancellation ratio
+        # the logalpha figure's C panels repeat the alpha figure's exactly -- alpha cancels in the
+        # ratio |sum| / sum|.| -- so they are drawn blank: the panel and its caption hold the row, so
+        # the two figures stay aligned panel for panel, with the redundant curves, grid, y ticks and
+        # legend all left off
+        if prefix == "dlogalpha" and agg == "C":
+            ax.set_yticks([])
         else:
-            ax.axhline(0.0, color="gray", linewidth=0.5)
+            vals = np.array(data_epoch[key])  # [batch, (all, pos, neg)]
+            for idx_attr, (attr_label, color) in enumerate(_DALPHA_ATTRIBUTIONS):
+                ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
+            if agg == "C":
+                ax.set_ylim(0.0, 1.0)  # a cancellation ratio
+            else:
+                ax.axhline(0.0, color="gray", linewidth=0.5)
+            legend_handles[ax] = ax.get_legend_handles_labels()[0]
+            ax.grid(True)
         ax.set_ylabel(label, fontsize=fontsize_axes)
-        legend_handles[ax] = ax.get_legend_handles_labels()[0]
-        ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")

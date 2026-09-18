@@ -108,15 +108,22 @@ class TrialData:
             # alpha_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
             # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the blended target
             # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the alpha
-            # panel's bound lines. Recorded only for an InfoNCE loss (utils.loss.infonce_batch_stats),
+            # panel's bound lines; log_alpha_req_* the same three reductions over log(alpha_req), for
+            # the logalpha panel (its min / max are the logs of the alpha_req ones, its mean is not).
+            # Recorded only for an InfoNCE loss (utils.loss.infonce_batch_stats),
             # so a BCE-family loss's series stay empty and its alpha panel gets no lines.
             "alpha_req_min": [],
             "alpha_req_mean": [],
             "alpha_req_max": [],
-            # dalpha_{sum,sum_abs,C}_{full,struct,res}: per batch, the InfoNCE logit-scale gradient
+            "log_alpha_req_min": [],
+            "log_alpha_req_mean": [],
+            "log_alpha_req_max": [],
+            # dalpha_{sum,sum_abs,C}_{full,struct,res,sres,ires}: per batch, the InfoNCE logit-scale gradient
             # decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
-            # the target), each summed, summed in magnitude, and their coherence ratio C -- every
+            # the target), the residual splitting again along s* = infonce_s_opt, the geometry that
+            # realizes p*, into sres (the model's geometry standing off s*) and ires (what s* itself
+            # still pushes on alpha), each summed, summed in magnitude, and their coherence ratio C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
             # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
             # the model learns (alpha times the dalpha sums, the same C -- all zero while
@@ -128,7 +135,7 @@ class TrialData:
                 f"{prefix}_{agg}_{comp}": []
                 for prefix in ("dalpha", "dlogalpha")
                 for agg in ("sum", "sum_abs", "C")
-                for comp in ("full", "struct", "res")
+                for comp in ("full", "struct", "res", "sres", "ires")
             },
             # kl*: per batch, the InfoNCE KL decomposition (utils.loss.infonce_kl_terms, both anchor
             # directions averaged): kl = D_KL(y || p), the raw loss less the targets' entropy, and its

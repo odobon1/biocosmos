@@ -1,9 +1,12 @@
 """
-The InfoNCE reachable-optimum diagnostics (utils.loss.infonce_p_opt / infonce_scale_grad_sums /
-infonce_kl_terms / infonce_batch_stats), p* being the row softmax's reachable optimum under
-bounded-cosine logits (max / min ratio at most exp(2 alpha)). The logit-scale gradient
+The InfoNCE reachable-optimum diagnostics (utils.loss.infonce_p_opt / infonce_s_opt /
+infonce_scale_grad_sums / infonce_kl_terms / infonce_batch_stats), p* being the row softmax's
+reachable optimum under bounded-cosine logits (max / min ratio at most exp(2 alpha)) and s* the
+geometry realizing it. The logit-scale gradient
 decomposition: per pair, dL/dalpha = (p - y) s splits into a structural part (p - p*) s -- what the
 model could still remove at this alpha -- and a residual (p* - y) s that no similarity geometry can;
+the residual splits again along s* into (p* - y)(s - s*) (the model's geometry standing off s*) and
+(p* - y) s* (what s* itself still pushes on alpha);
 each is attributed to the positive / negative target mass by the soft masks q / 1 - q, and reported
 summed, summed in magnitude, and as the coherence ratio C = |sum| / sum|.|; the dlogalpha family is
 the log-scale parameter's own gradient, alpha times the dalpha sums, and zero while logits.scale.clamp
@@ -39,6 +42,16 @@ def _p_opt_single_row(y, alpha, n_iter=40):
             hi = eta
     eta = (lo + hi) / 2
     return torch.exp(torch.clamp(log_y, min=eta, max=eta + 2 * alpha))
+
+
+def _residual_terms_single_row(y, s, alpha):
+    # the single-row residual split the row-wise infonce_s_opt / infonce_scale_grad_sums vectorize
+    # (TSM-Lin), verbatim: s* by inverting p*'s row softmax and recentering on its midrange, then
+    # (p* - y) s = (p* - y)(s - s*) + (p* - y) s*
+    p_opt = _p_opt_single_row(y, alpha)
+    log_p_opt = torch.log(p_opt)
+    s_opt = (log_p_opt - 0.5 * (log_p_opt.max() + log_p_opt.min())) / alpha
+    return (p_opt - y) * (s - s_opt), (p_opt - y) * s_opt
 
 
 def _targets(B, K, seed):
@@ -106,24 +119,57 @@ def test_p_opt_keeps_reachable_targets():
     torch.testing.assert_close(L.infonce_p_opt(Y, 1.0), Y, rtol=1e-9, atol=1e-12)
 
 
+@pytest.mark.parametrize("alpha", [0.5, 3.0, 10.0])
+def test_s_opt_realizes_p_opt_inside_the_cosine_bound(alpha):
+    # s* is itself a bounded-cosine geometry -- entries in [-1, 1], p*'s log range being at most
+    # 2 alpha -- and its row softmax at this alpha is exactly p*, so the structural term vanishes on
+    # it and the residual is all the gradient it leaves
+    L = import_loss_module()
+    _, Y = _targets(12, 4, seed=14)
+    P_opt = L.infonce_p_opt(Y, alpha)
+    S_opt = L.infonce_s_opt(P_opt, alpha)
+    assert torch.all(S_opt.abs() <= 1.0 + 1e-12)
+    torch.testing.assert_close(torch.softmax(alpha * S_opt, dim=1), P_opt)
+
+
+def test_residual_split_matches_the_single_row_reference():
+    # the residual splits row by row against the single-row construction, over the mp rows (exact
+    # zeros, so p* is off the target however large alpha grows) and the graded rows alike
+    L = import_loss_module()
+    B, alpha = 12, 4.0
+    Q, Y = _targets(B, 4, seed=4)
+    S = _sims(B, seed=5)
+    P_opt = L.infonce_p_opt(Y, alpha)
+    sums = L.infonce_scale_grad_sums(S, Q, Y, torch.softmax(alpha * S, dim=1), P_opt, L.infonce_s_opt(P_opt, alpha))
+    sres, ires = zip(*(_residual_terms_single_row(y, s, alpha) for y, s in zip(Y, S)))
+    for c, expected in ((3, sres), (4, ires)):
+        assert sums[0, c, 0].item() == pytest.approx(torch.stack(expected).sum().item() / B, rel=1e-9, abs=1e-12)
+    # neither part is the residual on its own: the split is doing work on this batch
+    assert all(abs(sums[0, c, 0].item()) > 1e-6 for c in (3, 4))
+
+
 def test_sums_decompose_and_full_sum_is_the_loss_gradient():
     L = import_loss_module()
     B, alpha = 12, 4.0
     Q, Y = _targets(B, 4, seed=4)
     S = _sims(B, seed=5)
     P = torch.softmax(alpha * S, dim=1)
-    sums = L.infonce_scale_grad_sums(S, Q, Y, P, L.infonce_p_opt(Y, alpha))
-    assert sums.shape == (2, 3, 3)
+    P_opt = L.infonce_p_opt(Y, alpha)
+    sums = L.infonce_scale_grad_sums(S, Q, Y, P, P_opt, L.infonce_s_opt(P_opt, alpha))
+    assert sums.shape == (2, 5, 3)
     # the full / all sum is d(per-anchor mean CE)/d(alpha), the direction's raw InfoNCE loss gradient
     a = torch.tensor(alpha, dtype=torch.float64, requires_grad=True)
     loss = -(Y * torch.log_softmax(a * S, dim=1)).sum(dim=1).mean()
     (dloss_dalpha,) = torch.autograd.grad(loss, a)
     torch.testing.assert_close(sums[0, 0, 0], dloss_dalpha)
-    # full = struct + res, all = pos + neg (exact for the sums; the magnitudes only bound them)
+    # full = struct + res, res = sres + ires, all = pos + neg (exact for the sums; the magnitudes only
+    # bound them)
     torch.testing.assert_close(sums[0, 0], sums[0, 1] + sums[0, 2])
+    torch.testing.assert_close(sums[0, 2], sums[0, 3] + sums[0, 4])
     torch.testing.assert_close(sums[0, :, 0], sums[0, :, 1] + sums[0, :, 2])
     assert torch.all(sums[1] >= sums[0].abs() - 1e-12)
     assert torch.all(sums[1, 0] <= sums[1, 1] + sums[1, 2] + 1e-12)
+    assert torch.all(sums[1, 2] <= sums[1, 3] + sums[1, 4] + 1e-12)
     assert torch.all(sums[1, :, 0] <= sums[1, :, 1] + sums[1, :, 2] + 1e-12)
 
 
@@ -134,9 +180,10 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
-    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
+    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
     assert set(stats) == {f"{prefix}_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
-        "kl", "kl_s", "kl_ir", "kl_sr", "alpha_req_min", "alpha_req_mean", "alpha_req_max"}
+        "kl", "kl_s", "kl_ir", "kl_sr"} | {
+        f"{prefix}alpha_req_{stat}" for prefix in ("", "log_") for stat in ("min", "mean", "max")}
     # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same C
     for comp in comps:
         for agg in aggs[:2]:
@@ -144,8 +191,9 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
         assert stats[f"dlogalpha_C_{comp}"] == pytest.approx(stats[f"dalpha_C_{comp}"], rel=1e-12)
     Sf, Qf, Yf = S.float().double(), Q.float().double(), Y.float().double()
     P_opt = L.infonce_p_opt(Yf, alpha)
-    i2t = L.infonce_scale_grad_sums(Sf, Qf, Yf, torch.softmax(logits.double(), dim=1), P_opt)
-    t2i = L.infonce_scale_grad_sums(Sf.T, Qf.T, Yf, torch.softmax(logits.double().T, dim=1), P_opt)
+    S_opt = L.infonce_s_opt(P_opt, alpha)
+    i2t = L.infonce_scale_grad_sums(Sf, Qf, Yf, torch.softmax(logits.double(), dim=1), P_opt, S_opt)
+    t2i = L.infonce_scale_grad_sums(Sf.T, Qf.T, Yf, torch.softmax(logits.double().T, dim=1), P_opt, S_opt)
     expected = 0.5 * (i2t + t2i)
     for a, agg in enumerate(aggs[:2]):
         for c, comp in enumerate(comps):
@@ -157,7 +205,9 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
     stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False)
-    one_dir = L.infonce_scale_grad_sums(S_sym, Q, Y, torch.softmax(alpha * S_sym, dim=1), L.infonce_p_opt(Y, alpha))
+    P_opt_sym = L.infonce_p_opt(Y, alpha)
+    one_dir = L.infonce_scale_grad_sums(S_sym, Q, Y, torch.softmax(alpha * S_sym, dim=1), P_opt_sym,
+                                        L.infonce_s_opt(P_opt_sym, alpha))
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
         assert stats_sym[f"dalpha_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
@@ -167,7 +217,8 @@ def test_batch_stats_row_wise_scale_bounds():
     # the target-implied scale bound is row-wise (softmax feasibility is): per row i, the smallest
     # alpha whose logit range 2 alpha spans log(Y_i), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as
     # its min / mean / max over rows -- a global max(Y) / min(Y) would pair extremes from different
-    # rows and overstate the batch's requirement
+    # rows and overstate the batch's requirement -- and again as those reductions over log(alpha_req),
+    # the units the logalpha panel plots in
     L = import_loss_module()
     B, alpha = 12, 4.0
     Q, Y_lin = _targets(B, 4, seed=6)
@@ -180,6 +231,15 @@ def test_batch_stats_row_wise_scale_bounds():
     assert stats["alpha_req_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
     assert stats["alpha_req_mean"] == pytest.approx(alpha_req.mean().item(), rel=1e-9)
     assert stats["alpha_req_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
+    # the logalpha panel's own trio: the same reductions over log(alpha_req). The min and max are the
+    # logs of the alpha_req ones (log is monotone), the mean is the mean of the rows' logs -- the log
+    # of their geometric mean, which sits strictly below log(mean) by Jensen wherever the rows differ
+    log_alpha_req = alpha_req.log()
+    for stat in ("min", "mean", "max"):
+        assert stats[f"log_alpha_req_{stat}"] == pytest.approx(getattr(log_alpha_req, stat)().item(), rel=1e-9)
+    for stat in ("min", "max"):
+        assert stats[f"log_alpha_req_{stat}"] == pytest.approx(math.log(stats[f"alpha_req_{stat}"]), rel=1e-9)
+    assert stats["log_alpha_req_mean"] < math.log(stats["alpha_req_mean"])
     # under the linear tsm a row with an exact zero (the mp rows of _targets) sits at infinity, taking
     # the max and the mean with it, while the min still reads off the graded rows
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, _log_scale(alpha), False)
@@ -188,6 +248,9 @@ def test_batch_stats_row_wise_scale_bounds():
     assert math.isinf(alpha_req.max()) and torch.isfinite(alpha_req).any()
     assert stats["alpha_req_min"] == pytest.approx(alpha_req[torch.isfinite(alpha_req)].min().item(), rel=1e-9)
     assert math.isinf(stats["alpha_req_mean"]) and math.isinf(stats["alpha_req_max"])
+    # and the infinity carries into the logs, leaving the min the only finite one there too
+    assert math.isinf(stats["log_alpha_req_mean"]) and math.isinf(stats["log_alpha_req_max"])
+    assert stats["log_alpha_req_min"] == pytest.approx(math.log(stats["alpha_req_min"]), rel=1e-9)
 
 
 def _grad_log_scale(S, Y, log_alpha_raw, clamp):
@@ -229,7 +292,7 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
         assert held
     elif log_alpha_raw < math.log(100):
         assert not held
-    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res")
+    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
     if held:
         assert any(v != 0.0 for v in on["dalpha_sum_full"])
         for agg in aggs:

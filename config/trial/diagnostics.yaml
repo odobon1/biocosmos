@@ -1,0 +1,24 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false) Skip that component's
+# compute -- its log fields and learning-curve panels are omitted (loss/LR/logit-scalar curves and evals
+# unaffected)
+  grad_norm_model: true  # {true, false}; Whole-model grad norm (model= in grad_norm.log + its curve panel)
+  delta_norm_model: true  # {true, false}; ||delta theta|| update norm via pre-step param snapshot
+  # (step= in grad_norm.log + its curve panel)
+  emb_logit_grads: true  # {true, false}; Retained embedding/logit grads (img=/txt=/logit= in grad_norm.log;
+  # no curve panel)
+  sim_grad_sums: true  # {true, false}; Retained sim grads' full-batch sums (the sim-grad-sum curve strips;
+  # no log fields)
+  sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Q
+  # curve panels, the mean hard-pair similarity margin strips, a unitless loss blend's lambda_eff strip and,
+  # for InfoNCE losses, the alpha panels' target bound lines, the logit-scale gradient decomposition and KL
+  # decomposition strips)
+learning_curves:
+  hpsm:  # hard-pair similarity margin
+    kappas: [0, 1, 10, 100, 1_000, 10_000, 100_000]
+    multimodal: false  # {true, false}
+logging: true
+plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
+# (trial) Only at the final checkpoint

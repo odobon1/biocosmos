@@ -1,3 +1,14 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+# Manifold-viz settings that decide what gets COMPUTED and CACHED during/after a trial: whether it runs at all
+# (n_seeds), and the projection fits whose output lands in projections.npz / projections_pooled.npz. Changing
+# these invalidates those caches, so they are frozen with the campaign; the purely visual settings that re-render
+# from the same caches live in config/render/manifold_viz.yaml.
+
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
 # Manifold-viz subsystem settings -- whether it runs at all (n_seeds) and how it behaves.
 
 # Which seeds get manifold viz, as a window over each arm/coord/dataset group's seed sweep: a trial is selected iff
@@ -6,12 +17,9 @@
 # campaign's seed count later brings them into the window as they run.
 n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whole subsystem -- nothing computed,
 # cached, or rendered, and the eval embeddings aren't even gathered for viz
+
 n_seeds_offset: 1  # [int] >= 0; Where the window starts; (0) The first seed of every arm/coord/dataset group;
 # (1) Skip the first, viz the second; etc.
-
-plot_2panel: false   # {true, false}; (true) Plot the per-method leaf/penult pairs
-plot_7panel: false   # {true, false}; (true) Plot the per-method 2x4 composites
-plot_8panel: true  # {true, false}; (true) Plot the cross-method grids (methods across, colorings down)
 
 pooled:  # Shared-frame manifold viz: one fit per method on all eval thresholds' embeddings pooled, then each
 # threshold plotted as a masked subset of the shared layout (the plot_* flags select the same groups, rendered
@@ -45,35 +53,3 @@ umap:  # Shared by BOTH UMAP variants -- the flat one (umap) and the spherical o
   # own knob because a spherical epoch costs ~30x a flat one, making the sphere the render worker's dominant compute;
   # 100 (vs the 500 small-N default) holds up because the chained warm starts land each fit near its converged layout
   # already -- raise it if the sphere plots look under-converged (the first eval and the pooled fit start cold)
-
-orient:  # Cross-eval orientation: every method's layout is aligned to a running reference of per-class CoMs so the
-# evolving GIFs don't spin or mirror-flip between evals. t-SNE + UMAP get the full rigid alignment (orthogonal
-# Procrustes, rotation + reflection); umap_sphere gets the same alignment solved in SO(3) -- the one rigid motion of
-# the whole ball that moves the cluster constellation (seen and unseen clusters alike) the least, so the ball and its
-# gridlines stay fixed for the viewer while the clusters glide across them; its first eval starts the largest class
-# at the north pole and the second on the central meridian, landmarks later evals are free to drift off; PCA keeps
-# its principal axes and only has its per-axis SIGN aligned (the component signs sklearn picks are data-dependent,
-# so they flip between evals)
-  ema_tau: 0.5  # (0.0, 1.0]; This fraction of the eval's oriented CoMs is mixed into the running reference
-  # (=1.0 --> align to the previous eval only, <1.0 --> damps drift across evals)
-
-eval_duration: 1500  # ms each eval is shown in the evolving GIFs (one frame per eval)
-bg_color: "#F5F5DC"  # Panel background color in hex format; (null) White. Doubles as the ball color for the
-# umap_sphere panels, whose background behind the ball is always white
-
-color:
-  seed: 42  # Rotates the whole palette (phase offset); Changes the colors, keeps the count-ordering;
-  # Colors are assigned to classes in order of sample count (golden-ratio hue + low-discrepancy
-  # vibrancy), so similar-count classes get maximally different colors and near-identical colors
-  # only land on classes with very different counts; Each band fixes a "vibrancy" via saturation
-  # (0-1, color intensity) and lightness (0-1, darkness->brightness); `weight` is each band's
-  # relative share of classes (need not sum to 1); Add/remove/retune bands freely, more bands =
-  # more variety
-  bands:
-    - {weight: 2.0, saturation: 1.00, lightness: 0.50}
-    - {weight: 0.7, saturation: 1.00, lightness: 0.30}
-    - {weight: 0.7, saturation: 1.00, lightness: 0.70}
-    - {weight: 0.5, saturation: 0.55, lightness: 0.50}
-    - {weight: 0.2, saturation: 0.45, lightness: 0.60}
-    - {weight: 0.3, saturation: 0.45, lightness: 0.40}
-    - {weight: 0.5, saturation: 0.50, lightness: 0.80}

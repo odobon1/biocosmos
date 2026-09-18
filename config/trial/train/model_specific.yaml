@@ -1,0 +1,16 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+# Per model family (clip / siglip), the params resolved from the family when the config proper leaves
+# them null. Keys are dot-paths into the training config, so anything declared there can take a
+# family default; a value set in the config wins, and a family default only ever fills a hole.
+
+siglip:
+  opt.wd: 0.0  # SigLIP paper recommends weight_decay = 0.0 for finetuning (?)
+  opt.beta2: 0.95  # SigLIP paper recommends Beta2 = 0.95
+  loss.crit: bce  # SigLIP's sigmoid pairwise loss
+
+clip:
+  opt.wd: 0.2  # CLIP paper recommends weight_decay = 0.2
+  opt.beta2: 0.98  # CLIP paper recommends Beta2 = 0.98
+  loss.crit: infonce  # CLIP's softmax contrastive loss

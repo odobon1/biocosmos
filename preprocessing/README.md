@@ -287,7 +287,7 @@ in-distribution (ID) and out-of-distribution (OOD) evaluation partitions.
 **Shared:** `preprocessing/common/split_gen.py` (`GenSplitDataManager`,
 stratified samplers, `generate_splits`)
 
-**Config:** `config/split_gen.yaml`
+**Config:** `config/preprocessing/split_gen.yaml`
 - `split` — label for the output directory (default `D10`)
 - `seed` — RNG seed
 - `pct_partition` — fraction of classes/samples drawn into each eval partition

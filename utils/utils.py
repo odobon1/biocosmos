@@ -299,7 +299,7 @@ class PrintLog:
         tuples in launch order; `in_progress` is the trial currently running (None when nothing is). A trial
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
-        as 'trial_id --- D-HH:MM:SS', dash-aligned per section; a Completed trial that dev.kill_thresh cut
+        as 'trial_id --- D-HH:MM:SS', dash-aligned per section; a Completed trial that kill_thresh cut
         short additionally carries ' --- ABANDON SHIP (eval <k>)', k the eval it stopped at (metadata's killed
         field); Failed entries additionally carry sample
         progress as ' --- E/N' (epoch index / n_epochs) and the failure type as
@@ -461,7 +461,7 @@ class PrintLog:
                 return float("nan")
             return sum(grads).pow(2).sum().sqrt().item()
 
-        # each enabled dev.reporting.batch_diagnostics component contributes its own grad_norm.log fields; with
+        # each enabled diagnostics.batch_diagnostics component contributes its own grad_norm.log fields; with
         # every component off the line has none and is skipped outright (as is the sim_targ line when
         # sim_targ_stats is off -- batch_stats arrives None)
         fields_grad_norm = []
@@ -592,7 +592,7 @@ class PrintLog:
             lines_info += f"{' Info ':=^{SECTION_WIDTH}}\n"
             lines_info += PrintLog._dash_aligned_lines(info) + "\n"
 
-        eval_header = f" Eval ({header}) " if header is not None else " Eval "
+        eval_header = f" Eval {header} " if header is not None else " Eval "
         banner = f"{eval_header:#^{SECTION_WIDTH}}"
         if banner_suffix is not None:
             banner += f" {banner_suffix}"
@@ -649,9 +649,9 @@ class PrintLog:
             "",
         ])
 
-        lines.extend(PrintLog._format_loss_block(cfg_train.loss, cfg_train.loss1, cfg_train.loss2))  # loss block
+        lines.extend(PrintLog._format_loss_block(cfg_train.loss, cfg_train.loss["loss1"], cfg_train.loss["loss2"]))  # loss block
 
-        lines.extend(PrintLog._format_aug_block(cfg_train.aug))  # image augmentation block
+        lines.extend(PrintLog._format_aug_block(cfg_train.aug_cfg))  # image augmentation block
 
         lines.extend([  # text templates block
             "=== Text Templates ===",
@@ -666,9 +666,9 @@ class PrintLog:
             "=== Optimization ===",
             "LR",
             PrintLog._dash_aligned_lines([
-                ("- Init",         cfg_train.opt["lr"]["init"]),
-                ("- Decay Factor", cfg_train.opt["lr"]["decay_factor"]),
-                ("- Warmup",       f"{cfg_train.opt['lr']['warmup']:,}"),
+                ("- Init",         cfg_train.lr["init"]),
+                ("- Decay Factor", cfg_train.lr["decay_factor"]),
+                ("- Warmup",       f"{cfg_train.lr['warmup']:,}"),
             ]),
             PrintLog._dash_aligned_lines([
                 ("Weight Decay", cfg_train.opt['wd']),

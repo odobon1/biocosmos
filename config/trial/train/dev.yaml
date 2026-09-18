@@ -1,0 +1,8 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+n_epochs: 1
+chain_floor: null
+n_chkpts: 1
+batch_size: 256
+lr.warmup: 0.0

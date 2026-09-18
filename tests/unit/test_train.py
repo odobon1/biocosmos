@@ -33,6 +33,8 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
             "scale": {"init": None, "freeze": False, "clamp": False},
             "bce": {"center": None, "bias": {"init": None, "freeze": False}},
         },
+        "loss1": _targ_cfg("mp"),
+        "loss2": _targ_cfg("phylo"),
     }
 
 
@@ -55,7 +57,10 @@ class _FakeCoordCfg:
     n_epochs: int = 5
     n_chkpts: int = 5
     batch_size: int = 1_024
-    dev: dict = field(default_factory=dict)
+    dev: bool = False
+    diagnostics: dict = field(default_factory=dict)
+    kill_thresh: float | None = None
+    del_base_eval_cache: str | None = None
     arch: dict = field(default_factory=lambda: {
         "model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None},
     })
@@ -63,9 +68,8 @@ class _FakeCoordCfg:
         "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
     })
     loss: dict = field(default_factory=_full_loss_cfg)
-    loss1: dict = field(default_factory=lambda: _targ_cfg("mp"))
-    loss2: dict = field(default_factory=lambda: _targ_cfg("phylo"))
-    opt: dict = field(default_factory=lambda: {"lr": {"warmup": 0.04}})
+    opt: dict = field(default_factory=dict)
+    lr: dict = field(default_factory=lambda: {"warmup": 0.04})
 
     def __post_init__(self):
         self.sample_volume = 102_500  # derived in TrainConfig.__post_init__, not a config field
@@ -81,7 +85,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
 
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
-    assert "loss" in config and "loss1" in config and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert "loss" in config and "loss1" in config["loss"] and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
     assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
@@ -124,10 +128,10 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert "clip" not in config["arch"]  # non_causal is CLIP-only
     assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
     assert "stoch_depth" in config["dropout"]["siglip"]
-    assert "loss2" not in config  # lambda 0.0
+    assert "loss2" not in config["loss"]  # lambda 0.0
     assert "type" not in config["loss"]["blend"] and config["loss"]["unitless"] is False  # a lone target: nothing to blend
     assert "shared" not in config["loss"]["logits"]  # ... and no second term to give its own logit scalars
-    assert config["loss1"] == {"targ": "mp"}  # the InfoNCE-only tsm sub-block pruned under a BCE crit
+    assert config["loss"]["loss1"] == {"targ": "mp"}  # the InfoNCE-only tsm sub-block pruned under a BCE crit
     assert "bce" not in config["loss"]  # targ_mass_neut is bif_bce-only
     cls_imb = config["loss"]["wting"]["cls_imb"]
     assert "class_bal" not in cls_imb and cls_imb["inv_freq"] == {"gamma": 0.5}  # type inv_freq
@@ -146,7 +150,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
     assert config["arch"]["clip"] == {"non_causal": True}
-    assert config["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
+    assert config["loss"]["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
@@ -161,7 +165,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg.loss = _full_loss_cfg(crit="bif_bce")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
-    assert "infonce" not in config["loss1"]
+    assert "infonce" not in config["loss"]["loss1"]
     assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
     assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
@@ -178,7 +182,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert "wting" not in config["loss"]
     assert config["loss"]["blend"]["lambda"] == 0.3
     assert "type" not in config["loss"]["blend"]  # no loss factor reads the target: the blend types coincide
-    assert config["loss1"] == {"targ": "mp"} and config["loss2"] == {"targ": "phylo"}
+    assert config["loss"]["loss1"] == {"targ": "mp"} and config["loss"]["loss2"] == {"targ": "phylo"}
 
     # lambda 1.0: the primary target spec is never read
     (tmp_path / "s5").mkdir()
@@ -187,18 +191,18 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg.loss["blend"]["lambda"] = 1.0
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s5" / "config.json").read_text())
-    assert "loss1" not in config and config["loss2"] == {"targ": "phylo"}
+    assert "loss1" not in config["loss"] and config["loss"]["loss2"] == {"targ": "phylo"}
 
     # InfoNCE: the tsm sub-block is read for every live target, except under sp (the linear mapping is a no-op)
     (tmp_path / "s6").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s6")
     cfg = _FakeCoordCfg()
     cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
-    cfg.loss1 = _targ_cfg("sp")
+    cfg.loss["loss1"] = _targ_cfg("sp")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s6" / "config.json").read_text())
-    assert config["loss1"] == {"targ": "sp"}
-    assert config["loss2"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
+    assert config["loss"]["loss1"] == {"targ": "sp"}
+    assert config["loss"]["loss2"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
     assert config["loss"]["blend"]["type"] == "targ"  # a live blend under focal: the blend types differ
     assert "shared" not in config["loss"]["logits"]  # a target blend is one loss on one set of logits
 
@@ -410,7 +414,8 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
 
 
 def _fake_targ_pipe(targ1, targ2, lambda_):
-    return SimpleNamespace(cfg=SimpleNamespace(loss={"blend": {"lambda": lambda_}}, loss1={"targ": targ1}, loss2={"targ": targ2}))
+    return SimpleNamespace(cfg=SimpleNamespace(
+        loss={"blend": {"lambda": lambda_}, "loss1": {"targ": targ1}, "loss2": {"targ": targ2}}))
 
 
 def test_tracked_targ_stats_graded_blends_only() -> None:
@@ -443,17 +448,17 @@ def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:
 
 
 def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
-    # dev.kill_thresh is a fraction of the run; the kill check runs at the train-time eval nearest it,
+    # kill_thresh is a fraction of the run; the kill check runs at the train-time eval nearest it,
     # rounded up (ceil(kill_thresh * n_chkpts)); null turns it off
-    cfg = SimpleNamespace(n_chkpts=10, dev={"kill_thresh": None})
+    cfg = SimpleNamespace(n_chkpts=10, kill_thresh=None)
     assert kill_chkpt(cfg) is None
-    cfg.dev["kill_thresh"] = 0.05
+    cfg.kill_thresh = 0.05
     assert kill_chkpt(cfg) == 1
-    cfg.dev["kill_thresh"] = 0.25
+    cfg.kill_thresh = 0.25
     assert kill_chkpt(cfg) == 3
-    cfg.dev["kill_thresh"] = 0.3
+    cfg.kill_thresh = 0.3
     assert kill_chkpt(cfg) == 3
-    cfg.dev["kill_thresh"] = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
+    cfg.kill_thresh = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
     assert kill_chkpt(cfg) == 7
 
 

@@ -6,6 +6,7 @@ import subprocess
 import yaml
 
 import campaign_runner as cr
+from utils.config import load_aliases_config_dict
 from utils.config import CampaignConfig
 from utils.utils import PrintLog
 
@@ -15,11 +16,11 @@ _BASE_COORD = [[{"name": "base"}]]
 
 
 def _set_camp(monkeypatch, **spec) -> None:
-    """Point the runner's camp-yaml read (_load_campaign_config) at `spec` -- what config/camps/<name>.yaml would
+    """Point the runner's camp-yaml read (_load_campaign_config) at `spec` -- what config/campaigns/<name>.yaml would
     hold (CampaignConfig's fields; suffix null). The runner re-reads the yaml before every trial, so calling this
     again -- between launches, or from inside a fake trial subprocess -- edits the campaign the way saving the
     file would."""
-    cfg = CampaignConfig(suffix=None, **spec)
+    cfg = CampaignConfig(suffix=None, baseline_overrides={}, **spec)
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: cfg)
 
 
@@ -60,15 +61,20 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "seed": 0,
         "dataset": "cub",
         "split": "D10",
-        "loss": {"crit": "bce", "sim": "cos"},
-        "loss1": {"targ": "sp"},
-        "dev": {"reporting": {"eval": {"base_chkpt_sel": False}}, "del_base_eval_cache": None},
+        "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}},
+        "del_base_eval_cache": None,
+        "dev": False,
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": {"eval_duration": 1500},
+        "manifold_viz": {"eval_duration": 1500},
         "model_specific": {},
+        "augmentation": {},
+        "diagnostics": {},
+        "dev": {},
+        "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
+        "aliases": load_aliases_config_dict(),
         "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -89,34 +95,56 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
 def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    train_a = {"campaign": "dev", "split": "D10"}
+    train_a = {"campaign": "dev", "split": "D10", "dev": False}
     hw_a = {"mixed_prec": True, "prefetch_factor": 4}
     mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
     ms_a = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
     ds_a = {"cub": {"n_epochs": 100}, "lepid": {"n_epochs": 20}}
+    aug_a = {"hflip": False}
+    rep_a = {"logging": True}
+    dev_a = {"n_epochs": 1}
+    ht_a = {"kernel": "bm"}
+    al_a = {"config": {"param": {"a": "A"}}}
 
-    train_b = {"campaign": "changed", "split": "dev"}
+    train_b = {"campaign": "changed", "split": "dev", "dev": False}
     hw_b = {"mixed_prec": False, "prefetch_factor": 2}
     mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
     ms_b = {"siglip": {"wd": 0.1, "beta2": 0.5}, "clip": {"wd": 0.3, "beta2": 0.7}}
     ds_b = {"cub": {"n_epochs": 5}, "lepid": {"n_epochs": 2}}
+    aug_b = {"hflip": True}
+    rep_b = {"logging": False}
+    dev_b = {"n_epochs": 2}
+    ht_b = {"kernel": "ou"}
+    al_b = {"config": {"param": {"b": "B"}}}
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
-    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_a)
+    monkeypatch.setattr(cr, "load_manifold_viz_trial_config_dict", lambda: mviz_a)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_a)
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_a)
+    monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: aug_a)
+    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: rep_a)
+    monkeypatch.setattr(cr, "load_dev_config_dict", lambda: dev_a)
+    monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: ht_a)
+    monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: al_a)
     out_first = cr._load_or_create_campaign_config("cmp_a")
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_b)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_b)
-    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: mviz_b)
+    monkeypatch.setattr(cr, "load_manifold_viz_trial_config_dict", lambda: mviz_b)
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_b)
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_b)
+    monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: aug_b)
+    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: rep_b)
+    monkeypatch.setattr(cr, "load_dev_config_dict", lambda: dev_b)
+    monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: ht_b)
+    monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: al_b)
     out_second = cr._load_or_create_campaign_config("cmp_a")
 
-    # the five sources are bundled into one snapshot and frozen on first launch
-    expected = {"train": train_a, "hardware": hw_a, "manif_viz": mviz_a, "model_specific": ms_a, "dataset_specific": ds_a}
+    # the nine sources are bundled into one snapshot and frozen on first launch
+    expected = {"train": train_a, "hardware": hw_a, "manifold_viz": mviz_a, "model_specific": ms_a, "dataset_specific": ds_a,
+                "augmentation": aug_a, "diagnostics": rep_a, "dev": dev_a,
+                "htargs": ht_a, "aliases": al_a}
     assert out_first == expected
     assert out_second == expected
 
@@ -126,6 +154,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
 
     train_cfg = {
         "campaign": "dev",
+        "dev": False,
         "n_epochs": None,
         "n_chkpts": None,
         "arch": {"model_type": "siglip_vitb16"},
@@ -133,9 +162,14 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: {"max_retries": 2, "use_img_cache": False})
-    monkeypatch.setattr(cr, "load_manif_viz_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_manifold_viz_trial_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: {"cub": {"n_epochs": 100, "n_chkpts": 50}})
+    monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_dev_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: {})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
@@ -148,7 +182,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     assert snapshot["train"]["n_chkpts"] is None
 
 
-def _stub_campaign_config(monkeypatch, dev=None, hardware=None, manif_viz=None, train_extra=None) -> dict:
+def _stub_campaign_config(monkeypatch, hardware=None, manifold_viz=None, train_extra=None) -> dict:
     """Inject a minimal frozen campaign snapshot; returns its train baseline."""
     baseline = {
         "campaign": "base_campaign",
@@ -158,16 +192,21 @@ def _stub_campaign_config(monkeypatch, dev=None, hardware=None, manif_viz=None, 
         "dataset": "cub",
         "split": "D10",
         "train_pt": "train",
-        "loss": {"crit": "bce", "sim": "cos"},
-        "loss1": {"targ": "sp"},
-        "dev": {"reporting": {"eval": {"base_chkpt_sel": False}}, "del_base_eval_cache": None, **(dev or {})},
+        "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}},
+        "del_base_eval_cache": None,
+        "dev": False,
         **(train_extra or {}),
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
         "hardware": hardware or {"max_retries": 2, "use_img_cache": False},
-        "manif_viz": manif_viz or {"eval_duration": 1500},
+        "manifold_viz": manifold_viz or {"eval_duration": 1500},
         "model_specific": {},
+        "augmentation": {},
+        "diagnostics": {},
+        "dev": {},
+        "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
+        "aliases": load_aliases_config_dict(),
         "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -179,13 +218,13 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
     # coord's overrides both applied to the trial config
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-    _stub_campaign_config(monkeypatch, train_extra={"opt": {"lr": {"init": 1.0e-5}}})
+    _stub_campaign_config(monkeypatch, train_extra={"lr": {"init": 1.0e-5}})
 
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         scheduled.append((cfg_dict["seed"], cfg_dict["dataset"], cfg_dict["arm"], cfg_dict["coord"],
-                          cfg_dict["loss1"]["targ"], cfg_dict["opt"]["lr"]["init"]))
+                          cfg_dict["loss"]["loss1"]["targ"], cfg_dict["lr"]["init"]))
         _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -195,10 +234,10 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         n_trials_screen=2, n_trials_qual=None, trainval=False,
         datasets=("cub", "lepid"),
         ablation_arms=[[
-            {"loss1.targ": "sp", "name": "sp"},
-            {"loss1.targ": "phylo", "name": "hp"},
+            {"loss.loss1.targ": "sp", "name": "sp"},
+            {"loss.loss1.targ": "phylo", "name": "hp"},
         ]],
-        hpo_coords=[[{"opt.lr.init": [2.0e-5, 2.0e-6]}]],
+        hpo_coords=[[{"lr.init": [2.0e-5, 2.0e-6]}]],
     )
     cr.run_campaign("cmp_b", "camp")
 
@@ -209,19 +248,19 @@ def test_run_campaign_matrix(tmp_path, monkeypatch) -> None:
         for seed in (42, 43)
         for dataset in ("cub", "lepid")
         for arm, targ in (("sp", "sp"), ("hp", "phylo"))
-        for coord, lr in (("LR-2.0e-5", 2.0e-5), ("LR-2.0e-6", 2.0e-6))
+        for coord, lr in (("LR-2e-5", 2.0e-5), ("LR-2e-6", 2.0e-6))
     }
     # seed-major, then dataset, arm, coord (the inner loop) -- the cycle order the stats levels key off
     assert scheduled[:4] == [
-        (42, "cub", "sp", "LR-2.0e-5", "sp", 2.0e-5),
-        (42, "cub", "sp", "LR-2.0e-6", "sp", 2.0e-6),
-        (42, "cub", "hp", "LR-2.0e-5", "phylo", 2.0e-5),
-        (42, "cub", "hp", "LR-2.0e-6", "phylo", 2.0e-6),
+        (42, "cub", "sp", "LR-2e-5", "sp", 2.0e-5),
+        (42, "cub", "sp", "LR-2e-6", "sp", 2.0e-6),
+        (42, "cub", "hp", "LR-2e-5", "phylo", 2.0e-5),
+        (42, "cub", "hp", "LR-2e-6", "phylo", 2.0e-6),
     ]
     assert scheduled[4][1] == "lepid" and scheduled[8][0] == 43
 
     meta = json.loads((tmp_path / "cmp_b" / "_screen" / "phase_metadata.json").read_text())
-    assert meta["matrix"] == {d: {a: ["LR-2.0e-5", "LR-2.0e-6"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
+    assert meta["matrix"] == {d: {a: ["LR-2e-5", "LR-2e-6"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
 
 
 def test_run_campaign_raises_on_arm_coord_key_collision_before_side_effects(tmp_path, monkeypatch) -> None:
@@ -234,8 +273,8 @@ def test_run_campaign_raises_on_arm_coord_key_collision_before_side_effects(tmp_
             monkeypatch,
             n_trials_screen=1, n_trials_qual=None, trainval=False,
             datasets=("cub",),
-            ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
-            hpo_coords=[[{"loss1.targ": "mp", "name": "mp"}]],
+            ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
+            hpo_coords=[[{"loss.loss1.targ": "mp", "name": "mp"}]],
         )
         cr.run_campaign("cmp_collide", "camp")
 
@@ -246,7 +285,7 @@ def test_run_campaign_writes_split_overrides(tmp_path, monkeypatch) -> None:
     # a coord dir's overrides.json records the arm's and the coord's declared overrides separately
     monkeypatch.setattr(cr, "SEED0", 7)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
-    _stub_campaign_config(monkeypatch, train_extra={"opt": {"lr": {"init": 1.0e-5}}})
+    _stub_campaign_config(monkeypatch, train_extra={"lr": {"init": 1.0e-5}})
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict, spare_render_pid=None):
@@ -259,17 +298,17 @@ def test_run_campaign_writes_split_overrides(tmp_path, monkeypatch) -> None:
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
-        hpo_coords=[[{"opt.lr.init": 2.0e-5, "name": "lr"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
+        hpo_coords=[[{"lr.init": 2.0e-5, "name": "lr"}]],
     )
     cr.run_campaign("cmp_c", "camp")
 
     fpath = tmp_path / "cmp_c" / "_screen" / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "lr" / "overrides.json"
     assert fpath.exists()
     with open(fpath) as f:
-        assert json.load(f) == {"arm": {"loss1.targ": "sp"}, "coord": {"opt.lr.init": 2.0e-5}}
+        assert json.load(f) == {"arm": {"loss.loss1.targ": "sp"}, "coord": {"lr.init": 2.0e-5}, "baseline": {}}
     # the trial itself gets the merged set
-    assert scheduled == [{"loss1.targ": "sp", "opt.lr.init": 2.0e-5}]
+    assert scheduled == [{"loss.loss1.targ": "sp", "lr.init": 2.0e-5}]
 
 
 def test_run_campaign_defers_coord_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
@@ -295,8 +334,8 @@ def test_run_campaign_defers_coord_dir_until_trial_launch(tmp_path, monkeypatch)
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
         ablation_arms=[[
-            {"loss1.targ": "sp", "name": "sp"},
-            {"loss1.targ": "phylo", "name": "hp"},
+            {"loss.loss1.targ": "sp", "name": "sp"},
+            {"loss.loss1.targ": "phylo", "name": "hp"},
         ]],
         hpo_coords=_BASE_COORD,
     )
@@ -326,7 +365,7 @@ def test_run_campaign_marks_complete_after_successful_trial(tmp_path, monkeypatc
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_complete", "camp")
@@ -344,7 +383,7 @@ def test_run_campaign_gpu_mismatch_raises(tmp_path, monkeypatch) -> None:
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_gpu", "camp")
@@ -390,7 +429,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     completed = cr.run_campaign("cmp_render", "camp")
@@ -405,7 +444,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
 def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-    _stub_campaign_config(monkeypatch, dev={"del_base_eval_cache": "campaign"})
+    _stub_campaign_config(monkeypatch, train_extra={"del_base_eval_cache": "campaign"})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -419,7 +458,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
 
-    _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",), ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+    _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",), ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_delc", "camp")
     assert seen_at_launch == [False]  # first launch: cache deleted before the trial ran
 
@@ -433,7 +472,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-    _stub_campaign_config(monkeypatch, dev={"del_base_eval_cache": "trial"})
+    _stub_campaign_config(monkeypatch, train_extra={"del_base_eval_cache": "trial"})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -455,7 +494,7 @@ def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_pa
         monkeypatch,
         n_trials_screen=2, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_delt", "camp")
@@ -493,7 +532,7 @@ def test_run_campaign_retries_then_fails_trial_without_progress(tmp_path, monkey
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_fail", "camp")
@@ -552,7 +591,7 @@ def test_run_campaign_invalid_config_fails_at_kickoff(tmp_path, monkeypatch) -> 
             monkeypatch,
             n_trials_screen=1, n_trials_qual=None, trainval=False,
             datasets=("cub",),
-            ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "mp", "name": "bad"}]],
+            ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "mp", "name": "bad"}]],
             hpo_coords=_BASE_COORD,
         )
         cr.run_campaign("cmp_badcfg", "camp")
@@ -602,7 +641,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_flaky", "camp")
@@ -621,8 +660,8 @@ def test_expand_combo_groups_raises_on_duplicate_names() -> None:
         cr._expand_combo_groups(
             [
                 [
-                    {"loss1.targ": "sp", "name": "dup"},
-                    {"loss1.targ": "phylo", "name": "dup"},
+                    {"loss.loss1.targ": "sp", "name": "dup"},
+                    {"loss.loss1.targ": "phylo", "name": "dup"},
                 ]
             ],
             "hpo_coords",
@@ -642,15 +681,15 @@ def test_expand_combo_groups_single_combo_group_unchanged() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss1.targ": "sp", "name": "sp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "name": "hp"},
+                {"loss.loss1.targ": "sp", "name": "sp"},
             ]
         ],
         "ablation_arms",
     )
     assert members == [
-        ("hp", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}),
-        ("sp", {"loss1.targ": "sp"}),
+        ("hp", {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}),
+        ("sp", {"loss.loss1.targ": "sp"}),
     ]
 
 
@@ -661,18 +700,18 @@ def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"},
-                {"loss1.targ": "mp"},
-                {"loss1.targ": "sp", "name": "sp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"},
+                {"loss.loss1.targ": "mp"},
+                {"loss.loss1.targ": "sp", "name": "sp"},
                 {"loss.sim": "geo1"},
             ]
         ],
         "ablation_arms",
     )
     assert members == [
-        ("Lambda-0.3_Targ2-hp", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}),
-        ("Targ-MP", {"loss1.targ": "mp"}),
-        ("sp", {"loss1.targ": "sp"}),
+        ("Lambda-0.3_Targ2-hp", {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}),
+        ("Targ-MP", {"loss.loss1.targ": "mp"}),
+        ("sp", {"loss.loss1.targ": "sp"}),
         ("loss.sim-geo1", {"loss.sim": "geo1"}),
     ]
 
@@ -706,17 +745,17 @@ def test_expand_combo_groups_combo_list_expands_item_and_appends_to_name() -> No
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
-                {"loss1.targ": "mp", "batch_size": [1024, 2048], "name": "mp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": [1024, 2048], "name": "hp"},
+                {"loss.loss1.targ": "mp", "batch_size": [1024, 2048], "name": "mp"},
             ]
         ],
         "ablation_arms",
     )
     assert members == [
-        ("hp_BS-1k", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024}),
-        ("hp_BS-2k", {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048}),
-        ("mp_BS-1k", {"loss1.targ": "mp", "batch_size": 1024}),
-        ("mp_BS-2k", {"loss1.targ": "mp", "batch_size": 2048}),
+        ("hp_BS-1k", {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 1024}),
+        ("hp_BS-2k", {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 2048}),
+        ("mp_BS-1k", {"loss.loss1.targ": "mp", "batch_size": 1024}),
+        ("mp_BS-2k", {"loss.loss1.targ": "mp", "batch_size": 2048}),
     ]
 
 
@@ -746,36 +785,36 @@ def test_expand_combo_groups_multiple_combo_lists_cross_within_item() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "batch_size": [1024, 2048], "opt.lr.init": [7.0e-6, 2.0e-4], "name": "hp"},
+                {"loss.blend.lambda": 0.3, "batch_size": [1024, 2048], "lr.init": [7.0e-6, 2.0e-4], "name": "hp"},
             ]
         ],
         "hpo_coords",
     )
     assert [name for name, _ in members] == [
         "hp_BS-1k_LR-7.0e-6",
-        "hp_BS-1k_LR-2.0e-4",
+        "hp_BS-1k_LR-2e-4",
         "hp_BS-2k_LR-7.0e-6",
-        "hp_BS-2k_LR-2.0e-4",
+        "hp_BS-2k_LR-2e-4",
     ]
-    assert dict(members)["hp_BS-2k_LR-2.0e-4"] == {"loss.blend.lambda": 0.3, "batch_size": 2048, "opt.lr.init": 2.0e-4}
+    assert dict(members)["hp_BS-2k_LR-2e-4"] == {"loss.blend.lambda": 0.3, "batch_size": 2048, "lr.init": 2.0e-4}
 
 
 def test_expand_combo_groups_combo_list_in_unnamed_item_folds_into_derived_name() -> None:
     # in an unnamed item the expanded value is named like any other override, in declared position --
     # the dev_new.yaml shape: unnamed combo-list items, one per combo group, crossing into a coord grid
-    members = cr._expand_combo_groups([[{"loss1.targ": "mp", "batch_size": [1024, 2048]}]], "ablation_arms")
+    members = cr._expand_combo_groups([[{"loss.loss1.targ": "mp", "batch_size": [1024, 2048]}]], "ablation_arms")
     assert members == [
-        ("Targ-MP_BS-1k", {"loss1.targ": "mp", "batch_size": 1024}),
-        ("Targ-MP_BS-2k", {"loss1.targ": "mp", "batch_size": 2048}),
+        ("Targ-MP_BS-1k", {"loss.loss1.targ": "mp", "batch_size": 1024}),
+        ("Targ-MP_BS-2k", {"loss.loss1.targ": "mp", "batch_size": 2048}),
     ]
     coords = cr._expand_combo_groups(
-        [[{"opt.lr.init": [2.0e-6, 2.0e-5]}], [{"loss.logits.scale.init": [10.0, 100.0]}]],
+        [[{"lr.init": [2.0e-6, 2.0e-5]}], [{"loss.logits.scale.init": [10.0, 100.0]}]],
         "hpo_coords",
     )
     assert [name for name, _ in coords] == [
-        "LR-2.0e-6_Alpha-10.0", "LR-2.0e-6_Alpha-100.0", "LR-2.0e-5_Alpha-10.0", "LR-2.0e-5_Alpha-100.0",
+        "LR-2e-6_Alpha-10.0", "LR-2e-6_Alpha-100.0", "LR-2e-5_Alpha-10.0", "LR-2e-5_Alpha-100.0",
     ]
-    assert dict(coords)["LR-2.0e-5_Alpha-100.0"] == {"opt.lr.init": 2.0e-5, "loss.logits.scale.init": 100.0}
+    assert dict(coords)["LR-2e-5_Alpha-100.0"] == {"lr.init": 2.0e-5, "loss.logits.scale.init": 100.0}
 
 
 def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups() -> None:
@@ -783,8 +822,8 @@ def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss1.targ": "mp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "name": "hp"},
+                {"loss.loss1.targ": "mp"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -796,10 +835,10 @@ def test_expand_combo_groups_derived_and_explicit_names_join_across_combo_groups
 
     assert len(members) == 4
     assert dict(members) == {
-        "hp_2k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
-        "hp_BS-1k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "Targ-MP_2k": {"loss1.targ": "mp", "batch_size": 2048},
-        "Targ-MP_BS-1k": {"loss1.targ": "mp", "batch_size": 1024},
+        "hp_2k": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 2048},
+        "hp_BS-1k": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 1024},
+        "Targ-MP_2k": {"loss.loss1.targ": "mp", "batch_size": 2048},
+        "Targ-MP_BS-1k": {"loss.loss1.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -808,8 +847,8 @@ def test_expand_combo_groups_cartesian_product_merges_and_joins_names() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss1.targ": "mp", "name": "mp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "name": "hp"},
+                {"loss.loss1.targ": "mp", "name": "mp"},
             ],
             [
                 {"batch_size": 2048, "name": "2k"},
@@ -821,10 +860,10 @@ def test_expand_combo_groups_cartesian_product_merges_and_joins_names() -> None:
 
     assert len(members) == 4
     assert dict(members) == {
-        "hp_2k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 2048},
-        "hp_1k": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "batch_size": 1024},
-        "mp_2k": {"loss1.targ": "mp", "batch_size": 2048},
-        "mp_1k": {"loss1.targ": "mp", "batch_size": 1024},
+        "hp_2k": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 2048},
+        "hp_1k": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "batch_size": 1024},
+        "mp_2k": {"loss.loss1.targ": "mp", "batch_size": 2048},
+        "mp_1k": {"loss.loss1.targ": "mp", "batch_size": 1024},
     }
 
 
@@ -852,12 +891,12 @@ def test_expand_combo_groups_raises_on_cross_combo_group_key_collision() -> None
         cr._expand_combo_groups(
             [
                 [
-                    {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                    {"loss1.targ": "mp", "name": "mp"},
+                    {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "name": "hp"},
+                    {"loss.loss1.targ": "mp", "name": "mp"},
                 ],
                 [
-                    {"loss.blend.lambda": 0.4, "loss2.targ": "phylo", "name": "hp4"},
-                    {"loss1.targ": "mp", "name": "sw2"},
+                    {"loss.blend.lambda": 0.4, "loss.loss2.targ": "phylo", "name": "hp4"},
+                    {"loss.loss1.targ": "mp", "name": "sw2"},
                 ],
             ],
             "ablation_arms",
@@ -869,14 +908,14 @@ def test_expand_matrix_raises_on_arm_coord_key_collision() -> None:
     # exactly like one shared between two combo groups of the same list
     with pytest.raises(ValueError, match=r"batch_size.*appear in both ablation_arms and hpo_coords"):
         cr._expand_matrix(
-            [[{"loss1.targ": "mp", "batch_size": 2048, "name": "mp"}]],
+            [[{"loss.loss1.targ": "mp", "batch_size": 2048, "name": "mp"}]],
             [[{"batch_size": [1024, 2048]}]],
         )
     arms, coords = cr._expand_matrix(
-        [[{"loss1.targ": "mp", "name": "mp"}, {"loss1.targ": "sp", "name": "sp"}]],
+        [[{"loss.loss1.targ": "mp", "name": "mp"}, {"loss.loss1.targ": "sp", "name": "sp"}]],
         [[{"batch_size": [1024, 2048]}]],
     )
-    assert arms == [("mp", {"loss1.targ": "mp"}), ("sp", {"loss1.targ": "sp"})]
+    assert arms == [("mp", {"loss.loss1.targ": "mp"}), ("sp", {"loss.loss1.targ": "sp"})]
     assert coords == [("BS-1k", {"batch_size": 1024}), ("BS-2k", {"batch_size": 2048})]
 
 
@@ -886,8 +925,8 @@ def test_expand_combo_groups_null_name_skips_component() -> None:
     members = cr._expand_combo_groups(
         [
             [
-                {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "name": "hp"},
-                {"loss1.targ": "mp", "name": "mp"},
+                {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "name": "hp"},
+                {"loss.loss1.targ": "mp", "name": "mp"},
             ],
             [
                 {"loss.wting.cls_imb.type": "inv_freq", "name": "if"},
@@ -897,10 +936,10 @@ def test_expand_combo_groups_null_name_skips_component() -> None:
         "ablation_arms",
     )
     assert dict(members) == {
-        "hp_if": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
-        "hp": {"loss.blend.lambda": 0.3, "loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
-        "mp_if": {"loss1.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
-        "mp": {"loss1.targ": "mp", "loss.wting.cls_imb.type": "class_bal"},
+        "hp_if": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "loss.wting.cls_imb.type": "inv_freq"},
+        "hp": {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo", "loss.wting.cls_imb.type": "class_bal"},
+        "mp_if": {"loss.loss1.targ": "mp", "loss.wting.cls_imb.type": "inv_freq"},
+        "mp": {"loss.loss1.targ": "mp", "loss.wting.cls_imb.type": "class_bal"},
     }
 
 
@@ -910,9 +949,9 @@ def test_expand_combo_groups_raises_on_multiple_null_names_in_group() -> None:
         cr._expand_combo_groups(
             [
                 [
-                    {"loss1.targ": "mp", "name": "mp"},
-                    {"loss1.targ": "sp", "name": None},
-                    {"loss1.targ": "phylo", "name": None},
+                    {"loss.loss1.targ": "mp", "name": "mp"},
+                    {"loss.loss1.targ": "sp", "name": None},
+                    {"loss.loss1.targ": "phylo", "name": None},
                 ]
             ],
             "ablation_arms",
@@ -925,8 +964,8 @@ def test_expand_combo_groups_raises_when_every_combo_group_has_null_name() -> No
         cr._expand_combo_groups(
             [
                 [
-                    {"loss1.targ": "mp", "name": "mp"},
-                    {"loss1.targ": "sp", "name": None},
+                    {"loss.loss1.targ": "mp", "name": "mp"},
+                    {"loss.loss1.targ": "sp", "name": None},
                 ],
                 [
                     {"batch_size": 2048, "name": "2k"},
@@ -947,7 +986,7 @@ def test_run_campaign_crosses_arms_with_coords(tmp_path, monkeypatch) -> None:
     scheduled = []
 
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
-        scheduled.append((cfg_dict["arm"], cfg_dict["coord"], cfg_dict["loss1"]["targ"], cfg_dict["loss"]["sim"]))
+        scheduled.append((cfg_dict["arm"], cfg_dict["coord"], cfg_dict["loss"]["loss1"]["targ"], cfg_dict["loss"]["sim"]))
         _leave_completed_trial(tmp_path, cfg_dict)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
@@ -956,7 +995,7 @@ def test_run_campaign_crosses_arms_with_coords(tmp_path, monkeypatch) -> None:
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]],
         hpo_coords=[[{"loss.sim": "cos", "name": "cos"}, {"loss.sim": "l2", "name": "l2"}]],
     )
     cr.run_campaign("cmp_groups", "camp")
@@ -970,7 +1009,7 @@ def test_run_campaign_crosses_arms_with_coords(tmp_path, monkeypatch) -> None:
 
     with open(tmp_path / "cmp_groups" / "_screen" / "_datasets" / "cub" / "_arms" / "hp" / "_coords" / "l2" / "overrides.json") as f:
         data = json.load(f)
-    assert data == {"arm": {"loss1.targ": "phylo"}, "coord": {"loss.sim": "l2"}}
+    assert data == {"arm": {"loss.loss1.targ": "phylo"}, "coord": {"loss.sim": "l2"}, "baseline": {}}
 
 
 def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
@@ -1137,7 +1176,7 @@ def test_manifest_buckets_and_formats(tmp_path) -> None:
     PrintLog.manifest(dpath_phase, trials, in_progress=("nymph", "hp", "c0", 42))
 
     # Completed/Failed entries carry the trial wall-clock, dash-padded per section (min 3 dashes at the
-    # longest trial id) so the times line up; a killed trial (dev.kill_thresh) is tagged with its kill eval
+    # longest trial id) so the times line up; a killed trial (kill_thresh) is tagged with its kill eval
     text = (dpath_phase / "manifest.log").read_text(encoding="utf-8")
     assert text == (
         "❌ Failed:\n"
@@ -1242,7 +1281,7 @@ def test_run_campaign_writes_manifest_tracking_outcomes(tmp_path, monkeypatch) -
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub", "lepid"),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_manifest_run", "camp")
@@ -1290,7 +1329,7 @@ def test_run_campaign_clears_in_progress_on_interrupt(tmp_path, monkeypatch) -> 
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub", "lepid"),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_manifest_interrupt", "camp")
@@ -1316,7 +1355,7 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_grow", "camp")
@@ -1334,8 +1373,8 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
         n_trials_screen=2, n_trials_qual=None, trainval=False,
         datasets=("cub", "lepid"),
         ablation_arms=[[
-            {"loss1.targ": "sp", "name": "sp"},
-            {"loss1.targ": "phylo", "name": "hp"},
+            {"loss.loss1.targ": "sp", "name": "sp"},
+            {"loss.loss1.targ": "phylo", "name": "hp"},
         ]],
         hpo_coords=[[{"name": "base"}, {"loss.sim": "geo1"}]],
     )
@@ -1359,7 +1398,7 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_commit", "camp")
@@ -1373,7 +1412,7 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
     ).stdout.strip()
     meta = json.loads((tmp_path / "cmp_commit" / "_screen" / "phase_metadata.json").read_text())
     assert meta["commit"] == head
-    # the dirty flag sits right under the hash; the test's camp yaml (config/camps/camp.yaml) is no tracked file, so
+    # the dirty flag sits right under the hash; the test's camp yaml (config/campaigns/camp.yaml) is no tracked file, so
     # the run can't be exactly the commit's code whatever the checkout's state
     keys = list(meta)
     assert keys[keys.index("commit") + 1] == "dirty"
@@ -1391,8 +1430,8 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
             n_trials_screen=1, n_trials_qual=None, trainval=False,
             datasets=("cub",),
             ablation_arms=[[
-                {"loss1.targ": "sp", "name": "dup"},
-                {"loss1.targ": "phylo", "name": "dup"},
+                {"loss.loss1.targ": "sp", "name": "dup"},
+                {"loss.loss1.targ": "phylo", "name": "dup"},
             ]],
             hpo_coords=_BASE_COORD,
         )
@@ -1411,7 +1450,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_roundtrip", "camp")
@@ -1426,7 +1465,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub", "lepid"),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_roundtrip", "camp")
@@ -1441,14 +1480,14 @@ def test_run_campaign_prunes_removed_arm(tmp_path, monkeypatch) -> None:
     # the shrunk matrix; the kept arm's trials are untouched, nothing new runs, and the manifest drops the arm
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_rm_arm", "camp")
     dpath_arms = tmp_path / "cmp_rm_arm" / "_screen" / "_datasets" / "cub" / "_arms"
     assert (dpath_arms / "hp" / "_coords" / "base" / "_seeds" / "42" / "trial_metadata.json").exists()
 
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_rm_arm", "camp")
 
     assert scheduled == []
@@ -1464,12 +1503,12 @@ def test_run_campaign_prunes_removed_coord(tmp_path, monkeypatch) -> None:
     # a coord removed from a combo list: its dir goes from every arm on every dataset, the sibling coord stays
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
     cr.run_campaign("cmp_rm_coord", "camp")
 
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
     cr.run_campaign("cmp_rm_coord", "camp")
 
     assert scheduled == []
@@ -1483,12 +1522,12 @@ def test_run_campaign_prunes_removed_coord(tmp_path, monkeypatch) -> None:
 def test_run_campaign_prunes_removed_dataset(tmp_path, monkeypatch) -> None:
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub", "lepid"),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_rm_dataset", "camp")
 
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_rm_dataset", "camp")
 
     assert scheduled == []
@@ -1504,12 +1543,12 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
     # seed would orphan its trial in every coord (arms / coords / datasets, whole dirs, are pruned instead)
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=2, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     cr.run_campaign("cmp_rm_seed", "camp")
 
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     with pytest.raises(ValueError, match=r"seeds removed: \[43\]"):
         cr.run_campaign("cmp_rm_seed", "camp")
     assert scheduled == []
@@ -1520,10 +1559,15 @@ def _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache: bool) -> None
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "arm": "a", "coord": "c", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"crit": "bce", "sim": "cos"}, "loss1": {"targ": "sp"}, "dev": {"reporting": {"eval": {"base_chkpt_sel": False}}, "del_base_eval_cache": None}},
+        "train": {"campaign": "c", "arm": "a", "coord": "c", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}}, "del_base_eval_cache": None, "dev": False},
         "hardware": {"max_retries": 2, "use_img_cache": use_img_cache},
-        "manif_viz": {},
+        "manifold_viz": {},
         "model_specific": {},
+        "augmentation": {},
+        "diagnostics": {},
+        "dev": {},
+        "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
+        "aliases": load_aliases_config_dict(),
         "dataset_specific": {},
     })
     monkeypatch.setattr(cr, "_spawn_render", lambda *a, **k: None)
@@ -1539,7 +1583,7 @@ def test_run_campaign_use_img_cache_missing_pack_errors_before_trials(tmp_path, 
             monkeypatch,
             n_trials_screen=1, n_trials_qual=None, trainval=False,
             datasets=("cub",),
-            ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+            ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
             hpo_coords=_BASE_COORD,
         )
         cr.run_campaign("cmp_ic_missing", "camp")
@@ -1557,7 +1601,7 @@ def test_run_campaign_use_img_cache_records_staging_runtime(tmp_path, monkeypatc
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False,
         datasets=("cub",),
-        ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]],
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
         hpo_coords=_BASE_COORD,
     )
     cr.run_campaign("cmp_ic_rt", "camp")
@@ -1581,69 +1625,59 @@ def test_run_campaign_use_img_cache_override_checked_at_startup(tmp_path, monkey
             monkeypatch,
             n_trials_screen=1, n_trials_qual=None, trainval=False,
             datasets=("cub",),
-            ablation_arms=ic if side == "arm" else [[{"loss1.targ": "sp", "name": "sp"}]],
+            ablation_arms=ic if side == "arm" else [[{"loss.loss1.targ": "sp", "name": "sp"}]],
             hpo_coords=ic if side == "coord" else _BASE_COORD,
         )
         cr.run_campaign("cmp_ic_override", "camp")
     assert launched == []
 
 
-def _resolve_campaign(tmp_path, monkeypatch, continue_campaign, suffix=None) -> str:
+def _resolve_campaign(tmp_path, monkeypatch, suffix=None) -> str:
     """cr._resolve_campaign('dev') with stubbed config loading; returns the campaign name it resolves to."""
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path})
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: CampaignConfig(
-        suffix=suffix, n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=["cub"], ablation_arms=[[{"name": "s"}]], hpo_coords=_BASE_COORD,
+        suffix=suffix, baseline_overrides={}, n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=["cub"], ablation_arms=[[{"name": "s"}]], hpo_coords=_BASE_COORD,
     ))
-    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": continue_campaign}})
     return cr._resolve_campaign("dev")
 
 
-def test_resolve_campaign_continue_campaign_true_keeps_existing_name(tmp_path, monkeypatch) -> None:
+def test_resolve_campaign_resumes_an_existing_name(tmp_path, monkeypatch) -> None:
+    # a launch under a name that already has an artifacts dir always resumes/extends that campaign
     (tmp_path / "dev").mkdir()
-    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=True) == "dev"
+    assert _resolve_campaign(tmp_path, monkeypatch) == "dev"
 
 
-def test_resolve_campaign_continue_campaign_false_keeps_name_without_collision(tmp_path, monkeypatch) -> None:
-    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False) == "dev"
-
-
-def test_resolve_campaign_continue_campaign_false_dedupes_to_first_free_name(tmp_path, monkeypatch) -> None:
-    (tmp_path / "dev").mkdir()
-    (tmp_path / "dev2").mkdir()
-    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False) == "dev3"
-
-
-def test_resolve_campaign_continue_campaign_false_dedupes_suffixed_name(tmp_path, monkeypatch) -> None:
+def test_resolve_campaign_appends_the_suffix(tmp_path, monkeypatch) -> None:
     (tmp_path / "dev_foobar").mkdir()
-    assert _resolve_campaign(tmp_path, monkeypatch, continue_campaign=False, suffix="foobar") == "dev_foobar2"
+    assert _resolve_campaign(tmp_path, monkeypatch, suffix="foobar") == "dev_foobar"
 
 
 def _wire_queue(tmp_path, monkeypatch) -> Path:
-    """Point the runner at a real config dir (camp_queue.yaml + camps/ live under it) and an empty artifacts dir,
-    resume campaigns by name (dev.continue_campaign) and neutralize pytest's own argv; returns the config dir."""
+    """Point the runner at a real config dir (campaign_queue.yaml + camps/ live under it) and an empty artifacts dir,
+    resume campaigns by name and neutralize pytest's own argv; returns the config dir."""
     dpath_config = tmp_path / "config"
-    (dpath_config / "camps").mkdir(parents=True)
+    (dpath_config / "campaigns").mkdir(parents=True)
     monkeypatch.setattr(cr, "paths", {"config": dpath_config, "artifacts": tmp_path / "artifacts"})
-    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": True}})
     monkeypatch.setattr(cr.sys, "argv", ["campaign_runner"])
     return dpath_config
 
 
 def _write_queue(dpath_config: Path, entries: list[str]) -> None:
-    (dpath_config / "camp_queue.yaml").write_text(yaml.safe_dump({"campaigns": entries}))
+    (dpath_config / "campaign_queue.yaml").write_text(yaml.safe_dump({"campaigns": entries}))
 
 
-_VALID_CAMP_YAML = "n_trials_screen: 1\nn_trials_qual: null\ntrainval: false\ndatasets: [cub]\nablation_arms: [[{name: s}]]\nhpo_coords: [[{name: base}]]\nsuffix: null\n"
+_VALID_CAMP_YAML = ("n_trials_screen: 1\nn_trials_qual: null\ntrainval: false\ndatasets: [cub]\n"
+                    "baseline_overrides: {}\nablation_arms: [[{name: s}]]\nhpo_coords: [[{name: base}]]\nsuffix: null\n")
 
 
 def _add_camp_config(dpath_config: Path, *names: str, text: str = _VALID_CAMP_YAML) -> None:
     for name in names:
-        (dpath_config / "camps" / f"{name}.yaml").write_text(text)
+        (dpath_config / "campaigns" / f"{name}.yaml").write_text(text)
 
 
 def _stub_runs(monkeypatch, on_run=None, plan_changed=lambda run: False) -> list[str]:
     """Stub cr.run_campaign to just record the campaigns launched (returning True) and cr._plan_changed with
-    `plan_changed(run)` (nothing changed, by default); `on_run(campaign)` can rewrite camp_queue.yaml mid-run to
+    `plan_changed(run)` (nothing changed, by default); `on_run(campaign)` can rewrite campaign_queue.yaml mid-run to
     simulate live edits. Returns the record list."""
     ran = []
 
@@ -1722,7 +1756,7 @@ def test_main_interrupted_campaign_stops_the_queue(tmp_path, monkeypatch, interr
 
 def test_main_empty_queue_exits_immediately(tmp_path, monkeypatch) -> None:
     dpath_config = _wire_queue(tmp_path, monkeypatch)
-    (dpath_config / "camp_queue.yaml").write_text("campaigns:\n")  # blank list parses to None
+    (dpath_config / "campaign_queue.yaml").write_text("campaigns:\n")  # blank list parses to None
 
     ran = _stub_runs(monkeypatch)
     cr.main()
@@ -1733,10 +1767,7 @@ def test_main_relaunches_a_run_campaign_whose_plan_changed_before_the_next_entry
     dpath_config = _wire_queue(tmp_path, monkeypatch)
     _add_camp_config(dpath_config, "a", "b", "c")
     _write_queue(dpath_config, ["camp.a", "camp.b", "camp.c"])
-    # a's dir already exists and dev.continue_campaign is off, so a runs as 'a2': the relaunch must resume that same
-    # dir rather than resolve the name afresh (which, a2's dir existing by then, would start 'a3')
     (tmp_path / "artifacts" / "a").mkdir(parents=True)
-    monkeypatch.setattr(cr, "load_train_config_dict", lambda: {"dev": {"continue_campaign": False}})
 
     # a's yaml changes its plan while b runs: a is relaunched once b is over, before c is launched
     edited = set()
@@ -1744,7 +1775,7 @@ def test_main_relaunches_a_run_campaign_whose_plan_changed_before_the_next_entry
     def _on_run(campaign: str) -> None:
         (tmp_path / "artifacts" / campaign).mkdir(exist_ok=True)  # the run creates its dir, as run_campaign would
         if campaign == "b":
-            edited.add("a2")
+            edited.add("a")
 
     def _plan_changed(run) -> bool:
         if run.campaign not in edited:
@@ -1754,12 +1785,12 @@ def test_main_relaunches_a_run_campaign_whose_plan_changed_before_the_next_entry
 
     ran = _stub_runs(monkeypatch, on_run=_on_run, plan_changed=_plan_changed)
     cr.main()
-    assert ran == ["a2", "b", "a2", "c"]
+    assert ran == ["a", "b", "a", "c"]
 
 
 _PLAN_SPEC = dict(
     n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-    ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD,
+    ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD,
 )
 
 
@@ -1768,7 +1799,7 @@ _PLAN_SPEC = dict(
     ({"hpo_coords": [[{"name": "base"}, {"loss.sim": "geo1"}]]}, True),
     ({"n_trials_screen": 2}, True),
     ({"datasets": ("cub", "lepid")}, True),
-    ({"ablation_arms": [[{"loss1.targ": "sp", "name": "sp"}]]}, True),
+    ({"ablation_arms": [[{"loss.loss1.targ": "sp", "name": "sp"}]]}, True),
     ({"n_trials_qual": 1}, True),
 ], ids=["unchanged", "coord_added", "seed_added", "dataset_added", "arm_removed", "qual_switched_on"])
 def test_plan_changed_compares_the_yaml_to_the_recorded_plans(tmp_path, monkeypatch, edit, expected) -> None:
@@ -1793,7 +1824,7 @@ def test_plan_changed_tolerates_an_invalid_yaml(tmp_path, monkeypatch, capsys) -
     _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 1})
     capsys.readouterr()
     assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan_bad", "camp")) is False
-    assert "camp_queue: 'camp.camp' config invalid -- not relaunched until it is fixed" in capsys.readouterr().out
+    assert "campaign_queue: 'camp.camp' config invalid -- not relaunched until it is fixed" in capsys.readouterr().out
 
 
 def test_plan_changed_stops_at_an_incomplete_earlier_phase(tmp_path, monkeypatch) -> None:
@@ -1834,8 +1865,8 @@ def test_main_runs_the_trials_added_to_a_finished_campaign_after_the_running_one
     monkeypatch.setattr(cr, "paths", {**cr.paths, "config": dpath_config})
 
     def _camp(name: str, coords: list) -> CampaignConfig:
-        return CampaignConfig(suffix=None, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-                              ablation_arms=[[{"loss1.targ": "sp", "name": f"sp_{name}"}]], hpo_coords=coords)
+        return CampaignConfig(suffix=None, baseline_overrides={}, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
+                              ablation_arms=[[{"loss.loss1.targ": "sp", "name": f"sp_{name}"}]], hpo_coords=coords)
 
     cfgs = {name: _camp(name, _BASE_COORD) for name in ("a", "b")}
     monkeypatch.setattr(cr, "_load_campaign_config", lambda name: cfgs[name])
@@ -1856,7 +1887,7 @@ def test_main_runs_the_trials_added_to_a_finished_campaign_after_the_running_one
 def test_main_rejects_arguments(tmp_path, monkeypatch) -> None:
     _wire_queue(tmp_path, monkeypatch)
     monkeypatch.setattr(cr.sys, "argv", ["campaign_runner", "--dev"])
-    with pytest.raises(SystemExit, match="camp_queue"):
+    with pytest.raises(SystemExit, match="campaign_queue"):
         cr.main()
 
 
@@ -1922,7 +1953,7 @@ def _setup_phased_campaign(tmp_path, monkeypatch, picks: dict) -> list:
     return scheduled
 
 
-_ARMS_SP_HP = [[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]]
+_ARMS_SP_HP = [[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]]
 _COORDS_SIM = [[{"loss.sim": ["cos", "geo1"]}]]  # -> loss.sim-cos, loss.sim-geo1
 
 
@@ -1953,7 +1984,7 @@ def test_run_campaign_qual_copies_picks_and_tops_up_seeds(tmp_path, monkeypatch)
     assert not (dpath_pick / "_seeds" / "42" / "chkpts").exists()
     for seed in ("43", "44"):
         assert json.loads((dpath_pick / "_seeds" / seed / "trial_metadata.json").read_text())["complete"] is True
-    assert json.loads((dpath_pick / "overrides.json").read_text()) == {"arm": {"loss1.targ": "sp"}, "coord": {"loss.sim": "geo1"}}
+    assert json.loads((dpath_pick / "overrides.json").read_text()) == {"arm": {"loss.loss1.targ": "sp"}, "coord": {"loss.sim": "geo1"}}
     assert not (dpath_qual / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-cos").exists()
     assert (dpath_qual / "_datasets" / "cub" / "_arms" / "hp" / "_coords" / "loss.sim-cos" / "_seeds" / "44").exists()
     assert not (dpath_qual / "_datasets" / "cub" / "_arms" / "hp" / "_coords" / "loss.sim-geo1").exists()
@@ -1984,7 +2015,7 @@ def test_run_campaign_qual_null_skips_qual(tmp_path, monkeypatch) -> None:
     _set_camp(
         monkeypatch,
         n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-                           ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
+                           ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
     )
     assert cr.run_campaign("cmp_noqual", "camp")
 
@@ -1999,7 +2030,7 @@ def test_run_campaign_qual_equal_counts_only_copies(tmp_path, monkeypatch) -> No
     _set_camp(
         monkeypatch,
         n_trials_screen=1, n_trials_qual=1, trainval=False, datasets=("cub",),
-                           ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
+                           ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
     )
     assert cr.run_campaign("cmp_eq", "camp")
 
@@ -2019,7 +2050,7 @@ def test_run_campaign_qual_adds_new_best_pick_on_relaunch(tmp_path, monkeypatch)
     _set_camp(
         monkeypatch,
         n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
-                           ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
+                           ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
     )
     assert cr.run_campaign("cmp_addpick", "camp")
     assert scheduled[2:] == [("qual", "cub", "sp", "loss.sim-geo1", 43)]
@@ -2085,14 +2116,14 @@ def test_run_campaign_removed_coord_drops_its_qual_pick(tmp_path, monkeypatch) -
     # topped up like any other
     scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     assert cr.run_campaign("cmp_rm_pick", "camp")
     assert scheduled[2:] == [("qual", "cub", "sp", "loss.sim-geo1", 43)]
 
     del scheduled[:]
     monkeypatch.setattr(cr, "pick_best_coords", lambda: {("sp", "cub"): "loss.sim-cos"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
     assert cr.run_campaign("cmp_rm_pick", "camp")
 
     assert scheduled == [("qual", "cub", "sp", "loss.sim-cos", 43)]
@@ -2110,14 +2141,14 @@ def test_run_campaign_live_edit_adds_trials_between_trials(tmp_path, monkeypatch
     # and the matrix records it
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=2, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     fake_ok = cr._run_trial_subprocess
 
     def _add_hp_during_first(cfg_dict, spare_render_pid=None):
         fake_ok(cfg_dict, spare_render_pid)
         if len(scheduled) == 1:  # saved while the first trial runs
             _set_camp(monkeypatch, n_trials_screen=2, n_trials_qual=None, trainval=False, datasets=("cub",),
-                      ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
+                      ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _add_hp_during_first)
     assert cr.run_campaign("cmp_live_add", "camp")
@@ -2134,14 +2165,14 @@ def test_run_campaign_live_edit_removes_items_between_trials(tmp_path, monkeypat
     # trial never runs, and the matrix / manifest drop it
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=2, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
     fake_ok = cr._run_trial_subprocess
 
     def _drop_geo1_during_second(cfg_dict, spare_render_pid=None):
         fake_ok(cfg_dict, spare_render_pid)
         if len(scheduled) == 2:  # saved while geo1's seed-42 trial runs
             _set_camp(monkeypatch, n_trials_screen=2, n_trials_qual=None, trainval=False, datasets=("cub",),
-                      ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
+                      ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _drop_geo1_during_second)
     assert cr.run_campaign("cmp_live_rm", "camp")
@@ -2161,7 +2192,7 @@ def test_run_campaign_live_edit_during_qual_screens_added_arm_first(tmp_path, mo
     # pick alongside the recorded one
     scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1", ("hp", "cub"): "loss.sim-cos"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=2, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     fake_ok = cr._run_trial_subprocess
 
     def _add_hp_during_first_qual_trial(cfg_dict, spare_render_pid=None):
@@ -2191,14 +2222,14 @@ def test_run_campaign_live_edit_switches_qual_off(tmp_path, monkeypatch) -> None
     # is left as is
     scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=3, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     fake_ok = cr._run_trial_subprocess
 
     def _switch_qual_off(cfg_dict, spare_render_pid=None):
         fake_ok(cfg_dict, spare_render_pid)
         if cfg_dict["phase"] == "qual":
             _set_camp(monkeypatch, n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
-                      ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
+                      ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _switch_qual_off)
     assert cr.run_campaign("cmp_live_off", "camp")
@@ -2213,9 +2244,9 @@ def test_run_campaign_live_edit_invalid_yaml_keeps_last_plan(tmp_path, monkeypat
     # the file up again once it is valid
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=3, n_trials_qual=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
     fake_ok = cr._run_trial_subprocess
-    arms_sp_hp = [[{"loss1.targ": "sp", "name": "sp"}, {"loss1.targ": "phylo", "name": "hp"}]]
+    arms_sp_hp = [[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]]
 
     def _unparseable(name):
         raise yaml.YAMLError("mapping values are not allowed here")
@@ -2278,21 +2309,21 @@ def test_stash_nccl_dumps_accumulates_into_existing_dir(tmp_path) -> None:
 def test_is_dirty_tracks_tracked_file_edits_and_an_untracked_camp_yaml(tmp_path, monkeypatch) -> None:
     # the provenance flag next to phase_metadata.json's commit hash: staged/unstaged edits to tracked files make the
     # checkout dirty, other untracked files (stray notebooks, temp/) don't -- git describe --dirty semantics -- except
-    # the campaign's own yaml, config/camps/<name>.yaml, which the commit must have for the run to be its code
+    # the campaign's own yaml, config/campaigns/<name>.yaml, which the commit must have for the run to be its code
     def git(*args):
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=tmp_path, check=True, capture_output=True)
     git("init", "-q")
     (tmp_path / "a.py").write_text("x")
-    (tmp_path / "config" / "camps").mkdir(parents=True)
-    (tmp_path / "config" / "camps" / "camp.yaml").write_text("x")
-    git("add", "a.py", "config/camps/camp.yaml")
+    (tmp_path / "config" / "campaigns").mkdir(parents=True)
+    (tmp_path / "config" / "campaigns" / "camp.yaml").write_text("x")
+    git("add", "a.py", "config/campaigns/camp.yaml")
     git("commit", "-q", "-m", "init")
     monkeypatch.setattr(cr, "__file__", str(tmp_path / "campaign_runner.py"))  # _is_dirty runs git in its module's dir
 
     assert cr._is_dirty("camp") is False
     (tmp_path / "untracked.ipynb").write_text("x")
     assert cr._is_dirty("camp") is False
-    (tmp_path / "config" / "camps" / "camp_new.yaml").write_text("x")
+    (tmp_path / "config" / "campaigns" / "camp_new.yaml").write_text("x")
     assert cr._is_dirty("camp_new") is True  # the campaign's own yaml is untracked
     (tmp_path / "a.py").write_text("y")
     assert cr._is_dirty("camp") is True

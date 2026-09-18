@@ -21,13 +21,13 @@ CORE = {  # always included, whatever the toggles
 }
 BULKY = {  # toggle -> the files it governs
     "weights": {f"{TRIAL}/model.pt", f"{TRIAL}/chkpts/in_progress/train_state.pt"},
-    "manif_viz": {
+    "manifold_viz": {
         f"{TRIAL}/evals/eval1/viz/8panel/joint.png",
         f"{TRIAL}/evals/eval1/viz_pooled/8panel/joint.png",
         f"{TRIAL}/viz/8panel/joint.gif",
         f"{TRIAL}/viz_pooled/8panel/joint.gif",
     },
-    "manif_viz_cache": {
+    "manifold_viz_cache": {
         f"{TRIAL}/evals/eval1/embs.npz",
         f"{TRIAL}/evals/eval1/projections.npz",
         f"{TRIAL}/evals/eval1/projections_pooled.npz",
@@ -43,10 +43,10 @@ def _write(fpath: Path) -> None:
 
 
 def _set_cfg(root: Path, **toggles) -> None:
-    cfg = {"weights": False, "manif_viz": False, "manif_viz_cache": False, "batch_logs": False,
+    cfg = {"weights": False, "manifold_viz": False, "manifold_viz_cache": False, "batch_logs": False,
            "untracked": ["tools/readable_tree.txt", "tools/image_aug"], **toggles}
-    _write(root / "config" / "zip.yaml")
-    (root / "config" / "zip.yaml").write_text(yaml.safe_dump(cfg))
+    _write(root / "config" / "render" / "zip.yaml")
+    (root / "config" / "render" / "zip.yaml").write_text(yaml.safe_dump(cfg))
 
 
 def _make_campaign(root: Path, campaign: str = "camp") -> None:

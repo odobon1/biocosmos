@@ -1,3 +1,6 @@
+# Read by the preprocessing pipeline (preprocessing/<dataset>/split_gen.py), which runs before any
+# campaign exists -- never part of a campaign snapshot.
+
 seed: 42
 split: D10
 

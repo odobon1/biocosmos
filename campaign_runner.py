@@ -2,8 +2,8 @@
 python -m campaign_runner
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m campaign_runner
 
-Campaign execution is driven by the queue in config/camp_queue.yaml: its `campaigns` list names the
-runs, in order -- camp.<name> runs the campaign defined by config/camps/<name>.yaml. The queue
+Campaign execution is driven by the queue in config/campaign_queue.yaml: its `campaigns` list names the
+runs, in order -- camp.<name> runs the campaign defined by config/campaigns/<name>.yaml. The queue
 file is re-read after every campaign, so entries may be added (at any position) while one runs;
 the runner exits once every listed entry has been run. A campaign's own yaml is re-read before every
 trial (_Camp), so its matrix can be edited -- arms, coords, datasets added or removed, seeds added -- while
@@ -37,14 +37,20 @@ from utils.config import (
     CFG_UNIVERSAL_VALUE_ALIASES,
     CampaignConfig,
     apply_overrides, 
-    apply_train_debug_overrides, 
+    apply_dev_overrides, 
+    inject_snapshots, 
     get_config_stats, 
     get_config_train, 
     load_train_config_dict, 
-    load_manif_viz_config_dict, 
+    load_manifold_viz_trial_config_dict, 
+    load_aliases_config_dict, 
     load_model_specific_config_dict, 
     load_dataset_specific_config_dict, 
-    load_hardware_config_dict
+    load_hardware_config_dict, 
+    load_augmentation_config_dict, 
+    load_diagnostics_config_dict, 
+    load_dev_config_dict, 
+    load_htargs_config_dict
 )
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
@@ -132,14 +138,13 @@ def _classify_crash(exc: Exception) -> str:
         return "ram"
     return "other"
 
-def _render_phase_tables(campaign: str, phase: str, base_sel: bool) -> None:
+def _render_phase_tables(campaign: str, phase: str) -> None:
     """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, phase_stats) of
     the phase from whatever is on disk, over its recorded matrix. Trials render each level only when a seed
     completes across that level's cycle (train.py), so a phase that ends mid-cycle -- one interrupted, or with
     a (dataset, arm, coord) that never succeeds -- would otherwise leave them a cycle behind. Checkpoint
     selection is NOT redone: every completed trial already reselected its own (dataset, arm, coord) at its own
-    trial end. `base_sel` (the frozen train.yaml's dev.reporting.eval.base_chkpt_sel) tells the convergence plots
-    whether the base eval was a selection candidate."""
+    trial end."""
     if phase == "trainval":  # runs no evals -> nothing to select or aggregate
         return
     cfg_stats = get_config_stats()
@@ -148,8 +153,8 @@ def _render_phase_tables(campaign: str, phase: str, base_sel: bool) -> None:
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
-            update_arm_stats(dataset, arm, *style, base_sel)
-        update_dataset_stats(dataset, *style, base_sel)
+            update_arm_stats(dataset, arm, *style)
+        update_dataset_stats(dataset, *style)
     update_phase_stats(*style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
@@ -172,8 +177,7 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
             save_json(metadata, fpath)
 
 def _dpath_campaign(campaign: str) -> Path:
-    """The campaign's root dir, artifacts/<campaign>/ -- holds the phase dirs (_screen/, qual/); the name-dedupe
-    check keys off it."""
+    """The campaign's root dir, artifacts/<campaign>/ -- holds the phase dirs (_screen/, qual/)."""
     return paths["artifacts"] / campaign
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
@@ -204,24 +208,30 @@ def _get_commit_hash() -> str:
 def _is_dirty(name: str) -> bool:
     """Whether the code the campaign runs is not exactly the recorded commit's: the repo's tracked files differ from
     HEAD (staged or unstaged edits; untracked files don't count, as with `git describe --dirty`), or the campaign's
-    own yaml, config/camps/<name>.yaml, is untracked (a campaign the commit doesn't have)."""
+    own yaml, config/campaigns/<name>.yaml, is untracked (a campaign the commit doesn't have)."""
     def git(*args):
         return subprocess.run(["git", *args], cwd=Path(__file__).parent, capture_output=True, text=True, check=True).stdout.strip()
-    return bool(git("status", "--porcelain", "--untracked-files=no")) or not git("ls-files", "--", f"config/camps/{name}.yaml")
+    return bool(git("status", "--porcelain", "--untracked-files=no")) or not git("ls-files", "--", f"config/campaigns/{name}.yaml")
 
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
-    On first launch five config sources are bundled into a single `artifacts/<campaign>/_screen/cfg_baseline.json` (the qual phase carries a copy, _copy_qual_picks)
-    under the keys `train`, `hardware`, `manif_viz`, `model_specific`, `dataset_specific`. The `train`
-    snapshot is derived from `config/train.yaml` (with `debug_mode` overrides folded in); the other four are
-    `config/hardware.yaml`, `config/manif_viz.yaml`, `config/model_specific.yaml`, and
-    `config/dataset_specific.yaml` verbatim. Every trial starts from the `train` snapshot and has the
-    sibling snapshots injected per trial (as `hw`, `manif_viz`, `model_specific`, `dataset_specific`).
+    On first launch nine config sources are bundled into a single `artifacts/<campaign>/_screen/cfg_baseline.json` (the qual phase carries a copy, _copy_qual_picks)
+    under the keys `train`, `hardware`, `manifold_viz`, `model_specific`, `dataset_specific`, `augmentation`,
+    `reporting`, `dev`, `htargs`. The `train` snapshot is derived from `config/trial/train/train.yaml` (with `config/trial/train/dev.yaml`'s
+    overrides folded in when `dev` is on); the other eight are `config/trial/hardware.yaml`, `config/{trial,render}/manifold_viz.yaml`,
+    `config/trial/train/model_specific.yaml`, `config/trial/train/dataset_specific.yaml`, `config/trial/train/augmentation.yaml`,
+    `config/trial/diagnostics.yaml`, `config/trial/train/dev.yaml` and `config/trial/train/htargs.yaml` verbatim. Every trial
+    starts from the `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manifold_viz`,
+    `model_specific`, `dataset_specific`, `augmentation`, `reporting`, `dev_overrides`, `htarg`). `htarg` is injected
+    before the arm / coord overrides are applied, since `htarg.*` is a swept dimension. Re-applying the frozen
+    `dev` overrides per trial is idempotent -- they are already folded into `train` -- but keeps a later
+    `config/trial/train/dev.yaml` edit out of the campaign.
     Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled per trial from the
     `model_specific` snapshot, so a per-arm/coord `arch.model_type` override still picks up the matching
     family's defaults; a null `n_epochs` / `n_chkpts` is likewise left unresolved and filled per trial from the
-    `dataset_specific` snapshot as per the trial's dataset. Every later relaunch (resume or matrix extension) reloads that
+    `dataset_specific` snapshot as per the trial's dataset. The `augmentation` snapshot is read only by a trial
+    whose `aug` is `custom`. Every later relaunch (resume or matrix extension) reloads that
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
     never alter that campaign -- all of its trials, original or added later, train against the same
     frozen config."""
@@ -229,13 +239,19 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     if fpath.exists():
         return load_json(fpath)
 
-    cfg_train = apply_train_debug_overrides(load_train_config_dict())
+    cfg_dev = load_dev_config_dict()
+    cfg_general = apply_dev_overrides(load_train_config_dict(), cfg_dev)
     cfg_snapshot = {
-        "train": cfg_train,
+        "train": cfg_general,
         "hardware": load_hardware_config_dict(),
-        "manif_viz": load_manif_viz_config_dict(),
+        "manifold_viz": load_manifold_viz_trial_config_dict(),
         "model_specific": load_model_specific_config_dict(),
         "dataset_specific": load_dataset_specific_config_dict(),
+        "augmentation": load_augmentation_config_dict(),
+        "diagnostics": load_diagnostics_config_dict(),
+        "dev": cfg_dev,
+        "htargs": load_htargs_config_dict(),
+        "aliases": load_aliases_config_dict(),
     }
     fpath.parent.mkdir(parents=True, exist_ok=True)
     save_json(cfg_snapshot, fpath)
@@ -246,40 +262,50 @@ def _fmt_name_value(v) -> str:
     them: any nonzero float below 1e-2 in magnitude (or one Python itself renders in scientific notation)
     is written '<shortest mantissa, with a decimal point>e<exponent, no zero-padding>' -- 0.0002 -> '2.0e-4',
     7e-06 -> '7.0e-6', 1.131e-4 -> '1.131e-4'. Python alone switches to scientific notation only below
-    1e-4, which would put 'LR-0.0002' next to 'LR-2.0e-5' in an LR sweep; larger floats keep their plain
-    rendering ('0.3', '0.05')."""
+    1e-4, which would put '0.0002' next to '2.0e-5' in a sweep of one param; larger floats keep their
+    plain rendering ('0.3', '0.05'). A value with a CFG_PARAM_VALUE_ALIASES entry never reaches this --
+    _alias_pair substitutes the alias string first, which passes through unchanged."""
     if isinstance(v, float) and v != 0.0 and (abs(v) < 1e-2 or "e" in repr(v)):
         sign, digits, exp = Decimal(repr(v)).as_tuple()  # repr: the shortest round-trip digits
         mant = f"{digits[0]}.{''.join(map(str, digits[1:])) or '0'}"
         return f"{'-' if sign else ''}{mant}e{exp + len(digits) - 1}"
     return str(v)
 
-def _alias_pair(k: str, v) -> str:
+def _alias_tables(aliases: dict | None):
+    """The three name-alias tables: a campaign's FROZEN aliases when one is supplied (so its arm / coord
+    names can never shift mid-campaign), else the live ones loaded at import."""
+    if aliases is None:
+        return CFG_PARAM_ALIASES, CFG_PARAM_VALUE_ALIASES, CFG_UNIVERSAL_VALUE_ALIASES
+    cfg_aliases = aliases["config"]
+    return cfg_aliases["param"], cfg_aliases["param_value"], cfg_aliases["universal_value"]
+
+def _alias_pair(k: str, v, aliases: dict | None = None) -> str:
     """Render one override as a 'key-value' name component, with the key mapped through
     CFG_PARAM_ALIASES and the value through CFG_PARAM_VALUE_ALIASES (per original key), falling
     back to CFG_UNIVERSAL_VALUE_ALIASES (key-independent) when no per-key alias exists,
     e.g. ('batch_size', 2048) -> 'bs-2k'."""
-    if v in CFG_PARAM_VALUE_ALIASES.get(k, {}):
-        v_aliased = CFG_PARAM_VALUE_ALIASES[k][v]
+    param, param_value, universal = _alias_tables(aliases)
+    if v in param_value.get(k, {}):
+        v_aliased = param_value[k][v]
     # identity guard: dict lookup uses ==, and True == 1 / False == 0 would alias numeric values
     elif v is None or isinstance(v, bool):
-        v_aliased = CFG_UNIVERSAL_VALUE_ALIASES[v]
+        v_aliased = universal[v]
     else:
         v_aliased = v
-    return f"{CFG_PARAM_ALIASES.get(k, k)}-{_fmt_name_value(v_aliased)}"
+    return f"{param.get(k, k)}-{_fmt_name_value(v_aliased)}"
 
-def _derive_item_name(item: dict) -> str:
+def _derive_item_name(item: dict, aliases: dict | None = None) -> str:
     """Name an unnamed `ablation_arms` / `hpo_coords` item by its overrides: _alias_pair components
     joined by '_', e.g. {'loss1.targ': 'mp', 'batch_size': 2048} -> 'Targ-MP_BS-2k'."""
-    return "_".join(_alias_pair(k, v) for k, v in item.items())
+    return "_".join(_alias_pair(k, v, aliases) for k, v in item.items())
 
-def _item_name(item: dict) -> str | None:
+def _item_name(item: dict, aliases: dict | None = None) -> str | None:
     """The name component an item contributes: its explicit 'name', or a name derived from its
     overrides via _derive_item_name when 'name' is absent. An explicit 'name: null' returns
     None -- the item contributes no component and is skipped when member names are joined."""
-    return item["name"] if "name" in item else _derive_item_name(item)
+    return item["name"] if "name" in item else _derive_item_name(item, aliases)
 
-def _expand_combo_lists(item: dict) -> list[dict]:
+def _expand_combo_lists(item: dict, aliases: dict | None = None) -> list[dict]:
     """Expand an item's combo lists (list-valued overrides) into scalar items, one per combination
     of list values; several combo lists in one item cross with each other, the last-listed key
     varying fastest. The chosen 'key-value' pairs always show in the name: appended to an
@@ -293,11 +319,11 @@ def _expand_combo_lists(item: dict) -> list[dict]:
         chosen = dict(zip(list_keys, values))
         scalar_item = {k: chosen.get(k, v) for k, v in item.items()}
         if item.get("name") is not None:
-            scalar_item["name"] = "_".join([item["name"], *(_alias_pair(k, chosen[k]) for k in list_keys)])
+            scalar_item["name"] = "_".join([item["name"], *(_alias_pair(k, chosen[k], aliases) for k in list_keys)])
         expanded.append(scalar_item)
     return expanded
 
-def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tuple[str, dict]]:
+def _expand_combo_groups(combo_groups: list[list[dict]], param: str, aliases: dict | None = None) -> list[tuple[str, dict]]:
     """Expand one camp-yaml override list (`param`: 'ablation_arms' -> the arms, 'hpo_coords' -> the
     coords) from its combo groups into the full list of (name, overrides) members.
 
@@ -319,7 +345,7 @@ def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tup
     if not combo_groups:
         raise ValueError(f"{param} must list at least one combo group.")
     combo_groups = [
-        [scalar_item for item in group for scalar_item in _expand_combo_lists(item)]
+        [scalar_item for item in group for scalar_item in _expand_combo_lists(item, aliases)]
         for group in combo_groups
     ]
     group_keys = [
@@ -354,7 +380,7 @@ def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tup
     seen_names: set[str] = set()
     for combo in itertools.product(*combo_groups):
         name = "_".join(
-            part for item in combo if (part := _item_name(item)) is not None
+            part for item in combo if (part := _item_name(item, aliases)) is not None
         )
         if name in seen_names:
             raise ValueError(f"Duplicate {param} name: {name}")
@@ -363,27 +389,37 @@ def _expand_combo_groups(combo_groups: list[list[dict]], param: str) -> list[tup
         members.append((name, payload))
     return members
 
-def _expand_matrix(ablation_arms: list[list[dict]], hpo_coords: list[list[dict]]) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+def _expand_matrix(ablation_arms: list[list[dict]], hpo_coords: list[list[dict]], aliases: dict | None = None,
+                   baseline_overrides: dict | None = None) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
     """(arms, coords): the campaign's arms expanded from `ablation_arms` and its coords from `hpo_coords`
-    (each per _expand_combo_groups). Every arm is crossed with every coord, the two override sets merging
-    into one trial config, so the two lists form ONE override space: a key may belong to exactly one combo
-    group across both (an arm key that is also a coord key would have two values fighting to define it)."""
-    arms = _expand_combo_groups(ablation_arms, "ablation_arms")
-    coords = _expand_combo_groups(hpo_coords, "hpo_coords")
-    shared = {k for _, payload in arms for k in payload} & {k for _, payload in coords for k in payload}
-    if shared:
-        raise ValueError(
-            f"override key(s) {sorted(shared)} appear in both ablation_arms and hpo_coords; "
-            f"each override key must belong to exactly one combo group."
-        )
+    (each per _expand_combo_groups). Every arm is crossed with every coord and both are laid over
+    `baseline_overrides`, the three override sets merging into one trial config, so they form ONE override
+    space: a key may appear in exactly one of them (a key in two would have two values fighting to define
+    it). baseline_overrides is nameless -- it is not expanded and never reaches a name, so the arms and
+    coords read exactly as they would with it empty."""
+    arms = _expand_combo_groups(ablation_arms, "ablation_arms", aliases)
+    coords = _expand_combo_groups(hpo_coords, "hpo_coords", aliases)
+    keys = {"ablation_arms": {k for _, payload in arms for k in payload},
+            "hpo_coords": {k for _, payload in coords for k in payload},
+            "baseline_overrides": set(baseline_overrides or {})}
+    for a, b in (("ablation_arms", "hpo_coords"), ("baseline_overrides", "ablation_arms"),
+                 ("baseline_overrides", "hpo_coords")):
+        shared = keys[a] & keys[b]
+        if shared:
+            raise ValueError(
+                f"override key(s) {sorted(shared)} appear in both {a} and {b}; "
+                f"each override key must belong to exactly one of baseline_overrides / ablation_arms / hpo_coords."
+            )
     return arms, coords
 
-def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict) -> None:
-    """The coord dir's overrides.json: the arm's and the coord's declared overrides, kept apart under
-    'arm' / 'coord' (the stats overrides bands read each side separately)."""
+def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict, baseline_payload: dict) -> None:
+    """The coord dir's overrides.json: the declared overrides kept apart under 'arm' / 'coord' / 'baseline'
+    (the stats overrides bands read the arm and coord sides separately; the campaign-wide baseline side is
+    uniform across every row, so it names nothing -- it is recorded so test.py and tools.regen_learning_curves
+    can rebuild a trial's effective config from this file alone)."""
     dpath_coord.mkdir(parents=True, exist_ok=True)
     with open(dpath_coord / "overrides.json", "w") as f:
-        json.dump({"arm": arm_payload, "coord": coord_payload}, f, indent=2, sort_keys=True)
+        json.dump({"arm": arm_payload, "coord": coord_payload, "baseline": baseline_payload}, f, indent=2, sort_keys=True)
 
 def _iter_seeds(n_trials: int) -> list[int]:
     return list(range(SEED0, SEED0 + n_trials))
@@ -505,10 +541,7 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, phase: str, arm: st
     cfg_dict["idx_seed"] = idx_seed
     cfg_dict["idx_trial"] = idx_trial
     cfg_dict["n_trials_total"] = n_trials_total
-    cfg_dict["manif_viz"] = cfg_snapshot["manif_viz"]
-    cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
-    cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
-    cfg_dict["hw"] = cfg_snapshot["hardware"]
+    inject_snapshots(cfg_dict, cfg_snapshot)
     cfg_dict["_overrides"] = overrides
     if injections:
         cfg_dict.update(injections)
@@ -615,7 +648,7 @@ def _spawn_render(trial_rel: str) -> subprocess.Popen:
     budget is enforced twice over: RENDER_MAX_WORKERS caps the plot-job process fan-out, and the
     numba/BLAS thread caps hold the UMAP stage (NN-descent + layout run numba-parallel, the pooled PCA
     runs on BLAS), which runs single-process BEFORE that fan-out and would otherwise burst to every core."""
-    cmd = [sys.executable, "-m", "tools.regen_manif_viz", trial_rel, "snapshot"]
+    cmd = [sys.executable, "-m", "tools.regen_manifold_viz", trial_rel, "snapshot"]
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
     cap = str(max(1, len(os.sched_getaffinity(0)) // 4))
     for var in ("RENDER_MAX_WORKERS", "NUMBA_NUM_THREADS", "OMP_NUM_THREADS",
@@ -626,7 +659,7 @@ def _spawn_render(trial_rel: str) -> subprocess.Popen:
 def _trial_has_manif_cache(dpath_trial: Path) -> bool:
     """Whether this trial actually produced any manifold-viz cache worth post-trial rendering.
 
-    Most trials may sit outside the manif_viz seed window; those write no projections/embeddings, so
+    Most trials may sit outside the manifold_viz seed window; those write no projections/embeddings, so
     spawning the detached render worker would just start Python to discover there is nothing to do.
     """
     dpath_evals = dpath_trial / "evals"
@@ -644,9 +677,9 @@ def _del_base_eval_cache() -> None:
     dpath = paths["root"] / "base_eval_cache"
     if dpath.exists():
         shutil.rmtree(dpath)
-        print("deleted base_eval_cache/ (dev.del_base_eval_cache)", flush=True)
+        print("deleted base_eval_cache/ (del_base_eval_cache)", flush=True)
 
-def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, base_sel: bool) -> tuple[dict, Path]:
+def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
     coord under every arm for the screening phase, each arm's picked coord(s) for the qual and trainval phases -- the
@@ -689,7 +722,7 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
     metadata["matrix"] = matrix
     save_json(metadata, fpath_meta)
     if pruned:  # the tables' rows changed: render them over the recorded matrix now rather than a cycle later
-        _render_phase_tables(campaign, phase, base_sel)
+        _render_phase_tables(campaign, phase)
     return metadata, fpath_meta
 
 def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str], coord_names: list[str]) -> dict:
@@ -814,7 +847,7 @@ def _plan_phases(campaign: str, phase: str, cfg: CampaignConfig, arms: list, coo
     return plans
 
 class _Camp:
-    """The campaign's config/camps/<name>.yaml, re-read on demand -- before every trial and at each phase transition
+    """The campaign's config/campaigns/<name>.yaml, re-read on demand -- before every trial and at each phase transition
     (_run_phase, run_campaign) -- so edits to a running campaign take effect. read() returns (cfg, arms, coords): the
     file's CampaignConfig and the arms / coords it expands to (_expand_matrix). A read that differs from the last is
     checked before it is handed out: every arm x coord's effective TrainConfig is constructed for every dataset, so a
@@ -835,7 +868,8 @@ class _Camp:
     def read(self) -> tuple[CampaignConfig, list, list]:
         try:
             cfg = _load_campaign_config(self.name)
-            arms, coords = _expand_matrix(cfg.ablation_arms, cfg.hpo_coords)
+            arms, coords = _expand_matrix(cfg.ablation_arms, cfg.hpo_coords, self.cfg_snapshot["aliases"],
+                                          cfg.baseline_overrides)
             if (cfg, arms, coords) != self.last:
                 self._check(cfg, arms, coords)
         except (SystemExit, yaml.YAMLError, TypeError, ValueError) as e:
@@ -865,7 +899,8 @@ class _Camp:
             for arm, arm_payload in arms:
                 for coord, coord_payload in coords:
                     cfg_dict = _build_trial_cfg_dict(self.cfg_snapshot, self.campaign, "_screen", arm, coord,
-                                                     {**arm_payload, **coord_payload}, SEED0, dataset, 0)
+                                                     {**cfg.baseline_overrides, **arm_payload, **coord_payload},
+                                                     SEED0, dataset, 0)
                     try:
                         get_config_train(cfg_dict=cfg_dict)
                     except Exception as e:
@@ -882,8 +917,7 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
         _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
-    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix,
-                                           cfg_snapshot["train"]["dev"]["reporting"]["eval"]["base_chkpt_sel"])
+    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix)
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
     # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every arm and
@@ -924,8 +958,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM."""
     dpath_phase = _dpath_phase(campaign, phase)
     max_retries = cfg_snapshot["hardware"]["max_retries"]  # consecutive no-progress trial retries before giving up
-    del_base_eval_cache = cfg_snapshot["train"]["dev"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
-    base_sel = cfg_snapshot["train"]["dev"]["reporting"]["eval"]["base_chkpt_sel"]  # the base eval as a selection candidate
+    del_base_eval_cache = cfg_snapshot["train"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
     render_proc: subprocess.Popen | None = None
     plans = None  # the plans applied: the earlier phases', then this one's (_plan_phases)
     trials: list[tuple] = []
@@ -941,7 +974,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 dpath_phase.mkdir(parents=True, exist_ok=True)
                 save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
-                _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix, base_sel)
+                _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix)
             plans = plans_new
             plan = plans[-1]
             _apply_plan(campaign, camp.name, phase, cfg_snapshot, plan)
@@ -975,9 +1008,10 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         # the coord dir (and with it the arm dir) is created here, at trial launch, not when the plan is
         # applied -- a planned arm/coord whose trials never start leaves no
         # artifacts/<campaign>/<phase>/_datasets/<dataset>/_arms/ entry
-        _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord])
+        _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord], cfg.baseline_overrides)
 
-        cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord, {**arm_payloads[arm], **coord_payloads[coord]},
+        cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord,
+                                         {**cfg.baseline_overrides, **arm_payloads[arm], **coord_payloads[coord]},
                                          seed, dataset, plan.seeds.index(seed), idx_trial, n_trials_total, injections=injections)
 
         if dpath_trial.exists():
@@ -1014,7 +1048,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 )
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.terminate()
-                _render_phase_tables(campaign, phase, base_sel)
+                _render_phase_tables(campaign, phase)
                 PrintLog.manifest(dpath_phase, trials, in_progress=None)
                 return "interrupted"
             except Exception as e:
@@ -1055,7 +1089,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
 
         # Render this trial's manifold viz off-process (CPU-only), overlapping the next trial's
         # training, but only when this trial actually produced manifold caches. Trials outside the
-        # manif_viz seed window have nothing to render, so skip the extra Python process entirely.
+        # manifold_viz seed window have nothing to render, so skip the extra Python process entirely.
         # At most one render in flight: wait on the prior one only when a new render is about to
         # start.
         if _trial_has_manif_cache(dpath_trial):
@@ -1066,7 +1100,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
         return outcome
 
-    _render_phase_tables(campaign, phase, base_sel)
+    _render_phase_tables(campaign, phase)
 
     # let the last trial's render finish before the phase exits
     if render_proc is not None:
@@ -1086,7 +1120,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     return "complete"
 
 def run_campaign(campaign: str, name: str) -> bool:
-    """Run, under artifacts/<campaign>/, the campaign config/camps/<name>.yaml defines: the screening phase -- every arm x
+    """Run, under artifacts/<campaign>/, the campaign config/campaigns/<name>.yaml defines: the screening phase -- every arm x
     coord on every dataset for n_trials_screen seeds, under _screen/ -- then, unless n_trials_qual is null, the qual
     phase under qual/: each arm's qual picks per dataset -- its recorded picks plus the current screening best when
     that's new (_qual_picks) -- each pick's screening trials copied over (_copy_qual_picks) and topped up to
@@ -1105,7 +1139,7 @@ def run_campaign(campaign: str, name: str) -> bool:
     # Validate the planned matrix before any side effects: every arm / coord name must be unique, and
     # no override key may be claimed by both an arm and a coord.
     cfg = _load_campaign_config(name)
-    _expand_matrix(cfg.ablation_arms, cfg.hpo_coords)
+    _expand_matrix(cfg.ablation_arms, cfg.hpo_coords, baseline_overrides=cfg.baseline_overrides)
 
     _enable_child_subreaper()
     # Route SIGTERM (e.g. `kill`, SLURM scancel) through the same path as Ctrl-C
@@ -1116,7 +1150,7 @@ def run_campaign(campaign: str, name: str) -> bool:
     # is not a new beginning, so the cache the campaign's own trials built survives it
     first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
     cfg_snapshot = _load_or_create_campaign_config(campaign)
-    if first_launch and cfg_snapshot["train"]["dev"]["del_base_eval_cache"] == "campaign":
+    if first_launch and cfg_snapshot["train"]["del_base_eval_cache"] == "campaign":
         _del_base_eval_cache()
 
     camp = _Camp(campaign, name, cfg_snapshot)
@@ -1146,40 +1180,24 @@ def run_campaign(campaign: str, name: str) -> bool:
 
 
 def _load_campaign_config(name: str) -> CampaignConfig:
-    fpath = paths["config"] / "camps" / f"{name}.yaml"
+    fpath = paths["config"] / "campaigns" / f"{name}.yaml"
     if not fpath.exists():
-        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "camps").glob("*.yaml")))
+        avail = ", ".join(sorted(p.stem for p in (paths["config"] / "campaigns").glob("*.yaml")))
         raise SystemExit(f"Campaign config not found: {fpath}\nAvailable campaigns: {avail}")
     with open(fpath) as f:
         return CampaignConfig(**yaml.safe_load(f))
 
-def _dedupe_campaign_name(campaign: str) -> str:
-    """Return the first campaign name without an existing artifacts dir: `campaign` itself, else
-    `<campaign>2`, `<campaign>3`, ..."""
-    if not _dpath_campaign(campaign).exists():
-        return campaign
-    n = 2
-    while _dpath_campaign(f"{campaign}{n}").exists():
-        n += 1
-    return f"{campaign}{n}"
-
 def _resolve_campaign(name: str) -> str:
-    """The artifacts dir the campaign config/camps/<name>.yaml runs under: `<name>_<suffix>` (`<name>` with suffix
-    null), deduped against the existing dirs unless dev.continue_campaign (_dedupe_campaign_name). Resolved once, at
-    the queue entry's launch (main) -- a later edit of `suffix` doesn't rename a running campaign, and the queue's
+    """The artifacts dir the campaign config/campaigns/<name>.yaml runs under: `<name>_<suffix>` (`<name>` with
+    suffix null). A launch under an existing name always resumes/extends that campaign. Resolved once, at the
+    queue entry's launch (main) -- a later edit of `suffix` doesn't rename a running campaign, and the queue's
     relaunches of the campaign resume this same dir."""
     cfg = _load_campaign_config(name)
-    campaign = f"{name}_{cfg.suffix}" if cfg.suffix is not None else name
-    if not load_train_config_dict()["dev"]["continue_campaign"]:
-        deduped = _dedupe_campaign_name(campaign)
-        if deduped != campaign:
-            print(f"campaign '{campaign}' already exists -- starting '{deduped}' (dev.continue_campaign: false)", flush=True)
-            campaign = deduped
-    return campaign
+    return f"{name}_{cfg.suffix}" if cfg.suffix is not None else name
 
 class _Run(NamedTuple):
     """One queue entry's campaign, as launched: `spec` the entry (camp.<name>), `campaign` the artifacts dir it
-    resolved to (_resolve_campaign), `name` that of its yaml, config/camps/<name>.yaml."""
+    resolved to (_resolve_campaign), `name` that of its yaml, config/campaigns/<name>.yaml."""
     spec: str
     campaign: str
     name: str
@@ -1194,7 +1212,7 @@ def _plan_changed(run: _Run) -> bool:
     try:
         cfg, arms, coords = _Camp(run.campaign, run.name, _load_or_create_campaign_config(run.campaign)).read()
     except (SystemExit, yaml.YAMLError, TypeError, ValueError) as e:
-        print(f"camp_queue: '{run.spec}' config invalid -- not relaunched until it is fixed: {e}", flush=True)
+        print(f"campaign_queue: '{run.spec}' config invalid -- not relaunched until it is fixed: {e}", flush=True)
         return False
     for phase in _PHASES:
         plans = _plan_phases(run.campaign, phase, cfg, arms, coords)
@@ -1209,19 +1227,19 @@ def _plan_changed(run: _Run) -> bool:
     return False
 
 def _load_queue() -> list[str]:
-    """The `campaigns` list from config/camp_queue.yaml (a blank list parses to None -> [])."""
-    with open(paths["config"] / "camp_queue.yaml") as f:
+    """The `campaigns` list from config/campaign_queue.yaml (a blank list parses to None -> [])."""
+    with open(paths["config"] / "campaign_queue.yaml") as f:
         return yaml.safe_load(f)["campaigns"] or []
 
 def _validate_queue_entry(spec: str) -> None:
     """Shallow fail-fast check of one queue entry: the camp. prefix and a loadable, valid config yaml (CampaignConfig)."""
     kind, _, name = spec.partition(".")
     if kind != "camp":
-        raise SystemExit(f"Invalid camp_queue.yaml entry '{spec}': entries take the form camp.<name>.")
+        raise SystemExit(f"Invalid campaign_queue.yaml entry '{spec}': entries take the form camp.<name>.")
     _load_campaign_config(name)
 
 def _next_queue_entry(executed: list[str]) -> str | None:
-    """Re-read camp_queue.yaml and return the first entry not yet run this session, or None when
+    """Re-read campaign_queue.yaml and return the first entry not yet run this session, or None when
     the queue is drained. Each executed entry consumes one matching occurrence from the list, so
     entries may be added at any position while a campaign runs (and a duplicated name queues a
     second run). Every pending entry is validated on each call: the one about to run hard-fails,
@@ -1235,7 +1253,7 @@ def _next_queue_entry(executed: list[str]) -> str | None:
         try:
             _validate_queue_entry(spec)
         except (SystemExit, yaml.YAMLError, TypeError, ValueError) as e:
-            print(f"camp_queue: pending entry '{spec}' is invalid -- fix before it is reached: {e}", flush=True)
+            print(f"campaign_queue: pending entry '{spec}' is invalid -- fix before it is reached: {e}", flush=True)
     if not pending:
         return None
     _validate_queue_entry(pending[0])
@@ -1243,7 +1261,7 @@ def _next_queue_entry(executed: list[str]) -> str | None:
 
 def main() -> None:
     if sys.argv[1:]:
-        raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/camp_queue.yaml)")
+        raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/campaign_queue.yaml)")
     runs: list[_Run] = []
     while True:
         # a campaign already run whose yaml has since changed its plan is relaunched -- the earliest such first --
@@ -1253,20 +1271,20 @@ def main() -> None:
             spec = _next_queue_entry([r.spec for r in runs])
             if spec is None:
                 break
-            print(f"camp_queue: launching '{spec}'", flush=True)
+            print(f"campaign_queue: launching '{spec}'", flush=True)
             _, _, name = spec.partition(".")
             run = _Run(spec, _resolve_campaign(name), name)
             runs.append(run)
         else:
-            print(f"camp_queue: relaunching '{run.spec}' -- its plan changed since it ran", flush=True)
+            print(f"campaign_queue: relaunching '{run.spec}' -- its plan changed since it ran", flush=True)
         try:
             completed = run_campaign(run.campaign, run.name)
         except KeyboardInterrupt:
             completed = False
         if not completed:
-            print(f"camp_queue: '{run.spec}' interrupted -- exiting queue", flush=True)
+            print(f"campaign_queue: '{run.spec}' interrupted -- exiting queue", flush=True)
             return
-    print(f"camp_queue: drained -- {len(runs)} campaign(s) run", flush=True)
+    print(f"campaign_queue: drained -- {len(runs)} campaign(s) run", flush=True)
 
 
 if __name__ == "__main__":

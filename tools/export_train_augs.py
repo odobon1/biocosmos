@@ -67,7 +67,7 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
 
     img_res = resolve_img_res_from_model(cfg.arch["model_type"])
-    augmenter = build_train_augmentation_transforms(img_res, aug_cfg=cfg.aug)
+    augmenter = build_train_augmentation_transforms(img_res, aug_cfg=cfg.aug_cfg)
     convert_mode = MaybeConvertMode()
     imgs_root = paths["imgs"][cfg.dataset]
 

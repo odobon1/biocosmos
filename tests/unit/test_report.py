@@ -131,7 +131,7 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std", False)
+    report.update_chkpt_selection("std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -162,9 +162,9 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
             assert metadata["best_chkpt"][criterion][group_key]["idx"] == 2
 
 
-def test_update_chkpt_selection_excludes_base_and_unfinished_trials(tmp_path, monkeypatch) -> None:
-    # without base_sel the base eval (index 0) is plotted but not selectable, and a trial short of its final eval
-    # doesn't enter the mean at all (nor get a _selected/ or _best/): here 43 stopped at chkpt 1 of 2
+def test_update_chkpt_selection_excludes_unfinished_trials(tmp_path, monkeypatch) -> None:
+    # a trial short of its final eval doesn't enter the mean at all (nor get a _selected/ or _best/):
+    # here 43 stopped at chkpt 1 of 2
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
@@ -174,21 +174,21 @@ def test_update_chkpt_selection_excludes_base_and_unfinished_trials(tmp_path, mo
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std", False)
+    report.update_chkpt_selection("std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1  # only trial 42 counted
     assert chkpt_means["means"] == pytest.approx([0.90, 0.10, 0.30])  # 42's curve alone
     assert list(chkpt_means["spreads"]) == [0.0] * 3  # ddof=1 undefined for one trial -> flat band
-    assert chkpt_means["idx_best"] == 2  # 0.90 at base is higher, but base can't win without base_sel
+    assert chkpt_means["idx_best"] == 0  # the base eval competes like any checkpoint, and 0.90 tops the curve
     own = json.loads((dpath_coord / "_seeds" / "42" / "evals" / "_best" / "map" / "native.json").read_text())
-    assert own["chkpt"].startswith("2/2")  # trial's own argmax skips the base eval as well
+    assert own["chkpt"].startswith("0/2")  # the trial's own argmax lands on the base eval too
     assert not (dpath_coord / "_seeds" / "43" / "evals" / "_selected").exists()
     assert not (dpath_coord / "_seeds" / "43" / "evals" / "_best").exists()
 
 
-def test_update_chkpt_selection_base_chkpt_sel_makes_base_a_candidate(tmp_path, monkeypatch) -> None:
-    # under base_sel the base eval (index 0) competes like any checkpoint: here it tops the mean
+def test_update_chkpt_selection_base_eval_competes_like_any_checkpoint(tmp_path, monkeypatch) -> None:
+    # the base eval (index 0) competes like any checkpoint: here it tops the mean
     # curve, so every trial's _selected/ is a copy of its evals/base/, and 42's own argmax is the
     # base too while 43's is chkpt 2
     dataset = "cub"
@@ -200,7 +200,7 @@ def test_update_chkpt_selection_base_chkpt_sel_makes_base_a_candidate(tmp_path, 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std", True)
+    report.update_chkpt_selection("std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["means"] == pytest.approx([0.70, 0.15, 0.45])
@@ -218,7 +218,7 @@ def test_update_chkpt_selection_base_chkpt_sel_makes_base_a_candidate(tmp_path, 
 
 
 def test_chkpt_dpaths_completes_a_killed_trial_at_its_kill_checkpoint(tmp_path) -> None:
-    # a trial killed at eval k (dev.kill_thresh; trial_metadata.json's killed = k) is complete with its
+    # a trial killed at eval k (kill_thresh; trial_metadata.json's killed = k) is complete with its
     # evals ending there, where the same evals without the marker are a trial still short of its final
     _write_trial_evals(tmp_path / "killed", (("0.5", "0.5"), ("0.4", "0.4"), ("0.3", "0.3")), n_chkpts=5, killed=2)
     _write_trial_evals(tmp_path / "short", (("0.5", "0.5"), ("0.4", "0.4"), ("0.3", "0.3")), n_chkpts=5)
@@ -230,7 +230,7 @@ def test_chkpt_dpaths_completes_a_killed_trial_at_its_kill_checkpoint(tmp_path) 
 def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path, monkeypatch) -> None:
     # trial 43 was killed at chkpt 1 of 3 (nothing beat its base), so it has no eval at the coord's
     # selected index: it stays out of the mean curve (42's alone, selecting chkpt 2) and is scored at
-    # its own best trained eval, its _selected copy flagged killed for the tables
+    # its own best eval -- the base here, since nothing beat it -- its _selected copy flagged killed
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
@@ -240,7 +240,7 @@ def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path,
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std", False)
+    report.update_chkpt_selection("std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1
@@ -249,9 +249,9 @@ def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path,
     sel = json.loads((dpath_coord / "_seeds" / "42" / "evals" / "_selected" / "map" / "native.json").read_text())
     assert sel["chkpt"].startswith("2/3") and sel["killed"] is False
     sel = json.loads((dpath_coord / "_seeds" / "43" / "evals" / "_selected" / "map" / "native.json").read_text())
-    assert sel["chkpt"].startswith("1/3") and sel["scores"]["comp"]["map"]["all"] == "0.20" and sel["killed"] is True
+    assert sel["chkpt"].startswith("0/3") and sel["scores"]["comp"]["map"]["all"] == "0.40" and sel["killed"] is True
     own = json.loads((dpath_coord / "_seeds" / "43" / "evals" / "_best" / "map" / "native.json").read_text())
-    assert own["chkpt"].startswith("1/3") and "killed" not in own
+    assert own["chkpt"].startswith("0/3") and "killed" not in own
     metadata = json.loads((tmp_path / "coord_metadata.json").read_text())
     assert metadata["best_chkpt"]["map"]["native"] == {"idx": 2, "n_trials": 1, "mean": "0.6000"}
 
@@ -259,7 +259,7 @@ def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path,
 def test_update_chkpt_selection_selects_over_killed_trials_when_all_were_killed(tmp_path, monkeypatch) -> None:
     # every trial killed at chkpt 1 of 3: their equally short curves form the mean curve (so the coord
     # still has a selection for the qual pick / trainval stop); each is still scored at its own best --
-    # under base_sel, the base eval that nothing beat
+    # the base eval, which nothing beat
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
@@ -269,7 +269,7 @@ def test_update_chkpt_selection_selects_over_killed_trials_when_all_were_killed(
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std", True)
+    report.update_chkpt_selection("std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -433,7 +433,7 @@ def test_stats_table_grid_single_acc_column() -> None:
 
 
 def test_stats_table_grid_marks_killed_rows() -> None:
-    # a row aggregating a killed trial (dev.kill_thresh) shows the killed count on its key cell and is
+    # a row aggregating a killed trial (kill_thresh) shows the killed count on its key cell and is
     # reported for the renderers' yellow shading; its scores aggregate like any other
     grid, killed_rows = report._stats_table_grid(
         ("Coord",),
@@ -460,8 +460,8 @@ def test_update_arm_stats_writes_pngs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_arm_stats("cub", "hp", "std", True, False, True, _SUPP_OFF, False)
-    report.update_arm_stats("cub", "mp", "std", True, False, True, _SUPP_OFF, False)
+    report.update_arm_stats("cub", "hp", "std", True, False, True, _SUPP_OFF)
+    report.update_arm_stats("cub", "mp", "std", True, False, True, _SUPP_OFF)
     dpath_stats = tmp_path / "_datasets" / "cub" / "_arms" / "hp" / "arm_stats"
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
@@ -485,9 +485,9 @@ def test_update_arm_stats_rows_and_curves(tmp_path, monkeypatch) -> None:
     grids, plotted = [], []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
-    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath, base_sel: plotted.append((fpath, curves, idx_win)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_OFF, False)
+    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_OFF)
     assert len(grids) == 8 and len(plotted) == 8  # map + acc per eval group
     assert _captured(grids, "arm_stats", "map", "native") == [
         ["Coord", *_MAP_LABELS],
@@ -501,12 +501,12 @@ def test_update_arm_stats_rows_and_curves(tmp_path, monkeypatch) -> None:
     assert curves[idx_win][0] == ("b",)
 
 
-def test_plot_convergence_base_sel_draws_a_base_selection(tmp_path) -> None:
+def test_plot_convergence_draws_a_base_selection(tmp_path) -> None:
     # with the base eval a candidate the curves start at checkpoint 0 on a symlog axis, so a
     # selection there (row a) is drawable; without it the log axis starts at checkpoint 1
     curves = [(("a",), np.array([0.6, 0.4, 0.5]), 0), (("b",), np.array([0.2, 0.3, 0.1]), 1)]
-    report._plot_convergence(curves, 0, "mAP", "with base", tmp_path / "with_base.png", True)
-    report._plot_convergence(curves, 1, "mAP", "without base", tmp_path / "without_base.png", False)
+    report._plot_convergence(curves, 0, "mAP", "with base", tmp_path / "with_base.png")
+    report._plot_convergence(curves, 1, "mAP", "second row", tmp_path / "without_base.png")
     assert (tmp_path / "with_base.png").exists()
     assert (tmp_path / "without_base.png").exists()
 
@@ -549,8 +549,8 @@ def test_update_dataset_stats_writes_pngs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(report, "_render_stats_table", _spy)
 
-    report.update_dataset_stats("cub", "std", True, False, True, _SUPP_OFF, False)
-    report.update_dataset_stats("bryo", "std", True, False, True, _SUPP_OFF, False)
+    report.update_dataset_stats("cub", "std", True, False, True, _SUPP_OFF)
+    report.update_dataset_stats("bryo", "std", True, False, True, _SUPP_OFF)
     dpath_stats = tmp_path / "_datasets" / "cub" / "dataset_stats"
     for kind in ("arm_coords", "arms"):
         for criterion in ("map", "acc"):
@@ -576,7 +576,7 @@ def test_update_dataset_stats_qual_phase_skips_arms(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF, False)
+    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
     dpath_stats = dpath_phase / "_datasets" / "cub" / "dataset_stats"
     assert (dpath_stats / "arm_coords" / "map" / "native" / "metrics.png").exists()
     assert not (dpath_stats / "arms").exists()
@@ -602,9 +602,9 @@ def test_update_dataset_stats_arms_use_best_coord_per_arm(tmp_path, monkeypatch)
     grids, plotted = [], []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
-    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath, base_sel: plotted.append((fpath, curves, idx_win)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF, False)
+    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
     assert [r[:2] for r in _captured(grids, "arms", "map", "native")] == [["Arm", "All"], ["a (1)", "60.00"], ["b (1)", "50.00"], ["c (1)", "50.00"]]
     assert _captured(grids, "arms", "acc", "native") == [["Arm", "I2T"], ["a (1)", "80.00"], ["b (1)", "70.00"], ["c (1)", "50.00"]]
     assert [r[:3] for r in _captured(grids, "arm_coords", "map", "native")] == [
@@ -666,8 +666,8 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF, False)
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF, False)
+    report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
     report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_stats", "map", "native")] == ["Coord", "c0 (1)"]
@@ -700,7 +700,7 @@ def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_dataset_stats("cub", "std", False, True, False, _SUPP_OFF, False)
+    report.update_dataset_stats("cub", "std", False, True, False, _SUPP_OFF)
     assert len(grids) == 16  # map + acc per eval group, both kinds
     grid_map = _captured(grids, "arm_coords", "map", "native")
     assert grid_map[0] == ["Arm", "Coord", *_MAP_LABELS]
@@ -1103,7 +1103,7 @@ def test_update_phase_stats_heatmap(tmp_path, monkeypatch) -> None:
 
 
 def test_update_phase_stats_shades_killed_rows_yellow(tmp_path, monkeypatch) -> None:
-    # a row aggregating a killed trial (dev.kill_thresh) swaps the heatmap ramp for the killed yellow in
+    # a row aggregating a killed trial (kill_thresh) swaps the heatmap ramp for the killed yellow in
     # every score cell -- the dataset table, the Mean table, and the killed seed's block (the seed block
     # of a surviving sibling keeps the ramp) -- and its key cell counts the kill; a row without one is
     # untouched
@@ -1137,7 +1137,7 @@ def test_update_phase_stats_shades_killed_rows_yellow(tmp_path, monkeypatch) -> 
 
 def test_update_phase_stats_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch) -> None:
     # the 'Hardware Performance' sheet's counterpart of the score sheets' yellow rows: a row holding a
-    # killed trial (dev.kill_thresh) reads 'X' across its readings -- the dataset table, the Mean table
+    # killed trial (kill_thresh) reads 'X' across its readings -- the dataset table, the Mean table
     # (its crash totals still counted) and the killed seed's block, while the surviving sibling seed's
     # block keeps its readings; a row without a kill is untouched
     for seed, killed in (("42", False), ("43", True)):
@@ -1240,7 +1240,7 @@ def test_update_arm_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_PRIM, False)
+    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_PRIM)
     assert len(grids) == 8  # map + acc per eval group
     grid_map = _captured(grids, "map", "native")
     assert grid_map[0] == ["Coord", *_PRIM_MAP_LABELS]
@@ -1335,7 +1335,7 @@ def test_update_arm_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, {"primitive": False, "n_shot": True}, False)
+    report.update_arm_stats("cub", "hp", "std", False, False, False, {"primitive": False, "n_shot": True})
     grid_map = _captured(grids, "map", "native")
     assert grid_map[0] == ["Coord", *_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
     assert grid_map[1][7:] == ["31.00", "32.00", "33.00"]
@@ -1351,13 +1351,13 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     # 'arm' keys, first-seen order) and, in the arm_coords workbooks, "Coord Overrides" likewise for
     # hpo_coords. Values resolve from each row's config.json -- "-" when the param is absent there
     # (inert under that config: mp has loss.blend.lambda 0.0, so clean_metadata dropped its loss2 subtree).
-    # loss1.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
+    # loss.loss1.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
     # differentiate nothing). Config cells get no winner-bold/heatmap styling despite
     # bold_high/heatmap on. The arms workbooks get the arm band only: an arm's coord is picked per
     # dataset, so it has no single coord config to show.
     arms = {
-        "hp": ({"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}, {"loss": {"blend": {"lambda": 0.3}}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}),
-        "mp": ({"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}),
+        "hp": ({"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}, {"loss": {"blend": {"lambda": 0.3}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}}),
+        "mp": ({"loss.loss1.targ": "mp"}, {"loss": {"loss1": {"targ": "mp"}}}),
     }
     coords = {"lo": 1.0e-5, "hi": 1.0e-4}
     base = 0.50
@@ -1368,8 +1368,8 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
             dpath_selected.mkdir(parents=True)
             _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
             base -= 0.05  # (hp, lo) best for hp, (mp, lo) best for mp
-            (dpath_coord / "overrides.json").write_text(json.dumps({"arm": arm_ov, "coord": {"opt.lr.init": lr}}))
-            (dpath_coord / "config.json").write_text(json.dumps({**meta, "opt": {"lr": {"init": lr}}}))
+            (dpath_coord / "overrides.json").write_text(json.dumps({"arm": arm_ov, "coord": {"lr.init": lr}}))
+            (dpath_coord / "config.json").write_text(json.dumps({**meta, "lr": {"init": lr}}))
     _write_meta(tmp_path, ["hp", "mp"], ["lo", "hi"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
@@ -1388,13 +1388,13 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[9][5] == "Mean"
     assert grid[9][0] == "Arm Overrides" and grid[9][3] == "Coord Overrides"
     assert "A10:B10" in merged and "D10:D10" not in merged  # a 1-wide band title is not merged
-    assert grid[10][:2] == ["loss.blend.lambda", "loss2.targ"]
-    assert grid[10][3] == "opt.lr.init"
-    assert not any(v == "loss1.targ" for r in grid for v in r)
+    assert grid[10][:2] == ["loss.blend.lambda", "loss.loss2.targ"]
+    assert grid[10][3] == "lr.init"
+    assert not any(v == "loss.loss1.targ" for r in grid for v in r)
     assert grid[10][5:7] == ["Arm", "Coord"]  # Mean header shares the row
     assert grid[11][:2] == ["0.3", "phylo"] and grid[11][3] == "1e-05" and grid[11][5:7] == ["hp", "lo"]
     assert grid[12][:2] == ["0.3", "phylo"] and grid[12][3] == "0.0001" and grid[12][5:7] == ["hp", "hi"]
-    assert grid[13][:2] == ["-", "-"] and grid[13][3] == "1e-05" and grid[13][5:7] == ["mp", "lo"]  # loss2.* inert for mp
+    assert grid[13][:2] == ["-", "-"] and grid[13][3] == "1e-05" and grid[13][5:7] == ["mp", "lo"]  # loss.loss2.* inert for mp
     assert grid[14][:2] == ["-", "-"] and grid[14][3] == "0.0001" and grid[14][5:7] == ["mp", "hi"]
     # param-name headers styled like other headers; config cells skip score styling entirely
     assert ws.cell(row=11, column=1).fill.fgColor.rgb[-6:] == "EAEAEA"
@@ -1413,7 +1413,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert agrid[2][5] == "CUB"
     assert agrid[9][5] == "Mean"
     assert agrid[9][0] == "Arm Overrides" and agrid[9][3] == "Coord Overrides"
-    assert agrid[10][:2] == ["loss.blend.lambda", "loss2.targ"] and agrid[10][3] == "opt.lr.init"
+    assert agrid[10][:2] == ["loss.blend.lambda", "loss.loss2.targ"] and agrid[10][3] == "lr.init"
     assert agrid[11][:2] == ["0.3", "phylo"]
     assert agrid[13][:2] == ["-", "-"]
     assert agrid[0][9] == "seed 42"
@@ -1427,7 +1427,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[4][3:6] == ["hp", "lo (1)", "50.00"]
     assert grid[5][3:6] == ["mp", "lo (1)", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][3] == "Mean"
-    assert grid[8][:2] == ["loss.blend.lambda", "loss2.targ"] and grid[8][3:5] == ["Arm", "Coord"]
+    assert grid[8][:2] == ["loss.blend.lambda", "loss.loss2.targ"] and grid[8][3:5] == ["Arm", "Coord"]
     assert grid[9][:2] == ["0.3", "phylo"] and grid[9][3:5] == ["hp", "-"]
     assert grid[10][:2] == ["-", "-"] and grid[10][3:5] == ["mp", "-"]
     assert all(r[2] is None for r in grid)
@@ -1442,8 +1442,8 @@ def test_update_phase_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypa
         dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
-        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss1.targ": "mp"}, "coord": {"opt.lr.init": 1.0e-5}}))
-        (dpath_coord / "config.json").write_text(json.dumps({"loss1": {"targ": "mp"}, "opt": {"lr": {"init": 1.0e-5}}}))
+        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": "mp"}, "coord": {"lr.init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": "mp"}}, "lr": {"init": 1.0e-5}}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
@@ -1554,7 +1554,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     for arm, dataset, overrides, meta, crashes in (
         ("hp", "cub", {"loss.blend.lambda": 0.3}, {"loss": {"blend": {"lambda": 0.3}}}, {"ram": 1, "vram": 1, "other": 0}),
         ("hp", "bryo", {"loss.blend.lambda": 0.3}, {"loss": {"blend": {"lambda": 0.3}}}, {"ram": 1, "vram": 0, "other": 0}),
-        ("mp", "cub", {"loss1.targ": "mp"}, {"loss1": {"targ": "mp"}}, {"ram": 0, "vram": 0, "other": 3}),
+        ("mp", "cub", {"loss.loss1.targ": "mp"}, {"loss": {"loss1": {"targ": "mp"}}}, {"ram": 0, "vram": 0, "other": 3}),
     ):
         dpath_coord = _dpath_coord(tmp_path, dataset, arm, "c0")
         (dpath_coord / "overrides.json").write_text(json.dumps({"arm": overrides, "coord": {}}))
@@ -1577,7 +1577,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.name} (Native; mAP-selection)"
     assert grid[12][0] == "Arm Overrides"
     assert "A13:B13" in merged
-    assert grid[13][:2] == ["loss.blend.lambda", "loss1.targ"]
+    assert grid[13][:2] == ["loss.blend.lambda", "loss.loss1.targ"]
     assert grid[14][:2] == ["0.3", "-"]
     assert grid[15][:2] == ["-", "mp"]
     # CUB table: merged title banner, Arm + Coord (the dataset's pick) + hw header, '<coord> (n)'
@@ -1726,8 +1726,8 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     for arm, targ, base in (("hp", "phylo", 0.50), ("mp", "mp", 0.40)):
         dpath_coord = _dpath_coord(tmp_path, "cub", arm, "c0")
         _write_test_scores(dpath_coord / "_seeds" / "42", _scores_grp(_comp(base)), 5)
-        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss1.targ": targ}, "coord": {"opt.lr.init": 1.0e-5}}))
-        (dpath_coord / "config.json").write_text(json.dumps({"loss1": {"targ": targ}, "opt": {"lr": {"init": 1.0e-5}}}))
+        (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": targ}, "coord": {"lr.init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": targ}}, "lr": {"init": 1.0e-5}}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
@@ -1735,14 +1735,14 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     report.update_test_stats("std", False, False, False, _SUPP_OFF, True)
 
     grid = [[c.value for c in row] for row in load_workbook(tmp_path / "map" / "test_native.xlsx").active.iter_rows()]
-    # the arm band's one differing param at col A + separator B; opt.lr.init is uniform -> the coord
+    # the arm band's one differing param at col A + separator B; lr.init is uniform -> the coord
     # band is omitted; score blocks start at C, band rows aligned with the Mean banner (row 8)
     assert grid[2][2] == "CUB"
     assert grid[3][2:6] == ["Arm", "Coord", "Chkpt", "All"]
     assert grid[4][2:6] == ["hp", "c0 (1)", "5", "50.00"]
     assert grid[5][2:6] == ["mp", "c0 (1)", "5", "40.00"]
     assert grid[7][0] == "Arm Overrides" and grid[7][2] == "Mean"
-    assert grid[8][0] == "loss1.targ" and grid[8][2:5] == ["Arm", "Coord", "Chkpt"]
+    assert grid[8][0] == "loss.loss1.targ" and grid[8][2:5] == ["Arm", "Coord", "Chkpt"]
     assert grid[9][0] == "phylo" and grid[9][2:5] == ["hp", "c0", "-"]
     assert grid[10][0] == "mp" and grid[10][2:5] == ["mp", "c0", "-"]
     assert not any(v == "Coord Overrides" for r in grid for v in r)

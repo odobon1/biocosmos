@@ -11,7 +11,7 @@ artifacts/<campaign>/test/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds
 ({'chkpt': the saved checkpoint index, 'scores': the group's scores}); trials whose score files are all
 present are skipped, so a relaunch resumes (and a fully-scored campaign just re-renders the tables).
 The run ends with the test workbooks, one per eval group at artifacts/<campaign>/test/map/test_<group>.xlsx
-(report.update_test_stats), styled per the live config/stats.yaml.
+(report.update_test_stats), styled per the live config/render/stats.yaml.
 """
 
 import shutil
@@ -126,7 +126,7 @@ def main():
         overrides = load_json(dpath_coord_tv / "overrides.json")
         chkpt_stop = load_json(dpath_coord_tv / "config.json")["chkpt_stop"]
         cfg_dict = _build_trial_cfg_dict(
-            cfg_snapshot, campaign, "trainval", arm, coord, {**overrides["arm"], **overrides["coord"]},
+            cfg_snapshot, campaign, "trainval", arm, coord, {**overrides["baseline"], **overrides["arm"], **overrides["coord"]},
             combo_seeds[0], dataset, seeds.index(combo_seeds[0]),
             injections={"train_pt": "trainval", "chkpt_stop": chkpt_stop},
         )

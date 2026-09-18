@@ -17,7 +17,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import utils.hardware
-from utils.config import get_config_train
+from utils.config import get_config_train, inject_snapshots
 from utils.report import plot_metrics
 from utils.train import ArtifactManager
 from utils.utils import load_json, load_split, paths
@@ -55,11 +55,8 @@ def regen_learning_curves(campaign):
                         cfg_dict["coord"] = coord
                         cfg_dict["seed"] = seed
                         cfg_dict["dataset"] = dataset
-                        cfg_dict["manif_viz"] = cfg_snapshot["manif_viz"]
-                        cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
-                        cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
-                        cfg_dict["hw"] = cfg_snapshot["hardware"]
-                        cfg_dict["_overrides"] = {**overrides["arm"], **overrides["coord"]}
+                        inject_snapshots(cfg_dict, cfg_snapshot)
+                        cfg_dict["_overrides"] = {**overrides["baseline"], **overrides["arm"], **overrides["coord"]}
                         if phase == "trainval":  # the runner's phase-level injection; chkpt_stop doesn't touch the epoch axis
                             cfg_dict["train_pt"] = "trainval"
                         cfg = get_config_train(cfg_dict)
@@ -74,7 +71,7 @@ def regen_learning_curves(campaign):
                             else []
                         )
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,
-                                     cfg.dev["reporting"]["learning_curves"]["hpsm"])
+                                     cfg.diagnostics["learning_curves"]["hpsm"])
                         print(f"regenerated: {dpath_trial / 'learning_curves'}")
 
 

@@ -10,78 +10,45 @@ from utils.hardware import compute_dataloader_workers_prefetch
 import pdb
 
 
+def load_aliases_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "aliases.yaml") as f:
+        return yaml.safe_load(f)
+
 # Aliases used when building arm / coord names from `ablation_arms` / `hpo_coords` keys/values (derived
 # names for unnamed items, and combo-list name components): keys map through CFG_PARAM_ALIASES and
 # values through CFG_PARAM_VALUE_ALIASES (per original key), falling back to
 # CFG_UNIVERSAL_VALUE_ALIASES (key-independent) when no per-key alias exists; anything without
-# an alias passes through verbatim.
-CFG_PARAM_ALIASES = {
-    "n_epochs": "E",
-    "batch_size": "BS",
-    "loss.blend.lambda": "Lambda",
-    "loss.blend.type": "Blend",
-    "loss.unitless": "Unit",
-    "loss.logits.shared": "ShSc",
-    "loss.wting.bce.dsmr": "DSMR",
-    "loss.logits.scale.init": "Alpha",
-    "loss.logits.bce.bias.init": "Binit",
-    "loss.logits.bce.center": "Bcent",
-    "loss1.targ": "Targ",
-    "loss2.targ": "Targ2",
-    "opt.lr.init": "LR",
-    "opt.wd": "WD",
-}
+# an alias passes through verbatim. Read once at import from config/trial/aliases.yaml; a campaign names
+# its arm / coord dirs from its own FROZEN copy instead (campaign_runner._alias_tables), so they can
+# never shift mid-campaign.
+_CFG_ALIASES = load_aliases_config_dict()["config"]
+CFG_PARAM_ALIASES = _CFG_ALIASES["param"]
+CFG_PARAM_VALUE_ALIASES = _CFG_ALIASES["param_value"]
+CFG_UNIVERSAL_VALUE_ALIASES = _CFG_ALIASES["universal_value"]
+# config file stem -> the cfg key a campaign's `ablation_arms` / `hpo_coords` overrides reach its
+# contents through (config/trial/aliases.yaml's config.file); only the overridable configs are listed
+CFG_FILE_ALIASES = _CFG_ALIASES["file"]
 
-CFG_PARAM_VALUE_ALIASES = {
-    "batch_size": {
-        1_024: "1k",
-        2_048: "2k",
-        4_096: "4k",
-        8_192: "8k",
-        16_384: "16k",
-        32_768: "32k",
-    },
-    "loss1.targ": {
-        "sp": "SP",
-        "mp": "MP",
-        "phylo": "hp",
-    },
-    "loss2.targ": {
-        "phylo": "hp",
-    },
-    "opt.lr.init": {
-        1.0e-7: "1e-7",
-        2.0e-7: "2e-7",
-        3.0e-7: "3e-7",
-        6.0e-7: "6e-7",
-        1.0e-6: "1e-6",
-        2.0e-6: "2e-6",
-        3.0e-6: "3e-6",
-        6.0e-6: "6e-6",
-        1.0e-5: "1e-5",
-        2.0e-5: "2e-5",
-        3.0e-5: "3e-5",
-        6.0e-5: "6e-5",
-        1.0e-4: "1e-4",
-        2.0e-4: "2e-4",
-        3.0e-4: "3e-4",
-        6.0e-4: "6e-4",
-        1.0e-3: "1e-3",
-        2.0e-3: "2e-3",
-        3.0e-3: "3e-3",
-        6.0e-3: "6e-3",
-    }
-}
-
-CFG_UNIVERSAL_VALUE_ALIASES = {
-    True: "T",
-    False: "F",
-    None: "N",
-}
+def inject_snapshots(cfg_dict: dict, cfg_snapshot: dict) -> None:
+    """Lay every sibling snapshot of a frozen campaign config onto a trial's config dict (`train` is
+    the base config itself, not a sibling)."""
+    for stem, key in CFG_FILE_ALIASES.items():  # the overridable ones, under their campaign-facing key
+        cfg_dict[key] = cfg_snapshot[stem]
+    # campaign-global: no arm / coord sweeps them. dev.yaml lands under `dev_overrides`, not `dev` --
+    # that key is train.yaml's on/off switch, and a (truthy) dict there would force dev overrides on
+    cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
+    cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
+    cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
+    cfg_dict["augmentation"] = cfg_snapshot["augmentation"]
+    cfg_dict["diagnostics"] = cfg_snapshot["diagnostics"]
+    cfg_dict["dev_overrides"] = cfg_snapshot["dev"]
 
 
-# equivalent to OpenCLIP default train preprocessor
-def _default_train_aug_cfg() -> dict:
+# OpenCLIP's default train preprocessor (open_clip.transform.AugmentationCfg: scale (0.9, 1.0), every
+# photometric aug off); the config `aug: openclip` selects it (config/trial/train/train.yaml). OpenAI published no
+# training-aug config of its own -- only the inference transform, the CLIP paper giving a random square
+# crop as the sole augmentation -- so these concrete values are OpenCLIP's
+def _aug_cfg_openclip() -> dict:
     return {
         "rrcrop": {
             "scale_min": 0.9,
@@ -96,8 +63,8 @@ def _default_train_aug_cfg() -> dict:
         },
         "sharpness": {"factor": 1.0, "prob": 0.0},
         "gblur": {
-            "kernel_size": 3,
-            "sigma": {"min": 0.0, "max": 0.0},
+            "kernel_size": 1,
+            "sigma": {"min": 0.0, "max": 1.0},
             "prob": 0.0,
         },
     }
@@ -125,15 +92,18 @@ class TrainConfig:
     freeze: dict
     htarg: dict
     loss: dict
-    loss1: dict
-    loss2: dict
     text_template: dict
     opt: dict
+    lr: dict
 
-    dev: dict
+    dev: bool  # {true, false}; (true) lay config/trial/train/dev.yaml's overrides over the config and force the dev split
+    diagnostics: dict  # reporting.yaml contents (get_config_train reads it live when not supplied)
+    kill_thresh: float | None  # {null, (0.0, 1.0)}; fraction of the run at which a trial that has not beaten its base eval is killed
+    del_base_eval_cache: str | None  # {null, campaign, trial}; when the campaign runner deletes base_eval_cache/
 
-    aug: dict = field(default_factory=_default_train_aug_cfg)
-    manif_viz: dict | None = None  # manif_viz.yaml contents; resolved from the yaml when not supplied
+    aug: str = "openclip"  # {openclip, custom}; which augmentation config the trial trains under -> self.aug_cfg
+    augmentation: dict | None = None  # augmentation.yaml contents, read by aug: custom; resolved from the yaml when not supplied
+    manifold_viz: dict | None = None  # manifold_viz.yaml contents; resolved from the yaml when not supplied
     idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
@@ -202,7 +172,7 @@ class TrainConfig:
             raise ValueError(f"n_chkpts ({self.n_chkpts}) exceeds sample_volume ({self.sample_volume})")
 
         for key, val in (
-            ("opt.lr.init", self.opt["lr"]["init"]),
+            ("lr.init", self.lr["init"]),
             ("opt.wd", self.opt["wd"]),
             ("loss.logits.scalar_lr_factor", self.loss["logits"]["scalar_lr_factor"]),
         ):
@@ -212,21 +182,20 @@ class TrainConfig:
                     f"without a decimal point (e.g. 1e-6) as a string; write 1.0e-6"
                 )
 
-        lr_warmup = self.opt["lr"]["warmup"]
+        lr_warmup = self.lr["warmup"]
         if not 0.0 <= lr_warmup < 1.0:
             raise ValueError(
-                f"opt.lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
+                f"lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
             )
 
-        if self.dev["reporting"]["plot_every"] not in ("trial", "chkpt"):
-            raise ValueError(f"dev.reporting.plot_every must be 'trial' or 'chkpt', got {self.dev['reporting']['plot_every']!r}")
+        if self.diagnostics["plot_every"] not in ("trial", "chkpt"):
+            raise ValueError(f"diagnostics.plot_every must be 'trial' or 'chkpt', got {self.diagnostics['plot_every']!r}")
 
-        if self.dev["del_base_eval_cache"] not in (None, "campaign", "trial"):
-            raise ValueError(f"dev.del_base_eval_cache must be null, 'campaign' or 'trial', got {self.dev['del_base_eval_cache']!r}")
+        if self.del_base_eval_cache not in (None, "campaign", "trial"):
+            raise ValueError(f"del_base_eval_cache must be null, 'campaign' or 'trial', got {self.del_base_eval_cache!r}")
 
-        kill_thresh = self.dev["kill_thresh"]
-        if kill_thresh is not None and not 0.0 < kill_thresh < 1.0:
-            raise ValueError(f"dev.kill_thresh must be null or a fraction in (0.0, 1.0), got {kill_thresh!r}")
+        if self.kill_thresh is not None and not 0.0 < self.kill_thresh < 1.0:
+            raise ValueError(f"kill_thresh must be null or a fraction in (0.0, 1.0), got {self.kill_thresh!r}")
 
         if self.arch["siglip"]["vis_proj_head"] is None and self.dropout["siglip"]["proj_head"] > 0.0:
             raise ValueError(
@@ -245,13 +214,13 @@ class TrainConfig:
         if not 0.0 <= lambda_ <= 1.0:
             raise ValueError(f"loss.blend.lambda out of bounds: {lambda_}, must be between 0.0 and 1.0")
         # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
-        live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, self.loss1), (lambda_, self.loss2)) if w != 0.0]
+        live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, self.loss["loss1"]), (lambda_, self.loss["loss2"])) if w != 0.0]
 
         if self.htarg["shuffle"]:
             if "phylo" not in live_targs:
                 raise ValueError(
                     "htarg.shuffle=True requires a live phylo target: "
-                    "loss1.targ 'phylo' under loss.blend.lambda != 1.0, or loss2.targ 'phylo' under loss.blend.lambda != 0.0"
+                    "loss.loss1.targ 'phylo' under loss.blend.lambda != 1.0, or loss.loss2.targ 'phylo' under loss.blend.lambda != 0.0"
                 )
             if self.seed is None:
                 raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
@@ -262,17 +231,17 @@ class TrainConfig:
         if self.loss["sim"] not in ("cos", "geo1", "geo2"):
             raise ValueError(f"Unknown loss.sim: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
 
-        for name, cfg_targ in (("loss1", self.loss1), ("loss2", self.loss2)):
+        for name, cfg_targ in (("loss.loss1", self.loss["loss1"]), ("loss.loss2", self.loss["loss2"])):
             if cfg_targ["targ"] not in ("sp", "mp", "tax", "phylo"):
                 raise ValueError(f"Unknown {name}.targ: '{cfg_targ['targ']}', must be one of {{sp, mp, tax, phylo}}")
 
         # a blend of two identical target distributions is that distribution: lambda would do nothing. Under InfoNCE
         # the same targ type still blends two distributions when the specs' tsm differ
-        if 0.0 < lambda_ < 1.0 and self.loss1["targ"] == self.loss2["targ"] and (
-            self.loss["crit"] != "infonce" or self.loss1["infonce"]["tsm"] == self.loss2["infonce"]["tsm"]
+        if 0.0 < lambda_ < 1.0 and self.loss["loss1"]["targ"] == self.loss["loss2"]["targ"] and (
+            self.loss["crit"] != "infonce" or self.loss["loss1"]["infonce"]["tsm"] == self.loss["loss2"]["infonce"]["tsm"]
         ):
             raise ValueError(
-                f"loss1 and loss2 specify the same target distribution (targ '{self.loss1['targ']}') under loss.blend.lambda "
+                f"loss.loss1 and loss.loss2 specify the same target distribution (targ '{self.loss['loss1']['targ']}') under loss.blend.lambda "
                 f"{lambda_}: the blend is that target itself, so loss.blend.lambda is inert"
             )
 
@@ -293,12 +262,22 @@ class TrainConfig:
         elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
             raise ValueError(f"Unknown loss.logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
 
-        if self.aug.get("cjit", {}).get("prob", 0.0) == 0.0:
-            self.aug.pop("cjit", None)
-        if self.aug.get("sharpness", {}).get("prob", 0.0) == 0.0:
-            self.aug.pop("sharpness", None)
-        if self.aug.get("gblur", {}).get("prob", 0.0) == 0.0:
-            self.aug.pop("gblur", None)
+        # the augmentation config the `aug` switch selects: OpenCLIP's defaults, or config/trial/train/augmentation.yaml
+        # (campaign trials inject the frozen snapshot; otherwise it is read live, and only when custom asks for it)
+        if self.aug == "openclip":
+            self.aug_cfg = _aug_cfg_openclip()
+        elif self.aug == "custom":
+            self.aug_cfg = deepcopy(self.augmentation) if self.augmentation is not None else load_augmentation_config_dict()
+        else:
+            raise ValueError(f"Unknown aug: '{self.aug}', must be one of {{openclip, custom}}")
+
+        # an aug block whose prob is 0.0 is inert -> dropped from the working config; downstream keys off presence
+        if self.aug_cfg["cjit"]["prob"] == 0.0:
+            del self.aug_cfg["cjit"]
+        if self.aug_cfg["sharpness"]["prob"] == 0.0:
+            del self.aug_cfg["sharpness"]
+        if self.aug_cfg["gblur"]["prob"] == 0.0:
+            del self.aug_cfg["gblur"]
 
         # focal toggle: gamma 0.0 disables -> block dropped from the working config; downstream keys off presence
         if self.loss["wting"]["focal"]["gamma"] == 0.0:
@@ -347,7 +326,7 @@ class TrainConfig:
 
 
 def inert_params(cfg: TrainConfig) -> dict[str, str]:
-    """The params the effective config never reads -- config/train.yaml's 'Inert iff' annotations -- as
+    """The params the effective config never reads -- config/trial/train/train.yaml's 'Inert iff' annotations -- as
     {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
     render inert keeps the first-listed reason."""
     is_siglip = "siglip" in cfg.arch["model_type"].lower()
@@ -355,7 +334,7 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     crit = cfg.loss["crit"]
     cls_imb_type = cfg.loss["wting"]["cls_imb"]["type"]
     # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
-    live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, cfg.loss1), (lambda_, cfg.loss2)) if w != 0.0]
+    live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, cfg.loss["loss1"]), (lambda_, cfg.loss["loss2"])) if w != 0.0]
     # what sets a loss blend apart from the target blend (utils.loss.Criterion): a loss factor that reads the
     # target -- without one the loss is affine in the target (focal gamma 0.0 drops its block from the working
     # config) -- or separate logit scalars, each term then scored on its own logits
@@ -371,8 +350,8 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
         ("dropout.siglip.proj_head", cfg.arch["siglip"]["vis_proj_head"] is None, "arch.siglip.vis_proj_head is null"),
         ("htarg", "phylo" not in live_targs, "no live target is phylo"),
         ("htarg.exp", cfg.htarg["kernel"] == "bm", "htarg.kernel is bm"),
-        ("loss1", lambda_ == 1.0, "loss.blend.lambda is 1.0"),
-        ("loss2", lambda_ == 0.0, "loss.blend.lambda is 0.0"),
+        ("loss.loss1", lambda_ == 1.0, "loss.blend.lambda is 1.0"),
+        ("loss.loss2", lambda_ == 0.0, "loss.blend.lambda is 0.0"),
         ("loss.blend.type", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
         ("loss.blend.type", not targ_dep,
          "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut) on shared logit scalars: "
@@ -392,15 +371,12 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
          "the CLIP logit bias is a fixed 0.0 buffer under loss.logits.bce.bias.init: null"),
     ]
     for key in ("loss1", "loss2"):
-        cfg_targ = getattr(cfg, key)
+        cfg_targ = cfg.loss[key]
         rules += [
-            (f"{key}.infonce", crit != "infonce", f"loss.crit is {crit}"),
-            (f"{key}.infonce.tsm.sm_scale", cfg_targ["infonce"]["tsm"]["type"] == "linear", f"{key}.infonce.tsm.type is linear"),
+            (f"loss.{key}.infonce", crit != "infonce", f"loss.crit is {crit}"),
+            (f"loss.{key}.infonce.tsm.sm_scale", cfg_targ["infonce"]["tsm"]["type"] == "linear",
+             f"loss.{key}.infonce.tsm.type is linear"),
         ]
-    # an aug block whose prob is 0.0 is dropped from the working config (__post_init__): its other params are unread
-    for block, params in (("cjit", ("brightness", "contrast", "saturation", "hue")), ("sharpness", ("factor",)),
-                          ("gblur", ("kernel_size", "sigma"))):
-        rules += [(f"aug.{block}.{param}", block not in cfg.aug, f"aug.{block}.prob is 0.0") for param in params]
 
     inert = {}
     for prefix, cond, reason in rules:
@@ -424,12 +400,15 @@ def _check_overrides_live(cfg: TrainConfig, overrides: dict) -> None:
             + "; ".join(f"{key} ({reason})" for key, reason in hits.items())
         )
 
-def apply_train_debug_overrides(cfg_dict: dict) -> dict:
-    cfg_dict = dict(cfg_dict)
-    dev_cfg = cfg_dict.get("dev", {}) or {}
-    if dev_cfg.get("debug_mode", False):
-        cfg_dict = apply_overrides(cfg_dict, dev_cfg["debug"])  # keys are dot-paths into this config (e.g. opt.lr.warmup)
-        cfg_dict["split"] = "dev"  # forced after the overrides: debug always runs on the dev split
+def apply_dev_overrides(cfg_dict: dict, dev_config: dict | None = None) -> dict:
+    """With train.yaml's `dev` on, lays config/trial/train/dev.yaml over the config -- its keys are dot-paths into
+    this config (e.g. lr.warmup) -- and forces the dev split. Inert with `dev` off."""
+    if not cfg_dict["dev"]:
+        return dict(cfg_dict)
+    if dev_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
+        dev_config = load_dev_config_dict()
+    cfg_dict = apply_overrides(cfg_dict, dev_config)
+    cfg_dict["split"] = "dev"  # forced after the overrides: a dev run always uses the dev split
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
@@ -466,11 +445,44 @@ def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
     return merged
 
 def load_train_config_dict() -> dict:
-    with open(paths["config"] / "train.yaml") as f:
+    """The base training config, assembled from config/trial/ plus config/trial/operational.yaml. Its shape is
+    what every dot-path override addresses (opt.wd, loss.blend.lambda, loss.loss1.targ, ...), so the pieces
+    merge into the one flat dict the rest of the pipeline has always seen: optimizer.yaml and
+    lr_schedule.yaml land whole under `opt` and `lr`, and loss.yaml whole under `loss` -- its per-target
+    `loss1` / `loss2` blocks included, so they are addressed as loss.loss1.* / loss.loss2.*."""
+    def _load(fpath):
+        with open(fpath) as f:
+            return yaml.safe_load(f)
+
+    dpath_trial = paths["config"] / "trial"
+    dpath = dpath_trial / "train"
+    cfg = _load(dpath / "train.yaml")
+    cfg.update(_load(dpath_trial / "split.yaml"))
+    cfg.update(_load(dpath / "model.yaml"))
+    cfg.update(_load(dpath_trial / "operational.yaml"))
+    cfg["opt"] = _load(dpath / "optimizer.yaml")
+    cfg["lr"] = _load(dpath / "lr_schedule.yaml")
+    cfg["loss"] = _load(dpath / "loss.yaml")
+    return cfg
+
+def load_augmentation_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "train" / "augmentation.yaml") as f:
+        return yaml.safe_load(f)
+
+def load_diagnostics_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "diagnostics.yaml") as f:
+        return yaml.safe_load(f)
+
+def load_dev_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "train" / "dev.yaml") as f:
+        return yaml.safe_load(f)
+
+def load_htargs_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "train" / "htargs.yaml") as f:
         return yaml.safe_load(f)
 
 def load_model_specific_config_dict() -> dict:
-    with open(paths["config"] / "model_specific.yaml") as f:
+    with open(paths["config"] / "trial" / "train" / "model_specific.yaml") as f:
         return yaml.safe_load(f)
 
 def _resolve_model_family(model_type: str) -> str:
@@ -484,51 +496,46 @@ def _resolve_model_family(model_type: str) -> str:
         "Expected a CLIP or SigLIP model type."
     )
 
-def apply_model_specific_opt_defaults(cfg_dict: dict, model_specific_config: dict | None = None) -> dict:
+def _get_by_dot_path(cfg_dict: dict, key_path: str):
+    """Read an existing config field addressed by dot-path. Every segment must already be declared --
+    the same contract as _set_by_dot_path, so a stale key in a defaults file fails loudly."""
+    cursor = cfg_dict
+    for depth, key in enumerate(key_path.split(".")):
+        if not isinstance(cursor, dict) or key not in cursor:
+            raise ValueError(
+                f"Unknown config key '{key_path}': '{'.'.join(key_path.split('.')[:depth + 1])}' is not a config field."
+            )
+        cursor = cursor[key]
+    return cursor
+
+def apply_model_specific_defaults(cfg_dict: dict, model_specific_config: dict | None = None) -> dict:
+    """Fills the params config/trial/train/model_specific.yaml declares for the trial's model family
+    (clip / siglip), each ONLY if null. Its keys are dot-paths into this config (opt.wd, loss.crit, ...),
+    so a value set in the config proper wins and a family default only ever fills a hole."""
     cfg_out = deepcopy(cfg_dict)
-    opt = cfg_out.get("opt", {})
-
-    if not isinstance(opt, dict):
-        raise ValueError("Config field 'opt' must be a dict.")
-
-    needs_wd = opt.get("wd") is None
-    needs_beta2 = opt.get("beta2") is None
-    if not (needs_wd or needs_beta2):
-        return cfg_out
-
     arch = cfg_out.get("arch", {})
     if not isinstance(arch, dict) or "model_type" not in arch:
         raise ValueError("Config field 'arch/model_type' is required to resolve model-specific defaults.")
 
-    model_type = arch["model_type"]
-    family = _resolve_model_family(model_type)
+    family = _resolve_model_family(arch["model_type"])
     if model_specific_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
         model_specific_config = load_model_specific_config_dict()
     family_defaults = model_specific_config.get(family)
-
     if not isinstance(family_defaults, dict):
         raise ValueError(f"Missing model hyperparameter defaults for family '{family}'.")
 
-    if needs_wd:
-        if "wd" not in family_defaults:
-            raise ValueError(f"Missing '{family}/wd' in model hyperparameter defaults.")
-        opt["wd"] = deepcopy(family_defaults["wd"])
-
-    if needs_beta2:
-        if "beta2" not in family_defaults:
-            raise ValueError(f"Missing '{family}/beta2' in model hyperparameter defaults.")
-        opt["beta2"] = deepcopy(family_defaults["beta2"])
-
-    cfg_out["opt"] = opt
+    for key_path, value in family_defaults.items():
+        if _get_by_dot_path(cfg_out, key_path) is None:
+            _set_by_dot_path(cfg_out, key_path, value)
     return cfg_out
 
 def load_dataset_specific_config_dict() -> dict:
-    with open(paths["config"] / "dataset_specific.yaml") as f:
+    with open(paths["config"] / "trial" / "train" / "dataset_specific.yaml") as f:
         return yaml.safe_load(f)
 
 def apply_dataset_specific_defaults(cfg_dict: dict, dataset_specific_config: dict | None = None) -> dict:
     """Fills n_epochs / n_chkpts, each only if null, from the trial's dataset entry in
-    config/dataset_specific.yaml."""
+    config/trial/train/dataset_specific.yaml."""
     cfg_out = deepcopy(cfg_dict)
     keys = [key for key in ("n_epochs", "n_chkpts") if cfg_out[key] is None]
     if not keys:
@@ -543,19 +550,25 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
     overrides = cfg_dict.pop("_overrides", None)  # campaign trials: the merged arm + coord overrides
     model_specific = cfg_dict.pop("model_specific", None)  # campaign trials inject the frozen snapshot; otherwise read live
     dataset_specific = cfg_dict.pop("dataset_specific", None)  # ditto
-    cfg_dict = apply_train_debug_overrides(cfg_dict)
-    cfg_dict = apply_model_specific_opt_defaults(cfg_dict, model_specific)
+    dev_overrides = cfg_dict.pop("dev_overrides", None)  # ditto (config/trial/train/dev.yaml, read only when `dev` is on)
+    cfg_dict = apply_dev_overrides(cfg_dict, dev_overrides)
+    cfg_dict = apply_model_specific_defaults(cfg_dict, model_specific)
     cfg_dict = apply_dataset_specific_defaults(cfg_dict, dataset_specific)
+    # htarg is a swept dimension (htarg.* dot-paths in ablation_arms / hpo_coords), so it has to be in place
+    # BEFORE the overrides land on it; campaign trials inject the frozen snapshot, otherwise load live
+    cfg_dict.setdefault("htarg", load_htargs_config_dict())
     if overrides is not None:
         cfg_dict = apply_overrides(cfg_dict, overrides)
-    cfg_dict.setdefault("hw", load_hardware_config_dict())  # campaign trials freeze hw into the baseline; otherwise load live
+    # campaign trials freeze these into the baseline and inject them per trial; otherwise load live
+    cfg_dict.setdefault("hw", load_hardware_config_dict())
+    cfg_dict.setdefault("diagnostics", load_diagnostics_config_dict())
     cfg = TrainConfig(**cfg_dict)
     if overrides is not None:
         _check_overrides_live(cfg, overrides)
     # campaign trials inject the frozen snapshot; otherwise load live. Either way it goes through
     # ManifoldVizConfig so the injected dict is validated too (not just the live yaml).
-    cfg_manif_viz = cfg.manif_viz if cfg.manif_viz is not None else load_manif_viz_config_dict()
-    cfg.manif_viz = asdict(ManifoldVizConfig(**cfg_manif_viz))
+    cfg_manifold_viz = cfg.manifold_viz if cfg.manifold_viz is not None else load_manifold_viz_trial_config_dict()
+    cfg.manifold_viz = asdict(ManifoldVizConfig(**{**cfg_manifold_viz, **load_manifold_viz_render_config_dict()}))
     return cfg
 
 
@@ -564,7 +577,7 @@ class HardwareConfig:
 
     mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
-    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss, row-band-sharded across ranks; None -> full BxB (no tiling/sharding). See config/hardware.yaml.
+    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss, row-band-sharded across ranks; None -> full BxB (no tiling/sharding). See config/trial/hardware.yaml.
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
@@ -583,7 +596,7 @@ class HardwareConfig:
 
 
 def load_hardware_config_dict() -> dict:
-    with open(paths["config"] / "hardware.yaml") as f:
+    with open(paths["config"] / "trial" / "hardware.yaml") as f:
         return yaml.safe_load(f)
 
 def get_config_hardware():
@@ -601,7 +614,7 @@ DATASET2MARKER_SIZE = {
 
 @dataclass
 class ManifoldVizConfig:
-    """manif_viz.yaml contents -- the whole manifold-viz subsystem: which trials run it (the
+    """manifold_viz.yaml contents -- the whole manifold-viz subsystem: which trials run it (the
     n_seeds/n_seeds_offset seed window), which panel groups are emitted, the pooled shared-frame fit, the
     per-method params, and colors."""
 
@@ -645,9 +658,20 @@ class ManifoldVizConfig:
             raise ValueError(f"orient.ema_tau must be in (0.0, 1.0], got {self.orient['ema_tau']}")
 
 
-def load_manif_viz_config_dict() -> dict:
-    with open(paths["config"] / "manif_viz.yaml") as f:
+def load_manifold_viz_trial_config_dict() -> dict:
+    """The half that decides what is computed and cached (projections.npz): frozen with the campaign."""
+    with open(paths["config"] / "trial" / "manifold_viz.yaml") as f:
         return yaml.safe_load(f)
+
+def load_manifold_viz_render_config_dict() -> dict:
+    """The half that only decides how the cached projections are drawn: read live at every render."""
+    with open(paths["config"] / "render" / "manifold_viz.yaml") as f:
+        return yaml.safe_load(f)
+
+def load_manifold_viz_config_dict() -> dict:
+    """Both halves merged -- the whole ManifoldVizConfig, as the compute and render paths expect it. The
+    render half is always the live file, so a campaign's frozen trial half never pins its styling."""
+    return {**load_manifold_viz_trial_config_dict(), **load_manifold_viz_render_config_dict()}
 
 @dataclass
 class StatsConfig:
@@ -672,7 +696,7 @@ class StatsConfig:
 
 
 def load_stats_config_dict() -> dict:
-    with open(paths["config"] / "stats.yaml") as f:
+    with open(paths["config"] / "render" / "stats.yaml") as f:
         return yaml.safe_load(f)
 
 def get_config_stats():
@@ -680,28 +704,41 @@ def get_config_stats():
 
 
 def load_zip_config_dict() -> dict:
-    with open(paths["config"] / "zip.yaml") as f:
+    with open(paths["config"] / "render" / "zip.yaml") as f:
         return yaml.safe_load(f)
 
 
 @dataclass
 class CampaignConfig:
-    """config/camps/<name>.yaml contents -- one campaign's trial matrix (see campaign_runner): its arms
+    """config/campaigns/<name>.yaml contents -- one campaign's trial matrix (see campaign_runner): its arms
     (ablation_arms) x coords (hpo_coords) x datasets, run for n_trials_screen seeds each in the screening phase,
     then each arm's best coord per dataset topped up to n_trials_qual seeds in the qual phase (null: no qual
     phase), then -- with trainval -- each of those picks retrained on the trainval partition up to its
-    qual-selected checkpoint, one run per qual seed (the trainval phase). suffix is appended to the campaign name
-    (null: none)."""
+    qual-selected checkpoint, one run per qual seed (the trainval phase). baseline_overrides is a flat set of
+    overrides laid on every trial of the campaign, nameless -- arm / coord names read as if it were empty.
+    suffix is appended to the campaign name (null: none)."""
 
     n_trials_screen: int
     n_trials_qual: int | None
     trainval: bool
     datasets: list
+    baseline_overrides: dict
     ablation_arms: list
     hpo_coords: list
     suffix: str | None
 
     def __post_init__(self):
+
+        # baseline_overrides is not a matrix dimension: it is one flat set of overrides laid on every trial
+        # of the campaign, so it takes scalars only -- a dict would be a combo group and a list a combo list
+        if not isinstance(self.baseline_overrides, dict):
+            raise ValueError(f"baseline_overrides must be a mapping of override key -> value, got {type(self.baseline_overrides).__name__}")
+        nested = {k: v for k, v in self.baseline_overrides.items() if isinstance(v, (dict, list))}
+        if nested:
+            raise ValueError(
+                f"baseline_overrides takes scalar values -- no combo groups or combo lists: {sorted(nested)}. "
+                f"It applies to every trial, so it has nothing to vary over; sweep in ablation_arms / hpo_coords instead."
+            )
 
         if self.n_trials_qual is not None and self.n_trials_screen > self.n_trials_qual:
             raise ValueError(
@@ -759,7 +796,7 @@ def apply_splits_debug_overrides(cfg_dict: dict) -> dict:
     return cfg_dict
 
 def get_config_splits():
-    with open(paths["config"] / "split_gen.yaml") as f:
+    with open(paths["config"] / "preprocessing" / "split_gen.yaml") as f:
         cfg_dict = yaml.safe_load(f)
     cfg_dict = apply_splits_debug_overrides(cfg_dict)
     cfg = GenSplitConfig(**cfg_dict)

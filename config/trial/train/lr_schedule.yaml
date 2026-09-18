@@ -1,0 +1,6 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+init: 2.0e-5
+decay_factor: null  # {null, [float]}; Cosine scheduler eta_min = lr.init * decay_factor; (null) Decay to 0.0
+warmup: 0.05  # [0.0, 1.0]; Linear LR warmup duration as a fraction of sample_volume (e.g. 0.02 -> 2% of sample_volume)

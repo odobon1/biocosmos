@@ -1,0 +1,25 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+n_epochs: null  # {null, [int]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where
+# epoch size is the batch-truncated train set floor(train_set_size / batch_size) * batch_size; (null) Resolved from
+# config/trial/train/dataset_specific.yaml as per the dataset being run on
+chain_floor: 100_000  # {null, [int]}; Min samples per dataloader pass: when train set < chain_floor, each pass consumes
+# ceil(chain_floor / train_set_size) permutations' worth of one continuous stream of full shuffled permutations of the
+# train set (partial-batch permutation tails carry into the next pass rather than dropping), decoupling pass length
+# (and max batch_size) from dataset size; epochs are credited per pass as ceil(consumed_samples / train_set_size);
+# (null | train set >= chain_floor) One pass per epoch
+n_chkpts: null  # {null, [int]} > 0; Number of train-time checkpoints/evals (final included, base excluded), evenly
+# spaced every sample_volume / n_chkpts samples; (null) Resolved from config/trial/train/dataset_specific.yaml as per the dataset
+# being run on
+batch_size: 2_048  # {16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768}; pretrain batch size for 
+# clip_vitb16 and siglip_vitb16 (and perhaps all) was 32k
+dv_batching: false  # (true) Dorsal/ventral-homogeneous batch sampling (only applicable to lepid/nymph)
+
+aug: openclip  # {openclip, custom}; Image augmentation; (openclip) OpenCLIP's default train preprocessor --
+# random resized crop over scale [0.9, 1.0], no photometric aug (OpenAI published no training-aug config of its
+# own, so these values are OpenCLIP's); (custom) Resolved from config/trial/train/augmentation.yaml
+
+text_template:
+  train: train
+  eval: sci  # Following BioCLIP eval protocol

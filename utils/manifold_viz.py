@@ -47,7 +47,7 @@ class RenderStyle:
 
 
 def _manifold_title(method, viz_context, subject, suffix=""):
-    """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp/LR-1.0e-5, Nymphalidae, 50k'."""
+    """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp/LR-1e-5, Nymphalidae, 50k'."""
     return f"{method}: {subject} Validation -- {viz_context.arm}/{viz_context.coord}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
 
 _GIF_DPI = 100  # evolving-GIF frame resolution (lower than the 300-dpi static PNGs)
@@ -769,7 +769,7 @@ def _parallel_render(jobs):
             func(*args)
         return
     ctx = multiprocessing.get_context("forkserver")
-    ctx.set_forkserver_preload(["utils.manif_viz"])  # import the stack once in the server, not per worker
+    ctx.set_forkserver_preload(["utils.manifold_viz"])  # import the stack once in the server, not per worker
     # RENDER_MAX_WORKERS caps the fan-out (the campaign sets it so a background render shares cores with the
     # next trial's training instead of oversubscribing them); unset/0 -> every core (manual offline re-render)
     cap = int(os.environ.get("RENDER_MAX_WORKERS", "0")) or len(os.sched_getaffinity(0))
@@ -1114,19 +1114,19 @@ def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, na
 
 def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, legend_by_role,
-                  dpath_vis, cfg_manif_viz, viz_context, tag, pca_limits=None):
+                  dpath_vis, cfg_manifold_viz, viz_context, tag, pca_limits=None):
     """Rank-0 render for one eval from ALREADY-ORIENTED projections ({method: {proj key: (N,2)}}), into
     dpath_vis/: the per-method stacked leaf(top)/penult(bottom) pairs (ID-only, OOD-only, the combined
     ID+OOD projection and its two partition-masked variants) under 2panel/<method>/, the 2x4 joint
     composite under 7panel/<method>/, and the cross-method grids (one column per method, one output per
-    2panel subject) under 8panel/. `cfg_manif_viz`'s plot_2panel/plot_7panel/plot_8panel flags gate
+    2panel subject) under 8panel/. `cfg_manifold_viz`'s plot_2panel/plot_7panel/plot_8panel flags gate
     which groups are emitted. Each output is a static PNG.
     `pca_limits` (proj key -> (xlim, ylim)) freezes every PCA panel to that box instead of auto-fitting to
     this eval's points -- the pooled pca_bounds='final' frame (the _RIGID methods always auto-fit). Pure
     renderer -- orientation/coloring/cache are the caller's job (render_eval)."""
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
-    frame_ms = cfg_manif_viz["eval_duration"]  # unused for stills; carried for the evolving GIFs' schedule
-    bg_color = cfg_manif_viz["bg_color"]
+    frame_ms = cfg_manifold_viz["eval_duration"]  # unused for stills; carried for the evolving GIFs' schedule
+    bg_color = cfg_manifold_viz["bg_color"]
     suffix = f", {tag}"
     def bake(projs):  # every panel's (proj, rgba); the grids below tile them into the pairs/composite/stacks
         return {stem: (proj, _rgba(np.array([color_map[label] for label in labels]), alpha))
@@ -1138,7 +1138,7 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
     for method in _METHODS:
         for out_name, subject, grid in _GRIDS:
             group, stem = _grid_group(out_name)
-            if not cfg_manif_viz[f"plot_{group}"]:  # 2panel / 7panel toggles
+            if not cfg_manifold_viz[f"plot_{group}"]:  # 2panel / 7panel toggles
                 continue
             suptitle = _manifold_title(method, viz_context, subject, suffix=suffix)
             col_titles = _COMPOSITE_COL_TITLES if out_name == "joint_panel" else None
@@ -1149,7 +1149,7 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((composite_plot, (grid, sub, fpath, suptitle, style, limits)))
     # cross-method grids (one column per method, _METHODS order left -> right): under viz/8panel/
-    if cfg_manif_viz["plot_8panel"]:
+    if cfg_manifold_viz["plot_8panel"]:
         style_8panel = RenderStyle(None, marker_size, legend_by_role, frame_ms, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
             suptitle = _manifold_title(_8PANEL_LABEL, viz_context, subject, suffix=suffix)
@@ -1187,7 +1187,7 @@ def _build_color_maps(viz_context, cids_all, cfg_color):
     color_nshot = nshot_color_map(nst_names)  # bucket colors matching the learning curves (+ OOD black)
     return color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names
 
-def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manif_viz, chunk_elems):
+def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifold_viz, chunk_elems):
     """COLLECTIVE -- every rank must enter. Compute the raw (sharded) t-SNE + PCA from the live,
     all-gathered eval embeddings and, on rank 0, cache them to dpath_cache/projections.npz. This is the
     training pipeline's ONLY in-loop viz work; orientation, coloring, and rendering are a separate pass
@@ -1199,7 +1199,7 @@ def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manif_
     _log("computing projections")
     # ALL RANKS: sharded t-SNE + PCA projections (collective ops inside)
     tsne_projs, pca_projs = _compute_projections(
-        eval_bundle_id["embs_img"], eval_bundle_ood["embs_img"], cfg_manif_viz["tsne"], chunk_elems)
+        eval_bundle_id["embs_img"], eval_bundle_ood["embs_img"], cfg_manifold_viz["tsne"], chunk_elems)
     if dist.is_initialized() and dist.get_rank() != 0:
         return  # non-rank-0 ranks only participate in the collective compute
     dpath_cache.mkdir(parents=True, exist_ok=True)
@@ -1263,7 +1263,7 @@ def _pooled_pools(dirs, idx_id, idx_ood):
     del id_blocks, ood_blocks  # free the (duplicated in joint) block lists before the fit's buffers allocate
     return pools
 
-def compute_umap_projections(dpath_evals, cfg_manif_viz):
+def compute_umap_projections(dpath_evals, cfg_manifold_viz):
     """CPU, single process. Fit each eval's UMAP from its cached embs.npz and append umap_{id,ood,joint}
     to that eval's projections.npz. Run by the post-trial render worker BEFORE any rendering, so UMAP
     never touches the training loop's collective GPU path.
@@ -1277,7 +1277,7 @@ def compute_umap_projections(dpath_evals, cfg_manif_viz):
 
     Idempotent: an eval that already carries UMAP is not refit, but its cached layout is still read to
     seed the next eval's init, so an interrupted sweep resumes to the same result as an unbroken one."""
-    cfg_umap = cfg_manif_viz["umap"]
+    cfg_umap = cfg_manifold_viz["umap"]
     prev = None  # previous eval's {proj key: layout} -> this eval's init
     for d in _ordered_eval_dirs(dpath_evals, "embs.npz"):
         with np.load(d / "projections.npz") as npz:
@@ -1299,7 +1299,7 @@ def compute_umap_projections(dpath_evals, cfg_manif_viz):
         np.savez(d / "projections.npz", **cache)
         prev = {m: {k: projs[(m, k)] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
 
-def compute_umap_pooled(dpath_evals, cfg_manif_viz):
+def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     """CPU, single process. Fit ONE shared UMAP over all eval thresholds' pooled embeddings and append the
     per-threshold blocks as umap_{id,ood,joint} to each <eval>/projections_pooled.npz -- the UMAP
     counterpart of `compute_pooled_projections`, run by the post-trial render worker. Reuses the subsample
@@ -1325,7 +1325,7 @@ def compute_umap_pooled(dpath_evals, cfg_manif_viz):
     idx_id, idx_ood = caches[0]["idx_id"], caches[0]["idx_ood"]
     m_id, m_ood = len(idx_id), len(idx_ood)
     pools = _pooled_pools(dirs, idx_id, idx_ood)
-    cfg_umap = cfg_manif_viz["umap"]
+    cfg_umap = cfg_manifold_viz["umap"]
     projs = {}
     for k in _PROJ_KEYS:
         knn = _umap_knn(pools[k], cfg_umap)  # one neighbor search, both fits
@@ -1340,7 +1340,7 @@ def compute_umap_pooled(dpath_evals, cfg_manif_viz):
                 cache[f"{m}_{k}"] = projs[(m, k)][t * blk:(t + 1) * blk]
         np.savez(d / "projections_pooled.npz", **cache)
 
-def compute_pooled_projections(dpath_evals, cfg_manif_viz, budget, chunk_elems):
+def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
     """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
     embeddings pooled (read from each eval's embs.npz) and, on rank 0, write per-threshold masked blocks
     to <eval>/projections_pooled.npz. The pooled UMAP is fit off this path, post-trial, by
@@ -1372,7 +1372,7 @@ def compute_pooled_projections(dpath_evals, cfg_manif_viz, budget, chunk_elems):
     _log(f"pooling {T} thresholds -> t-SNE on {T * (m_id + m_ood)} pts (id {T * m_id}, ood {T * m_ood}) at budget {budget}")
 
     pools = _pooled_pools(dirs, idx_id, idx_ood)
-    cfg_tsne = cfg_manif_viz["tsne"]
+    cfg_tsne = cfg_manifold_viz["tsne"]
     tsne_projs, pca_projs = {}, {}
     for k, pool in pools.items():  # collective sharded t-SNE per subject (id/ood/joint), one at a time
         pca_projs[k] = compute_pca(pool)
@@ -1456,22 +1456,22 @@ def _incoming_ref(dpath_evals, eval_name, ema_tau):
     cached = _load_orient_ref(ordered[idx - 1], ema_tau)
     return cached if cached is not None else _ema_through(dpath_evals, eval_name, ema_tau)
 
-def _no_panels_enabled(cfg_manif_viz):
-    """True when every manifold-viz panel group is toggled off (manif_viz.plot_2panel/plot_7panel/
+def _no_panels_enabled(cfg_manifold_viz):
+    """True when every manifold-viz panel group is toggled off (manifold_viz.plot_2panel/plot_7panel/
     plot_8panel) -- the render passes then short-circuit, doing no setup/render and writing no (empty)
     viz dirs."""
-    return not (cfg_manif_viz["plot_2panel"] or cfg_manif_viz["plot_7panel"] or cfg_manif_viz["plot_8panel"])
+    return not (cfg_manifold_viz["plot_2panel"] or cfg_manifold_viz["plot_7panel"] or cfg_manifold_viz["plot_8panel"])
 
 def _final_pca_limits(dpath_final, fname):
     """PCA axis limits per proj key frozen to the FINAL eval's pooled projection (id/ood/joint each its
-    own bounding box) -- the manif_viz.pooled.pca_bounds='final' frame shared by every pooled PCA
+    own bounding box) -- the manifold_viz.pooled.pca_bounds='final' frame shared by every pooled PCA
     plot, so the per-threshold plots and the evolving GIF all sit in the converged final layout's box
     (earlier thresholds' points can fall outside it)."""
     projs_by_method, _, _ = _load_projections(dpath_final, fname)
     return {k: _common_limits([projs_by_method["PCA"][k]]) for k in _PROJ_KEYS}
 
 @rank0
-def render_eval(dpath_evals, eval_name, cfg_manif_viz, viz_context, orient=True, fname="projections.npz"):
+def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=True, fname="projections.npz"):
     """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz(_pooled)/.
 
     Default (per-eval, `orient=True`, projections.npz): every method's independently-fit projection is
@@ -1482,8 +1482,8 @@ def render_eval(dpath_evals, eval_name, cfg_manif_viz, viz_context, orient=True,
     thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz_pooled/. The
     cache holds only this threshold's subsample, so colors are still built from the FULL eval set
     (projections.npz) -- coloring by the subsample would reorder the count-ranked hues and break color
-    correspondence with the other plots. `cfg_manif_viz`'s plot_2/4/7panel flags gate which panel groups."""
-    if _no_panels_enabled(cfg_manif_viz):
+    correspondence with the other plots. `cfg_manifold_viz`'s plot_2/4/7panel flags gate which panel groups."""
+    if _no_panels_enabled(cfg_manifold_viz):
         return
     dpath_eval = dpath_evals / eval_name
     projs_by_method, cids_id, cids_ood = _load_projections(dpath_eval, fname)
@@ -1495,12 +1495,12 @@ def render_eval(dpath_evals, eval_name, cfg_manif_viz, viz_context, orient=True,
     else:
         _, cids_id_full, cids_ood_full = _load_projections(dpath_eval)
     color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot, nst_names = \
-        _build_color_maps(viz_context, list(cids_id_full) + list(cids_ood_full), cfg_manif_viz["color"])
+        _build_color_maps(viz_context, list(cids_id_full) + list(cids_ood_full), cfg_manifold_viz["color"])
     penults_id = [cid_2_penult[c] for c in cids_id]
     penults_ood = [cid_2_penult[c] for c in cids_ood]
     nshot_id = [cid_2_nshot[c] for c in cids_id]  # OOD samples are drawn black, not bucketed
     if orient:
-        ema_tau = cfg_manif_viz["orient"]["ema_tau"]
+        ema_tau = cfg_manifold_viz["orient"]["ema_tau"]
         ref = _incoming_ref(dpath_evals, eval_name, ema_tau)  # reference through the prior evals (O(1) cache read)
         cids_by = _cids_by(cids_id, cids_ood)
         render_projs = {}
@@ -1513,10 +1513,10 @@ def render_eval(dpath_evals, eval_name, cfg_manif_viz, viz_context, orient=True,
         render_projs = projs_by_method
     tag = eval_name
     pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
-                  if not orient and cfg_manif_viz["pooled"]["pca_bounds"] == "final" else None)
+                  if not orient and cfg_manifold_viz["pooled"]["pca_bounds"] == "final" else None)
     _render_grids(render_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
-                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manif_viz, viz_context, tag,
+                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag,
                   pca_limits)
 
 def _eval_sort_key(name):
@@ -1565,7 +1565,7 @@ def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
 
     return {p: _bound(p) for p in pairs}
 
-def render_evolution(dpath_evals, dpath_out, cfg_manif_viz, viz_context, orient=True, fname="projections.npz"):
+def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orient=True, fname="projections.npz"):
     """Rank-0. Assemble one GIF per grid (`_GRIDS`) showing the training evolution
     (base -> eval1 -> ... -> evalN): each eval contributes one frame, then the GIF hard-cuts
     to the next eval, axes/gridlines frozen across evals so only the points move. Reads each eval's
@@ -1578,18 +1578,18 @@ def render_evolution(dpath_evals, dpath_out, cfg_manif_viz, viz_context, orient=
     one frame, so the GIF just masks the single layout to each threshold's subsample. Colors always come
     from the FULL eval set (projections.npz) so class colors match the other plots. Caches are streamed one
     eval at a time (frozen limits precomputed in a single pass), so peak memory doesn't scale with the number of checkpoints."""
-    if _no_panels_enabled(cfg_manif_viz):
+    if _no_panels_enabled(cfg_manifold_viz):
         return
     evals = _ordered_eval_dirs(dpath_evals, fname)
     if not evals:
         return
     names = [d.name for d in evals]
 
-    cfg_color = cfg_manif_viz["color"]
+    cfg_color = cfg_manifold_viz["color"]
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
-    bg_color = cfg_manif_viz["bg_color"]
-    frame_ms = cfg_manif_viz["eval_duration"]  # one frame per eval, so each eval shows for eval_duration
-    ema_tau = cfg_manif_viz["orient"]["ema_tau"]
+    bg_color = cfg_manifold_viz["bg_color"]
+    frame_ms = cfg_manifold_viz["eval_duration"]  # one frame per eval, so each eval shows for eval_duration
+    ema_tau = cfg_manifold_viz["orient"]["ema_tau"]
     # eval set is fixed across checkpoints, so any eval's cids give the same (count-ordered) colors; always
     # the FULL eval set (projections.npz, explicit -- NOT the pooled subsample) so a class keeps its color
     _, cids_id, cids_ood = _load_projections(evals[-1], "projections.npz")
@@ -1598,7 +1598,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manif_viz, viz_context, orient=
     cmaps = (color_leaf, color_penult, color_nshot, cid_2_penult, cid_2_nshot)  # shipped to workers (O(classes))
     legends = _legend_specs(color_nshot, nst_names)  # per-color-role coloring legend for every panel
     limits_by = _evolution_limits(evals, ema_tau, orient, fname)  # frozen axes per (method, proj key), single streaming pass
-    if not orient and cfg_manif_viz["pooled"]["pca_bounds"] == "final":  # freeze pooled PCA to the final threshold's box
+    if not orient and cfg_manifold_viz["pooled"]["pca_bounds"] == "final":  # freeze pooled PCA to the final threshold's box
         for k, lim in _final_pca_limits(evals[-1], fname).items():
             limits_by[("PCA", k)] = lim
 
@@ -1607,7 +1607,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manif_viz, viz_context, orient=
     for method in _METHODS:
         for out_name, subject, grid in _GRIDS:
             group, stem = _grid_group(out_name)
-            if not cfg_manif_viz[f"plot_{group}"]:  # 2panel / 7panel toggles
+            if not cfg_manifold_viz[f"plot_{group}"]:  # 2panel / 7panel toggles
                 continue
             stems = _stems_of(grid)
             col_titles = _COMPOSITE_COL_TITLES if out_name == "joint_panel" else None
@@ -1618,7 +1618,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manif_viz, viz_context, orient=
             jobs.append((composite_evolving_gif, (grid, subject, viz_context, evals, names, cmaps,
                                                    ema_tau, limits, fpath, style, orient, fname)))
     # cross-method evolving GIFs (one column per method): under <dpath_out>/8panel/
-    if cfg_manif_viz["plot_8panel"]:
+    if cfg_manifold_viz["plot_8panel"]:
         style_8panel = RenderStyle(None, marker_size, legends, frame_ms, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
             limits = {(m, s): limits_by[(m, _STEM_PROJKEY[s])] for m in _METHODS for s in (leaf_stem, penult_stem)}

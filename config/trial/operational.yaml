@@ -1,0 +1,13 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
+
+dev: false  # {true, false}
+
+kill_thresh: 0.2  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
+# base model is killed: at the train-time eval nearest that fraction, rounded up (ceil(kill_thresh * n_chkpts)), if no
+# eval so far has beaten the base eval's Composite-All Native mAP, the trial ends there and counts as complete --
+# scored at its own best checkpoint and shaded yellow in the stats tables (see README); (null) Never kill
+
+del_base_eval_cache: campaign  # {null, campaign, trial}; (campaign) Delete base_eval_cache/ once, when the campaign
+# is first created (relaunches keep the cache the campaign's own trials built); (trial) Delete it before each trial
+# launch, so every trial re-runs its base eval (apples-to-apples wall-clock comparisons); (null) Never delete it

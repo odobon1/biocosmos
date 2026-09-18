@@ -1,0 +1,81 @@
+# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# edits never reach an existing campaign; the `param` / `param_value` / `universal_value` tables name its
+# arm / coord DIRECTORIES, so a campaign keeps the ones it launched with and its names can never shift.
+# EXCEPTION: `config.file` below is read live (once per process at import), because it maps config files to
+# the cfg keys the CURRENT code injects them under -- it must track the code, not the campaign.
+
+# Name mappings, all of the same shape: anything without an alias passes through verbatim.
+#
+# `config.file` maps a config file stem to the cfg key a campaign's overrides reach its contents through.
+#
+# The rest name arm / coord names built from `ablation_arms` / `hpo_coords` keys/values (derived names
+# for unnamed items, and combo-list name components): keys map through `param` and values through
+# `param_value` (per original key), falling back to `universal_value` (key-independent) when no
+# per-key alias exists.
+#
+# NOTE: a float key must be written with a decimal point -- YAML parses scientific notation without one
+# (e.g. 1e-6) as a string, which would never match the numeric override value it is meant to alias.
+
+
+config:
+
+  file:
+    hardware: hw
+    htargs: htarg
+
+  param:  # override key -> name component
+    n_epochs: E
+    batch_size: BS
+    loss.blend.lambda: Lambda
+    loss.blend.type: Blend
+    loss.unitless: Unit
+    loss.logits.shared: ShSc
+    loss.wting.bce.dsmr: DSMR
+    loss.logits.scale.init: Alpha
+    loss.logits.bce.bias.init: Binit
+    loss.logits.bce.center: Bcent
+    loss.loss1.targ: Targ
+    loss.loss2.targ: Targ2
+    lr.init: LR
+    opt.wd: WD
+
+  param_value:  # per override key, value -> name component
+    batch_size:
+      1_024: 1k
+      2_048: 2k
+      4_096: 4k
+      8_192: 8k
+      16_384: 16k
+      32_768: 32k
+    loss.loss1.targ:
+      sp: SP
+      mp: MP
+      phylo: hp
+    loss.loss2.targ:
+      phylo: hp
+    lr.init:
+      1.0e-7: 1e-7
+      2.0e-7: 2e-7
+      3.0e-7: 3e-7
+      6.0e-7: 6e-7
+      1.0e-6: 1e-6
+      2.0e-6: 2e-6
+      3.0e-6: 3e-6
+      6.0e-6: 6e-6
+      1.0e-5: 1e-5
+      2.0e-5: 2e-5
+      3.0e-5: 3e-5
+      6.0e-5: 6e-5
+      1.0e-4: 1e-4
+      2.0e-4: 2e-4
+      3.0e-4: 3e-4
+      6.0e-4: 6e-4
+      1.0e-3: 1e-3
+      2.0e-3: 2e-3
+      3.0e-3: 3e-3
+      6.0e-3: 6e-3
+      
+  universal_value:  # key-independent value -> name component
+    true: T
+    false: F
+    null: N

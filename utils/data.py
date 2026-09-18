@@ -31,13 +31,13 @@ from pathlib import Path
 
 from utils.text import get_text_generator
 from utils.utils import paths, load_pickle, load_json, load_split, shuffle_list
-from utils.config import TrainConfig, _default_train_aug_cfg
+from utils.config import TrainConfig, _aug_cfg_openclip
 
 import pdb
 
 
 def _merge_aug_cfg(aug_cfg: Mapping[str, Any] | None) -> dict:
-    default_aug_cfg = _default_train_aug_cfg()
+    default_aug_cfg = _aug_cfg_openclip()
     if aug_cfg is None:
         return default_aug_cfg
 

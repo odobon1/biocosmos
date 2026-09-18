@@ -3,7 +3,7 @@ import math
 import numpy as np
 import torch
 
-from utils.manif_viz import (_hbeta_search, _knn, _orient, _sparse_joint_p, _tsne_torch, compute_pca,
+from utils.manifold_viz import (_hbeta_search, _knn, _orient, _sparse_joint_p, _tsne_torch, compute_pca,
                             compute_umap, orient_pca, orient_proj, orient_sphere)
 
 

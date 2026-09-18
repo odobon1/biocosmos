@@ -153,8 +153,8 @@ def build_harness(model_ddp, crit, world_size, device):
     h.cfg = SimpleNamespace(
         loss=crit.cfg,
         hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
-        dev={"reporting": {"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
-                           "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}}},
+        diagnostics={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
+                   "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}},
         device=device,
     )
     return h

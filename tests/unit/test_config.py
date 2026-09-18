@@ -3,7 +3,7 @@ import pytest
 from utils.config import CampaignConfig, GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import get_config_train, inert_params, _check_overrides_live
-from utils.config import apply_model_specific_opt_defaults
+from utils.config import apply_model_specific_defaults
 from utils.config import apply_dataset_specific_defaults
 
 
@@ -34,14 +34,15 @@ def make_train_config_dummy(**overrides):
         "chain_floor": None,
         "dv_batching": False,
         "htarg": {"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": False},
-        "dev": {"reporting": {"logging": False, "plot_every": "trial"}, "del_base_eval_cache": None, "kill_thresh": None},
+        "dev": False,
+        "diagnostics": {"logging": False, "plot_every": "trial"},
+        "kill_thresh": None,
+        "del_base_eval_cache": None,
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
         "loss": _loss_cfg(),
-        "loss1": {"targ": "sp"},
-        "loss2": {"targ": "sp"},
+        "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
         "opt": {
-            "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
             "wd": 0.0,
             "beta1": 0.9,
             "beta2": 0.95,
@@ -65,7 +66,10 @@ def make_train_config_dummy(**overrides):
             "max_retries": 2,
         },
     }
+    # loss1 / loss2 are blocks of `loss` now, but stay kwargs here so callers read unchanged
+    targs = {k: overrides.pop(k) for k in ("loss1", "loss2") if k in overrides}
     config.update(overrides)
+    config["loss"] = {**config["loss"], "loss1": {"targ": "sp"}, "loss2": {"targ": "sp"}, **targs}
     return config
 
 
@@ -122,7 +126,7 @@ def test_train_config_rejects_non_int_n_chkpts(monkeypatch: pytest.MonkeyPatch) 
         TrainConfig(**make_train_config_dummy(n_chkpts=None))
 
 
-def make_manif_viz_config_dummy(**overrides):
+def make_manifold_viz_config_dummy(**overrides):
     config = {
         "n_seeds": 1,
         "n_seeds_offset": 0,
@@ -139,78 +143,66 @@ def make_manif_viz_config_dummy(**overrides):
     return config
 
 
-def test_manif_viz_config_rejects_negative_n_seeds() -> None:
+def test_manifold_viz_config_rejects_negative_n_seeds() -> None:
     with pytest.raises(ValueError, match="n_seeds must be >= 0"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(n_seeds=-1))
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(n_seeds=-1))
 
 
-def test_manif_viz_config_rejects_negative_n_seeds_offset() -> None:
+def test_manifold_viz_config_rejects_negative_n_seeds_offset() -> None:
     with pytest.raises(ValueError, match="n_seeds_offset must be >= 0"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(n_seeds_offset=-1))
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(n_seeds_offset=-1))
 
 
-def test_manif_viz_config_rejects_nonpositive_pooled_budget() -> None:
+def test_manifold_viz_config_rejects_nonpositive_pooled_budget() -> None:
     with pytest.raises(ValueError, match="pooled.budget must be > 0"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(
             pooled={"enabled": True, "budget": 0.0, "pca_bounds": None}))
 
 
-def test_manif_viz_config_rejects_invalid_pca_bounds() -> None:
+def test_manifold_viz_config_rejects_invalid_pca_bounds() -> None:
     with pytest.raises(ValueError, match="pooled.pca_bounds must be null or 'final'"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(
             pooled={"enabled": True, "budget": 1.0, "pca_bounds": "first"}))
 
 
-def test_manif_viz_config_rejects_too_few_umap_neighbors() -> None:
+def test_manifold_viz_config_rejects_too_few_umap_neighbors() -> None:
     with pytest.raises(ValueError, match="umap.n_neighbors must be >= 2"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 1, "min_dist": 0.1, "n_iter": None, "n_iter_sphere": 100}))
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(umap={"n_neighbors": 1, "min_dist": 0.1, "n_iter": None, "n_iter_sphere": 100}))
 
 
-def test_manif_viz_config_rejects_out_of_range_umap_min_dist() -> None:
+def test_manifold_viz_config_rejects_out_of_range_umap_min_dist() -> None:
     with pytest.raises(ValueError, match=r"umap.min_dist must be in \[0.0, 1.0\)"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(umap={"n_neighbors": 15, "min_dist": 1.0, "n_iter": None, "n_iter_sphere": 100}))
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(umap={"n_neighbors": 15, "min_dist": 1.0, "n_iter": None, "n_iter_sphere": 100}))
 
 
-def test_manif_viz_config_rejects_out_of_range_ema_tau() -> None:
+def test_manifold_viz_config_rejects_out_of_range_ema_tau() -> None:
     with pytest.raises(ValueError, match=r"orient.ema_tau must be in \(0.0, 1.0\]"):
-        ManifoldVizConfig(**make_manif_viz_config_dummy(orient={"ema_tau": 0.0}))
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(orient={"ema_tau": 0.0}))
 
 
 def test_train_config_rejects_yaml_string_scientific_notation(monkeypatch: pytest.MonkeyPatch) -> None:
-    # YAML parses "1e-6" (no decimal point in the mantissa) as a STRING; a swept opt.lr.init like
+    # YAML parses "1e-6" (no decimal point in the mantissa) as a STRING; a swept lr.init like
     # that must fail at config time, not deep inside AdamW
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="opt.lr.init must be numeric"):
-        TrainConfig(**make_train_config_dummy(opt={
-            "lr": {"init": "1e-6", "decay_factor": 1.0e-3, "warmup": 0.02},
-            "wd": 0.0,
-            "beta1": 0.9,
-            "beta2": 0.95,
-            "eps": 1.0e-6,
-        }))
+    with pytest.raises(ValueError, match="lr.init must be numeric"):
+        TrainConfig(**make_train_config_dummy(lr={"init": "1e-6", "decay_factor": 1.0e-3, "warmup": 0.02}))
 
 
 def test_train_config_rejects_warmup_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
-    # opt.lr.warmup is a fraction of sample_volume -- a stale absolute sample count must fail loudly
+    # lr.warmup is a fraction of sample_volume -- a stale absolute sample count must fail loudly
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="opt.lr.warmup must be a fraction of sample_volume"):
-        TrainConfig(**make_train_config_dummy(opt={
-            "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 200_000},
-            "wd": 0.0,
-            "beta1": 0.9,
-            "beta2": 0.95,
-            "eps": 1.0e-6,
-        }))
+    with pytest.raises(ValueError, match="lr.warmup must be a fraction of sample_volume"):
+        TrainConfig(**make_train_config_dummy(lr={"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 200_000}))
 
 
 def test_train_config_rejects_unknown_plot_every(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["dev"]["reporting"]["plot_every"] = "epoch"
-    with pytest.raises(ValueError, match="dev.reporting.plot_every must be 'trial' or 'chkpt'"):
+    cfg_dict["diagnostics"]["plot_every"] = "epoch"
+    with pytest.raises(ValueError, match="diagnostics.plot_every must be 'trial' or 'chkpt'"):
         TrainConfig(**cfg_dict)
 
 
@@ -218,23 +210,23 @@ def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.Mo
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["dev"]["del_base_eval_cache"] = "always"
-    with pytest.raises(ValueError, match="dev.del_base_eval_cache must be null, 'campaign' or 'trial'"):
+    cfg_dict["del_base_eval_cache"] = "always"
+    with pytest.raises(ValueError, match="del_base_eval_cache must be null, 'campaign' or 'trial'"):
         TrainConfig(**cfg_dict)
 
 
 def test_train_config_rejects_kill_thresh_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
-    # dev.kill_thresh is a fraction of the run strictly inside (0, 1); null turns the kill check off
+    # kill_thresh is a fraction of the run strictly inside (0, 1); null turns the kill check off
     patch_hw(monkeypatch)
 
     for kill_thresh in (0.0, 1.0, -0.1, 1.5):
         cfg_dict = make_train_config_dummy()
-        cfg_dict["dev"]["kill_thresh"] = kill_thresh
-        with pytest.raises(ValueError, match="dev.kill_thresh must be null or a fraction in"):
+        cfg_dict["kill_thresh"] = kill_thresh
+        with pytest.raises(ValueError, match="kill_thresh must be null or a fraction in"):
             TrainConfig(**cfg_dict)
     cfg_dict = make_train_config_dummy()
-    cfg_dict["dev"]["kill_thresh"] = 0.25
-    assert TrainConfig(**cfg_dict).dev["kill_thresh"] == 0.25
+    cfg_dict["kill_thresh"] = 0.25
+    assert TrainConfig(**cfg_dict).kill_thresh == 0.25
 
 
 def test_train_config_rejects_htarg_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -407,85 +399,85 @@ def test_apply_overrides_allows_declared_null_field() -> None:
     assert out["opt"]["beta2"] is None
 
 
-def test_model_specific_opt_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_specific_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"wd": 0.0, "beta2": 0.95},
-            "clip": {"wd": 0.2, "beta2": 0.98},
+            "siglip": {"opt.wd": 0.0, "opt.beta2": 0.95},
+            "clip": {"opt.wd": 0.2, "opt.beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
-    out = apply_model_specific_opt_defaults(cfg_in)
+    out = apply_model_specific_defaults(cfg_in)
 
     assert out["opt"]["wd"] == 0.0
     assert out["opt"]["beta2"] == 0.95
 
 
-def test_model_specific_opt_defaults_preserve_explicit_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_specific_defaults_preserve_explicit_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"wd": 0.0, "beta2": 0.95},
-            "clip": {"wd": 0.2, "beta2": 0.98},
+            "siglip": {"opt.wd": 0.0, "opt.beta2": 0.95},
+            "clip": {"opt.wd": 0.2, "opt.beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "wd": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
+        opt={"wd": 0.11, "beta1": 0.9, "beta2": 0.77, "eps": 1.0e-6},
     )
 
-    out = apply_model_specific_opt_defaults(cfg_in)
+    out = apply_model_specific_defaults(cfg_in)
 
     assert out["opt"]["wd"] == 0.11
     assert out["opt"]["beta2"] == 0.77
 
 
-def test_model_specific_opt_defaults_resolve_partial_null(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_specific_defaults_resolve_partial_null(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"wd": 0.0, "beta2": 0.95},
-            "clip": {"wd": 0.2, "beta2": 0.98},
+            "siglip": {"opt.wd": 0.0, "opt.beta2": 0.95},
+            "clip": {"opt.wd": 0.2, "opt.beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
+        opt={"wd": None, "beta1": 0.9, "beta2": 0.7, "eps": 1.0e-6},
     )
 
-    out = apply_model_specific_opt_defaults(cfg_in)
+    out = apply_model_specific_defaults(cfg_in)
 
     assert out["opt"]["wd"] == 0.2
     assert out["opt"]["beta2"] == 0.7
 
 
-def test_model_specific_opt_defaults_unknown_model_type_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_specific_defaults_unknown_model_type_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
         lambda: {
-            "siglip": {"wd": 0.0, "beta2": 0.95},
-            "clip": {"wd": 0.2, "beta2": 0.98},
+            "siglip": {"opt.wd": 0.0, "opt.beta2": 0.95},
+            "clip": {"opt.wd": 0.2, "opt.beta2": 0.98},
         },
     )
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "mystery_model", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
     with pytest.raises(ValueError, match="Could not resolve model family"):
-        apply_model_specific_opt_defaults(cfg_in)
+        apply_model_specific_defaults(cfg_in)
 
 
-def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_specific_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     # a campaign trial passes the frozen snapshot; the live model_specific.yaml must not be read
     def _boom():
         raise AssertionError("model_specific.yaml must not be read when a snapshot is passed")
@@ -493,14 +485,37 @@ def test_model_specific_opt_defaults_use_passed_snapshot(monkeypatch: pytest.Mon
 
     cfg_in = make_train_config_dummy(
         arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}},
-        opt={"lr": {"decay_factor": 1.0e-3}, "wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
+        opt={"wd": None, "beta1": 0.9, "beta2": None, "eps": 1.0e-6},
     )
 
-    snapshot = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
-    out = apply_model_specific_opt_defaults(cfg_in, snapshot)
+    snapshot = {"siglip": {"opt.wd": 0.0, "opt.beta2": 0.95}, "clip": {"opt.wd": 0.2, "opt.beta2": 0.98}}
+    out = apply_model_specific_defaults(cfg_in, snapshot)
 
     assert out["opt"]["wd"] == 0.2
     assert out["opt"]["beta2"] == 0.98
+
+
+def test_model_specific_defaults_fill_any_dot_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the defaults file keys are dot-paths into the config, so a family can default anything declared
+    # there -- loss.crit among them (clip -> infonce, siglip -> bce)
+    monkeypatch.setattr(
+        "utils.config.load_model_specific_config_dict",
+        lambda: {"siglip": {"loss.crit": "bce"}, "clip": {"loss.crit": "infonce"}},
+    )
+    for model_type, crit in (("clip_vitb16", "infonce"), ("siglip_vitb16", "bce")):
+        cfg_in = make_train_config_dummy(arch={"model_type": model_type, "clip": {"non_causal": False}})
+        cfg_in["loss"]["crit"] = None
+        assert apply_model_specific_defaults(cfg_in)["loss"]["crit"] == crit
+    # a crit set in the config proper wins over the family default
+    cfg_in = make_train_config_dummy(arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}})
+    cfg_in["loss"]["crit"] = "bif_bce"
+    assert apply_model_specific_defaults(cfg_in)["loss"]["crit"] == "bif_bce"
+    # a stale key in the defaults file fails loudly rather than landing in a field nothing reads
+    monkeypatch.setattr("utils.config.load_model_specific_config_dict",
+                        lambda: {"clip": {"loss.nonesuch": 1}, "siglip": {}})
+    with pytest.raises(ValueError, match="Unknown config key 'loss.nonesuch'"):
+        apply_model_specific_defaults(make_train_config_dummy(
+            arch={"model_type": "clip_vitb16", "clip": {"non_causal": False}}))
 
 
 def test_dataset_specific_defaults_resolve_null_n_epochs_and_n_chkpts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -669,7 +684,7 @@ def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPat
 
     cfg_dict = make_train_config_dummy()  # batch_size 8
     cfg_dict["loss"]["crit"] = "infonce"
-    cfg_dict["loss1"]["targ"] = "mp"
+    cfg_dict["loss"]["loss1"]["targ"] = "mp"
     cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
 
     cfg = TrainConfig(**cfg_dict)
@@ -815,19 +830,19 @@ def _full_targ_cfg(targ="mp", tsm_type="softmax"):
 
 
 def test_get_config_train_rejects_inert_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss1.targ mp under loss.blend.lambda 0.0 leaves no live phylo target, so an htarg.kernel override is never read:
+    # loss.loss1.targ mp under loss.blend.lambda 0.0 leaves no live phylo target, so an htarg.kernel override is never read:
     # refused even when it restates the baseline's own value -- the value is beside the point -- while the
-    # live override alongside it (loss1.targ) goes unmentioned
+    # live override alongside it (loss.loss1.targ) goes unmentioned
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg("mp"), loss2=_full_targ_cfg("phylo"))
-    cfg_dict["_overrides"] = {"loss1.targ": "mp", "htarg.kernel": cfg_dict["htarg"]["kernel"]}
+    cfg_dict["_overrides"] = {"loss.loss1.targ": "mp", "htarg.kernel": cfg_dict["htarg"]["kernel"]}
 
     with pytest.raises(ValueError, match=r"inert override\(s\).*htarg\.kernel \(no live target is phylo\)") as excinfo:
         get_config_train(cfg_dict)
-    assert "loss1.targ" not in str(excinfo.value)
+    assert "loss.loss1.targ" not in str(excinfo.value)
 
 
-@pytest.mark.parametrize("live", [{"loss1.targ": "phylo"}, {"loss.blend.lambda": 0.3, "loss2.targ": "phylo"}])
+@pytest.mark.parametrize("live", [{"loss.loss1.targ": "phylo"}, {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}])
 def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch: pytest.MonkeyPatch, live) -> None:
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg("mp"), loss2=_full_targ_cfg("phylo"))
@@ -837,17 +852,17 @@ def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch
 
 
 def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss2.infonce.tsm.type is inert both through loss.crit (bce) and through loss.blend.lambda 0.0 (all of loss2):
+    # loss.loss2.infonce.tsm.type is inert both through loss.crit (bce) and through loss.blend.lambda 0.0 (all of loss2):
     # the enclosing cause is the one reported; every inert key is listed
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg(), loss2=_full_targ_cfg())
-    cfg_dict["_overrides"] = {"loss2.infonce.tsm.type": "linear", "loss2.targ": "phylo"}
+    cfg_dict["_overrides"] = {"loss.loss2.infonce.tsm.type": "linear", "loss.loss2.targ": "phylo"}
 
     with pytest.raises(ValueError) as excinfo:
         get_config_train(cfg_dict)
     msg = str(excinfo.value)
-    assert "loss2.infonce.tsm.type (loss.blend.lambda is 0.0)" in msg
-    assert "loss2.targ (loss.blend.lambda is 0.0)" in msg
+    assert "loss.loss2.infonce.tsm.type (loss.blend.lambda is 0.0)" in msg
+    assert "loss.loss2.targ (loss.blend.lambda is 0.0)" in msg
 
 
 def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -856,18 +871,17 @@ def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> Non
 
     inert = inert_params(cfg)
     assert {
-        "arch.siglip", "dropout.siglip", "htarg", "loss2",
-        "loss1.infonce", "loss.bce", "loss.wting.cls_imb.inv_freq", "loss.wting.cls_imb.class_bal",
+        "arch.siglip", "dropout.siglip", "htarg", "loss.loss2",
+        "loss.loss1.infonce", "loss.bce", "loss.wting.cls_imb.inv_freq", "loss.wting.cls_imb.class_bal",
         "loss.wting.cls_imb.norm", "loss.logits.bce.bias.freeze",  # CLIP's fixed 0.0 bias buffer
-        "aug.cjit.brightness", "aug.sharpness.factor", "aug.gblur.sigma",  # every aug prob is 0.0
     } <= inert.keys()
     assert inert["loss.bce"] == "loss.crit is bce"
-    assert "loss1" not in inert
+    assert "loss.loss1" not in inert
     # live: the family's own block, the toggles themselves, the BCE-path logit params under a BCE crit
     _check_overrides_live(cfg, {
-        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.blend.lambda": 0.0, "loss1.targ": "sp",
+        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.blend.lambda": 0.0, "loss.loss1.targ": "sp",
         "loss.wting.cls_imb.type": None, "loss.wting.focal.gamma": 0.0, "loss.wting.bce.dsmr": False,
-        "loss.logits.bce.center": None, "loss.logits.bce.bias.init": None, "aug.cjit.prob": 0.0,
+        "loss.logits.bce.center": None, "loss.logits.bce.bias.init": None, "aug": "custom",
     })
 
 
@@ -884,14 +898,14 @@ def test_inert_params_siglip_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> N
     inert = inert_params(cfg)
     assert {
         "arch.clip", "dropout.siglip.proj_head", "htarg.exp",
-        "loss.bce", "loss.wting.bce", "loss.logits.bce", "loss.wting.cls_imb.class_bal", "loss2.infonce.tsm.sm_scale",
+        "loss.bce", "loss.wting.bce", "loss.logits.bce", "loss.wting.cls_imb.class_bal", "loss.loss2.infonce.tsm.sm_scale",
     } <= inert.keys()
-    assert inert["loss2.infonce.tsm.sm_scale"] == "loss2.infonce.tsm.type is linear"
-    assert not {"loss1", "loss2", "loss1.infonce", "loss2.infonce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
+    assert inert["loss.loss2.infonce.tsm.sm_scale"] == "loss.loss2.infonce.tsm.type is linear"
+    assert not {"loss1", "loss2", "loss.loss1.infonce", "loss.loss2.infonce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
     _check_overrides_live(cfg, {
         "dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.blend.lambda": 0.5,
-        "loss1.infonce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
-        "loss2.targ": "mp", "loss2.infonce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
+        "loss.loss1.infonce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
+        "loss.loss2.targ": "mp", "loss.loss2.infonce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
     })
 
 
@@ -916,8 +930,8 @@ def test_inert_params_linear_tsm_makes_sm_scale_inert(monkeypatch: pytest.Monkey
     cfg = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(crit="infonce"), loss1=_full_targ_cfg(tsm_type="linear"), loss2=_full_targ_cfg()))
 
     inert = inert_params(cfg)
-    assert inert["loss1.infonce.tsm.sm_scale"] == "loss1.infonce.tsm.type is linear"
-    assert "loss1.infonce" not in inert
+    assert inert["loss.loss1.infonce.tsm.sm_scale"] == "loss.loss1.infonce.tsm.type is linear"
+    assert "loss.loss1.infonce" not in inert
 
 
 def test_inert_params_blend_type_needs_two_targets_and_a_target_dependent_factor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -980,9 +994,9 @@ def test_inert_params_loss1_inert_at_lambda_one(monkeypatch: pytest.MonkeyPatch)
     cfg = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(lambda_=1.0), loss1=_full_targ_cfg("phylo"), loss2=_full_targ_cfg("mp")))
 
     inert = inert_params(cfg)
-    assert inert["loss1"] == "loss.blend.lambda is 1.0"
+    assert inert["loss.loss1"] == "loss.blend.lambda is 1.0"
     assert inert["htarg"] == "no live target is phylo"
-    assert "loss2" not in inert
+    assert "loss.loss2" not in inert
 
 
 def _make_stats_config_dummy(**overrides):
@@ -1014,7 +1028,8 @@ def _make_campaign_config_dummy(**overrides):
         "n_trials_qual": 5,
         "trainval": False,
         "datasets": ["cub"],
-        "ablation_arms": [[{"loss1.targ": "sp", "name": "sp"}]],
+        "baseline_overrides": {},
+        "ablation_arms": [[{"loss.loss1.targ": "sp", "name": "sp"}]],
         "hpo_coords": [[{"name": "base"}]],
         "suffix": None,
     }
@@ -1038,6 +1053,18 @@ def test_campaign_config_trainval_requires_qual() -> None:
     with pytest.raises(ValueError, match="trainval"):
         CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=None))
     assert CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=5)).trainval is True
+
+
+def test_campaign_config_baseline_overrides_take_scalars_only() -> None:
+    # baseline_overrides applies to every trial, so it has nothing to vary over: a dict value would be a
+    # combo group and a list value a combo list
+    for bad in ({"loss": {"crit": "bce"}}, {"batch_size": [512, 1_024]}):
+        with pytest.raises(ValueError, match="baseline_overrides takes scalar values"):
+            CampaignConfig(**_make_campaign_config_dummy(baseline_overrides=bad))
+    with pytest.raises(ValueError, match="baseline_overrides must be a mapping"):
+        CampaignConfig(**_make_campaign_config_dummy(baseline_overrides=[[{"batch_size": 1_024}]]))
+    assert CampaignConfig(**_make_campaign_config_dummy(
+        baseline_overrides={"batch_size": 1_024, "aug": "custom"})).baseline_overrides["aug"] == "custom"
 
 
 def test_train_config_rejects_chkpt_stop_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,11 +2,11 @@
 python -m tools.zip [<campaign> ...]
 
 Bundle a snapshot of the source tree -- every git-tracked file (per the index, so staged adds count and a `git rm`
-drops out), plus the untracked files config/zip.yaml lists -- and, optionally, whole campaigns
+drops out), plus the untracked files config/render/zip.yaml lists -- and, optionally, whole campaigns
 (artifacts/<campaign>/, every phase incl. test/) into one zip under temp/:
 temp/biocosmos_<YYYYMMDD-HHMMSS>[_<campaign>...].zip, laid out as a checkout (everything under a top-level
 biocosmos/ dir, campaigns at biocosmos/artifacts/<campaign>/). Which of a campaign's bulky contents ship is
-governed by config/zip.yaml's toggles (weights, manif_viz, manif_viz_cache, batch_logs); the rest of a campaign --
+governed by config/render/zip.yaml's toggles (weights, manifold_viz, manifold_viz_cache, batch_logs); the rest of a campaign --
 metrics, metadata, stats tables and plots, learning curves, the epoch/eval/init logs -- is always included.
 """
 
@@ -34,9 +34,9 @@ def _bulky_toggle(rel):
     if sub[0] in ("model.pt", "chkpts"):  # trainval product weights; in-progress resume state (model + optimizer)
         return "weights"
     if any(p in ("viz", "viz_pooled") for p in sub[:-1]):  # per-eval plots (evals/<eval>/viz*/) + evolving GIFs (<trial>/viz*/)
-        return "manif_viz"
+        return "manifold_viz"
     if sub[0] == "evals" and sub[-1] in MANIF_VIZ_CACHE:
-        return "manif_viz_cache"
+        return "manifold_viz_cache"
     if sub[:2] == ("logs", "batch"):
         return "batch_logs"
     return None

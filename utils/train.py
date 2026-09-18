@@ -91,7 +91,7 @@ class TrialData:
             "sim_median": [],
             "sim_mean": [],
             # sim_margin*: per batch, the mean hard-pair similarity margin at each
-            # dev.reporting.learning_curves.hpsm.kappas value (a list in config order, not a scalar)
+            # diagnostics.learning_curves.hpsm.kappas value (a list in config order, not a scalar)
             # over the blended targets (sim_targ_batch_stats): the I2T / T2I directions and their mean,
             # each its own curve strip with one line per kappa (the directional strips only under
             # hpsm.multimodal)
@@ -325,7 +325,7 @@ class ArtifactManager:
             del metadata["n_trials_total"]
             del metadata["dataset"]
             del metadata["split"]
-            # dataset-resolved duration and checkpoint count (config/dataset_specific.yaml fills a null
+            # dataset-resolved duration and checkpoint count (config/trial/train/dataset_specific.yaml fills a null
             # n_epochs / n_chkpts per dataset), not arm/coord params; the duration is recorded in
             # coord_metadata.json's horizon (and each trial's trial_metadata.json progress), the
             # checkpoint count in every eval file's chkpt field
@@ -333,6 +333,11 @@ class ArtifactManager:
             del metadata["n_chkpts"]
 
             del metadata["dev"]
+            del metadata["diagnostics"]
+            # campaign/run-management knobs, not arm/coord params: when the runner kills a hopeless
+            # trial, and when it clears base_eval_cache/
+            del metadata["kill_thresh"]
+            del metadata["del_base_eval_cache"]
 
             # family-specific sections: models.py reads arch.siglip / dropout.siglip only when
             # is_siglip, and arch.clip.non_causal drives disable_causal_mask_text (CLIPWrapper-only)
@@ -348,9 +353,9 @@ class ArtifactManager:
             # target specs: loss2 carries weight lambda, loss1 weight 1 - lambda (utils.loss.targ_specs)
             lambda_ = metadata["loss"]["blend"]["lambda"]
             if lambda_ == 0.0:
-                del metadata["loss2"]
+                del metadata["loss"]["loss2"]
             if lambda_ == 1.0:
-                del metadata["loss1"]
+                del metadata["loss"]["loss1"]
 
             loss = metadata["loss"]
             crit = loss["crit"]
@@ -378,8 +383,8 @@ class ArtifactManager:
             # per-target infonce sub-block: the BCE losses never read it, and under sp the linear tsm
             # mapping is an identical no-op (row sums already 1)
             for key in ("loss1", "loss2"):
-                if key in metadata and (is_bce_family or metadata[key]["targ"] == "sp"):
-                    del metadata[key]["infonce"]
+                if key in loss and (is_bce_family or loss[key]["targ"] == "sp"):
+                    del loss[key]["infonce"]
 
             # bce sub-block (targ_mass_neut): read only by the bifurcated variant
             if crit != "bif_bce":
@@ -442,7 +447,7 @@ class ArtifactManager:
         # ceil; the warmup converts the way the trainer does (warmup fraction -> samples -> steps,
         # train.py's scheduler warmup-step count).
         metadata_coord = load_json(fpath_meta)
-        warmup_samps = round(cfg_train.opt["lr"]["warmup"] * cfg_train.sample_volume)
+        warmup_samps = round(cfg_train.lr["warmup"] * cfg_train.sample_volume)
         metadata_coord["horizon"] = {
             "n_samps": {"total": cfg_train.sample_volume, "warmup": warmup_samps},
             "n_steps": {
@@ -486,7 +491,7 @@ class ArtifactManager:
     @staticmethod
     @rank0
     def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, killed, init_flag=False):
-        # killed: the train-time eval index the trial was killed at (dev.kill_thresh), None otherwise
+        # killed: the train-time eval index the trial was killed at (kill_thresh), None otherwise
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
         progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}

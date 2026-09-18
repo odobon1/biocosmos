@@ -1,0 +1,21 @@
+datasets: [cub]
+
+n_trials_screen: 1
+n_trials_qual: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the qual phase; (null) no qual phase
+trainval: false  # {true, false}; (true) after the qual phase, retrain each pick on the trainval partition up to its qual-selected checkpoint, one run per qual seed, saving the weights (needs n_trials_qual)
+
+baseline_overrides:  # nameless overrides applied to every trial of the campaign; arm / coord names read
+# as if this were empty. Scalars only -- no combo groups or combo lists -- and no key here may also appear
+# in ablation_arms or hpo_coords
+  batch_size: 1_024
+  aug: custom
+
+ablation_arms:
+  - - {loss.loss1.targ: mp, loss.loss1.infonce.tsm.type: linear, name: SupCon}
+    - {loss.loss1.targ: phylo, loss.loss1.infonce.tsm.type: softmax, name: HCon}
+
+hpo_coords:
+  - - {lr.init: [6.0e-5]}
+  - - {loss.logits.scale.init: [30]}
+
+suffix: null  # {null, [str]}; no suffix if set to null

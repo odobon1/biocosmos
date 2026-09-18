@@ -14,7 +14,7 @@ batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false
   sim_targ_stats: true  # {true, false}; Batch sim/targ distribution stats (sim_targ.log + the S/P/Q
   # curve panels, the mean hard-pair similarity margin strips, a unitless loss blend's lambda_eff strip and,
   # for InfoNCE losses, the alpha panels' target bound lines, the logit-scale gradient decomposition and KL
-  # decomposition strips)
+  # decomposition strips + kl.log)
 learning_curves:
   hpsm:  # hard-pair similarity margin
     kappas: [0, 1, 10, 100, 1_000, 10_000, 100_000]

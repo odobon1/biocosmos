@@ -268,6 +268,7 @@ class PrintLog:
     log_batch_grad_norm = None
     log_batch_scale_bias = None
     log_batch_similarity = None
+    log_batch_kl = None
     log_epoch = None
     log_eval = None
     log_init = None
@@ -284,6 +285,7 @@ class PrintLog:
         PrintLog.log_batch_grad_norm = open(dpath_batch_logs / "grad_norm.log", "a", buffering=1)
         PrintLog.log_batch_scale_bias = open(dpath_batch_logs / "scale_bias.log", "a", buffering=1)
         PrintLog.log_batch_similarity = open(dpath_batch_logs / "sim_targ.log", "a", buffering=1)
+        PrintLog.log_batch_kl = open(dpath_batch_logs / "kl.log", "a", buffering=1)
         PrintLog.log_epoch = open(dpath_logs / "epoch.log", "a", buffering=1)
         PrintLog.log_init = open(dpath_logs / "init.log", "a", buffering=1)
         PrintLog.log_text_train = open(dpath_logs / "text_train.log", "a", buffering=1)
@@ -386,6 +388,7 @@ class PrintLog:
             PrintLog.log_batch_grad_norm.write(header_epoch)
             PrintLog.log_batch_scale_bias.write(header_epoch)
             PrintLog.log_batch_similarity.write(header_epoch)
+            PrintLog.log_batch_kl.write(header_epoch)
 
     @staticmethod
     @rank0
@@ -513,6 +516,20 @@ class PrintLog:
                         for group in stat_groups
                     )
                     + "\n"
+                )
+            # the InfoNCE KL decomposition, the kl.log line's five values -- the raw D_KL(y || p), its
+            # structural part, the two representational parts summed (E_R = E_SR + E_IR, derived here as
+            # it is in the KL panels) and each of them. InfoNCE only (infonce_batch_stats), so a
+            # BCE-family loss's line is skipped like its panels are
+            if batch_stats is not None and "kl" in batch_stats:
+                PrintLog.log_batch_kl.write(
+                    f"{batch_str:<10} "
+                    f"KL={batch_stats['kl']: .4e} "
+                    f"E_S={batch_stats['kl_s']: .4e} "
+                    f"E_R={batch_stats['kl_sr'] + batch_stats['kl_ir']: .4e} "
+                    f"E_SR={batch_stats['kl_sr']: .4e} "
+                    f"E_IR={batch_stats['kl_ir']: .4e}"
+                    f"\n"
                 )
 
     @staticmethod
@@ -821,6 +838,7 @@ class PrintLog:
             PrintLog.log_batch_grad_norm,
             PrintLog.log_batch_scale_bias,
             PrintLog.log_batch_similarity,
+            PrintLog.log_batch_kl,
             PrintLog.log_epoch,
             PrintLog.log_eval,
             PrintLog.log_init,

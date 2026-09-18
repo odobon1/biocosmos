@@ -13,6 +13,6 @@ manifold_viz_cache: false  # {true, false}; (true) include the per-eval caches t
 # (raw eval embeddings, ~N x D x 2 bytes per eval), projections.npz, projections_pooled.npz, orient_ref.pkl;
 # needed to re-render (tools/regen_manifold_viz.py) from the unpacked zip
 batch_logs: true  # {true, false}; (true) include each trial's per-batch logs (logs/batch/: general, grad_norm,
-# scale_bias, sim_targ -- one line per train batch, so they grow with run length)
+# scale_bias, sim_targ, kl -- one line per train batch, so they grow with run length)
 
 untracked: []  # [str]; relative paths of untracked files or dirs to bundle with the tracked source

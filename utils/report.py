@@ -1886,22 +1886,24 @@ def plot_kl_curves(
     output_filename,
 ):
     # the InfoNCE KL decomposition (sim_targ_stats on; an InfoNCE loss only, since only it records the
-    # series -- any other trial gets no figure), four panels (utils.loss.infonce_kl_terms, both anchor
+    # series -- any other trial gets no figure), five panels (utils.loss.infonce_kl_terms, both anchor
     # directions averaged, batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then
-    # its three parts, the structural E_s = D_KL(p* || p) (what the model could still remove at this
-    # alpha), the irreducible E_ir = D_KL(y || p*) (the target outside the reachable set) and the cross
-    # term E_sr. All four are >= 0 (E_sr because p is itself reachable; bf16 logit rounding can dip it
-    # a hair below), so each panel draws a zero reference line and autoscales -- the line hugs the
-    # bottom while the series stays positive, and any dip below it shows.
+    # its three parts, the structural E_S = D_KL(p* || p) (what the model could still remove at this
+    # alpha), the irreducible E_IR = D_KL(y || p*) (the target outside the reachable set) and the cross
+    # term E_SR, with the two representational parts also drawn summed as E_R = E_SR + E_IR. All are >= 0
+    # (E_SR because p is itself reachable; bf16 logit rounding can dip it a hair below), so each panel
+    # draws a zero reference line and autoscales -- the line hugs the bottom while the series stays
+    # positive, and any dip below it shows.
     kl_panels = [
-        (f"kl{suffix}", label)
-        for suffix, label in (
-            ("", r"$D_{\mathrm{KL}}(y\|p)$"),
-            ("_s", r"$\mathcal{E}_{s} = D_{\mathrm{KL}}(p^*\|p)$"),
-            ("_ir", r"$\mathcal{E}_{\text{ir}} = D_{\mathrm{KL}}(y\|p^*)$"),
-            ("_sr", r"$\mathcal{E}_{\text{sr}}$"),
+        (vals, label)
+        for vals, label in (
+            (data_epoch["kl"], r"$D_{\mathrm{KL}}(\text{y}\|\text{p})$"),
+            (data_epoch["kl_s"], r"$\mathcal{E}^{\text{S}}$"),
+            (np.array(data_epoch["kl_sr"]) + np.array(data_epoch["kl_ir"]), r"$\mathcal{E}^{\text{R}}$"),
+            (data_epoch["kl_sr"], r"$\mathcal{E}^{\text{SR}}$"),
+            (data_epoch["kl_ir"], r"$\mathcal{E}^{\text{IR}}$"),
         )
-        if len(data_epoch[f"kl{suffix}"]) == len(x_train)
+        if len(vals) == len(x_train)
     ]
     if not kl_panels:
         return
@@ -1910,9 +1912,9 @@ def plot_kl_curves(
     gs = gridspec.GridSpec(len(kl_panels), 1, hspace=0)
     axes = []
 
-    for key, label in kl_panels:
+    for vals, label in kl_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        ax.plot(x_train, data_epoch[key], color="darkmagenta", linewidth=1.0)
+        ax.plot(x_train, vals, color="darkmagenta", linewidth=1.0)
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.grid(True)

@@ -137,7 +137,7 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
                 predicted pair probability -- on [0, 1] like the targets, so the P and Q strips
                 are directly comparable. Under InfoNCE the row-softmax carries no such reading.
     - hpsm_kappas -- the kappa values the mean hard-pair similarity margins are reported at
-                (diagnostics.learning_curves.hpsm.kappas; one curve-strip line each).
+                (reporting.learning_curves.hpsm.kappas; one curve-strip line each).
 
     Returns min/max/median/mean for sim/targ as flat keys (the batch logs read those), the mean
     hard-pair similarity margins (hard_pair_similarity_margin averaged over anchors, each a list
@@ -596,7 +596,7 @@ class VLMWrapper(abc.ABC):
         parameter's own gradient, whether the clamp holds it.
         """
         cfg_loss = self.cfg.loss
-        kappas = self.cfg.diagnostics["learning_curves"]["hpsm"]["kappas"]
+        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
         stats = sim_targ_batch_stats(sims[0], targs, kappas, logits=stat_logits(logits, cfg_loss))
         if cfg_loss["crit"] == "infonce":
             logit_scale = self._unwrapped_model.logit_scale
@@ -624,10 +624,10 @@ class VLMWrapper(abc.ABC):
         )
         # the gathered embeddings are what batch_step returns to the grad-norm logger; retain so
         # .grad carries the full-batch dL/dembs after backward (same quantity the chunked path
-        # all-reduces into its returned leaves). Each diagnostics.batch_diagnostics component gates only its
+        # all-reduces into its returned leaves). Each reporting.batch_diagnostics component gates only its
         # own retains/stats (emb_logit_grads the embedding+logit retains, sim_grad_sums the sim
         # retains, sim_targ_stats the batch stats) -- the loss/gradient path is untouched
-        diag = self.cfg.diagnostics["batch_diagnostics"]
+        diag = self.cfg.reporting["batch_diagnostics"]
         if diag["emb_logit_grads"]:
             if embs_img_b.requires_grad:
                 embs_img_b.retain_grad()
@@ -784,14 +784,14 @@ class VLMWrapper(abc.ABC):
         (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
         embs_img_b / embs_txt_b for grad-norm logging, and -- since the backward already ran and the
         sim matrices are gone -- the sims slot carries the grad_sum_sim float accumulated
-        tile-by-tile by chunked_bce_loss_backward. With diagnostics.batch_diagnostics.sim_targ_stats
+        tile-by-tile by chunked_bce_loss_backward. With reporting.batch_diagnostics.sim_targ_stats
         off batch_stats is None; with .sim_grad_sums off the sims slot carries None.
         """
         chunk = self.cfg.hw.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
         device = self.cfg.device
-        diag = self.cfg.diagnostics["batch_diagnostics"]
-        kappas = self.cfg.diagnostics["learning_curves"]["hpsm"]["kappas"]
+        diag = self.cfg.reporting["batch_diagnostics"]
+        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
 
         # DDP.forward must run under no_sync too, so the reducer is never armed for this step (we sync
         # gradients manually below); otherwise DDP would expect a matching synced backward. The reducer
@@ -839,7 +839,7 @@ class VLMWrapper(abc.ABC):
                     dist.all_reduce(p.grad)
             # the representation backward has consumed the leaves' band-partial grads; fold them so the
             # returned leaves carry full-batch dL/dembs for grad-norm logging (diagnostics-only, so
-            # skipped when diagnostics.batch_diagnostics.emb_logit_grads is off)
+            # skipped when reporting.batch_diagnostics.emb_logit_grads is off)
             if diag["emb_logit_grads"]:
                 dist.all_reduce(img.grad)
                 dist.all_reduce(txt.grad)
@@ -909,7 +909,7 @@ class VLMWrapper(abc.ABC):
 
         loss_total = 0.0
         chunk_stats = []
-        kappas = self.cfg.diagnostics["learning_curves"]["hpsm"]["kappas"]
+        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
             _, loss_raw, _, sims, targs, _ = self._loss_full_batch(embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl])

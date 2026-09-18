@@ -17,6 +17,7 @@ from utils.utils import (
     TimeTracker,
     Timer,
 )
+from utils.config import eval_groups
 from utils.ddp import rank0
 
 import pdb
@@ -91,7 +92,7 @@ class TrialData:
             "sim_median": [],
             "sim_mean": [],
             # sim_margin*: per batch, the mean hard-pair similarity margin at each
-            # diagnostics.learning_curves.hpsm.kappas value (a list in config order, not a scalar)
+            # reporting.learning_curves.hpsm.kappas value (a list in config order, not a scalar)
             # over the blended targets (sim_targ_batch_stats): the I2T / T2I directions and their mean,
             # each its own curve strip with one line per kappa (the directional strips only under
             # hpsm.multimodal)
@@ -340,7 +341,7 @@ class ArtifactManager:
             del metadata["n_chkpts"]
 
             del metadata["dev"]
-            del metadata["diagnostics"]
+            del metadata["reporting"]
             # campaign/run-management knobs, not arm/coord params: when the runner kills a hopeless
             # trial, and when it clears base_eval_cache/
             del metadata["kill_thresh"]
@@ -577,14 +578,16 @@ class ArtifactManager:
         # @rank0: a concurrent same-combo campaign can create/replace this combo's file at any
         # moment, so independent per-rank reads could disagree on hit/miss; rank 0 alone reads and
         # the caller broadcasts the decision. Entries carry only what the caching trial computed
-        # (metrics always; projections + embs for viz trials): a trial must read
-        # an entry missing a piece it needs as a miss (recompute, overwriting the entry with the
-        # richer version) rather than trip _write_base_eval on the missing piece downstream.
-        # Leaner entries stay valid hits for trials that don't need the missing pieces.
+        # (the eval groups its reporting.yaml had in play; projections + embs for viz trials): a
+        # trial must read an entry missing a piece it needs as a miss (recompute, overwriting the
+        # entry with the richer version) rather than trip _write_base_eval on the missing piece
+        # downstream. Leaner entries stay valid hits for trials that don't need the missing pieces.
         fpath = ArtifactManager.base_eval_cache_fpath(cfg_train)
         if not fpath.exists():
             return None
         entry = load_pickle(fpath)
+        if not eval_groups(cfg_train.reporting).keys() <= entry["metrics"]["scores"].keys():
+            return None
         if require_projections and entry["projections"] is None:
             return None
         if require_embs and entry["embs"] is None:

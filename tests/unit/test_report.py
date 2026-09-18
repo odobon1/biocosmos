@@ -9,7 +9,10 @@ from utils.train import ArtifactManager
 from utils.utils import load_pickle, save_pickle, paths
 
 
-_GROUP_KEYS = ("native", "native_macro", "joint", "joint_macro")
+# {group key: reported name} for the groups in play, the shape utils.config.eval_groups hands the
+# renderers; the fixtures below write every group's files, so all four are exercised
+_EVAL_GROUPS = {"native": "Native", "native_macro": "Native-Macro", "joint": "Joint", "joint_macro": "Joint-Macro"}
+_GROUP_KEYS = tuple(_EVAL_GROUPS)
 _SUPP_OFF = {"primitive": False, "n_shot": False}
 _SUPP_PRIM = {"primitive": True, "n_shot": False}
 _MAP_LABELS = ["All", "ID", "OOD", "I2T", "I2I", "T2I"]
@@ -76,7 +79,7 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_metric_stats("std")
+    report.update_metric_stats(_EVAL_GROUPS, "std")
 
     stats = json.loads((dpath_coord / "coord_stats" / "map" / "native" / "metrics.json").read_text())
     assert stats["n_trials"] == 2
@@ -99,6 +102,35 @@ def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monke
         for group_key in _GROUP_KEYS:
             assert (dpath_coord / "coord_stats" / criterion / group_key / "metrics.json").exists()
             assert (dpath_coord / "coord_stats" / criterion / group_key / "metrics_listview.json").exists()
+
+
+def test_stats_are_rendered_only_for_the_eval_groups_in_play(tmp_path, monkeypatch) -> None:
+    # every renderer keys off the eval_groups map it is handed (reporting.yaml's `eval`), not the set of
+    # <group>.json files on disk: a group left out gets no coord_stats subtree even when its metrics are there
+    for seed in ("42", "43"):
+        for criterion in ("map", "acc"):
+            dpath_selected = tmp_path / "_seeds" / seed / "evals" / "_selected" / criterion
+            dpath_selected.mkdir(parents=True)
+            for group_key in _GROUP_KEYS:
+                (dpath_selected / f"{group_key}.json").write_text(json.dumps({
+                    "scores": {"comp": {"map": {"all": "0.50"}}},
+                    "loss_raw": {"id": "0.70", "ood": None},
+                    "sim": {"mean": "0.0925"},
+                    "targ": {"mean": "-0.9895"},
+                    "chkpt": "1/1 (0.0M/0.0M samples)",
+                    "killed": False,
+                }))
+
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dataset", "cub")
+
+    report.update_metric_stats({"native": "Standard", "joint_macro": "GZSL"}, "std")
+
+    for criterion in ("map", "acc"):
+        assert (tmp_path / "coord_stats" / criterion / "native").exists()
+        assert (tmp_path / "coord_stats" / criterion / "joint_macro").exists()
+        assert not (tmp_path / "coord_stats" / criterion / "native_macro").exists()
+        assert not (tmp_path / "coord_stats" / criterion / "joint").exists()
 
 
 def _write_trial_evals(dpath_trial, chkpt_scores, n_chkpts=None, killed=None):
@@ -131,7 +163,7 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -174,7 +206,7 @@ def test_update_chkpt_selection_excludes_unfinished_trials(tmp_path, monkeypatch
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1  # only trial 42 counted
@@ -200,7 +232,7 @@ def test_update_chkpt_selection_base_eval_competes_like_any_checkpoint(tmp_path,
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["means"] == pytest.approx([0.70, 0.15, 0.45])
@@ -240,7 +272,7 @@ def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path,
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1
@@ -269,7 +301,7 @@ def test_update_chkpt_selection_selects_over_killed_trials_when_all_were_killed(
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection("std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
     chkpt_means = load_pickle(dpath_coord / "coord_stats" / "map" / "native" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -460,8 +492,8 @@ def test_update_arm_stats_writes_pngs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_arm_stats("cub", "hp", "std", True, False, True, _SUPP_OFF)
-    report.update_arm_stats("cub", "mp", "std", True, False, True, _SUPP_OFF)
+    report.update_arm_stats("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
+    report.update_arm_stats("cub", "mp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
     dpath_stats = tmp_path / "_datasets" / "cub" / "_arms" / "hp" / "arm_stats"
     for criterion in ("map", "acc"):
         for group_key in _GROUP_KEYS:
@@ -487,7 +519,7 @@ def test_update_arm_stats_rows_and_curves(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_OFF)
+    report.update_arm_stats("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
     assert len(grids) == 8 and len(plotted) == 8  # map + acc per eval group
     assert _captured(grids, "arm_stats", "map", "native") == [
         ["Coord", *_MAP_LABELS],
@@ -549,8 +581,8 @@ def test_update_dataset_stats_writes_pngs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(report, "_render_stats_table", _spy)
 
-    report.update_dataset_stats("cub", "std", True, False, True, _SUPP_OFF)
-    report.update_dataset_stats("bryo", "std", True, False, True, _SUPP_OFF)
+    report.update_dataset_stats("cub", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
+    report.update_dataset_stats("bryo", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
     dpath_stats = tmp_path / "_datasets" / "cub" / "dataset_stats"
     for kind in ("arm_coords", "arms"):
         for criterion in ("map", "acc"):
@@ -576,7 +608,7 @@ def test_update_dataset_stats_qual_phase_skips_arms(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
     dpath_stats = dpath_phase / "_datasets" / "cub" / "dataset_stats"
     assert (dpath_stats / "arm_coords" / "map" / "native" / "metrics.png").exists()
     assert not (dpath_stats / "arms").exists()
@@ -604,7 +636,7 @@ def test_update_dataset_stats_arms_use_best_coord_per_arm(tmp_path, monkeypatch)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
 
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
     assert [r[:2] for r in _captured(grids, "arms", "map", "native")] == [["Arm", "All"], ["a (1)", "60.00"], ["b (1)", "50.00"], ["c (1)", "50.00"]]
     assert _captured(grids, "arms", "acc", "native") == [["Arm", "I2T"], ["a (1)", "80.00"], ["b (1)", "70.00"], ["c (1)", "50.00"]]
     assert [r[:3] for r in _captured(grids, "arm_coords", "map", "native")] == [
@@ -666,9 +698,9 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_arm_stats("cub", "sp", "std", False, False, False, _SUPP_OFF)
-    report.update_dataset_stats("cub", "std", False, False, False, _SUPP_OFF)
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_arm_stats("cub", "sp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_stats", "map", "native")] == ["Coord", "c0 (1)"]
     assert [r[:2] for r in _captured(grids, "arm_coords", "map", "native")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
@@ -700,7 +732,7 @@ def test_update_dataset_stats_ordered_localized_per_metric(tmp_path, monkeypatch
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_dataset_stats("cub", "std", False, True, False, _SUPP_OFF)
+    report.update_dataset_stats("cub", _EVAL_GROUPS, "std", False, True, False, _SUPP_OFF)
     assert len(grids) == 16  # map + acc per eval group, both kinds
     grid_map = _captured(grids, "arm_coords", "map", "native")
     assert grid_map[0] == ["Arm", "Coord", *_MAP_LABELS]
@@ -726,7 +758,7 @@ def test_update_phase_stats_qual_phase_skips_arms_workbooks(tmp_path, monkeypatc
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     assert (dpath_phase / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
     assert not (dpath_phase / "phase_stats" / "arms").exists()
@@ -747,7 +779,7 @@ def test_update_phase_stats_writes_stacked_tables(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     fpath_xlsx = tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx"
     assert fpath_xlsx.exists()
@@ -864,7 +896,7 @@ def test_update_phase_stats_arm_coords_layout(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_PRIM, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM, False)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     ws = wb.active
@@ -924,7 +956,7 @@ def test_update_phase_stats_bold_high(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", True, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", True, False, False, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, arm rows
@@ -960,7 +992,7 @@ def test_update_phase_stats_per_group_files(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     dpath_stats = tmp_path / "phase_stats"
     for kind in ("arm_coords", "arms"):
@@ -992,7 +1024,7 @@ def test_update_phase_stats_criterion_sourcing(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     wb_map = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb_map.active.iter_rows()]
@@ -1031,7 +1063,7 @@ def test_update_phase_stats_ordered_per_sheet_metric(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, True, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
@@ -1084,7 +1116,7 @@ def test_update_phase_stats_heatmap(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col C,
@@ -1118,7 +1150,7 @@ def test_update_phase_stats_shades_killed_rows_yellow(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
@@ -1152,7 +1184,7 @@ def test_update_phase_stats_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, True, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")["Hardware Performance"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
@@ -1193,7 +1225,7 @@ def test_update_phase_stats_supp_primitive(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_PRIM, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM, False)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     ws = wb.active
@@ -1240,7 +1272,7 @@ def test_update_arm_stats_supp_primitive(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, _SUPP_PRIM)
+    report.update_arm_stats("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM)
     assert len(grids) == 8  # map + acc per eval group
     grid_map = _captured(grids, "map", "native")
     assert grid_map[0] == ["Coord", *_PRIM_MAP_LABELS]
@@ -1280,7 +1312,7 @@ def test_update_phase_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, {"primitive": True, "n_shot": True}, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, {"primitive": True, "n_shot": True}, False)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     ws = wb.active
@@ -1313,7 +1345,7 @@ def test_update_phase_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     assert agrid[12][5:8] == ["41.00", "52.00", "53.00"]
 
     # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
-    report.update_phase_stats("std", False, False, False, {"primitive": False, "n_shot": True}, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, {"primitive": False, "n_shot": True}, False)
 
     ws = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx").active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
@@ -1335,7 +1367,7 @@ def test_update_arm_stats_supp_n_shot(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
 
-    report.update_arm_stats("cub", "hp", "std", False, False, False, {"primitive": False, "n_shot": True})
+    report.update_arm_stats("cub", "hp", _EVAL_GROUPS, "std", False, False, False, {"primitive": False, "n_shot": True})
     grid_map = _captured(grids, "map", "native")
     assert grid_map[0] == ["Coord", *_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
     assert grid_map[1][7:] == ["31.00", "32.00", "33.00"]
@@ -1374,7 +1406,7 @@ def test_update_phase_stats_overrides_bands(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", True, False, True, _SUPP_OFF, True)
+    report.update_phase_stats(_EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, True)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arm_coords" / "map" / "native.xlsx")
     ws = wb.active
@@ -1448,7 +1480,7 @@ def test_update_phase_stats_overrides_all_uniform_omits_bands(tmp_path, monkeypa
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, True)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
 
     for kind in ("arm_coords", "arms"):
         wb = load_workbook(tmp_path / "phase_stats" / kind / "map" / "native.xlsx")
@@ -1488,7 +1520,7 @@ def test_update_phase_stats_arms_workbook_picks_best_coord_per_dataset(tmp_path,
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_phase_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     # every table's 'Coord' key cell names the dataset's pick (the Mean table's shows '-': per dataset)
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
@@ -1564,7 +1596,7 @@ def test_update_phase_stats_hw_sheet(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_phase_stats("std", True, False, True, _SUPP_OFF, True)
+    report.update_phase_stats(_EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, True)
 
     wb = load_workbook(tmp_path / "phase_stats" / "arms" / "map" / "native.xlsx")
     assert wb.sheetnames == ["Composite mAP", "Composite I2T Accuracy", "Hardware Performance"]
@@ -1659,7 +1691,7 @@ def test_update_test_stats_writes_stacked_tables_with_chkpt_column(tmp_path, mon
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     for group_key in _GROUP_KEYS:
         assert (tmp_path / "map" / f"test_{group_key}.xlsx").exists()
@@ -1707,7 +1739,7 @@ def test_update_test_stats_chkpt_per_dataset(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats("std", False, False, False, _SUPP_OFF, False)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     grid = [[c.value for c in row] for row in load_workbook(tmp_path / "map" / "test_native.xlsx").active.iter_rows()]
     assert grid[2][0] == "CUB"
@@ -1732,7 +1764,7 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats("std", False, False, False, _SUPP_OFF, True)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
 
     grid = [[c.value for c in row] for row in load_workbook(tmp_path / "map" / "test_native.xlsx").active.iter_rows()]
     # the arm band's one differing param at col A + separator B; lr.init is uniform -> the coord

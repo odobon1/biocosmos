@@ -21,12 +21,12 @@ import torch
 import torch.distributed as dist
 
 from campaign_runner import _build_trial_cfg_dict
-from utils.config import get_config_stats, get_config_train
+from utils.config import eval_groups, get_config_stats, get_config_train
 from utils.data import stage_img_cache
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 from utils.eval import EvaluationPipeline
 from utils.hardware import apply_backend_flags
-from utils.report import _EVAL_GROUPS, update_test_stats
+from utils.report import update_test_stats
 from utils.train import ArtifactManager, format_scores
 from utils.utils import get_text_template, load_json, save_json, paths
 
@@ -54,15 +54,16 @@ def _plan(campaign):
               for coord in coords]
     return cfg_snapshot, metadata, combos
 
-def _pending(dpath_test, combos, seeds):
+def _pending(dpath_test, combos, seeds, groups):
     """{(dataset, arm, coord): [seeds]} of the trials still to score: those whose test score files
-    (_seeds/<seed>/<group>.json, all eval groups) aren't all on disk. Computed once up front, before
-    anything is written, so every rank derives the identical eval sequence (evaluate() is collective)."""
+    (_seeds/<seed>/<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
+    once up front, before anything is written, so every rank derives the identical eval sequence
+    (evaluate() is collective)."""
     pending = {}
     for dataset, arm, coord in combos:
         for seed in seeds:
             dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed)
-            if not all((dpath_scores / f"{group_key}.json").exists() for group_key in _EVAL_GROUPS):
+            if not all((dpath_scores / f"{group_key}.json").exists() for group_key in groups):
                 pending.setdefault((dataset, arm, coord), []).append(seed)
     return pending
 
@@ -103,7 +104,8 @@ def main():
 
     cfg_snapshot, metadata, combos = _plan(campaign)
     seeds = metadata["seeds"]
-    pending = _pending(dpath_test, combos, seeds)
+    groups = eval_groups(cfg_snapshot["reporting"])  # the eval groups the campaign has in play (frozen)
+    pending = _pending(dpath_test, combos, seeds, groups)
 
     # fail fast, before any GPU work: every still-unscored trial needs its trainval model on disk -- a
     # missing one means the trainval phase is incomplete (relaunch the campaign to finish it)
@@ -177,7 +179,7 @@ def main():
     dist.barrier()  # every trial's score files on disk before rank 0 renders the tables
     ArtifactManager.dpath_phase = dpath_test
     cfg_stats = get_config_stats()
-    update_test_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+    update_test_stats(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                       cfg_stats.supp_scores, cfg_stats.overrides)
     cleanup_ddp()
 

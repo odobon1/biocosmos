@@ -43,14 +43,6 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
                 "id": {"map": {"i2t": 0.1, "i2i": 0.2, "t2i": 0.3}, "acc": {"i2t": 0.4}},
                 "comp": {"map": {"all": 0.2, "i2i": 0.2, "id": 0.2}},
             },
-            "native_macro": {
-                "id": {"map": {"i2t": 0.12, "i2i": 0.22, "t2i": 0.32}, "acc": {"i2t": 0.42}},
-                "comp": {"map": {"all": 0.22, "i2i": 0.22, "id": 0.22}},
-            },
-            "joint": {
-                "id": {"map": {"i2t": 0.11, "i2i": 0.21, "t2i": 0.31}, "acc": {"i2t": 0.41}},
-                "comp": {"map": {"all": 0.21, "i2i": 0.21, "id": 0.21}},
-            },
             "joint_macro": {
                 "id": {"map": {"i2t": 0.13, "i2i": 0.23, "t2i": 0.33}, "acc": {"i2t": 0.43}},
                 "comp": {"map": {"all": 0.23, "i2i": 0.23, "id": 0.23}},
@@ -61,4 +53,28 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
         "targ": {"min": None, "max": None, "median": None, "mean": None},
     }
 
-    PrintLog.eval(eval_metrics, _EvalPipe())
+    PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard", "joint_macro": "GZSL"})
+
+
+def test_printlog_eval_blocks_follow_the_eval_groups_in_play(capsys) -> None:
+    # one composite block per group in play, under its reported name; a group switched off has no
+    # scores subtree at all, so a stale block would KeyError rather than print blank
+    class _EvalPipe:
+        partitions = ["id"]
+
+    eval_metrics = {
+        "scores": {
+            "native": {"comp": {"map": {"all": 0.2, "i2i": 0.2, "id": 0.2}}},
+            "joint_macro": {"comp": {"map": {"all": 0.23, "i2i": 0.23, "id": 0.23}}},
+        },
+        "loss_raw": {"id": None},
+        "sim": {"min": None, "max": None, "median": None, "mean": None},
+        "targ": {"min": None, "max": None, "median": None, "mean": None},
+    }
+
+    PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard", "joint_macro": "GZSL"})
+
+    printout = capsys.readouterr().out
+    assert "Composite Standard mAP" in printout
+    assert "Composite GZSL mAP" in printout
+    assert "Native" not in printout and "Joint" not in printout

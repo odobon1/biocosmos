@@ -23,7 +23,7 @@ from utils.utils import (
     model_grad_l2_norm,
 )
 from models import VLMWrapper
-from utils.config import get_config_stats
+from utils.config import eval_groups, get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, targ_specs
 from utils.eval import EvaluationPipeline
@@ -168,7 +168,7 @@ class TrainPipeline:
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
         self._logit_scalars_tracked = self._tracked_logit_scalars()
         self._targ_stats_tracked = self._tracked_targ_stats()
-        self._batch_diag = self.cfg.diagnostics["batch_diagnostics"]
+        self._batch_diag = self.cfg.reporting["batch_diagnostics"]
         self._params_prev = None  # pre-step parameter snapshot, allocated on the first step
 
         if resume_state is not None:
@@ -392,6 +392,7 @@ class TrainPipeline:
         PrintLog.eval(
             self.data.eval_metrics,
             self.eval_pipe,
+            eval_groups(self.cfg.reporting),
             header=header,
             banner_suffix=f"[{self.cfg.idx_trial}/{self.cfg.n_trials_total}] ({self.cfg.campaign}/{self.cfg.phase}/{self.cfg.dataset}/{self.cfg.arm}/{self.cfg.coord}/{self.cfg.seed})",
             n_samps_seen=self.n_samps_seen,
@@ -427,9 +428,9 @@ class TrainPipeline:
         self.data.save()
         ArtifactManager.save_train_state(self, idx_batch)
         ArtifactManager.save_trial_state(self.data)
-        if final or self.cfg.diagnostics["plot_every"] == "chkpt":
+        if final or self.cfg.reporting["plot_every"] == "chkpt":
             plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch,
-                         self.cfg.diagnostics["learning_curves"]["hpsm"])
+                         self.cfg.reporting["learning_curves"]["hpsm"], eval_groups(self.cfg.reporting))
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.loss_chunk_size is not None:
@@ -469,7 +470,7 @@ class TrainPipeline:
         in opposite directions. Measured against a pre-step snapshot, which is optimizer-agnostic
         (no reliance on AdamW's internals) at the cost of one extra copy of the trainable params;
         the buffers are allocated once and reused, so there's no per-step allocation churn.
-        With diagnostics.batch_diagnostics.delta_norm_model off the snapshot/delta is skipped entirely (returns None)."""
+        With reporting.batch_diagnostics.delta_norm_model off the snapshot/delta is skipped entirely (returns None)."""
         if not self._batch_diag["delta_norm_model"]:
             self.opt.step()
             return None
@@ -756,7 +757,7 @@ def run_training(cfg):
     ArtifactManager.create_trial_dirs()
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_coord(cfg)
-    if cfg.diagnostics["logging"]:
+    if cfg.reporting["logging"]:
         PrintLog.create_logs(ArtifactManager.dpath_trial / "logs", cfg.train_pt != "trainval")
     PrintLog.init_train(cfg)
 
@@ -791,22 +792,23 @@ def run_training(cfg):
         ArtifactManager.save_model(train_pipe.modelw)
     else:
         cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
+        groups = eval_groups(cfg.reporting)  # the eval groups the campaign has in play (frozen)
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
         # rewrites their evals/_selected/, so the aggregates below see the current selection
-        update_chkpt_selection(cfg_stats.spread_type)
-        update_metric_stats(cfg_stats.spread_type)
+        update_chkpt_selection(groups, cfg_stats.spread_type)
+        update_metric_stats(groups, cfg_stats.spread_type)
         # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
         # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
         # (dataset_stats), and the whole matrix (phase_stats) -- so it is never rendered from a mix of
         # coords reselected against different trial counts
         if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
-            update_arm_stats(cfg.dataset, cfg.arm, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                             cfg_stats.supp_scores)
+            update_arm_stats(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+                             cfg_stats.heatmap, cfg_stats.supp_scores)
         if dataset_sweep_complete(cfg.seed, cfg.dataset):
-            update_dataset_stats(cfg.dataset, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                                 cfg_stats.supp_scores)
+            update_dataset_stats(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+                                 cfg_stats.heatmap, cfg_stats.supp_scores)
         if seed_sweep_complete(cfg.seed):
-            update_phase_stats(cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
-                                  cfg_stats.overrides)
+            update_phase_stats(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+                                  cfg_stats.supp_scores, cfg_stats.overrides)
 
     cleanup_ddp()

@@ -18,7 +18,7 @@ except that every level renders unconditionally here, rather than only at the en
 
 import sys
 
-from utils.config import get_config_stats
+from utils.config import eval_groups, get_config_stats
 from utils.report import (
     update_metric_stats,
     update_chkpt_selection,
@@ -32,6 +32,9 @@ from utils.utils import load_json, paths
 
 def regen_campaign(campaign, cfg_stats):
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
+    # the eval groups the campaign has in play, off its frozen snapshot -- the set its trials actually
+    # scored, so the live reporting.yaml having moved on can't ask for a group that was never written
+    groups = eval_groups(load_json(paths["artifacts"] / campaign / "_screen" / "cfg_baseline.json")["reporting"])
     for phase in ("_screen", "qual"):  # the trainval phase runs no evals: nothing to select, aggregate or render
         ArtifactManager.dpath_phase = paths["artifacts"] / campaign / phase
         if not ArtifactManager.dpath_phase.exists():  # no qual phase: n_trials_qual null, or not reached yet
@@ -45,11 +48,11 @@ def regen_campaign(campaign, cfg_stats):
                     ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
                                                    / "_coords" / coord)
                     if ArtifactManager.dpath_coord.exists():
-                        update_chkpt_selection(cfg_stats.spread_type)
-                        update_metric_stats(cfg_stats.spread_type)
-                update_arm_stats(dataset, arm, *style)
-            update_dataset_stats(dataset, *style)
-        update_phase_stats(*style, cfg_stats.overrides)
+                        update_chkpt_selection(groups, cfg_stats.spread_type)
+                        update_metric_stats(groups, cfg_stats.spread_type)
+                update_arm_stats(dataset, arm, groups, *style)
+            update_dataset_stats(dataset, groups, *style)
+        update_phase_stats(groups, *style, cfg_stats.overrides)
 
 
 def main():

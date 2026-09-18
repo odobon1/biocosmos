@@ -9,12 +9,22 @@ import math
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
 from utils.utils import load_split, Timer
-from utils.config import TrainConfig
+from utils.config import TrainConfig, eval_groups
 
 import pdb
 
 
 RETRIEVAL_MODALITIES = ("i2t", "i2i", "t2i")
+
+# eval group key -> (the gallery its scores are retrieved against, the rollup over that gallery's
+# classes). Which of them a trial scores is reporting.yaml's `eval` (utils.config.eval_groups); a
+# gallery whose groups are all off is never even computed.
+EVAL_GROUP_SPECS = {
+    "native": ("native", "standard"),
+    "native_macro": ("native", "macro"),
+    "joint": ("joint", "standard"),
+    "joint_macro": ("joint", "macro"),
+}
 
 
 def harmonic_mean(values):
@@ -672,6 +682,10 @@ class EvaluationPipeline:
 
         self.header_tag = header_tag
 
+        # the groups this trial scores, and the galleries they need (reporting.yaml's `eval`)
+        self.eval_groups = list(eval_groups(config.reporting))
+        self.galleries = {EVAL_GROUP_SPECS[group_key][0] for group_key in self.eval_groups}
+
         self.split = load_split(config.dataset, config.split)
         self.nshot_bucket_names = list(self.split.nshot["names"])
         self.partitions = list_eval_partitions(self.split, eval_pt)
@@ -703,19 +717,14 @@ class EvaluationPipeline:
         timer.start()
 
         eval_metrics: Dict[str, Any] = {
-            "scores": {
-                "native": {},
-                "native_macro": {},
-                "joint": {},
-                "joint_macro": {},
-            },
+            "scores": {group_key: {} for group_key in self.eval_groups},
             "loss_raw": {},
             "sim": {stat: None for stat in ("min", "max", "median", "mean")},
             "targ": {stat: None for stat in ("min", "max", "median", "mean")},
         }
         accum = {
             group_key: {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
-            for group_key in ("native", "native_macro", "joint", "joint_macro")
+            for group_key in self.eval_groups
         }
         eval_bundles: Dict[str, Dict[str, Any]] = {}
         partition_losses: Dict[str, Optional[float]] = {}
@@ -736,22 +745,24 @@ class EvaluationPipeline:
                     for stat in ("min", "max", "median", "mean")
                 }
 
-        jointgall_embs_img = torch.cat(
-            [eval_bundles[partition]["embs_img"] for partition in self.partitions],
-            dim=0,
-        )
-        jointgall_class_encs_img = torch.cat(
-            [eval_bundles[partition]["class_encs_img"] for partition in self.partitions],
-            dim=0,
-        )
-        jointgall_embs_text = torch.cat(
-            [eval_bundles[partition]["embs_text"] for partition in self.partitions],
-            dim=0,
-        )
-        jointgall_class_encs_text = torch.cat(
-            [eval_bundles[partition]["class_encs_text"] for partition in self.partitions],
-            dim=0,
-        )
+        # the joint gallery is built (and retrieved against) only when a group in play reads it
+        if "joint" in self.galleries:
+            jointgall_embs_img = torch.cat(
+                [eval_bundles[partition]["embs_img"] for partition in self.partitions],
+                dim=0,
+            )
+            jointgall_class_encs_img = torch.cat(
+                [eval_bundles[partition]["class_encs_img"] for partition in self.partitions],
+                dim=0,
+            )
+            jointgall_embs_text = torch.cat(
+                [eval_bundles[partition]["embs_text"] for partition in self.partitions],
+                dim=0,
+            )
+            jointgall_class_encs_text = torch.cat(
+                [eval_bundles[partition]["class_encs_text"] for partition in self.partitions],
+                dim=0,
+            )
 
         img_offset = 0
         for partition in self.partitions:
@@ -772,34 +783,34 @@ class EvaluationPipeline:
                 nshot_bucket_names=pipe.nshot_bucket_names,
             )
 
-            self_match_idxs_g = torch.arange(
-                img_offset,
-                img_offset + eval_bundle_partition["embs_img"].size(0),
-                device=eval_bundle_partition["embs_img"].device,
-                dtype=torch.long,
-            )
-            img_offset += eval_bundle_partition["embs_img"].size(0)
+            scores_gallery = {"native": nativegall_scores}
 
-            jointgall_scores = pipe.compute_map_scores(
-                embs_img_q=eval_bundle_partition["embs_img"],
-                class_encs_img_q=eval_bundle_partition["class_encs_img"],
-                embs_text_q=eval_bundle_partition["embs_text"],
-                class_encs_text_q=eval_bundle_partition["class_encs_text"].to(eval_bundle_partition["embs_img"].device),
-                embs_img_g=jointgall_embs_img,
-                class_encs_img_g=jointgall_class_encs_img,
-                embs_text_g=jointgall_embs_text,
-                class_encs_text_g=jointgall_class_encs_text,
-                self_match_idxs_g=self_match_idxs_g,
-                class_enc_to_bucket=pipe.class_enc_to_bucket,
-                nshot_bucket_names=pipe.nshot_bucket_names,
-            )
+            if "joint" in self.galleries:
+                self_match_idxs_g = torch.arange(
+                    img_offset,
+                    img_offset + eval_bundle_partition["embs_img"].size(0),
+                    device=eval_bundle_partition["embs_img"].device,
+                    dtype=torch.long,
+                )
+                img_offset += eval_bundle_partition["embs_img"].size(0)
 
-            for group_key, scores, grp in (
-                ("native", nativegall_scores, "standard"),
-                ("native_macro", nativegall_scores, "macro"),
-                ("joint", jointgall_scores, "standard"),
-                ("joint_macro", jointgall_scores, "macro"),
-            ):
+                scores_gallery["joint"] = pipe.compute_map_scores(
+                    embs_img_q=eval_bundle_partition["embs_img"],
+                    class_encs_img_q=eval_bundle_partition["class_encs_img"],
+                    embs_text_q=eval_bundle_partition["embs_text"],
+                    class_encs_text_q=eval_bundle_partition["class_encs_text"].to(eval_bundle_partition["embs_img"].device),
+                    embs_img_g=jointgall_embs_img,
+                    class_encs_img_g=jointgall_class_encs_img,
+                    embs_text_g=jointgall_embs_text,
+                    class_encs_text_g=jointgall_class_encs_text,
+                    self_match_idxs_g=self_match_idxs_g,
+                    class_enc_to_bucket=pipe.class_enc_to_bucket,
+                    nshot_bucket_names=pipe.nshot_bucket_names,
+                )
+
+            for group_key in self.eval_groups:
+                gallery, grp = EVAL_GROUP_SPECS[group_key]
+                scores = scores_gallery[gallery]
                 a = accum[group_key]
                 a["all"].append(harmonic_mean([scores[grp]["map"][m] for m in RETRIEVAL_MODALITIES]))
                 a["i2t"].append(scores[grp]["map"]["i2t"])

@@ -1,5 +1,6 @@
 import pytest
 
+from utils import config
 from utils.config import CampaignConfig, GenSplitConfig, ManifoldVizConfig, StatsConfig, TrainConfig
 from utils.config import apply_overrides
 from utils.config import get_config_train, inert_params, _check_overrides_live
@@ -35,7 +36,11 @@ def make_train_config_dummy(**overrides):
         "dv_batching": False,
         "htarg": {"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": False},
         "dev": False,
-        "diagnostics": {"logging": False, "plot_every": "trial"},
+        "reporting": {
+            "logging": False,
+            "plot_every": "trial",
+            "eval": {"native_macro": False, "joint": False, "joint_macro": True},
+        },
         "kill_thresh": None,
         "del_base_eval_cache": None,
         "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
@@ -201,9 +206,33 @@ def test_train_config_rejects_unknown_plot_every(monkeypatch: pytest.MonkeyPatch
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["diagnostics"]["plot_every"] = "epoch"
-    with pytest.raises(ValueError, match="diagnostics.plot_every must be 'trial' or 'chkpt'"):
+    cfg_dict["reporting"]["plot_every"] = "epoch"
+    with pytest.raises(ValueError, match="reporting.plot_every must be 'trial' or 'chkpt'"):
         TrainConfig(**cfg_dict)
+
+
+def test_train_config_rejects_unknown_eval_group_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
+    # native carries no toggle (it is always in play) and a typo'd group would otherwise silently
+    # drop that group from every artifact of the campaign
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy()
+    cfg_dict["reporting"]["eval"]["joint_marco"] = cfg_dict["reporting"]["eval"].pop("joint_macro")
+    with pytest.raises(ValueError, match="reporting.eval must toggle exactly"):
+        TrainConfig(**cfg_dict)
+
+
+def test_eval_groups_is_native_plus_the_toggles_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    # keys in EVAL_GROUPS order regardless of the yaml's; names from aliases.yaml's eval_groups,
+    # anything unlisted verbatim
+    patch_hw(monkeypatch)
+    monkeypatch.setattr(config, "CFG_EVAL_GROUP_ALIASES", {"native": "Standard", "joint_macro": "GZSL"})
+
+    cfg = TrainConfig(**make_train_config_dummy())
+    assert config.eval_groups(cfg.reporting) == {"native": "Standard", "joint_macro": "GZSL"}
+
+    cfg.reporting["eval"] = {"joint_macro": False, "joint": True, "native_macro": True}
+    assert config.eval_groups(cfg.reporting) == {"native": "Standard", "native_macro": "native_macro", "joint": "joint"}
 
 
 def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.MonkeyPatch) -> None:

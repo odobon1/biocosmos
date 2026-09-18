@@ -22,3 +22,10 @@ learning_curves:
 logging: true
 plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
 # (trial) Only at the final checkpoint
+eval:  # Eval groups in play, toggled per group; native is always in and so is not listed. (false)
+# The group is never scored -- no evals/<chkpt>/<group>.json, no checkpoint selection, no
+# coord/arm/dataset/phase/test stats, no learning-curve figure, no eval-printout block. Each group is
+# labelled by its aliases.yaml `eval_groups` alias in all of them
+  native_macro: false  # {true, false}
+  joint: false  # {true, false}
+  joint_macro: true  # {true, false}

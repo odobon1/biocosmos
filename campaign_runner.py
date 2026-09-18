@@ -14,8 +14,10 @@ the queue moves on (main).
 
 from pathlib import Path
 from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import NamedTuple
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 import ctypes
 import itertools
 import json
@@ -37,9 +39,10 @@ from utils.config import (
     CFG_UNIVERSAL_VALUE_ALIASES,
     CampaignConfig,
     apply_overrides, 
-    apply_dev_overrides, 
-    inject_snapshots, 
-    get_config_stats, 
+    apply_dev_overrides,
+    inject_snapshots,
+    eval_groups,
+    get_config_stats,
     get_config_train, 
     load_train_config_dict, 
     load_manifold_viz_trial_config_dict, 
@@ -48,7 +51,7 @@ from utils.config import (
     load_dataset_specific_config_dict, 
     load_hardware_config_dict, 
     load_augmentation_config_dict, 
-    load_diagnostics_config_dict, 
+    load_reporting_config_dict, 
     load_dev_config_dict, 
     load_htargs_config_dict
 )
@@ -138,7 +141,7 @@ def _classify_crash(exc: Exception) -> str:
         return "ram"
     return "other"
 
-def _render_phase_tables(campaign: str, phase: str) -> None:
+def _render_phase_tables(campaign: str, phase: str, groups: dict) -> None:
     """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, phase_stats) of
     the phase from whatever is on disk, over its recorded matrix. Trials render each level only when a seed
     completes across that level's cycle (train.py), so a phase that ends mid-cycle -- one interrupted, or with
@@ -153,9 +156,9 @@ def _render_phase_tables(campaign: str, phase: str) -> None:
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
-            update_arm_stats(dataset, arm, *style)
-        update_dataset_stats(dataset, *style)
-    update_phase_stats(*style, cfg_stats.overrides)
+            update_arm_stats(dataset, arm, groups, *style)
+        update_dataset_stats(dataset, groups, *style)
+    update_phase_stats(groups, *style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
@@ -221,7 +224,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     `reporting`, `dev`, `htargs`. The `train` snapshot is derived from `config/trial/train/train.yaml` (with `config/trial/train/dev.yaml`'s
     overrides folded in when `dev` is on); the other eight are `config/trial/hardware.yaml`, `config/{trial,render}/manifold_viz.yaml`,
     `config/trial/train/model_specific.yaml`, `config/trial/train/dataset_specific.yaml`, `config/trial/train/augmentation.yaml`,
-    `config/trial/diagnostics.yaml`, `config/trial/train/dev.yaml` and `config/trial/train/htargs.yaml` verbatim. Every trial
+    `config/trial/reporting.yaml`, `config/trial/train/dev.yaml` and `config/trial/train/htargs.yaml` verbatim. Every trial
     starts from the `train` snapshot and has the sibling snapshots injected per trial (as `hw`, `manifold_viz`,
     `model_specific`, `dataset_specific`, `augmentation`, `reporting`, `dev_overrides`, `htarg`). `htarg` is injected
     before the arm / coord overrides are applied, since `htarg.*` is a swept dimension. Re-applying the frozen
@@ -248,7 +251,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
         "model_specific": load_model_specific_config_dict(),
         "dataset_specific": load_dataset_specific_config_dict(),
         "augmentation": load_augmentation_config_dict(),
-        "diagnostics": load_diagnostics_config_dict(),
+        "reporting": load_reporting_config_dict(),
         "dev": cfg_dev,
         "htargs": load_htargs_config_dict(),
         "aliases": load_aliases_config_dict(),
@@ -679,7 +682,7 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (del_base_eval_cache)", flush=True)
 
-def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict) -> tuple[dict, Path]:
+def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, groups: dict) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
     coord under every arm for the screening phase, each arm's picked coord(s) for the qual and trainval phases -- the
@@ -722,7 +725,7 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
     metadata["matrix"] = matrix
     save_json(metadata, fpath_meta)
     if pruned:  # the tables' rows changed: render them over the recorded matrix now rather than a cycle later
-        _render_phase_tables(campaign, phase)
+        _render_phase_tables(campaign, phase, groups)
     return metadata, fpath_meta
 
 def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str], coord_names: list[str]) -> dict:
@@ -917,7 +920,7 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
         _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
-    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix)
+    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix, eval_groups(cfg_snapshot["reporting"]))
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
     # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every arm and
@@ -959,6 +962,9 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     dpath_phase = _dpath_phase(campaign, phase)
     max_retries = cfg_snapshot["hardware"]["max_retries"]  # consecutive no-progress trial retries before giving up
     del_base_eval_cache = cfg_snapshot["train"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
+    # the eval groups every table/plot of the phase is rendered per -- off the FROZEN snapshot, the set
+    # its trials actually scored, so a later reporting.yaml edit can't ask for a group never written
+    groups = eval_groups(cfg_snapshot["reporting"])
     render_proc: subprocess.Popen | None = None
     plans = None  # the plans applied: the earlier phases', then this one's (_plan_phases)
     trials: list[tuple] = []
@@ -974,7 +980,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 dpath_phase.mkdir(parents=True, exist_ok=True)
                 save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
-                _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix)
+                _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix, groups)
             plans = plans_new
             plan = plans[-1]
             _apply_plan(campaign, camp.name, phase, cfg_snapshot, plan)
@@ -1048,7 +1054,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 )
                 if render_proc is not None and render_proc.poll() is None:
                     render_proc.terminate()
-                _render_phase_tables(campaign, phase)
+                _render_phase_tables(campaign, phase, groups)
                 PrintLog.manifest(dpath_phase, trials, in_progress=None)
                 return "interrupted"
             except Exception as e:
@@ -1100,7 +1106,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
         return outcome
 
-    _render_phase_tables(campaign, phase)
+    _render_phase_tables(campaign, phase, groups)
 
     # let the last trial's render finish before the phase exits
     if render_proc is not None:
@@ -1262,6 +1268,7 @@ def _next_queue_entry(executed: list[str]) -> str | None:
 def main() -> None:
     if sys.argv[1:]:
         raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/campaign_queue.yaml)")
+    time_start = time.time()
     runs: list[_Run] = []
     while True:
         # a campaign already run whose yaml has since changed its plan is relaunched -- the earliest such first --
@@ -1285,6 +1292,8 @@ def main() -> None:
             print(f"campaign_queue: '{run.spec}' interrupted -- exiting queue", flush=True)
             return
     print(f"campaign_queue: drained -- {len(runs)} campaign(s) run", flush=True)
+    print(f"campaign_queue: {datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
+    print(f"campaign_queue: total time {timedelta(seconds=int(time.time() - time_start))}", flush=True)
 
 
 if __name__ == "__main__":

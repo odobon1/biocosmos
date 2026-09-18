@@ -14,6 +14,12 @@ from utils.utils import PrintLog
 # a single no-override coord: the degenerate no-HPO case, so a campaign's matrix is its arms alone
 _BASE_COORD = [[{"name": "base"}]]
 
+# the stub snapshots' reporting.eval, and the eval groups it puts in play: native (always) + joint_macro.
+# native_macro / joint are off, so no artifact of theirs may be written anywhere.
+_EVAL_TOGGLES = {"native_macro": False, "joint": False, "joint_macro": True}
+_GROUPS_ON = ("native", "joint_macro")
+_GROUPS_OFF = ("native_macro", "joint")
+
 
 def _set_camp(monkeypatch, **spec) -> None:
     """Point the runner's camp-yaml read (_load_campaign_config) at `spec` -- what config/campaigns/<name>.yaml would
@@ -71,7 +77,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "manifold_viz": {"eval_duration": 1500},
         "model_specific": {},
         "augmentation": {},
-        "diagnostics": {},
+        "reporting": {"eval": _EVAL_TOGGLES},
         "dev": {},
         "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
         "aliases": load_aliases_config_dict(),
@@ -123,7 +129,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_a)
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_a)
     monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: aug_a)
-    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: rep_a)
+    monkeypatch.setattr(cr, "load_reporting_config_dict", lambda: rep_a)
     monkeypatch.setattr(cr, "load_dev_config_dict", lambda: dev_a)
     monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: ht_a)
     monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: al_a)
@@ -135,7 +141,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: ms_b)
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: ds_b)
     monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: aug_b)
-    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: rep_b)
+    monkeypatch.setattr(cr, "load_reporting_config_dict", lambda: rep_b)
     monkeypatch.setattr(cr, "load_dev_config_dict", lambda: dev_b)
     monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: ht_b)
     monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: al_b)
@@ -143,7 +149,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
 
     # the nine sources are bundled into one snapshot and frozen on first launch
     expected = {"train": train_a, "hardware": hw_a, "manifold_viz": mviz_a, "model_specific": ms_a, "dataset_specific": ds_a,
-                "augmentation": aug_a, "diagnostics": rep_a, "dev": dev_a,
+                "augmentation": aug_a, "reporting": rep_a, "dev": dev_a,
                 "htargs": ht_a, "aliases": al_a}
     assert out_first == expected
     assert out_second == expected
@@ -166,7 +172,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     monkeypatch.setattr(cr, "load_model_specific_config_dict", lambda: {"siglip": {"wd": 0.0, "beta2": 0.95}})
     monkeypatch.setattr(cr, "load_dataset_specific_config_dict", lambda: {"cub": {"n_epochs": 100, "n_chkpts": 50}})
     monkeypatch.setattr(cr, "load_augmentation_config_dict", lambda: {})
-    monkeypatch.setattr(cr, "load_diagnostics_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_reporting_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_dev_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: {})
@@ -203,7 +209,7 @@ def _stub_campaign_config(monkeypatch, hardware=None, manifold_viz=None, train_e
         "manifold_viz": manifold_viz or {"eval_duration": 1500},
         "model_specific": {},
         "augmentation": {},
-        "diagnostics": {},
+        "reporting": {"eval": _EVAL_TOGGLES},
         "dev": {},
         "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
         "aliases": load_aliases_config_dict(),
@@ -396,8 +402,7 @@ def test_run_campaign_gpu_mismatch_raises(tmp_path, monkeypatch) -> None:
     assert len(scheduled) == n_first
 
 
-def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str) -> list[Path]:
-    groups = ("native", "native_macro", "joint", "joint_macro")
+def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str, groups=_GROUPS_ON) -> list[Path]:
     dpath_dataset = dpath_phase / "_datasets" / dataset
     fpaths = []
     for criterion in ("map", "acc"):
@@ -439,6 +444,9 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
     # no trial ever completed, so the tables are empty -- the point is that they were written at all
     for fpath in _campaign_table_fpaths(tmp_path / "cmp_render" / "_screen", "cub", "sp"):
         assert fpath.exists(), fpath
+    # ... and only for the eval groups reporting.eval has in play
+    for fpath in _campaign_table_fpaths(tmp_path / "cmp_render" / "_screen", "cub", "sp", groups=_GROUPS_OFF):
+        assert not fpath.exists(), fpath
 
 
 def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:
@@ -1564,7 +1572,7 @@ def _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache: bool) -> None
         "manifold_viz": {},
         "model_specific": {},
         "augmentation": {},
-        "diagnostics": {},
+        "reporting": {"eval": _EVAL_TOGGLES},
         "dev": {},
         "htargs": {"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
         "aliases": load_aliases_config_dict(),

@@ -41,14 +41,15 @@ def test_pending_skips_fully_scored_trials(tmp_path) -> None:
     # mid-save) leaves it pending, so a relaunch re-runs it
     dpath_test = tmp_path / "test"
     combos = [("cub", "a1", "c1")]
+    groups = {"native": "Standard", "joint_macro": "GZSL"}
     dpath_seeds = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_seeds"
-    for group_key in test_script._EVAL_GROUPS:  # seed 42: fully scored
+    for group_key in groups:  # seed 42: fully scored
         (dpath_seeds / "42").mkdir(parents=True, exist_ok=True)
         (dpath_seeds / "42" / f"{group_key}.json").write_text("{}")
     (dpath_seeds / "43").mkdir(parents=True)  # seed 43: partially scored
     (dpath_seeds / "43" / "native.json").write_text("{}")
 
-    pending = test_script._pending(dpath_test, combos, [42, 43, 44])
+    pending = test_script._pending(dpath_test, combos, [42, 43, 44], groups)
 
     assert pending == {("cub", "a1", "c1"): [43, 44]}
 

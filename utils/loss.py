@@ -689,7 +689,7 @@ def hard_pair_similarity_margin(S, Q, kappa):
 
     - S ---- [R, B] similarities (a full BxB matrix, or a row-block of one)
     - Q ---- [R, B] target memberships in [0, 1]
-    - kappa  hardness weight; diagnostics.learning_curves.hpsm.kappas lists the values curved
+    - kappa  hardness weight; reporting.learning_curves.hpsm.kappas lists the values curved
 
     Returns Δs_i(kappa) per row, [R]; the batch statistic is its mean over all B rows. Rows are the
     anchors: on S (image rows, text columns) that is the I2T margin, on S.T with Q.T the T2I one; the

@@ -28,6 +28,25 @@ CFG_UNIVERSAL_VALUE_ALIASES = _CFG_ALIASES["universal_value"]
 # config file stem -> the cfg key a campaign's `ablation_arms` / `hpo_coords` overrides reach its
 # contents through (config/trial/aliases.yaml's config.file); only the overridable configs are listed
 CFG_FILE_ALIASES = _CFG_ALIASES["file"]
+# eval group key -> the name it is reported under (config/trial/aliases.yaml's eval_groups); a group
+# without an alias passes through verbatim. Read live like CFG_FILE_ALIASES rather than from a campaign's
+# frozen copy: these are display labels only, so relabelling one re-renders an existing campaign under it.
+CFG_EVAL_GROUP_ALIASES = load_aliases_config_dict()["eval_groups"]
+
+# Every eval group a trial can score, in reporting order (utils.eval maps each to the gallery its scores
+# are computed against x the rollup over that gallery's classes). `native` is always scored;
+# config/trial/reporting.yaml's `eval` block toggles the rest.
+EVAL_GROUPS = ("native", "native_macro", "joint", "joint_macro")
+
+def eval_groups(cfg_reporting: dict) -> dict:
+    """The eval groups in play, {group key: reported name}, in EVAL_GROUPS order: `native`, always in,
+    plus every group reporting.yaml's `eval` switches on. The KEY names the group's scores subtree and
+    every per-group artifact file/dir; the name is CFG_EVAL_GROUP_ALIASES' display label."""
+    return {
+        key: CFG_EVAL_GROUP_ALIASES.get(key, key)
+        for key in EVAL_GROUPS
+        if key == "native" or cfg_reporting["eval"][key]
+    }
 
 def inject_snapshots(cfg_dict: dict, cfg_snapshot: dict) -> None:
     """Lay every sibling snapshot of a frozen campaign config onto a trial's config dict (`train` is
@@ -40,7 +59,7 @@ def inject_snapshots(cfg_dict: dict, cfg_snapshot: dict) -> None:
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
     cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
     cfg_dict["augmentation"] = cfg_snapshot["augmentation"]
-    cfg_dict["diagnostics"] = cfg_snapshot["diagnostics"]
+    cfg_dict["reporting"] = cfg_snapshot["reporting"]
     cfg_dict["dev_overrides"] = cfg_snapshot["dev"]
 
 
@@ -97,7 +116,7 @@ class TrainConfig:
     lr: dict
 
     dev: bool  # {true, false}; (true) lay config/trial/train/dev.yaml's overrides over the config and force the dev split
-    diagnostics: dict  # reporting.yaml contents (get_config_train reads it live when not supplied)
+    reporting: dict  # reporting.yaml contents (get_config_train reads it live when not supplied)
     kill_thresh: float | None  # {null, (0.0, 1.0)}; fraction of the run at which a trial that has not beaten its base eval is killed
     del_base_eval_cache: str | None  # {null, campaign, trial}; when the campaign runner deletes base_eval_cache/
 
@@ -188,8 +207,16 @@ class TrainConfig:
                 f"lr.warmup must be a fraction of sample_volume in [0.0, 1.0), got {lr_warmup}"
             )
 
-        if self.diagnostics["plot_every"] not in ("trial", "chkpt"):
-            raise ValueError(f"diagnostics.plot_every must be 'trial' or 'chkpt', got {self.diagnostics['plot_every']!r}")
+        if self.reporting["plot_every"] not in ("trial", "chkpt"):
+            raise ValueError(f"reporting.plot_every must be 'trial' or 'chkpt', got {self.reporting['plot_every']!r}")
+
+        # native is always in play, so it carries no toggle; a typo here would otherwise drop a whole
+        # eval group from the campaign's artifacts without a word
+        if set(self.reporting["eval"]) != set(EVAL_GROUPS) - {"native"}:
+            raise ValueError(
+                f"reporting.eval must toggle exactly {sorted(set(EVAL_GROUPS) - {'native'})} "
+                f"(native is always in play), got {sorted(self.reporting['eval'])}"
+            )
 
         if self.del_base_eval_cache not in (None, "campaign", "trial"):
             raise ValueError(f"del_base_eval_cache must be null, 'campaign' or 'trial', got {self.del_base_eval_cache!r}")
@@ -469,8 +496,8 @@ def load_augmentation_config_dict() -> dict:
     with open(paths["config"] / "trial" / "train" / "augmentation.yaml") as f:
         return yaml.safe_load(f)
 
-def load_diagnostics_config_dict() -> dict:
-    with open(paths["config"] / "trial" / "diagnostics.yaml") as f:
+def load_reporting_config_dict() -> dict:
+    with open(paths["config"] / "trial" / "reporting.yaml") as f:
         return yaml.safe_load(f)
 
 def load_dev_config_dict() -> dict:
@@ -561,7 +588,7 @@ def get_config_train(cfg_dict: dict) -> TrainConfig:
         cfg_dict = apply_overrides(cfg_dict, overrides)
     # campaign trials freeze these into the baseline and inject them per trial; otherwise load live
     cfg_dict.setdefault("hw", load_hardware_config_dict())
-    cfg_dict.setdefault("diagnostics", load_diagnostics_config_dict())
+    cfg_dict.setdefault("reporting", load_reporting_config_dict())
     cfg = TrainConfig(**cfg_dict)
     if overrides is not None:
         _check_overrides_live(cfg, overrides)

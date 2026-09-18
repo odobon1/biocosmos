@@ -58,7 +58,7 @@ class _FakeCoordCfg:
     n_chkpts: int = 5
     batch_size: int = 1_024
     dev: bool = False
-    diagnostics: dict = field(default_factory=dict)
+    reporting: dict = field(default_factory=dict)
     kill_thresh: float | None = None
     del_base_eval_cache: str | None = None
     arch: dict = field(default_factory=lambda: {
@@ -246,29 +246,53 @@ def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
     assert data.data_eval["targ"]["min"] == [None, -1.0]
 
 
+def _cfg_eval_groups(**toggles):
+    """A stub config carrying just reporting.eval -- what load_base_eval_cache reads off it."""
+    eval_cfg = {"native_macro": False, "joint": False, "joint_macro": False, **toggles}
+    return SimpleNamespace(reporting={"eval": eval_cfg})
+
+
 def test_load_base_eval_cache_misses_when_entry_lacks_needed_pieces(tmp_path, monkeypatch) -> None:
     # entries carry only what the caching trial computed -- a trial must read an entry missing a
     # piece it needs (projections for viz, embs for pooled) as a miss (recompute + upgrade the
     # entry) rather than hit the missing piece downstream in _write_base_eval; leaner trials
     # still reuse the entry
     fpath = tmp_path / "combo.pkl"
+    cfg = _cfg_eval_groups()
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: fpath)
-    entry = {"metrics": {"scores": {"comp": {"map": {"all": "0.50"}}}}, "projections": None, "embs": None}
+    entry = {"metrics": {"scores": {"native": {"comp": {"map": {"all": "0.50"}}}}}, "projections": None, "embs": None}
 
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=False, require_embs=False) is None  # no file for this combo
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=False, require_embs=False) is None  # no file for this combo
 
     save_pickle(entry, fpath)
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=False) is None  # metrics-only entry, viz trial
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=False, require_embs=False) == entry
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=True, require_embs=False) is None  # metrics-only entry, viz trial
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=False, require_embs=False) == entry
 
     entry_viz = {**entry, "projections": {"pca_id": [0.0]}}
     save_pickle(entry_viz, fpath)
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=False) == entry_viz
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=True) is None  # no embs, pooled trial
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=True, require_embs=False) == entry_viz
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=True, require_embs=True) is None  # no embs, pooled trial
 
     entry_pooled = {**entry_viz, "embs": {"embs_id": [0.0]}}
     save_pickle(entry_pooled, fpath)
-    assert ArtifactManager.load_base_eval_cache(None, require_projections=True, require_embs=True) == entry_pooled
+    assert ArtifactManager.load_base_eval_cache(cfg, require_projections=True, require_embs=True) == entry_pooled
+
+
+def test_load_base_eval_cache_misses_when_entry_lacks_an_eval_group_in_play(tmp_path, monkeypatch) -> None:
+    # an entry written by a campaign with fewer eval groups in play carries only those groups' scores;
+    # a campaign needing more must recompute rather than KeyError on the missing group downstream, while
+    # the leaner campaign still reuses the richer entry
+    fpath = tmp_path / "combo.pkl"
+    monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: fpath)
+    scores = {"native": {"comp": {"map": {"all": "0.50"}}}, "joint_macro": {"comp": {"map": {"all": "0.40"}}}}
+    entry = {"metrics": {"scores": scores}, "projections": None, "embs": None}
+    save_pickle(entry, fpath)
+
+    cfg_lean = _cfg_eval_groups(joint_macro=True)
+    cfg_rich = _cfg_eval_groups(joint_macro=True, joint=True)
+
+    assert ArtifactManager.load_base_eval_cache(cfg_lean, require_projections=False, require_embs=False) == entry
+    assert ArtifactManager.load_base_eval_cache(cfg_rich, require_projections=False, require_embs=False) is None
 
 
 def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> None:

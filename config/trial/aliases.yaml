@@ -1,12 +1,19 @@
 # FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
 # edits never reach an existing campaign; the `param` / `param_value` / `universal_value` tables name its
 # arm / coord DIRECTORIES, so a campaign keeps the ones it launched with and its names can never shift.
-# EXCEPTION: `config.file` below is read live (once per process at import), because it maps config files to
-# the cfg keys the CURRENT code injects them under -- it must track the code, not the campaign.
+# EXCEPTIONS, both read live (once per process at import): `config.file` below, because it maps config files
+# to the cfg keys the CURRENT code injects them under -- it must track the code, not the campaign -- and
+# `eval_groups`, whose aliases are display labels only (no artifact is named from them), so relabelling one
+# re-renders an existing campaign's tables, plots and printouts under the new label.
 
 # Name mappings, all of the same shape: anything without an alias passes through verbatim.
 #
 # `config.file` maps a config file stem to the cfg key a campaign's overrides reach its contents through.
+#
+# `eval_groups` names the eval groups (reporting.yaml's `eval`) wherever they are reported -- stats table
+# and workbook titles/banners, learning-curve plot titles, the eval printout's section headers. The group
+# KEY still names every artifact file/dir (<group>.json, coord_stats/<criterion>/<group>/, <group>.xlsx),
+# so an alias can be changed freely.
 #
 # The rest name arm / coord names built from `ablation_arms` / `hpo_coords` keys/values (derived names
 # for unnamed items, and combo-list name components): keys map through `param` and values through
@@ -18,11 +25,9 @@
 
 
 config:
-
   file:
     hardware: hw
     htargs: htarg
-
   param:  # override key -> name component
     n_epochs: E
     batch_size: BS
@@ -38,7 +43,6 @@ config:
     loss.loss2.targ: Targ2
     lr.init: LR
     opt.wd: WD
-
   param_value:  # per override key, value -> name component
     batch_size:
       1_024: 1k
@@ -74,8 +78,11 @@ config:
       2.0e-3: 2e-3
       3.0e-3: 3e-3
       6.0e-3: 6e-3
-      
   universal_value:  # key-independent value -> name component
     true: T
     false: F
     null: N
+
+eval_groups:
+  native: Standard
+  joint_macro: GZSL

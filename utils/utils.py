@@ -464,7 +464,7 @@ class PrintLog:
                 return float("nan")
             return sum(grads).pow(2).sum().sqrt().item()
 
-        # each enabled diagnostics.batch_diagnostics component contributes its own grad_norm.log fields; with
+        # each enabled reporting.batch_diagnostics component contributes its own grad_norm.log fields; with
         # every component off the line has none and is skipped outright (as is the sim_targ line when
         # sim_targ_stats is off -- batch_stats arrives None)
         fields_grad_norm = []
@@ -491,7 +491,7 @@ class PrintLog:
                 f"{batch_str:<10} "
                 f"lr={lr:.2e} "
                 f"loss={loss_batch:.2e} "
-                # a unitless loss blend's effective lambda (batch_stats: needs batch_diagnostics.sim_targ_stats)
+                # a unitless loss blend's effective lambda (batch_stats: needs reporting.batch_diagnostics.sim_targ_stats)
                 + (f"lambda_eff={batch_stats['lambda_eff']:.4f} " if batch_stats is not None and "lambda_eff" in batch_stats else "")
                 + f"\n"
             )
@@ -537,6 +537,7 @@ class PrintLog:
     def eval(
         eval_metrics: Dict[str, Any],
         eval_pipe,
+        eval_groups: Dict[str, str],
         header: Optional[str] = None,
         banner_suffix: Optional[str] = None,
         n_samps_seen: Optional[int] = None,
@@ -558,24 +559,13 @@ class PrintLog:
 
         lines_comp = f"{' ID/OOD Eval ':=^{SECTION_WIDTH}}\n"
 
-        lines_comp += _format_composite_block(
-            " Composite Native Gallery mAP ",
-            eval_metrics["scores"]["native"]["comp"]["map"],
-        )
-        lines_comp += _format_composite_block(
-            " Composite Joint Gallery mAP ",
-            eval_metrics["scores"]["joint"]["comp"]["map"],
-        )
+        # one block per eval group in play (reporting.yaml's `eval`), under its reported name
+        for group_key, group_name in eval_groups.items():
+            lines_comp += _format_composite_block(
+                f" Composite {group_name} mAP ",
+                eval_metrics["scores"][group_key]["comp"]["map"],
+            )
 
-        lines_comp_macro = _format_composite_block(
-            " Composite Native Gallery Macro mAP ",
-            eval_metrics["scores"]["native_macro"]["comp"]["map"],
-        )
-        lines_comp_macro += _format_composite_block(
-            " Composite Joint Gallery Macro mAP ",
-            eval_metrics["scores"]["joint_macro"]["comp"]["map"],
-        )
-        
         loss_pairs = [
             (partition.upper(), f"{eval_metrics['loss_raw'][partition]:.3e}")
             for partition in partitions
@@ -616,7 +606,6 @@ class PrintLog:
         eval_printout = (
             f"{banner}\n"
             f"{lines_comp}"
-            f"{lines_comp_macro}"
             f"{lines_loss}"
             f"{lines_sim_targ}"
             f"{lines_info}"

@@ -83,8 +83,8 @@ def _make_harness(model, crit):
     # InfoNCE diagnostics run
     h.cfg = SimpleNamespace(
         loss=crit.cfg,
-        diagnostics={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
-                   "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}},
+        reporting={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
+                 "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}},
     )
     return h
 

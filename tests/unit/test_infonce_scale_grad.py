@@ -207,7 +207,8 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
             assert stats[f"dalpha_{agg}_{comp}"] == pytest.approx(expected[a, c].tolist(), rel=1e-9, abs=1e-12)
     for c, comp in enumerate(comps):
         C = stats[f"dalpha_C_{comp}"]
-        assert C == pytest.approx((expected[0, c].abs() / (expected[1, c] + 1e-30)).tolist(), rel=1e-9, abs=1e-12)
+        assert torch.all(expected[1, c] > 0)  # nothing here is a zero-pressure term, so C is a plain ratio
+        assert C == pytest.approx((expected[0, c].abs() / expected[1, c]).tolist(), rel=1e-9, abs=1e-12)
         assert all(0.0 <= v <= 1.0 for v in C)
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
@@ -243,6 +244,29 @@ def test_batch_stats_residual_is_not_the_float32_row_sum_deficit():
     assert stats["dalpha_sum_struct"][0] == pytest.approx(stats["dalpha_sum_full"][0], rel=1e-9)
 
 
+def test_coherence_is_exact_at_vanishing_gradient_magnitudes():
+    # C = |sum| / sum_abs is divided exactly, not against an additive floor in the denominator. The
+    # residual terms decay like exp(-2 alpha), and on targets whose rows sum to exactly 1 (even class
+    # counts, no arithmetic floor under them) they are down at ~1e-42 by alpha 50 while staying
+    # perfectly coherent -- every pair pulling the same way, C = 1. A floor of 1e-30 would report
+    # ~1e-12 there, i.e. near-total cancellation where there is none
+    L = import_loss_module()
+    B, alpha = 64, 50.0
+    enc = torch.arange(B) // 4
+    Q = (enc[:, None] == enc[None, :]).double()
+    Y = Q / Q.sum(dim=1, keepdim=True)
+    assert torch.equal(Y.sum(dim=1), torch.ones(B, dtype=torch.float64))  # else A sits on a ~1e-16 floor
+    g = torch.Generator().manual_seed(17)
+    S = (0.6 * (2 * Q - 1) + 0.4 * (torch.rand(B, B, generator=g).double() * 2 - 1)).clamp(-1, 1)
+    S = 0.5 * (S + S.T)  # a partly-trained geometry: positives above negatives, so the residual coheres
+    stats = L.infonce_batch_stats(S, Q, Y, alpha * S, _log_scale(alpha), False)
+    for comp in ("res", "sres", "ires"):
+        G, A, C = (stats[f"dalpha_{k}_{comp}"][0] for k in ("sum", "sum_abs", "C"))
+        assert 0.0 < A < 1e-30, (comp, A)  # under any floor that would have been added to it
+        assert C == pytest.approx(abs(G) / A, rel=1e-12), comp
+        assert C == pytest.approx(1.0, rel=1e-12), comp  # coherent: no cancellation at all
+
+
 def test_batch_stats_row_wise_scale_bounds():
     # the target-implied scale bound is row-wise (softmax feasibility is): per row i, the smallest
     # alpha whose logit range 2 alpha spans log(Y_i), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as
@@ -261,15 +285,14 @@ def test_batch_stats_row_wise_scale_bounds():
     assert stats["alpha_req_min"] == pytest.approx(alpha_req.min().item(), rel=1e-9)
     assert stats["alpha_req_mean"] == pytest.approx(alpha_req.mean().item(), rel=1e-9)
     assert stats["alpha_req_max"] == pytest.approx(alpha_req.max().item(), rel=1e-9)
-    # the logalpha panel's own trio: the same reductions over log(alpha_req). The min and max are the
-    # logs of the alpha_req ones (log is monotone), the mean is the mean of the rows' logs -- the log
-    # of their geometric mean, which sits strictly below log(mean) by Jensen wherever the rows differ
-    log_alpha_req = alpha_req.log()
+    # the logalpha panel's trio is the alpha one in that panel's units -- the log of each, all three,
+    # so a batch crosses its bound in both figures or neither. Taking the mean over log(alpha_req)
+    # instead would give the log of the rows' geometric mean, which Jensen puts strictly below this
+    # wherever the rows differ, leaving a band of alpha that reads as clearing the bound on one panel
+    # and short of it on the other
     for stat in ("min", "mean", "max"):
-        assert stats[f"log_alpha_req_{stat}"] == pytest.approx(getattr(log_alpha_req, stat)().item(), rel=1e-9)
-    for stat in ("min", "max"):
         assert stats[f"log_alpha_req_{stat}"] == pytest.approx(math.log(stats[f"alpha_req_{stat}"]), rel=1e-9)
-    assert stats["log_alpha_req_mean"] < math.log(stats["alpha_req_mean"])
+    assert alpha_req.log().mean().item() < stats["log_alpha_req_mean"]  # the Jensen gap is real here
     # under the linear tsm a row with an exact zero (the mp rows of _targets) sits at infinity, taking
     # the max and the mean with it, while the min still reads off the graded rows
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y_lin.float(), logits, _log_scale(alpha), False)
@@ -325,9 +348,12 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
     aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
     if held:
         assert any(v != 0.0 for v in on["dalpha_sum_full"])
-        for agg in aggs:
-            for comp in comps:
+        for comp in comps:
+            for agg in aggs[:2]:
                 assert on[f"dlogalpha_{agg}_{comp}"] == [0.0, 0.0, 0.0]
+            # every pair's parameter gradient is zero, so there is no cancellation to report: the
+            # coherence is undefined (NaN), not zero -- zero would read as total cancellation
+            assert all(math.isnan(v) for v in on[f"dlogalpha_C_{comp}"])
     else:
         alpha = math.exp(log_alpha_raw)
         for comp in comps:

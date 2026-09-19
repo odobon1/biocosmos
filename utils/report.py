@@ -97,6 +97,16 @@ _BG_LINE_PANEL = "#FAF7F0"
 # negative- (-) target-mass shares -- black for the total, Okabe-Ito blue / vermillion for the pair
 # (legible together, and under red-green color blindness)
 _DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
+# the residual strips (res / sres / ires) stop resolving once their magnitude reaches the float64
+# resolution of the decomposition itself. The terms decay like exp(-2 alpha), so past alpha ~16 what is
+# left is either the true value -- unreadably small against a full gradient of order 1 -- or a one-ulp
+# quantization artifact of p*_cap - y, ~1e-42 and ~1e-15 respectively, flipping between the two with
+# alpha for no physical reason. Each panel autoscales to its own series, so the artifact would otherwise
+# render as structure; batches below this multiple of eps (on A_comp / A_full, which is scale-free) are
+# shaded instead. The curve is still drawn -- the shading says not to read it, not that it is missing
+_DALPHA_RES_FLOOR = 100.0 * np.finfo(np.float64).eps  # ~2.2e-14
+_DALPHA_RES_COMPS = ("res", "sres", "ires")
+_DALPHA_RES_SHADE = "#E8E1D3"  # a shade down from _BG_LINE_PANEL, under the curves and the grid
 
 def _fold_hist_columns(cols, threshold):
     """(folded columns, group size) for a P heatmap strip: one histogram per recorded batch folded
@@ -1773,6 +1783,30 @@ def plot_general_curves(
 
     _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
+def _dalpha_unresolved(data_epoch, comp):
+    """Per batch, whether the residual dL/dalpha term `comp` sits at or below the decomposition's own
+    float64 resolution (_DALPHA_RES_FLOOR): its magnitude sum against the full term's. The ratio is
+    scale-free, so it is read off the dalpha family for both figures -- dlogalpha is alpha times dalpha,
+    which cancels, and the dalpha one stays defined where the clamp zeroes the dlogalpha family."""
+    A = np.asarray(data_epoch[f"dalpha_sum_abs_{comp}"], dtype=float)[:, 0]
+    A_full = np.asarray(data_epoch["dalpha_sum_abs_full"], dtype=float)[:, 0]
+    return A < _DALPHA_RES_FLOOR * A_full
+
+
+def _shade_unresolved(ax, x_train, mask):
+    """Shade a panel's unresolved batches (_dalpha_unresolved), one span per contiguous run, each
+    carried half a sample either way so a lone batch still shows. Only the first span is labelled, the
+    rest riding along out of the legend."""
+    x = np.asarray(x_train, dtype=float)
+    half = 0.5 * (x[-1] - x[0]) / max(1, len(x) - 1)
+    padded = np.concatenate(([False], mask, [False]))
+    starts = np.flatnonzero(~padded[:-1] & padded[1:])
+    ends = np.flatnonzero(padded[:-1] & ~padded[1:]) - 1
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        ax.axvspan(x[s] - half, x[e] + half, color=_DALPHA_RES_SHADE, linewidth=0, zorder=0,
+                   label="unresolved" if i == 0 else "_nolegend_")
+
+
 def plot_alpha_curves(
     data_epoch,
     x_train,
@@ -1809,7 +1843,10 @@ def plot_alpha_curves(
     # (utils.loss.infonce_batch_stats), every panel drawing the all /
     # positive-mass / negative-mass attributions -- bar the logalpha figure's five C panels, which
     # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
-    # holds the parameter above its cap, dalpha* still carrying the pressure on the effective scale.
+    # holds the parameter above its cap -- its sums zero and its C NaN, there being no pressure on the
+    # parameter to cancel -- dalpha* still carrying the pressure on the effective scale.
+    # The three residual comps carry a shaded background over the batches they do not resolve
+    # (_DALPHA_RES_FLOOR), on all three of their aggs.
 
     def dalpha_label(agg, comp):
         sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
@@ -1819,11 +1856,18 @@ def plot_alpha_curves(
         return rf"$\text{{{'A' if agg == 'sum_abs' else 'C'}}}_{{{sym}}}{sup}$"
 
     dalpha_panels = [
-        (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg)
+        (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg, comp)
         for agg in ("sum", "sum_abs", "C")
         for comp in ("full", "struct", "res", "sres", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
+    # the batches each residual term does not resolve, shaded on all three of its aggs: where the
+    # magnitude is arithmetic, so are the signed sum and the coherence ratio taken over it
+    res_unresolved = {
+        comp: _dalpha_unresolved(data_epoch, comp)
+        for comp in _DALPHA_RES_COMPS
+        if len(data_epoch[f"dalpha_sum_abs_{comp}"]) == len(data_epoch["dalpha_sum_abs_full"]) == len(x_train)
+    }
     n_panels = len(scale_panels) + len(dalpha_panels)
     if n_panels == 0:
         return
@@ -1861,7 +1905,7 @@ def plot_alpha_curves(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-    for key, label, agg in dalpha_panels:
+    for key, label, agg, comp in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         # the logalpha figure's C panels repeat the alpha figure's exactly -- alpha cancels in the
         # ratio |sum| / sum|.| -- so they are drawn blank: the panel and its caption hold the row, so
@@ -1877,6 +1921,8 @@ def plot_alpha_curves(
                 ax.set_ylim(0.0, 1.0)  # a cancellation ratio
             else:
                 ax.axhline(0.0, color="gray", linewidth=0.5)
+            if comp in res_unresolved:
+                _shade_unresolved(ax, x_train, res_unresolved[comp])
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
             ax.grid(True)
         ax.set_ylabel(label, fontsize=fontsize_axes)

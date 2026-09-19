@@ -878,17 +878,23 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
 
     - the logit-scale gradient decomposition (the dalpha_* and dlogalpha_* learning-curve strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
       the coherence C = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
-      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). alpha is the
+      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). The ratio is
+      divided exactly, with sum_abs = 0 reading NaN rather than 0: a term whose every pair is zero has
+      no cancellation to report, and the two must not be conflated -- sum_abs > 0 with sum = 0 is total
+      cancellation, sum_abs = 0 is no pressure at all. An additive floor in the denominator would do
+      worse than blur that case: the residual terms decay like exp(-2 alpha), so sum_abs reaches 1e-42
+      by alpha 50 on targets whose rows sum to exactly 1, and any floor above it drags a perfectly
+      coherent C = 1 down towards zero -- reading as total cancellation where there is none. alpha is the
       scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
       effective scale whether or not the parameter can follow it. The dlogalpha family is the
       gradient of the log-scale parameter the model actually learns (logits.scale: the param is
       log(alpha_raw), and z = exp(min(log alpha_raw, ln 100)) * s under logits.scale.clamp, exp(log
       alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dalpha per pair while the clamp is off
       or slack, so its sums are alpha times the dalpha ones and its C, alpha cancelling in the ratio,
-      equals the dalpha one (up to the ratio's epsilon); once the clamp holds (the raw parameter
-      above ln 100, where clamp's backward blocks the gradient) the parameter's gradient is exactly
-      zero however hard the loss pushes on the effective scale, and the whole family reads zero (sum,
-      sum_abs, and C by the ratio's epsilon) while dalpha keeps reporting the pressure. The factor
+      equals the dalpha one; once the clamp holds (the raw parameter above ln 100, where clamp's
+      backward blocks the gradient) the parameter's gradient is exactly zero however hard the loss
+      pushes on the effective scale, so its sums both read zero and its C reads NaN -- the parameter
+      is under no pressure to cancel -- while dalpha keeps reporting the pressure. The factor
       d(alpha)/d(log alpha_raw) is taken by autograd through the same clamp-then-exp path
       compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
       backward breaks the tie (the gradient passes in 2.5 / 2.7, is blocked in 2.14).
@@ -900,10 +906,14 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       Softmax feasibility is row-wise, so the batch's requirement is the max (a global max(Y) / min(Y)
       would pair extremes from different rows and overstate it); a row holding a zero sits at
       infinity. One statistic for both directions, which train against Y's rows alike. The
-      log_alpha_req_* trio is the same three reductions taken over log(alpha_req) instead, for the
-      logalpha panel, which plots the log parameter: the min and max are the logs of the alpha_req
-      ones (log is monotone) but the mean is not -- it is the mean of the rows' logs, the log of
-      their geometric mean.
+      log_alpha_req_* trio is that same trio in the units the logalpha panel plots: the log of each,
+      not the reductions retaken over log(alpha_req). The two figures show one quantity under a
+      monotone change of variable, so a line either figure draws must be the other's under the same
+      map, or the same batch crosses its bound in one panel and not the other -- min and max commute
+      with log and would agree either way, but the mean does not: mean(log(alpha_req)) is the log of
+      the rows' geometric mean, which Jensen puts strictly below log(mean(alpha_req)) wherever the
+      rows differ, so alpha sitting between the two means would read as clearing the requirement on
+      the logalpha panel while the alpha panel still showed it short.
 
     Y's rows are renormalized before any of it, the reachable-set solve needing sum(p*) = 1 to be the
     constraint it says it is. InfoNCECriterion._tsm already hands this path a float64 Y whose rows sum to
@@ -940,12 +950,11 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
                       + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt, S_opt))
         kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt) + infonce_kl_terms(Y, log_P_t2i, P_opt))
         alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
-        log_alpha_req = alpha_req.log()  # the logalpha panel's own bounds: the reductions over the logs
-        bounds = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max(),
-                              log_alpha_req.min(), log_alpha_req.mean(), log_alpha_req.max()])
+        reqs = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
+        bounds = torch.cat([reqs, reqs.log()])  # the logalpha panel's lines are the alpha ones' logs
         families = []
         for scaled in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
-            C = scaled[0].abs() / (scaled[1] + 1e-30)
+            C = torch.where(scaled[1] > 0, scaled[0].abs() / scaled[1], torch.nan)  # NaN: no pressure, no ratio
             families.append(torch.cat([scaled, C[None]]))
         grad = torch.stack(families)  # [2, 3, 5, 3]
         packed = torch.cat([grad.flatten(), kl, bounds]).cpu()

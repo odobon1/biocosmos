@@ -109,8 +109,8 @@ class TrialData:
             # alpha_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
             # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the blended target
             # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the alpha
-            # panel's bound lines; log_alpha_req_* the same three reductions over log(alpha_req), for
-            # the logalpha panel (its min / max are the logs of the alpha_req ones, its mean is not).
+            # panel's bound lines; log_alpha_req_* the same trio in the logalpha panel's units, the log
+            # of each, so a batch crosses its bound in both figures or in neither.
             # Recorded only for an InfoNCE loss (utils.loss.infonce_batch_stats),
             # so a BCE-family loss's series stay empty and its alpha panel gets no lines.
             "alpha_req_min": [],
@@ -127,8 +127,9 @@ class TrialData:
             # still pushes on alpha), each summed, summed in magnitude, and their coherence ratio C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
             # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
-            # the model learns (alpha times the dalpha sums, the same C -- all zero while
-            # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient;
+            # the model learns (alpha times the dalpha sums, the same C -- the sums zero and C NaN while
+            # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient, so
+            # there is no pressure on it whose cancellation could be reported;
             # dalpha_* is the pressure on the effective, post-clamp scale either way). Recorded only for
             # an InfoNCE loss (VLMWrapper._batch_stats), so a BCE-family loss's series stay empty and
             # get no panels.

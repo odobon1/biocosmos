@@ -407,10 +407,10 @@ def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str, groups=_GR
     fpaths = []
     for criterion in ("map", "acc"):
         for group in groups:
-            fpaths.append(dpath_dataset / "_arms" / arm / "arm_stats" / criterion / group / "metrics.png")
+            fpaths.append(dpath_dataset / "_arms" / arm / "arm_metrics" / "performance" / criterion / group / "scores.png")
             for kind in ("arm_coords", "arms"):
-                fpaths.append(dpath_dataset / "dataset_stats" / kind / criterion / group / "metrics.png")
-                fpaths.append(dpath_phase / "phase_stats" / kind / criterion / f"{group}.xlsx")
+                fpaths.append(dpath_dataset / "dataset_metrics" / kind / "performance" / criterion / group / "scores.png")
+                fpaths.append(dpath_phase / "phase_metrics" / kind / "performance" / criterion / group / "metrics.xlsx")
     return fpaths
 
 
@@ -1563,6 +1563,31 @@ def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "cmp_rm_seed" / "_screen" / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "base" / "_seeds" / "43" / "trial_metadata.json").exists()
 
 
+def test_run_campaign_drops_a_best_coord_mirror_when_a_coord_is_added(tmp_path, monkeypatch) -> None:
+    # _arms/<arm>/best_coord/ stands for an arm with every planned trial in: a coord added to it leaves the arm short
+    # of its plan, so the mirror an earlier completion left is dropped as the new plan is applied -- before the added
+    # coord's trial launches, not at the arm's next completed trial (report.update_best_coord_curves rebuilds it once
+    # the arm is whole again; these fake trials write no evals, so nothing here does)
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
+    camp = dict(n_trials_screen=1, n_trials_qual=None, trainval=False, datasets=("cub",),
+                ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]])
+    _set_camp(monkeypatch, **camp, hpo_coords=[[{"loss.sim": ["cos"]}]])
+    cr.run_campaign("cmp_best_coord", "camp")
+    dpath_best = tmp_path / "cmp_best_coord" / "_screen" / "_datasets" / "cub" / "_arms" / "sp" / "best_coord"
+    (dpath_best / "learning_curves" / "42").mkdir(parents=True)
+
+    del scheduled[:]
+    fake_trial, at_launch = cr._run_trial_subprocess, []
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: (
+        at_launch.append(dpath_best.exists()), fake_trial(cfg_dict, spare_render_pid)))
+    _set_camp(monkeypatch, **camp, hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+    cr.run_campaign("cmp_best_coord", "camp")
+
+    assert scheduled == [("sp", "loss.sim-geo1", "cub", 42)]  # only the added coord's trial ran
+    assert at_launch == [False]  # the mirror was already gone when it launched
+    assert not dpath_best.exists()
+
+
 def _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache: bool) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
@@ -2003,12 +2028,12 @@ def test_run_campaign_qual_copies_picks_and_tops_up_seeds(tmp_path, monkeypatch)
     # the qual manifest: the copied trial counts as completed there, the unpicked coords are not planned
     text = (dpath_qual / "manifest.log").read_text(encoding="utf-8")
     assert "cub/sp/loss.sim-geo1/42 ---" in text and "cub/sp/loss.sim-cos" not in text
-    # the qual phase's own stats tree renders on the way out -- minus the arms/ dirs (phase_stats
-    # workbooks and dataset_stats pngs), which would just duplicate arm_coords/ over the picks
-    assert (dpath_qual / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
-    assert not (dpath_qual / "phase_stats" / "arms").exists()
-    assert (dpath_qual / "_datasets" / "cub" / "dataset_stats" / "arm_coords").exists()
-    assert not (dpath_qual / "_datasets" / "cub" / "dataset_stats" / "arms").exists()
+    # the qual phase's own stats tree renders on the way out -- minus the arms/ dirs (phase_metrics
+    # workbooks and dataset_metrics pngs), which would just duplicate arm_coords/ over the picks
+    assert (dpath_qual / "phase_metrics" / "arm_coords" / "performance" / "map" / "native" / "metrics.xlsx").exists()
+    assert not (dpath_qual / "phase_metrics" / "arms").exists()
+    assert (dpath_qual / "_datasets" / "cub" / "dataset_metrics" / "arm_coords").exists()
+    assert not (dpath_qual / "_datasets" / "cub" / "dataset_metrics" / "arms").exists()
     # screening: both coords, still just seed 42
     dpath_screen = tmp_path / "cmp_qual" / "_screen" / "_datasets" / "cub" / "_arms" / "sp" / "_coords"
     assert (dpath_screen / "loss.sim-cos" / "_seeds" / "42").exists() and (dpath_screen / "loss.sim-geo1" / "_seeds" / "42").exists()
@@ -2046,7 +2071,7 @@ def test_run_campaign_qual_equal_counts_only_copies(tmp_path, monkeypatch) -> No
     dpath_qual = tmp_path / "cmp_eq" / "qual"
     assert (dpath_qual / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-cos" / "_seeds" / "42" / "trial_metadata.json").exists()
     assert json.loads((dpath_qual / "phase_metadata.json").read_text())["seeds"] == [42]
-    assert (dpath_qual / "phase_stats" / "arm_coords" / "map" / "native.xlsx").exists()
+    assert (dpath_qual / "phase_metrics" / "arm_coords" / "performance" / "map" / "native" / "metrics.xlsx").exists()
 
 
 def test_run_campaign_qual_adds_new_best_pick_on_relaunch(tmp_path, monkeypatch) -> None:

@@ -57,7 +57,13 @@ from utils.config import (
 )
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
-from utils.report import update_arm_stats, update_dataset_stats, update_phase_stats, pick_best_coords
+from utils.report import (
+    update_arm_metrics,
+    update_best_coord_curves,
+    update_dataset_metrics,
+    update_phase_metrics,
+    pick_best_coords,
+)
 from utils.train import ArtifactManager
 from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
 
@@ -142,7 +148,7 @@ def _classify_crash(exc: Exception) -> str:
     return "other"
 
 def _render_phase_tables(campaign: str, phase: str, groups: dict) -> None:
-    """Re-render every cross-coord level's tables/plots/workbooks (arm_stats, dataset_stats, phase_stats) of
+    """Re-render every cross-coord level's tables/plots/workbooks (arm_metrics, dataset_metrics, phase_metrics) of
     the phase from whatever is on disk, over its recorded matrix. Trials render each level only when a seed
     completes across that level's cycle (train.py), so a phase that ends mid-cycle -- one interrupted, or with
     a (dataset, arm, coord) that never succeeds -- would otherwise leave them a cycle behind. Checkpoint
@@ -156,9 +162,9 @@ def _render_phase_tables(campaign: str, phase: str, groups: dict) -> None:
     style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
-            update_arm_stats(dataset, arm, groups, *style)
-        update_dataset_stats(dataset, groups, *style)
-    update_phase_stats(groups, *style, cfg_stats.overrides)
+            update_arm_metrics(dataset, arm, groups, *style)
+        update_dataset_metrics(dataset, groups, *style)
+    update_phase_metrics(groups, *style, cfg_stats.overrides)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
@@ -185,7 +191,7 @@ def _dpath_campaign(campaign: str) -> Path:
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
     """A phase's dir, artifacts/<campaign>/<phase>/ ('_screen' | 'qual' | 'trainval'): the root of every artifact the runner and
-    that phase's trials write (_datasets/, phase_stats/, phase_metadata.json, cfg_baseline.json, manifest.log,
+    that phase's trials write (_datasets/, phase_metrics/, phase_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
     return _dpath_campaign(campaign) / phase
 
@@ -913,14 +919,23 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
     """Bring the phase's tree in line with `plan` -- at its first application (phase entry) and again whenever a
     re-read of the camp yaml changed it: the qual tree's new picks copied over from screening (_copy_qual_picks), the
     trainval tree's config snapshot (_write_phase_snapshot), phase_metadata.json reconciled (_phase_metadata: the
-    seeds and matrix recorded, what the previous plan had and this one drops pruned), the image-cache staging, and
-    the manifest, rewritten over the planned trials."""
+    seeds and matrix recorded, what the previous plan had and this one drops pruned), each arm's best_coord/ mirror
+    reconciled (update_best_coord_curves), the image-cache staging, and the manifest, rewritten over the planned
+    trials."""
     dpath_phase = _dpath_phase(campaign, phase)
     if phase == "qual":
         _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
     metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix, eval_groups(cfg_snapshot["reporting"]))
+
+    # a plan that grows an arm (a coord or a seed added) leaves it short of its trials again: its best_coord/ mirror
+    # goes here, the moment the edit is applied, rather than surviving until the arm's next completed trial -- the
+    # dir never outlives the completion it stands for. Rebuilt once the arm is whole again (update_arm_metrics).
+    ArtifactManager.dpath_phase = dpath_phase
+    for dataset, arms in plan.matrix.items():
+        for arm in arms:
+            update_best_coord_curves(dataset, arm)
 
     # Node-local image-cache staging, up front: fail fast (before any trial) if a pack is missing, and record
     # per-dataset staging seconds. null = dataset unused this campaign, or img caching off in every arm and

@@ -8,7 +8,8 @@ already-run campaign. Each trial's config is rebuilt exactly as on the campaign 
 cfg_baseline.json snapshot + the coord's overrides.json, arm + coord overrides merged, against the SLURM alloc
 recorded in phase_metadata.json rather than a live one -- so no SLURM job is needed) to recover samps_per_epoch
 (the plots' epoch axis) and the split whose n-shot bucket names label the n-shot panels. Trials without a
-data_trial.pkl (never checkpointed) are skipped.
+data_trial.pkl (never checkpointed) are skipped. Each complete arm's best_coord/ mirror (_screen/ only) is
+re-copied from the re-rendered originals, so it never lags them.
 """
 
 import pickle
@@ -18,7 +19,7 @@ from types import SimpleNamespace
 
 import utils.hardware
 from utils.config import eval_groups, get_config_train, inject_snapshots
-from utils.report import plot_metrics
+from utils.report import plot_metrics, update_best_coord_curves
 from utils.train import ArtifactManager
 from utils.utils import load_json, load_split, paths
 
@@ -73,6 +74,9 @@ def regen_learning_curves(campaign):
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,
                                      cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting))
                         print(f"regenerated: {dpath_trial / 'learning_curves'}")
+                # the arm's best_coord/ mirror is a copy of curves just re-rendered: re-copy it rather than leave
+                # it on the old renders
+                update_best_coord_curves(dataset, arm)
 
 
 def main():

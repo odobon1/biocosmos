@@ -1,11 +1,14 @@
 """
 Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint selection
 (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/coord_stats/), the per-eval-group composite-score summary
-tables + convergence plots at every cross-coord level -- per arm (_arms/<arm>/arm_stats/), per dataset
-(_datasets/<dataset>/dataset_stats/{arm_coords,arms}/) -- each {map,acc}/<group>/{metrics,convergence}.png,
-the phase workbooks (phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx), the test workbooks
-(artifacts/<campaign>/test/map/test_<group>.xlsx, from the score files test.py writes), and per-trial
-learning-curve plots -- all under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
+tables + convergence plots at every cross-coord level -- per arm (_arms/<arm>/arm_metrics/performance/), per dataset
+(_datasets/<dataset>/dataset_metrics/{arm_coords,arms}/performance/) -- each {map,acc}/<group>/{scores,convergence}.png,
+the phase workbooks (phase_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/metrics.xlsx), the test workbooks
+(artifacts/<campaign>/test/map/test_<group>.xlsx, from the score files test.py writes), per-trial
+learning-curve plots, each arm's coords' logit-scale panels stacked into strip figures
+(_arms/<arm>/arm_metrics/coord_strips/) and each finished arm's best coord's copy of its
+learning curves (_arms/<arm>/best_coord/) -- all
+under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
 ArtifactManager.dpath_phase). The phase's phase_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
 planned (dataset, arm, coord) set every sweep gate and table row here keys off: every arm x coord in the
 screening phase, each arm's picked coord(s) in the qual phase. Everything here renders from artifacts already
@@ -13,6 +16,7 @@ on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O liv
 """
 
 import math
+import shutil
 
 import matplotlib
 matplotlib.use("Agg")
@@ -227,14 +231,26 @@ def _matrix_arm_coords(matrix, datasets):
 
 def arm_sweep_complete(seed, dataset, arm):
     """True once `seed` has a completed trial in EVERY planned coord of `arm` on `dataset` -- the arm's cycle
-    of the seed sweep. The arm's arm_stats/ re-render only at these points (train.py): every trial
+    of the seed sweep. The arm's arm_metrics/ re-render only at these points (train.py): every trial
     completion reselects only its own coord's checkpoint, so mid-cycle the arm's tables would mix
     coords reselected against different trial counts."""
     return all(_trial_complete(dataset, arm, coord, seed) for coord in _matrix()[dataset][arm])
 
+def arm_complete(dataset, arm):
+    """True once EVERY planned trial of `arm` on `dataset` is complete -- all its coords (the phase's
+    matrix) across all the phase's seeds (phase_metadata.json's 'seeds'), i.e. the whole arm rather than
+    one seed's cycle of it (arm_sweep_complete). Gates the arm's best_coord/ mirror
+    (update_best_coord_curves)."""
+    metadata = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
+    return all(
+        _trial_complete(dataset, arm, coord, seed)
+        for coord in metadata["matrix"][dataset][arm]
+        for seed in metadata["seeds"]
+    )
+
 def dataset_sweep_complete(seed, dataset):
     """True once `seed` has a completed trial in EVERY planned (arm, coord) on `dataset` -- the dataset's
-    cycle of the seed sweep; gates the dataset_stats/ re-render the way arm_sweep_complete gates arm_stats/."""
+    cycle of the seed sweep; gates the dataset_metrics/ re-render the way arm_sweep_complete gates arm_metrics/."""
     return all(
         _trial_complete(dataset, arm, coord, seed)
         for arm, coords in _matrix()[dataset].items()
@@ -243,7 +259,7 @@ def dataset_sweep_complete(seed, dataset):
 
 def seed_sweep_complete(seed):
     """True once `seed` has a completed trial in EVERY planned (dataset, arm, coord) of the phase -- i.e. one
-    full pass of the matrix; gates the phase_stats/ workbooks' re-render."""
+    full pass of the matrix; gates the phase_metrics/ workbooks' re-render."""
     return all(
         _trial_complete(dataset, arm, coord, seed)
         for dataset, arms in _matrix().items()
@@ -601,16 +617,15 @@ def _col_styles(grid, bold_high, n_keys):
     return styles
 
 # heatmap shade of a table row holding a killed trial (kill_thresh): a sickly yellow in place of the
-# white -> red score ramp, so the scores still read but visibly come from a run cut short
+# white -> green score ramp, so the scores still read but visibly come from a run cut short
 _KILLED_HEX = "DCE06E"
 
 def _heat_hex(mean):
-    """Heatmap cell color as 'RRGGBB': linear white (#ffffff) -> #ff5533 interpolation over a
-    fixed 0.00 -> 100.00."""
+    """Heatmap cell color as 'RRGGBB': linear white (#ffffff) -> #4caf50 interpolation over a
+    fixed 0.00 -> 100.00. The top of the ramp is a mid-tone leaf green rather than a saturated one,
+    so a high-scoring cell reads as shaded paper and its black text keeps its contrast."""
     frac = max(0.0, min(1.0, mean / 100.0))
-    g = round(255 - (255 - 0x55) * frac)
-    b = round(255 - (255 - 0x33) * frac)
-    return f"FF{g:02X}{b:02X}"
+    return "".join(f"{round(255 - (255 - channel) * frac):02X}" for channel in (0x4C, 0xAF, 0x50))
 
 def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows):
     # matplotlib lays table rows out at a fixed 10pt * 1.2 = 1/6in apiece whatever the figure size
@@ -674,9 +689,10 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
     fig.savefig(fpath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
-def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap):
+def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, spread_type, bold_high,
+                       ordered, heatmap):
     """Render one score table + one convergence plot per selection criterion x eval group for ONE
-    dataset: dpath_stats/{map,acc}/<group>/metrics.png -- map/ the comp mAP table (All/ID/OOD/I2T/I2I/T2I
+    dataset: dpath_stats/{map,acc}/<group>/scores.png -- map/ the comp mAP table (All/ID/OOD/I2T/I2I/T2I
     score columns), acc/ the comp I2T accuracy table (single I2T column), each plus the enabled
     supplemental columns (labels = (mAP labels, acc labels) per _score_labels) and each sourcing its
     own criterion's best checkpoints (map/ from evals/_selected/map/, acc/ from evals/_selected/acc/) -- and
@@ -690,8 +706,8 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
     highest-mean cell (ties included; '-' cells ignored), ordered orders the rows by the table's own
     metric's mean over THIS dataset's completed trials (map tables by the mAP 'All' column, acc tables
     by the acc 'I2T' column) -- localized per dataset and per group, independent of the cross-dataset
-    order used in the workbooks -- heatmap shades score cells white->#ff5533 over a fixed
-    0.00->100.00 (as in update_phase_stats), rows holding a killed trial (kill_thresh) in the
+    order used in the workbooks -- heatmap shades score cells white->#4caf50 over a fixed
+    0.00->100.00 (as in update_phase_metrics), rows holding a killed trial (kill_thresh) in the
     killed yellow instead. Convergence plots overlay every row's curve on one
     log-scaled checkpoint axis, all grey, with the winner -- the highest mean at its OWN selected
     checkpoint, ties to the first row -- black on top, its selection marked (_plot_convergence, from
@@ -717,7 +733,7 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
                 criterion,
                 spread_type,
             )
-            _render_stats_table(grid, len(headers), f"{score_name}{title_suffix}", dpath_group / "metrics.png", bold_high, heatmap,
+            _render_stats_table(grid, len(headers), f"{score_name}{title_suffix}", dpath_group / "scores.png", bold_high, heatmap,
                                 killed_rows)
             if curves:
                 idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
@@ -725,14 +741,15 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
                                   dpath_group / "convergence.png")
 
 @rank0
-def update_arm_stats(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
-    _datasets/<dataset>/_arms/<arm>/arm_stats/{map,acc}/<group>/{metrics,convergence}.png (see
+    _datasets/<dataset>/_arms/<arm>/arm_metrics/performance/{map,acc}/<group>/{scores,convergence}.png (see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
     completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
     '<score name> -- <arm>, <dataset> (<group>)'. An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at the end of the arm's seed cycle (train.py,
-    arm_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
+    arm_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats. The arm's
+    best_coord/ mirror rides along on the same calls (update_best_coord_curves)."""
     dpath_arm = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
     if not dpath_arm.exists():
         return
@@ -749,14 +766,192 @@ def update_arm_stats(dataset, arm, eval_groups, spread_type, bold_high, ordered,
         curves = [((coord,), *_curve(dataset, arm, coord, criterion, group_key)) for (coord,) in rows]
         return rows, comps_by, curves
 
-    _render_stats_pngs(dpath_arm / "arm_stats", ("Coord",), rowset, dataset, f"{arm}, {DATASET_ALIAS2NAME[dataset]}",
-                       eval_groups, _score_labels(supp_scores, _nshot_names(comps_all)), spread_type, bold_high,
-                       ordered, heatmap)
+    _render_stats_pngs(dpath_arm / "arm_metrics" / "performance", ("Coord",), rowset, dataset,
+                       f"{arm}, {DATASET_ALIAS2NAME[dataset]}", eval_groups,
+                       _score_labels(supp_scores, _nshot_names(comps_all)), spread_type, bold_high, ordered, heatmap)
+    update_best_coord_curves(dataset, arm)
+    update_coord_strips(dataset, arm, spread_type)
 
 @rank0
-def update_dataset_stats(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_best_coord_curves(dataset, arm):
+    """Mirror the learning curves of `arm`'s best coord on `dataset` to
+    _datasets/<dataset>/_arms/<arm>/best_coord/learning_curves/<seed>/ -- every trial of that coord,
+    its learning_curves/ dir copied whole ({general,alpha,logalpha,KL}.png + scores/<group>.png) -- so the
+    arm's answer reads off one dir without first working out which coord won.
+
+    Best is the coord with the highest across-trial mean Native mAP composite All at its selected
+    checkpoint (_best_coords on criterion 'map' x eval group 'native' -- the figure the qual phase picks
+    its arms' coords by, pick_best_coords), ties to the first in campaign order.
+
+    The dir stands for a FINISHED arm, so it exists only while every planned trial of the arm is in
+    (arm_complete: all its coords x all the phase's seeds). It is rebuilt from scratch on each call and
+    dropped whenever the arm is short of its plan again -- a coord or a seed added to it -- to be written
+    once more when the arm completes over the new plan; the runner drops it at the moment such an edit is
+    applied (campaign_runner._apply_plan) rather than at the arm's next completed trial. Screening phase
+    only: the qual matrix reduces each arm to its pick(s), so there this would just duplicate the pick's
+    own coord dir, and the trainval phase runs no evals to rank coords by."""
+    if ArtifactManager.dpath_phase.name != "_screen":
+        return
+    dpath_best = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm / "best_coord"
+    if dpath_best.exists():
+        shutil.rmtree(dpath_best)
+    if not arm_complete(dataset, arm):
+        return
+    arm_coords = [(arm, coord) for coord in _matrix()[dataset][arm]]
+    comps_by = _collect_comps(("native",), arm_coords, (dataset,), "map")["native"]
+    coord = _best_coords(arm_coords, (dataset,), comps_by, "map")[(arm, dataset)]
+    for dpath_trial in sorted((_dpath_coord(dataset, arm, coord) / "_seeds").iterdir()):
+        shutil.copytree(dpath_trial / "learning_curves", dpath_best / "learning_curves" / dpath_trial.name)
+
+# the learning-curve strip figures (update_coord_strips), one per parameterization of the logit scale:
+# (the series it plots, its target-implied bound trio, its symbol, the figure's name)
+_STRIP_FIGURES = (("scale", "alpha_req", r"\alpha", "alpha"),
+                  ("logit_scale", "log_alpha_req", r"\log \alpha", "logalpha"))
+
+def _req_labels(reqs, sym):
+    """{stat: legend label} for a scale panel's target-implied bound trio (`reqs`: {stat: values}),
+    naming only the stats with something to draw -- a stat non-finite on every batch draws nothing, and
+    an entry for a line that is nowhere on the panel is one the reader cannot place. The min and max
+    bracket the band in the same solid style, so one entry covers the pair, naming whichever of the two
+    draws and riding on that line (the other goes unlabelled, and an unlabelled line is left out of the
+    legend); an empty map means the trio draws nothing at all. Shared by plot_alpha_curves' panels and
+    the strip figures."""
+    drawn = [stat for stat, vals in reqs.items() if np.isfinite(vals).any()]
+    band = [stat for stat in ("min", "max") if stat in drawn]
+    labels = {band[0]: rf"${sym}_{{\text{{req}}}}$ ({', '.join(band)})"} if band else {}
+    if "mean" in drawn:
+        labels["mean"] = rf"${sym}_{{\text{{req}}}}$ (mean)"
+    return labels
+
+def _strip_data(panels, scale_key, req_key, spread_type):
+    """One coord's strip, off its `panels` [(x_train, data_epoch)] -- (x, scale, reqs): `scale` the
+    (values, spread) of the logit-scale series and `reqs` {stat: (values, spread)} its target-implied
+    bound trio (empty where the trials don't record it -- a BCE-family loss). With `spread_type` None
+    (the per-seed figures, one trial apiece) every spread is None and the values are that trial's own;
+    otherwise (the agg figure) every line is the mean over the coord's trials and every spread their
+    _spread band, flat for a lone trial as the chkpt-mean curves' is. Series are truncated to the
+    shortest, so a trial the kill threshold stopped early shortens its coord's strip rather than
+    dropping out of it."""
+    n = min(len(x) for x, _ in panels)
+
+    def agg(key):
+        vals = np.array([np.asarray(data[key], dtype=float)[:n] for _, data in panels])
+        if spread_type is None:
+            return vals[0], None
+        spread = np.zeros(n) if len(vals) == 1 else np.array([_spread(col, spread_type) for col in vals.T])
+        return vals.mean(axis=0), spread
+
+    reqs = {}
+    if all(len(data[f"{req_key}_max"]) == len(data[scale_key]) for _, data in panels):
+        reqs = {stat: agg(f"{req_key}_{stat}") for stat in ("min", "mean", "max")}
+    return panels[0][0][:n], agg(scale_key), reqs
+
+def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_axes, fontsize_ticks,
+                   fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel):
+    """One figure of scale strips, `strips` [(coord, x, scale, reqs)] top to bottom (_strip_data): the
+    scale panel plot_alpha_curves gives each trial -- the scale in purple over its bound trio in red,
+    the min and max solid and the mean dashed -- one per coord of an arm, each named on its right, over
+    one shared epoch axis. A (values, spread) pair with a spread shades it around its line, so on the agg
+    figure every line carries its own across-trial band; one '± <spread_type>' entry names the
+    convention for all of them. The legend is the figure's, not a panel's: the strips draw the same
+    series, so the handles are pooled by label and boxed once, off the left of the top strip (away from
+    the coord names)."""
+    fig = plt.figure(figsize=(fig_width, height_fixed + len(strips) * height_panel))
+    gs = gridspec.GridSpec(len(strips), 1, hspace=0)
+    axes = []
+
+    for coord, x, (vals_scale, spread_scale), reqs in strips:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        ax.plot(x, vals_scale, color="tab:purple", label=rf"${sym}$")
+        if spread_scale is not None:
+            ax.fill_between(x, vals_scale - spread_scale, vals_scale + spread_scale, color="tab:purple",
+                            alpha=0.2, label=f"± {spread_type}")
+        labels_req = _req_labels({stat: vals for stat, (vals, _) in reqs.items()}, sym)
+        for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
+            if stat in reqs:
+                vals, spread = reqs[stat]
+                ax.plot(x, vals, color="red", linestyle=linestyle, linewidth=1.0, label=labels_req.get(stat))
+                if spread is not None:
+                    ax.fill_between(x, vals - spread, vals + spread, color="red", alpha=0.15)
+        # the coord names the strip from its right, horizontal (a coord name reads badly rotated) and
+        # outside the y ticks, which go right on EVERY strip rather than alternating: that clears the
+        # whole left margin for the figure's one legend, which would otherwise sit over the tick labels
+        ax.set_ylabel(coord, rotation=0, ha="left", va="center", fontsize=fontsize_axes, labelpad=8)
+        ax.yaxis.set_label_position("right")
+        ax.yaxis.tick_right()
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+    axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    axes[-1].tick_params(labelbottom=True)
+
+    handles = {}  # label -> handle, first strip to draw it winning: a coord whose loss records no bounds
+    for ax in axes:                              # leaves them to a coord whose loss does
+        for handle, label in zip(*ax.get_legend_handles_labels()):
+            handles.setdefault(label, handle)
+    _finish_curves(fig, axes, [], {axes[0]: list(handles.values())}, plot_title, fpath_plot, fontsize_legend,
+                   subplot_border_width, alternate_sides=False)
+
+@rank0
+def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
+                      subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
+    """Render `arm`'s logit-scale strips for `dataset` --
+    _datasets/<dataset>/_arms/<arm>/arm_metrics/coord_strips/{seeds/<seed>,agg}/{alpha,logalpha}.png:
+    the scale panel of every planned coord of the arm (the phase's matrix) with a completed trial there,
+    stacked into one figure per parameterization (_STRIP_FIGURES: alpha, the scale the logits carry;
+    logalpha, the log-scale parameter the model learns), so an arm's coords read against each other on one
+    epoch axis instead of one figure apiece. seeds/<seed>/ draws that seed's trial per coord, agg/ the mean
+    over the coord's trials with a spread band on every line (_strip_data, _render_strips). The style
+    defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
+
+    The epoch axis is rebuilt the way the trial figures' is (n_samps_seen / samps_per_epoch), reading
+    samps_per_epoch off the recorded artifacts -- coord_metadata.json's horizon (the coord's sample volume)
+    over trial_metadata.json's n_epochs -- rather than rebuilding a TrainConfig for it. A coord that doesn't
+    track a figure's scale (a frozen logit scalar: the series is empty) is left out of that figure, and an
+    arm with no coord tracking it gets no figure at all. Rendered with the arm's tables (update_arm_metrics)."""
+    dpath_strips = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm / "arm_metrics"
+                    / "coord_strips")
+    panels = {}  # coord -> {seed: (x_train, data_epoch)}, completed trials only, campaign coord order
+    for coord in _matrix()[dataset][arm]:
+        dpath_coord = _dpath_coord(dataset, arm, coord)
+        if not (dpath_coord / "_seeds").exists():
+            continue
+        for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
+            if _chkpt_dpaths(dpath_trial) is None:
+                continue
+            # read off the trial's own completion, not the coord dir: that exists from the moment a trial
+            # launches, whereas coord_metadata.json is the subprocess's to write and a crash can precede it
+            n_samps = load_json(dpath_coord / "coord_metadata.json")["horizon"]["n_samps"]["total"]
+            samps_per_epoch = n_samps / load_json(dpath_trial / "trial_metadata.json")["progress"]["n_epochs"]
+            data_epoch = load_pickle(dpath_trial / "data_trial.pkl")["epoch"]
+            # as plot_metrics builds it: each batch's metrics are measured on the pre-step model, so the
+            # curve anchors at 0 and the last stamp is dropped
+            x_train = np.array([0.0, *(v / samps_per_epoch for v in data_epoch["n_samps_seen"][:-1])])
+            panels.setdefault(coord, {})[dpath_trial.name] = (x_train, data_epoch)
+
+    for scale_key, req_key, sym, name in _STRIP_FIGURES:
+        tracked = {
+            coord: {seed: panel for seed, panel in by_seed.items() if len(panel[1][scale_key]) == len(panel[0])}
+            for coord, by_seed in panels.items()
+        }
+        tracked = {coord: by_seed for coord, by_seed in tracked.items() if by_seed}
+        if not tracked:
+            continue
+        plot_title = f"{arm}\n{DATASET_ALIAS2NAME[dataset]}"
+        style = (fontsize_axes, fontsize_ticks, fontsize_legend, subplot_border_width, fig_width, height_fixed,
+                 height_panel)
+        for seed in sorted({seed for by_seed in tracked.values() for seed in by_seed}, key=int):
+            strips = [(coord, *_strip_data([by_seed[seed]], scale_key, req_key, None))
+                      for coord, by_seed in tracked.items() if seed in by_seed]
+            _render_strips(strips, dpath_strips / "seeds" / seed / f"{name}.png", sym, plot_title, spread_type, *style)
+        strips = [(coord, *_strip_data(list(by_seed.values()), scale_key, req_key, spread_type))
+                  for coord, by_seed in tracked.items()]
+        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", sym, plot_title, spread_type, *style)
+
+@rank0
+def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `dataset`'s cross-arm tables/plots:
-    _datasets/<dataset>/dataset_stats/{arm_coords,arms}/{map,acc}/<group>/{metrics,convergence}.png (see
+    _datasets/<dataset>/dataset_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/{scores,convergence}.png (see
     _render_stats_pngs). arm_coords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
     matrix) with >= 1 completed trial in this dataset. arms/ has one 'Arm' row per arm, each at its BEST coord for this
     dataset -- per criterion x group, the coord with the highest across-trial mean of the criterion's
@@ -779,7 +974,7 @@ def update_dataset_stats(dataset, eval_groups, spread_type, bold_high, ordered, 
     rows_ac = [row for row in arm_coords if comps_ref[(row, dataset)]]
     labels = _score_labels(supp_scores, _nshot_names(comps_all))
     subject = DATASET_ALIAS2NAME[dataset]
-    dpath_stats = dpath_dataset / "dataset_stats"
+    dpath_stats = dpath_dataset / "dataset_metrics"
 
     def rowset_arm_coords(criterion, group_key):
         curves = [(row, *_curve(dataset, *row, criterion, group_key)) for row in rows_ac]
@@ -790,10 +985,10 @@ def update_dataset_stats(dataset, eval_groups, spread_type, bold_high, ordered, 
         curves = [((arm,), *_curve(dataset, arm, best[(arm, dataset)], criterion, group_key)) for (arm,) in rows]
         return rows, comps_arms, curves
 
-    _render_stats_pngs(dpath_stats / "arm_coords", ("Arm", "Coord"), rowset_arm_coords, dataset, subject, eval_groups,
-                       labels, spread_type, bold_high, ordered, heatmap)
+    _render_stats_pngs(dpath_stats / "arm_coords" / "performance", ("Arm", "Coord"), rowset_arm_coords, dataset,
+                       subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap)
     if ArtifactManager.dpath_phase.name != "qual":  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
-        _render_stats_pngs(dpath_stats / "arms", ("Arm",), rowset_arms, dataset, subject, eval_groups,
+        _render_stats_pngs(dpath_stats / "arms" / "performance", ("Arm",), rowset_arms, dataset, subject, eval_groups,
                            labels, spread_type, bold_high, ordered, heatmap)
 
 def _override_value(config, key):
@@ -950,9 +1145,9 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
         ws.column_dimensions[get_column_letter(c)].width = widths[c] + 2 if c in widths else 3
 
 @rank0
-def update_phase_stats(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
+def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
     """Write the phase's workbooks, one per selection criterion x eval group under
-    artifacts/<campaign>/<phase>/phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx. The arm_coords/
+    artifacts/<campaign>/<phase>/phase_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/metrics.xlsx. The arm_coords/
     workbooks have one row per planned (arm, coord) (the phase's matrix), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
     one row per arm, each arm shown at its BEST coord per dataset -- the coord with the highest
     across-trial mean of the workbook's criterion's comp score among the arm's coords with completed
@@ -990,7 +1185,7 @@ def update_phase_stats(eval_groups, spread_type, bold_high, ordered, heatmap, su
     its own metric's Mean-table first score column -- 'All' for mAP, 'I2T' for accuracy -- descending;
     when False, rows keep the fixed matrix order (arms, then coords within each arm).
     Within a sheet one row order is shared across all tables, but the two sheets' orders may differ.
-    heatmap shades each score cell white->#ff5533 by value over a fixed 0.00->100.00 (False leaves
+    heatmap shades each score cell white->#4caf50 by value over a fixed 0.00->100.00 (False leaves
     cells unshaded). '-' cells are never shaded. To the right of this aggregate block sit per-seed
     blocks (one blank separator column apart): a 'seed <seed>' label in the campaign-banner row,
     then the per-dataset tables only (no Mean summary) built from that seed's trials alone,
@@ -1180,7 +1375,7 @@ def update_phase_stats(eval_groups, spread_type, bold_high, ordered, heatmap, su
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
 
-    dpath_stats = ArtifactManager.dpath_phase / "phase_stats"
+    dpath_stats = ArtifactManager.dpath_phase / "phase_metrics"
     write_arms = ArtifactManager.dpath_phase.name != "qual"  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
     band_specs_ac = [("Arm Overrides", _band_keys("arm", rows_ac, declared_ac, config_ac)),
                      ("Coord Overrides", _band_keys("coord", rows_ac, declared_ac, config_ac))] if overrides else []
@@ -1196,7 +1391,8 @@ def update_phase_stats(eval_groups, spread_type, bold_high, ordered, heatmap, su
         for group_key, group_name in eval_groups.items():
             comps_by = comps_all[criterion][group_key]
             banner = f"{group_name}; {selection_name}"
-            write_workbook(dpath_stats / "arm_coords" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows_ac,
+            write_workbook(dpath_stats / "arm_coords" / "performance" / criterion / group_key / "metrics.xlsx",
+                           ("Arm", "Coord"), rows_ac,
                            lambda row, dataset: row, comps_by, hw_by, crash_totals_ac, band_specs_ac, config_ac, banner)
             if not write_arms:
                 continue
@@ -1220,7 +1416,8 @@ def update_phase_stats(eval_groups, spread_type, bold_high, ordered, heatmap, su
                          for kind in _CRASH_KINDS}
                 for (arm,) in rows
             }
-            write_workbook(dpath_stats / "arms" / criterion / f"{group_key}.xlsx", ("Arm", "Coord"), rows, key_cells_arms,
+            write_workbook(dpath_stats / "arms" / "performance" / criterion / group_key / "metrics.xlsx",
+                           ("Arm", "Coord"), rows, key_cells_arms,
                            comps_arms, hw_arms, crash_totals_arms, band_specs_arms, config_arms, banner)
 
 
@@ -1251,7 +1448,7 @@ def _collect_test_scores(group_keys, arm_coords, datasets):
     return comps_all, chkpts
 
 def _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, score_key, labels, spread_type, ordered):
-    """A test score sheet's blocks, laid out like update_phase_stats' build_blocks (aggregate
+    """A test score sheet's blocks, laid out like update_phase_metrics' build_blocks (aggregate
     block of per-dataset tables + bottom 'Mean' cross-dataset summary, then one per-seed block of
     the per-dataset tables alone) with a third 'Chkpt' key column after 'Arm'/'Coord': the
     checkpoint index the combo's trainval models were saved at -- a per-(row, dataset) value, so the
@@ -1299,7 +1496,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
     (ArtifactManager.dpath_phase = the test dir; the map/ folder mirrors the phase workbooks'
     <kind>/<criterion>/ layout for consistency -- test has no selection-criterion dimension, every
     trainval model already sitting at its qual-selected best-mAP checkpoint, so map/ is the only
-    folder). Each workbook is laid out like the qual phase's phase_stats/arm_coords/ ones --
+    folder). Each workbook is laid out like the qual phase's phase_metrics/arm_coords/ ones --
     'Composite mAP' + 'Composite I2T Accuracy' sheets of stacked per-dataset tables + bottom Mean
     summary, per-seed blocks, and the 'Arm Overrides' / 'Coord Overrides' config bands (read from
     the test tree's coord config.json/overrides.json copies), with all of stats.yaml's styling
@@ -1893,13 +2090,18 @@ def plot_alpha_curves(
             # at infinity and leaves a gap in the lines it reaches (the max and the mean): a stray one
             # under graded targets (a tax top-rank split, a bm-kernel pair meeting at the root), every
             # row under sp/mp targets with the linear tsm, which then draws nothing
-            # the min and max bracket the band in the same solid style, so one entry covers the pair
-            # and the max line goes unlabelled (an unlabelled line is left out of the legend)
-            labels_req = {"min": rf"${sym}_{{\text{{req}}}}$ (min, max)", "mean": rf"${sym}_{{\text{{req}}}}$ (mean)"}
+            # the legend names only the stats the panel actually draws (_req_labels: the mean and the max
+            # go non-finite wherever a stray zero row reaches them, all three under hard binary targets,
+            # whose every row holds a zero). With none of the trio drawn the panel keeps no legend at all,
+            # as a trial not recording the series does.
+            vals_req = {stat: np.asarray(data_epoch[f"{req_key}_{stat}"], dtype=float)
+                        for stat in ("min", "mean", "max")}
+            labels_req = _req_labels(vals_req, sym)
             for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
-                ax.plot(x_train, data_epoch[f"{req_key}_{stat}"], color="red", linestyle=linestyle, linewidth=1.0,
+                ax.plot(x_train, vals_req[stat], color="red", linestyle=linestyle, linewidth=1.0,
                         label=labels_req.get(stat))
-            legend_handles[ax] = ax.get_legend_handles_labels()[0]
+            if labels_req:
+                legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -1931,7 +2133,18 @@ def plot_alpha_curves(
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
-    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    # the dalpha panels come agg-major, so each agg's five comps are a consecutive block: the gradient
+    # sums, their magnitudes, their coherence ratios. Each block is ruled off top and bottom in a
+    # double-width line (_finish_curves' axes_blocks) -- the three read as one quantity apiece across the
+    # five decompositions, which the shared y scale of a block does not say on its own. The logalpha
+    # figure's blank C block is ruled like the others, the two figures staying aligned block for block.
+    axes_dalpha = axes[len(scale_panels):]  # in dalpha_panels order
+    axes_blocks = [
+        [ax for ax, panel in zip(axes_dalpha, dalpha_panels) if panel[2] == agg]
+        for agg in ("sum", "sum_abs", "C")
+    ]
+    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
+                   subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
 
 def plot_kl_curves(
     data_epoch,
@@ -1987,12 +2200,17 @@ def plot_kl_curves(
 
     _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
-def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend, subplot_border_width):
+def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
+                   subplot_border_width, axes_blocks=(), alternate_sides=True):
     """
     The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_alpha_curves /
-    plot_kl_curves) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`, the heatmap
-    strips, keep their own background), the title, the layout, the outside legends (`legend_handles`:
-    panel -> handles), then the save.
+    plot_kl_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
+    the heatmap strips, keep their own background), the title, the layout, the outside legends
+    (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule
+    off as blocks (see below). `alternate_sides` flips every other panel's y label and ticks to the right
+    and boxes its legend opposite, so a stack of panels doesn't crowd one margin; False leaves every
+    panel's sides as its figure set them and boxes every legend on the left (the strip figures, whose
+    right margin carries the coord names).
     """
     for ax in axes:
         ax.label_outer()
@@ -2003,9 +2221,20 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
         for spine in ax.spines.values():
             spine.set_linewidth(subplot_border_width)
             spine.set_edgecolor("black")
-        if idx_ax % 2 == 1:
+        if alternate_sides and idx_ax % 2 == 1:
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
+
+    # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_alpha_curves' three
+    # dL/dalpha aggs) is ruled off as one block: the horizontal spines bounding it -- the top of its
+    # first panel and the bottom of its last -- go to twice the panel border's width, everything else
+    # (its sides, and the edges shared between panels inside it) staying at the panel width, so the rules
+    # read as separators across the column rather than as a frame. The panels sit flush (hspace=0), so a
+    # block's own bottom edge doubles as the next block's top and the pair of thick spines draws as the
+    # one rule between them.
+    for group in axes_blocks:
+        group[0].spines["top"].set_linewidth(2 * subplot_border_width)
+        group[-1].spines["bottom"].set_linewidth(2 * subplot_border_width)
 
     # the title is the top panel's own, left-aligned with its left edge: padded off the panel in points
     # rather than placed by figure fraction, so the spacing holds at any figure height
@@ -2018,7 +2247,8 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
     for idx_ax, ax in enumerate(axes):
         _fit_ylabel(ax)
         if ax in legend_handles:
-            _place_legend_outside(ax, legend_handles[ax], "left" if idx_ax % 2 == 1 else "right", fontsize_legend)
+            side = "left" if not alternate_sides or idx_ax % 2 == 1 else "right"
+            _place_legend_outside(ax, legend_handles[ax], side, fontsize_legend)
     plt.tight_layout()
     fpath_plot.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fpath_plot, dpi=300)

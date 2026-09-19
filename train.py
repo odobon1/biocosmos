@@ -36,9 +36,9 @@ from utils.report import (
     arm_sweep_complete,
     dataset_sweep_complete,
     seed_sweep_complete,
-    update_arm_stats,
-    update_dataset_stats,
-    update_phase_stats,
+    update_arm_metrics,
+    update_dataset_metrics,
+    update_phase_metrics,
 )
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
@@ -798,17 +798,17 @@ def run_training(cfg):
         update_chkpt_selection(groups, cfg_stats.spread_type)
         update_metric_stats(groups, cfg_stats.spread_type)
         # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
-        # completed trial in every coord of the arm (arm_stats), every arm x coord of the dataset
-        # (dataset_stats), and the whole matrix (phase_stats) -- so it is never rendered from a mix of
+        # completed trial in every coord of the arm (arm_metrics), every arm x coord of the dataset
+        # (dataset_metrics), and the whole matrix (phase_metrics) -- so it is never rendered from a mix of
         # coords reselected against different trial counts
         if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
-            update_arm_stats(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+            update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
                              cfg_stats.heatmap, cfg_stats.supp_scores)
         if dataset_sweep_complete(cfg.seed, cfg.dataset):
-            update_dataset_stats(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+            update_dataset_metrics(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
                                  cfg_stats.heatmap, cfg_stats.supp_scores)
         if seed_sweep_complete(cfg.seed):
-            update_phase_stats(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
+            update_phase_metrics(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                                   cfg_stats.supp_scores, cfg_stats.overrides)
 
     cleanup_ddp()

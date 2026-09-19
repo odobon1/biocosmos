@@ -7,12 +7,16 @@ trials are scored at (argmax of the across-trial mean curve) and rewrites every 
 evals/_selected/{map,acc}/<group>.json to that checkpoint, plus
 _datasets/<dataset>/_arms/<arm>/_coords/<coord>/coord_stats/{map,acc}/<group>/{metrics.json, metrics_listview.json,
 chkpt_means.pkl, chkpt_means.png} and coord_metadata.json's best_chkpt, and re-renders every cross-coord level:
-_datasets/<dataset>/_arms/<arm>/arm_stats/ and _datasets/<dataset>/dataset_stats/{arm_coords,arms}/ (arms/ in _screen/ only; each
-{map,acc}/<group>/{metrics,convergence}.png) and phase_stats/{arm_coords,arms}/{map,acc}/<group>.xlsx (arms/ in _screen/ only), all using
+_datasets/<dataset>/_arms/<arm>/arm_metrics/performance/ ({map,acc}/<group>/{scores,convergence}.png) and
+_datasets/<dataset>/dataset_metrics/{arm_coords,arms}/performance/ (arms/ in _screen/ only; each
+{map,acc}/<group>/{scores,convergence}.png) and phase_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/metrics.xlsx
+(arms/ in _screen/ only). Each
+arm's _arms/<arm>/arm_metrics/coord_strips/ (its coords' logit-scale panels stacked) and, when the arm is
+complete, its best_coord/ copy of the best coord's learning curves (_screen/ only) are rebuilt with its arm_metrics/. All using
 the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides), so edits to any
 of them take effect for an already-run campaign,  Each trial's cached per-checkpoint
 evals/{base,eval*}/ metrics files are reused and re-aggregated exactly as on the trial-completion path in train.py
-(update_chkpt_selection -> update_metric_stats -> update_arm_stats -> update_dataset_stats -> update_phase_stats) --
+(update_chkpt_selection -> update_metric_stats -> update_arm_metrics -> update_dataset_metrics -> update_phase_metrics) --
 except that every level renders unconditionally here, rather than only at the end of its seed cycle.
 """
 
@@ -22,9 +26,9 @@ from utils.config import eval_groups, get_config_stats
 from utils.report import (
     update_metric_stats,
     update_chkpt_selection,
-    update_arm_stats,
-    update_dataset_stats,
-    update_phase_stats,
+    update_arm_metrics,
+    update_dataset_metrics,
+    update_phase_metrics,
 )
 from utils.train import ArtifactManager
 from utils.utils import load_json, paths
@@ -50,9 +54,9 @@ def regen_campaign(campaign, cfg_stats):
                     if ArtifactManager.dpath_coord.exists():
                         update_chkpt_selection(groups, cfg_stats.spread_type)
                         update_metric_stats(groups, cfg_stats.spread_type)
-                update_arm_stats(dataset, arm, groups, *style)
-            update_dataset_stats(dataset, groups, *style)
-        update_phase_stats(groups, *style, cfg_stats.overrides)
+                update_arm_metrics(dataset, arm, groups, *style)
+            update_dataset_metrics(dataset, groups, *style)
+        update_phase_metrics(groups, *style, cfg_stats.overrides)
 
 
 def main():

@@ -137,7 +137,16 @@ class Criterion(abc.ABC):
     def targ_memb(self, Qs):
         """The blended target matrix Q = sum_k w_k Q_k from the specs' matrices Qs (_targets): the pair
         memberships in [0, 1] the batch stats read (target histogram, hard-pair margins, positive / negative
-        mass masks). The distribution the loss trains against is targ_dist."""
+        mass masks). The distribution the loss trains against is targ_dist.
+
+        A lone spec is always at full weight (targ_specs drops the zero-weight one), so its blend is the
+        matrix itself and the result is returned as-is rather than as a fresh 1.0 * Q -- the copy it skips
+        is a full BxB, twice per InfoNCE batch (the membership blend and the float64 distribution blend,
+        48 MB between them at B 2048). The result then ALIASES Qs[0], so nothing may write into a blended
+        target in place; nothing does (the only in-place ops in the loss path are scalar accumulators, and
+        the collectives all reduce freshly built stat buffers, never a target)."""
+        if len(Qs) == 1:
+            return Qs[0]
         return sum(w * Q for (w, _), Q in zip(self.targ_specs, Qs))
 
     @property
@@ -218,7 +227,9 @@ class Criterion(abc.ABC):
                        target's raw loss on shared logits, the loss being affine in the target)
         - targs ------ Blended target matrix Q (targ_memb); pt[B, B]
         - y ---------- Target distribution Y trained against (targ_dist; a training InfoNCE loss returns
-                       the distribution its blended gradient follows -- see InfoNCECriterion); pt[B, B]
+                       the distribution its blended gradient follows -- see InfoNCECriterion); pt[B, B].
+                       float64 under InfoNCE (the batch stats are its only consumer and its tsm is
+                       solved there -- see InfoNCECriterion._tsm), the loss's own dtype otherwise
         """
         raise NotImplementedError
 
@@ -235,7 +246,21 @@ class InfoNCECriterion(Criterion):
         return F.softmax(Z, dim=1)
 
     def _tsm(self, Q, cfg_tsm, logit_scale):
-        """One target spec's simplex mapping: its Q row-normalized (linear) or row-softmaxed (softmax)."""
+        """One target spec's simplex mapping: its Q row-normalized (linear) or row-softmaxed (softmax).
+
+        Solved and returned in float64. The softmax's negatives reach exp(-2 alpha), which flushes to
+        exact zero in float32 from alpha ~ 50.6 -- past the base-model scales the run starts from
+        (clip_vitb16 ~100, siglip_vitb16 ~117) under sm_scale pinned. That costs the loss nothing (a
+        flushed entry contributes ~1e-86 to its CE) but it destroys the row-wise target-implied scale
+        bound the batch stats read off Y: alpha_req = 0.5 * log(max Y / min Y) goes to infinity where
+        the true bound is alpha * (max_j Q_ij - min_j Q_ij), at most alpha itself -- pinned means the
+        target is always exactly reachable at the current scale, which is the line worth seeing. The
+        row sums land on 1 to ~1e-16 here rather than the ~1e-8 float32 manages, which is what
+        infonce_p_opt's reachable-set solve needs (see infonce_batch_stats). __call__ takes float32
+        copies for the loss and hands these on for the stats. `logit_scale` is left in its own dtype
+        so alpha is bit-identical to the one infonce_batch_stats derives from the same parameter.
+        """
+        Q = Q.double()
         Q_mass = Q.sum(dim=1)
 
         if cfg_tsm["type"] == "linear":
@@ -262,10 +287,12 @@ class InfoNCECriterion(Criterion):
         
         Qs = self._targets(B, class_encs_b, targ_data_b)
         Q = self.targ_memb(Qs)  # pt[B, B]
-        Ys = self.targ_dists(Qs, self._per_term(lambda t: t, logit_scale, len(Qs)))  # pt[B, B] per live spec
-        Y = self.targ_memb(Ys)  # pt[B, B]
-
-        terms = self.loss_terms(Ys, Y)
+        # the tsm runs in float64 (see _tsm): the batch stats read those, the loss takes float32 copies of
+        # just the targets its terms actually score against
+        Ys64 = self.targ_dists(Qs, self._per_term(lambda t: t, logit_scale, len(Qs)))  # pt[B, B] per live spec
+        Y64 = self.targ_memb(Ys64)  # pt[B, B]
+        terms64 = self.loss_terms(Ys64, Y64)
+        terms = [(w, Y_k.float()) for w, Y_k in terms64]
         Zs = self._per_term(lambda Z: Z, logits, len(terms))  # pt[B, B] per term
         log_ps = self._per_term(lambda Z: (F.log_softmax(Z, dim=1), F.log_softmax(Z.T, dim=1)), logits, len(terms))
         losses_raw = [(-Y_k * log_p_i2t, -Y_k * log_p_t2i) for (_, Y_k), (log_p_i2t, log_p_t2i) in zip(terms, log_ps)]  # pt[B, B] pairs
@@ -279,10 +306,10 @@ class InfoNCECriterion(Criterion):
         if self.sep_scalars:
             # no one distribution is trained against across two sets of logits: the batch stats read the
             # primary term's, with its logits and scale (VLMWrapper._batch_stats)
-            Y = terms[0][1]
+            Y64 = terms64[0][1]
 
         if not train:
-            return loss_raw, loss_raw, Q, Y
+            return loss_raw, loss_raw, Q, Y64
 
         W_ci = self._cls_imb_wts(class_encs_b)  # class-imbalance weights; pt[B]
         if self.cfg["wting"]["cls_imb"]["norm"]:
@@ -306,9 +333,9 @@ class InfoNCECriterion(Criterion):
             # the distribution the blended gradient follows: the terms' targets under their normalized blend
             # coefficients (the loss is linear in the target) -- unitless reweights a loss blend's terms
             # away from (1 - lambda, lambda), so the batch stats read this Y rather than the static blend
-            Y = sum(c * Y_k for c, (_, Y_k) in zip(coeffs, terms)) / sum(coeffs)
+            Y64 = sum(c * Y_k for c, (_, Y_k) in zip(coeffs, terms64)) / sum(coeffs)
 
-        return loss, loss_raw, Q, Y
+        return loss, loss_raw, Q, Y64
 
 class BCECriterion(Criterion):
     """
@@ -705,7 +732,7 @@ def hard_pair_similarity_margin(S, Q, kappa):
     return (w_pos * S).sum(dim=1) - (w_neg * S).sum(dim=1)
 
 
-def infonce_p_opt(Y, alpha, n_iter=40):
+def infonce_p_opt(Y, alpha, n_iter=60):
     """
     Row-wise reachable-set projection of the InfoNCE target distribution Y: the closest distribution
     a row softmax can realize under bounded-cosine logits. With s in [-1, 1] and z = alpha * s, a
@@ -718,7 +745,12 @@ def infonce_p_opt(Y, alpha, n_iter=40):
     -- entries already inside the band are kept, the rest pinned to its edges (a target of exactly
     0, an sp / mp negative, lands on the floor lam), lam set by the sum. lam is solved per row by
     bisection on eta = log(lam) over [-log(B) - 2 * alpha, -log(B)], where the clamped row mass is
-    <= 1 and >= 1 respectively (monotone in eta between). One p* serves both anchor directions:
+    <= 1 and >= 1 respectively (monotone in eta between). 60 halvings exhausts float64 at any alpha:
+    the bracket is 2 * alpha wide and eta itself is of order 2 * alpha, so the ulp it has to resolve
+    is ~2 * alpha * 2^-52 and the scale cancels -- ~52 halvings reach one ulp, 60 leave margin, and
+    more are wasted. Fewer are not: the shortfall is 2 * alpha * 2^-(n+1), which at n = 40 corrupts
+    the residual p* - y by 3% at alpha 14 and by three orders past alpha 20. One p* serves both anchor
+    directions:
     InfoNCECriterion reads Y's rows as each anchor's targets in the I2T and the T2I direction alike.
 
     - Y ------ [R, B] target distributions (rows summing to 1; Criterion.targ_dist under InfoNCE)
@@ -873,6 +905,14 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       ones (log is monotone) but the mean is not -- it is the mean of the rows' logs, the log of
       their geometric mean.
 
+    Y's rows are renormalized before any of it, the reachable-set solve needing sum(p*) = 1 to be the
+    constraint it says it is. InfoNCECriterion._tsm already hands this path a float64 Y whose rows sum to
+    1 to ~1e-16, so the correction is nil there; it is the guard for a float32 Y, whose rows sum to 1 only
+    to ~1e-8. Left un-renormalized, that deficit is made up by lifting the floor lam, and the lift reports
+    as residual -- sum|p* - y| comes out at the row-sum deficit itself, some 7 orders above the true
+    residual at large alpha, where it decays like exp(-2 alpha). The correction sits below a float32 ulp,
+    so it is inert for the loss itself, whose CE needs no normalized target.
+
     - sim, targs, y, logits -- the batch's BxB S, Q (the blended target matrix), Y (the blended target
       distribution) and logits (first branch), as passed to sim_targ_batch_stats
     - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
@@ -884,6 +924,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     """
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
+        Y = Y / Y.sum(dim=1, keepdim=True)  # rows to 1 in float64; see the renormalization note above
         with torch.enable_grad():
             # the scale the logits carry and its derivative in the raw parameter, d(alpha)/d(log alpha_raw),
             # by autograd through the clamp-then-exp path compute_logits takes: alpha while the clamp is

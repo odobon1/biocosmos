@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from tests.unit.test_loss_targets import import_loss_module
 
 
-def _p_opt_single_row(y, alpha, n_iter=40):
+def _p_opt_single_row(y, alpha, n_iter=60):
     # the single-row solver the row-wise infonce_p_opt vectorizes (MP-HCon-Intuition.ipynb), verbatim
     y = y.detach().double()
     alpha = torch.as_tensor(alpha, dtype=torch.float64, device=y.device).detach()
@@ -76,6 +76,13 @@ def _sims(B, seed):
 def _log_scale(alpha):
     # the raw log-scale parameter infonce_batch_stats takes (the model's logit_scale, detached)
     return torch.tensor(math.log(alpha), dtype=torch.float64)
+
+
+def _y_stats(Y):
+    # the target distribution infonce_batch_stats solves against: Y's rows renormalized in float64, the
+    # criterion building them in float32 (rows summing to 1 only to ~1e-8)
+    Y = Y.double()
+    return Y / Y.sum(dim=1, keepdim=True)
 
 
 @pytest.mark.parametrize("alpha", [0.5, 3.0, 10.0])
@@ -189,7 +196,7 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
         for agg in aggs[:2]:
             assert stats[f"dlogalpha_{agg}_{comp}"] == pytest.approx([alpha * v for v in stats[f"dalpha_{agg}_{comp}"]], rel=1e-12)
         assert stats[f"dlogalpha_C_{comp}"] == pytest.approx(stats[f"dalpha_C_{comp}"], rel=1e-12)
-    Sf, Qf, Yf = S.float().double(), Q.float().double(), Y.float().double()
+    Sf, Qf, Yf = S.float().double(), Q.float().double(), _y_stats(Y.float())
     P_opt = L.infonce_p_opt(Yf, alpha)
     S_opt = L.infonce_s_opt(P_opt, alpha)
     i2t = L.infonce_scale_grad_sums(Sf, Qf, Yf, torch.softmax(logits.double(), dim=1), P_opt, S_opt)
@@ -211,6 +218,29 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
         assert stats_sym[f"dalpha_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
+
+
+def test_batch_stats_residual_is_not_the_float32_row_sum_deficit():
+    # Criterion.targ_dist builds Y in float32, whose rows sum to 1 only to ~1e-8, so infonce_batch_stats
+    # renormalizes them in float64 first. Without that the solve makes the deficit up by lifting the floor
+    # lam and reports the lift as residual -- sum|p* - y| landing on the deficit itself, orders above the
+    # true residual, which by this alpha has decayed like exp(-2 alpha) to nothing
+    L = import_loss_module()
+    B, alpha = 64, 60.0
+    Q, Y = _targets(B, 8, seed=15)
+    S = _sims(B, seed=16)
+    Y32 = Y.float()
+    deficit = (Y32.double().sum(dim=1) - 1.0).abs().mean().item()
+    assert deficit > 1e-9  # the float32 rows really are off 1, else the check below is vacuous
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y32, (alpha * S).float(), _log_scale(alpha), False)
+    # the residual sits orders under the deficit, not on it (un-renormalized it lands within a factor of
+    # two of it, the magnitudes not cancelling across the two anchor directions the way the signed sums do)
+    for comp in ("res", "sres", "ires"):
+        assert abs(stats[f"dalpha_sum_{comp}"][0]) < deficit / 100, comp
+        assert stats[f"dalpha_sum_abs_{comp}"][0] < deficit / 100, comp
+    assert abs(stats["kl_ir"]) < deficit / 100
+    # the structural part carries the whole gradient there, the target being reachable at this alpha
+    assert stats["dalpha_sum_struct"][0] == pytest.approx(stats["dalpha_sum_full"][0], rel=1e-9)
 
 
 def test_batch_stats_row_wise_scale_bounds():
@@ -376,7 +406,7 @@ def test_batch_stats_kl_keys_average_directions():
     S = _sims(B, seed=13)
     logits = (alpha * S).float() - 0.7  # a bias is inert under the row softmax
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
-    Yf, Z = Y.float().double(), logits.double()
+    Yf, Z = _y_stats(Y.float()), logits.double()
     P_opt = L.infonce_p_opt(Yf, alpha)
     i2t = L.infonce_kl_terms(Yf, torch.log_softmax(Z, dim=1), P_opt)
     t2i = L.infonce_kl_terms(Yf, torch.log_softmax(Z.T, dim=1), P_opt)

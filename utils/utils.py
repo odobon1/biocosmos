@@ -562,7 +562,7 @@ class PrintLog:
         # one block per eval group in play (reporting.yaml's `eval`), under its reported name
         for group_key, group_name in eval_groups.items():
             lines_comp += _format_composite_block(
-                f" Composite {group_name} mAP ",
+                f" {group_name} Composite mAP ",
                 eval_metrics["scores"][group_key]["comp"]["map"],
             )
 

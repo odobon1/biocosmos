@@ -283,7 +283,7 @@ def test_separate_logit_scalars_infonce_returns_the_primary_distribution():
     crit = _make_crit(cfg, specs, K, B)
     Q = torch.rand(B, B)
     Y_2 = crit.targ_dists([Q, Q], [torch.tensor(2.3), torch.tensor(1.7)])[1]
-    torch.testing.assert_close(Y_2, torch.softmax(2 * Q * torch.tensor(1.7).exp(), dim=1))
+    torch.testing.assert_close(Y_2, torch.softmax(2 * Q.double() * torch.tensor(1.7).exp(), dim=1))
 
 
 @pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
@@ -328,7 +328,7 @@ def test_unitless_infonce_returns_the_distribution_its_gradient_follows():
     _, _, y_u, _ = _forward(_make_crit(_cfg("infonce", lambda_, blend_type="loss", unitless=True), specs, K, B))
     c_1, c_2 = (1.0 - lambda_) / loss_1.detach(), lambda_ / loss_2.detach()
     torch.testing.assert_close(y_u, (c_1 * y_1 + c_2 * y_2) / (c_1 + c_2))
-    torch.testing.assert_close(y_u.sum(dim=1), torch.ones(B))
+    torch.testing.assert_close(y_u.sum(dim=1), torch.ones(B, dtype=torch.float64))  # InfoNCE's y is float64
 
 
 def test_lambda_endpoints_are_the_single_targets():

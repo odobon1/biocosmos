@@ -75,6 +75,6 @@ def test_printlog_eval_blocks_follow_the_eval_groups_in_play(capsys) -> None:
     PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard", "joint_macro": "GZSL"})
 
     printout = capsys.readouterr().out
-    assert "Composite Standard mAP" in printout
-    assert "Composite GZSL mAP" in printout
+    assert "Standard Composite mAP" in printout
+    assert "GZSL Composite mAP" in printout
     assert "Native" not in printout and "Joint" not in printout

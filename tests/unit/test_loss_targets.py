@@ -1,4 +1,5 @@
 import importlib
+import math
 import sys
 import types
 
@@ -119,14 +120,35 @@ def test_targ_dist_is_q_for_bce_and_the_tsm_row_transform_for_infonce() -> None:
     bce.targ_specs = [(1.0, {"targ": "phylo"})]
     assert torch.equal(bce.targ_dist([Q], [logit_scale]), Q)
 
+    Qd = Q.double()  # InfoNCE's tsm solves in float64 (InfoNCECriterion._tsm), so Y comes back there
     Y = _infonce(loss_mod, [(1.0, _spec("linear", "pinned"))]).targ_dist([Q], [logit_scale])
-    assert torch.allclose(Y, Q / Q.sum(dim=1, keepdim=True))  # rows sum to 1, zeros stay zero
+    assert torch.allclose(Y, Qd / Qd.sum(dim=1, keepdim=True))  # rows sum to 1, zeros stay zero
     Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned"))]).targ_dist([Q], [logit_scale])
-    assert torch.allclose(Y, torch.softmax(2 * Q * 100.0, dim=1))
+    assert torch.allclose(Y, torch.softmax(2 * Qd * 100.0, dim=1))
     Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned1"))], clamp=False).targ_dist([Q], [logit_scale])
-    assert torch.allclose(Y, torch.softmax(Q * torch.exp(logit_scale), dim=1))
+    assert torch.allclose(Y, torch.softmax(Qd * torch.exp(logit_scale), dim=1))
     Y = _infonce(loss_mod, [(1.0, _spec("softmax", 3.0))]).targ_dist([Q], [logit_scale])
-    assert torch.allclose(Y, torch.softmax(2 * Q * 3.0, dim=1))
+    assert torch.allclose(Y, torch.softmax(2 * Qd * 3.0, dim=1))
+
+
+def test_softmax_tsm_keeps_full_support_at_the_base_model_scales() -> None:
+    # the softmax tsm's negatives reach exp(-2 alpha), which flushes to exact zero in float32 from
+    # alpha ~ 50.6 -- past the scales a run starts from under scale.init null (clip_vitb16 ~100,
+    # siglip_vitb16 ~117.3). Solving in float64 keeps them, which is what holds the row-wise
+    # target-implied scale bound finite: alpha_req = 0.5 log(max Y / min Y) = alpha (max_j Q_ij -
+    # min_j Q_ij), the pinned target being exactly reachable at the scale that built it
+    loss_mod = import_loss_module()
+    enc = torch.arange(6) // 2
+    Q = (enc[:, None] == enc[None, :]).float()  # mp-like 0/1, so the log range is the full 2 alpha
+    for alpha in (30.0, 100.0, 117.3):
+        logit_scale = torch.tensor(math.log(alpha))
+        Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned"))], clamp=False).targ_dist([Q], [logit_scale])
+        assert Y.dtype == torch.float64
+        assert (Y > 0).all(), alpha  # float32 flushes every negative to exactly zero above ~50.6
+        alpha_req = 0.5 * torch.log(Y.amax(dim=1) / Y.amin(dim=1))
+        assert torch.isfinite(alpha_req).all(), alpha
+        expected = torch.exp(logit_scale).double() * (Q.double().amax(dim=1) - Q.double().amin(dim=1))
+        torch.testing.assert_close(alpha_req, expected)
 
 
 def test_targ_dist_blends_each_spec_under_its_own_tsm() -> None:
@@ -140,8 +162,11 @@ def test_targ_dist_blends_each_spec_under_its_own_tsm() -> None:
     assert [w for w, _ in specs] == [0.7, 0.3]
     crit = _infonce(loss_mod, specs)
     Y = crit.targ_dist([Q1, Q2], [logit_scale] * 2)
-    assert torch.allclose(Y, 0.7 * Q1 / Q1.sum(dim=1, keepdim=True) + 0.3 * torch.softmax(2 * Q2 * 3.0, dim=1))
+    Q1d, Q2d = Q1.double(), Q2.double()  # the tsm's float64 (InfoNCECriterion._tsm); targ_memb keeps Q's dtype
+    assert torch.allclose(Y, 0.7 * Q1d / Q1d.sum(dim=1, keepdim=True) + 0.3 * torch.softmax(2 * Q2d * 3.0, dim=1))
     assert torch.allclose(crit.targ_memb([Q1, Q2]), 0.7 * Q1 + 0.3 * Q2)
+    # a lone spec is at full weight, so its blend is the matrix itself -- returned as-is, not copied
+    assert _infonce(loss_mod, [(1.0, _spec("linear", "pinned"))]).targ_memb([Q1]) is Q1
 
 
 def test_targ_specs_drop_zero_weight_specs() -> None:

@@ -850,19 +850,29 @@ def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_ax
                    fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel):
     """One figure of scale strips, `strips` [(coord, x, scale, reqs)] top to bottom (_strip_data): the
     scale panel plot_alpha_curves gives each trial -- the scale in purple over its bound trio in red,
-    the min and max solid and the mean dashed -- one per coord of an arm, each named on its right, over
-    one shared epoch axis. A (values, spread) pair with a spread shades it around its line, so on the agg
-    figure every line carries its own across-trial band; one '± <spread_type>' entry names the
-    convention for all of them. The legend is the figure's, not a panel's: the strips draw the same
-    series, so the handles are pooled by label and boxed once, off the left of the top strip (away from
-    the coord names)."""
+    the min and max solid and the mean dashed -- one per coord of an arm, over one shared epoch axis. A
+    (values, spread) pair with a spread shades it around its line, so on the agg figure every line carries
+    its own across-trial band; one '± <spread_type>' entry names the convention for all of them.
+
+    Each strip is named by its coord in bold, the names alternating left / right down the figure with each
+    strip's y ticks on its name's side, so neither margin carries every label; the names on a side start
+    at a common x (their pads make up the difference between each strip's tick labels and the widest
+    block that side has to clear). The coords' top-level dimension -- combo-group names join with '_' and
+    the first group varies slowest, so LR-5.0e-6_Alpha-{100,10,1} groups under its LR -- boxes each run of
+    strips sharing it in a double-width border (_finish_curves' axes_blocks). The legend is the figure's,
+    not a panel's (the strips draw the same series), pooled by label and laid out in one row above the top
+    strip, right-aligned opposite the title."""
     fig = plt.figure(figsize=(fig_width, height_fixed + len(strips) * height_panel))
     gs = gridspec.GridSpec(len(strips), 1, hspace=0)
     axes = []
 
     for coord, x, (vals_scale, spread_scale), reqs in strips:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        ax.plot(x, vals_scale, color="tab:purple", label=rf"${sym}$")
+        # the scale rides above its bound lines (zorder): a softmax target mapping pinned to the scale
+        # (utils.loss.InfoNCECriterion._tsm) makes the bound the scale itself wherever a row's targets
+        # span the full similarity range, and the panel is about the scale -- drawn under, it would
+        # vanish beneath the trio exactly where they coincide
+        ax.plot(x, vals_scale, color="tab:purple", label=rf"${sym}$", zorder=3)
         if spread_scale is not None:
             ax.fill_between(x, vals_scale - spread_scale, vals_scale + spread_scale, color="tab:purple",
                             alpha=0.2, label=f"± {spread_type}")
@@ -873,24 +883,58 @@ def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_ax
                 ax.plot(x, vals, color="red", linestyle=linestyle, linewidth=1.0, label=labels_req.get(stat))
                 if spread is not None:
                     ax.fill_between(x, vals - spread, vals + spread, color="red", alpha=0.15)
-        # the coord names the strip from its right, horizontal (a coord name reads badly rotated) and
-        # outside the y ticks, which go right on EVERY strip rather than alternating: that clears the
-        # whole left margin for the figure's one legend, which would otherwise sit over the tick labels
-        ax.set_ylabel(coord, rotation=0, ha="left", va="center", fontsize=fontsize_axes, labelpad=8)
-        ax.yaxis.set_label_position("right")
-        ax.yaxis.tick_right()
+        # the coord names the strip, horizontal (a coord name reads badly rotated) and bold, on the side
+        # its y ticks take -- alternating down the figure, so one margin doesn't carry every label
+        side = "left" if len(axes) % 2 == 0 else "right"
+        ax.set_ylabel(coord, rotation=0, ha="left", va="center", fontsize=fontsize_axes, fontweight="bold")
+        ax.yaxis.set_label_position(side)
+        ax.yaxis.set_ticks_position(side)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
+    # the names on a side start at a common x. A name sits labelpad points beyond its own tick labels, so
+    # the pads make up each strip's difference from the widest block that side must clear -- the tick
+    # labels alone on the right, where the name runs away from the panel, the tick labels plus the name on
+    # the left, where it runs back toward one. The draw is what fills the tick labels in and lays them
+    # out; widths are read off an explicit renderer and converted to points, labelpad's unit (so the save
+    # dpi is moot).
+    fig.canvas.draw()
+    renderer, to_points = fig.canvas.get_renderer(), 72 / fig.dpi
+    ticks = [max((t.get_window_extent(renderer).width for t in ax.get_yticklabels()), default=0.0) * to_points
+             for ax in axes]
+    names = [ax.yaxis.label.get_window_extent(renderer).width * to_points for ax in axes]
+    for side, idxs in (("left", range(0, len(axes), 2)), ("right", range(1, len(axes), 2))):
+        idxs = list(idxs)
+        if idxs:
+            span = max(ticks[i] + names[i] * (side == "left") for i in idxs)
+            for i in idxs:
+                axes[i].yaxis.labelpad = span - ticks[i] + 6
+
     handles = {}  # label -> handle, first strip to draw it winning: a coord whose loss records no bounds
     for ax in axes:                              # leaves them to a coord whose loss does
         for handle, label in zip(*ax.get_legend_handles_labels()):
             handles.setdefault(label, handle)
-    _finish_curves(fig, axes, [], {axes[0]: list(handles.values())}, plot_title, fpath_plot, fontsize_legend,
-                   subplot_border_width, alternate_sides=False)
+    axes[0].legend(handles=list(handles.values()), loc="lower right", bbox_to_anchor=(1.0, 1.0),
+                   ncol=len(handles), fontsize=fontsize_legend)
+    _finish_curves(fig, axes, [], {}, plot_title, fpath_plot, fontsize_legend, subplot_border_width,
+                   axes_blocks=_strip_blocks(strips, axes), box_blocks=True, alternate_sides=False)
+
+def _strip_blocks(strips, axes):
+    """The strip runs to box, grouped by the coords' top-level dimension: combo-group names join with '_'
+    and the campaign crosses the first group slowest, so the component before the first '_' is the coarsest
+    sweep the names carry -- LR-5.0e-6_Alpha-{100,10,1}, LR-5.0e-5_Alpha-{100,10,1} groups under its LR.
+    A coord set with no such level (one combo group, so every name its own group) gets no boxes rather
+    than a box per strip."""
+    blocks, level = [], None
+    for (coord, *_), ax in zip(strips, axes):
+        if coord.split("_")[0] != level:
+            level = coord.split("_")[0]
+            blocks.append([])
+        blocks[-1].append(ax)
+    return [] if len(blocks) == len(axes) else blocks
 
 @rank0
 def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
@@ -2076,7 +2120,10 @@ def plot_alpha_curves(
 
     for key, label in scale_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        ax.plot(x_train, data_epoch[key], color="tab:purple", label=rf"${sym}$")
+        # zorder: the bound lines below sit exactly on this one wherever the target mapping is a softmax
+        # pinned to the scale (utils.loss.InfoNCECriterion._tsm -- the target is then always exactly
+        # reachable at the current scale), and the panel is about the scale
+        ax.plot(x_train, data_epoch[key], color="tab:purple", label=rf"${sym}$", zorder=3)
         if key == scale_key and len(data_epoch[f"{req_key}_max"]) == len(x_train):
             # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
             # alpha_req; an InfoNCE loss only, so a BCE-family loss's panel gets no lines), read
@@ -2201,13 +2248,14 @@ def plot_kl_curves(
     _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
-                   subplot_border_width, axes_blocks=(), alternate_sides=True):
+                   subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
     The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_alpha_curves /
     plot_kl_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
     the heatmap strips, keep their own background), the title, the layout, the outside legends
     (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule
-    off as blocks (see below). `alternate_sides` flips every other panel's y label and ticks to the right
+    off as blocks, `box_blocks` closing each block's sides too (see below). `alternate_sides` flips every
+    other panel's y label and ticks to the right
     and boxes its legend opposite, so a stack of panels doesn't crowd one margin; False leaves every
     panel's sides as its figure set them and boxes every legend on the left (the strip figures, whose
     right margin carries the coord names).
@@ -2226,15 +2274,18 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
             ax.yaxis.tick_right()
 
     # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_alpha_curves' three
-    # dL/dalpha aggs) is ruled off as one block: the horizontal spines bounding it -- the top of its
-    # first panel and the bottom of its last -- go to twice the panel border's width, everything else
-    # (its sides, and the edges shared between panels inside it) staying at the panel width, so the rules
-    # read as separators across the column rather than as a frame. The panels sit flush (hspace=0), so a
-    # block's own bottom edge doubles as the next block's top and the pair of thick spines draws as the
-    # one rule between them.
+    # dL/dalpha aggs, the strip figures' top-level coord groups) is ruled off as one block: the horizontal
+    # spines bounding it -- the top of its first panel and the bottom of its last -- go to twice the panel
+    # border's width, the edges shared between panels inside it staying at the panel width. The sides stay
+    # too unless `box_blocks` closes them, which carries the same double width down every panel of the
+    # block, boxing it. The panels sit flush (hspace=0), so a block's own bottom edge doubles as the next
+    # block's top and the pair of thick spines draws as the one rule between them.
     for group in axes_blocks:
         group[0].spines["top"].set_linewidth(2 * subplot_border_width)
         group[-1].spines["bottom"].set_linewidth(2 * subplot_border_width)
+        for ax in group if box_blocks else ():
+            ax.spines["left"].set_linewidth(2 * subplot_border_width)
+            ax.spines["right"].set_linewidth(2 * subplot_border_width)
 
     # the title is the top panel's own, left-aligned with its left edge: padded off the panel in points
     # rather than placed by figure fraction, so the spacing holds at any figure height

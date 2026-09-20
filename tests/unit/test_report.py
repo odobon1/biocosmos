@@ -737,6 +737,31 @@ def test_update_coord_strips_skip_coords_without_the_series(tmp_path, monkeypatc
     assert all(reqs == {} for _, strips in calls for *_, reqs in strips)
 
 
+def test_strip_blocks_group_by_the_coords_top_level_dimension() -> None:
+    # combo-group names join with '_' and the campaign crosses the first group slowest, so the component
+    # before the first '_' is the coarsest sweep the names carry: one block per LR here
+    strips = [(coord,) for coord in ("LR-1e-5_Alpha-100", "LR-1e-5_Alpha-10", "LR-2e-5_Alpha-100")]
+
+    assert report._strip_blocks(strips, ["ax0", "ax1", "ax2"]) == [["ax0", "ax1"], ["ax2"]]
+    # one combo group (no '_' level) would box every strip on its own -- no boxes at all instead
+    assert report._strip_blocks([("c0",), ("c1",)], ["ax0", "ax1"]) == []
+
+
+def test_finish_curves_boxes_blocks_when_asked(tmp_path) -> None:
+    # box_blocks closes the block's sides too: the double width runs down every panel of it, boxing the
+    # run rather than just ruling it off (the strip figures' coord groups)
+    fig, axs = plt.subplots(4, 1)
+    axes = list(axs)
+
+    report._finish_curves(fig, axes, [], {}, "t", tmp_path / "boxed.png", 8, 1, axes_blocks=[axes[1:3]],
+                          box_blocks=True)
+
+    widths = {ax: {side: spine.get_linewidth() for side, spine in ax.spines.items()} for ax in axes}
+    assert widths[axes[1]] == {"left": 2, "right": 2, "top": 2, "bottom": 1}
+    assert widths[axes[2]] == {"left": 2, "right": 2, "top": 1, "bottom": 2}
+    assert set(widths[axes[0]].values()) == {1} and set(widths[axes[3]].values()) == {1}
+
+
 def test_finish_curves_rules_off_panel_blocks(tmp_path) -> None:
     # a block (plot_alpha_curves' dL/dalpha aggs) is ruled at twice the panel border's width on the two
     # horizontals bounding it -- the top of its first panel, the bottom of its last -- and nowhere else:

@@ -255,6 +255,30 @@ def test_batch_stats_carry_a_unitless_loss_blends_lambda_eff(crit_name):
     assert 0.0 < batch_stats["lambda_eff"] < 1.0
 
 
+@pytest.mark.parametrize("center", ["sim", "grad_proj", "grad_proj2"])
+@pytest.mark.parametrize("focal_gamma", [0.0, 2.0])
+def test_bce_centering_is_not_read_under_infonce(center, focal_gamma):
+    # loss.logits.bce.center is the sigmoid path's and declared inert under InfoNCE, so it must leave an InfoNCE
+    # run BIT-identical. Read, it is a no-op only in exact arithmetic -- a row softmax is shift-invariant, so
+    # dL/dsim has zero row / column sums under any weighting that reads the logits through p (focal included):
+    # grad_proj* subtract a mean that is zero, `sim` shifts every logit alike -- and perturbs the run at ~1e-8
+    K, B = 6, 24
+
+    def grads(center_):
+        crit = _make_crit(_cfg("infonce", focal_gamma=focal_gamma, center=center_), K, B)
+        g = torch.Generator().manual_seed(0)
+        img = F.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
+        txt = F.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
+        class_encs_b = torch.randint(0, K, (B,), generator=g)
+        h = _make_harness(Toy().train(), crit)
+        loss, *_ = h._loss_full_batch(img, txt, class_encs_b, [None] * B)
+        loss.backward()
+        return loss.detach(), img.grad, txt.grad, h.model.logit_scale.grad
+
+    for got, want in zip(grads(center), grads(None)):
+        assert torch.equal(got, want)
+
+
 def test_infonce_stats():
     # p_hist is the sigmoid-BCE pair probability; an InfoNCE loss gets none (its row-softmax mean is a
     # fixed 1/B). It gets the row-wise target-implied scale bounds (alpha_req_*) and the logit-scale

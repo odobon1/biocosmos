@@ -1089,7 +1089,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       value is never evidence of its own reliability. Which path computed each row is therefore
       reported alongside -- resid_paths, the batch's row fractions [hard closed form, feasible exact
       zero, subtracted / numerically unvalidated] -- and the curves mark EVERY batch with a non-zero
-      third fraction as unvalidated, whatever it reads (utils.report._RESID_MARKS). No magnitude test
+      third fraction as unvalidated, whatever it reads (utils.report._RESID_UNVALIDATED). No magnitude test
       can stand in for that: the natural one, the term against the full gradient's magnitude, scales
       with a quantity that shrinks as the model fits while the subtraction's error (set by the
       order-one entries of p* and y) does not, so it passes exactly the batches it should catch. An
@@ -1517,7 +1517,10 @@ def _crit_center_grad_mean(crit, img, txt, term_fns, coeffs, class_encs_b, B, co
             term_blocks = [term_fn(rs, re) for term_fn in term_fns]
             term_invs = [_bif_block_invariants(crit, targs, B) if crit.bifurcated else None for targs in term_blocks]
             for rows_live, cols in branches:
-                sim_leaf = compute_sim(rows_live[rs:re].detach(), cols.detach(), crit.cfg["sim"]).requires_grad_(True)
+                # float32 leaf: the projection node sits AFTER compute_logits' own float32 cast of the sims, so a
+                # bf16 leaf (what compute_sim returns under autocast) would hand back that node's gradient
+                # rounded to bf16 through the cast's backward -- the mean of the rounded grads, not the node's
+                sim_leaf = compute_sim(rows_live[rs:re].detach(), cols.detach(), crit.cfg["sim"]).float().requires_grad_(True)
                 logits_fs = [compute_logits(sim_leaf, clamp, None, secondary=bool(g)).float() for g in range(n_pairs)]
                 nums, _ = _block_term_nums(crit, logits_fs, term_blocks, term_invs, consts_list, rs, re, class_encs_b, B)
                 wnums = [c * num / B for c, num in zip(coeffs, nums)]

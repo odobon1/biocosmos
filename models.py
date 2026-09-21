@@ -584,7 +584,12 @@ class VLMWrapper(abc.ABC):
         model = self._unwrapped_model
         crit = self.crit
         clamp = crit.cfg["logits"]["scale"]["clamp"]
-        center = crit.cfg["logits"]["bce"]["center"]
+        # loss.logits.bce.* is the sigmoid / BCE path's and declared inert under InfoNCE (utils.config.inert_params),
+        # so it is not read there. It is a no-op there in exact arithmetic -- a row softmax is shift-invariant, so
+        # dL/dsim has zero row (i2t) and column (t2i) sums under any weighting that reads the logits through p:
+        # grad_proj* would subtract a mean that is zero, `sim` shift every logit alike -- but not a BIT-exact one
+        # (the mean comes out ~1e-8), and an inert setting should leave a run bit-identical
+        center = crit.cfg["logits"]["bce"]["center"] if crit.cfg["crit"] != "infonce" else None
         secondaries = (False, True) if crit.sep_scalars else (False,)
 
         if crit.bifurcated:

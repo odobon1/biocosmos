@@ -172,6 +172,7 @@ def full_batch_reference(toy, compute_sim, crit, fi, ft, fc, ftd):
     txt.retain_grad()
 
     def clogits(sim, clamp, center, half_live=False, secondary=False):
+        sim = sim.float()  # the head runs in float32 whatever the sims came in as
         s, b = (toy.logit_scale2, toy.logit_bias2) if secondary else (toy.logit_scale, toy.logit_bias)
         if half_live:
             s = 0.5 * s + 0.5 * s.detach()

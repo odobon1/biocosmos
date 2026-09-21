@@ -124,6 +124,7 @@ def _compute_logits_fn(p):
     """Stub mirroring VLMWrapper.compute_logits's center/half_live semantics (incl. the chunked
     path's center_global hook) over the toy scale/bias params."""
     def compute_logits(sim, clamp, center=None, center_global=None, half_live=False, secondary=False):
+        sim = sim.float()  # the head runs in float32 whatever the sims came in as
         s, b = (p["scale2"], p["bias2"]) if secondary else (p["scale"], p["bias"])
         if half_live:
             s = 0.5 * s + 0.5 * s.detach()
@@ -406,6 +407,60 @@ def test_batch_diagnostics_off():
         torch.testing.assert_close(txt_off.grad, txt_on.grad, rtol=0, atol=0)
         for key in ("scale", "bias"):
             torch.testing.assert_close(p_off[key].grad, p_on[key].grad, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("center", [None, "grad_proj", "grad_proj2"])
+def test_chunked_matches_full_under_mixed_precision_with_the_real_head(center):
+    # the head (VLMWrapper.compute_logits) casts the bf16 sims to float32 BEFORE scaling / biasing / projecting,
+    # so the grad_proj* projection node lives in float32. The chunked path's prepass has to measure its centering
+    # constant at that node: probing from a bf16 sim leaf returns the node's gradient rounded to bf16 through the
+    # cast's backward -- the mean of the rounded grads -- and the tiles then subtract a constant the full-batch
+    # projection never saw (sum dL/dS off, the towers' gradients with it). Exercised with the ACTUAL head under
+    # bf16 autocast: the handwritten mirror and mixed_prec=False used elsewhere in this file cannot see it
+    from types import SimpleNamespace
+    from models import VLMWrapper
+
+    device = torch.device("cpu")
+    B, K, D, C = 32, 12, 16, 8
+    crit = _make_crit(_cfg(center=center), K, B)
+    g = torch.Generator().manual_seed(0)
+    img0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
+    txt0 = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1)
+    class_encs_b = torch.randint(0, K, (B,), generator=g)
+    targ_data_b = _make_targ_data(B, K, 4, class_encs_b)
+
+    def head():
+        model = SimpleNamespace(logit_scale=torch.nn.Parameter(torch.tensor(2.3)), logit_bias=torch.nn.Parameter(torch.tensor(-0.5)))
+        stub = SimpleNamespace(_unwrapped_model=model)
+        return model, lambda *args, **kwargs: VLMWrapper.compute_logits(stub, *args, **kwargs)
+
+    img, txt = img0.clone().requires_grad_(True), txt0.clone().requires_grad_(True)
+    model, compute_logits = head()
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        sim = compute_sim(img, txt, "cos")
+        assert sim.dtype == torch.bfloat16  # else the case under test is not being exercised
+        sim.retain_grad()
+        loss, *_ = crit(compute_logits(sim, False, center), class_encs_b, targ_data_b, True, model.logit_scale, sim)
+    loss.backward()
+
+    imgc, txtc = img0.clone().requires_grad_(True), txt0.clone().requires_grad_(True)
+    modelc, compute_logits_c = head()
+    loss_c, _, _, gsum_c = L.chunked_bce_loss_backward(
+        imgc, txtc, class_encs_b, targ_data_b, crit, compute_logits_c, C, True, device, rank=0, world_size=1,
+    )
+
+    torch.testing.assert_close(loss_c, loss.detach(), rtol=1e-5, atol=1e-6)
+    # the two quantities that do not depend on bf16 accumulation order, and so isolate the centering constant:
+    # each tile's dL/dS entries (elementwise off that constant) and the image grads (row i reads its own tile
+    # alone). Measured over six seeds: with the float32 probe sum dL/dS agrees to 2e-9 and the image grads
+    # exactly; with a bf16 probe they are off by 1e-3..1e-1 and 5e-5..5e-4
+    assert gsum_c == pytest.approx(sim.grad.double().sum().item(), abs=1e-5)
+    assert ((imgc.grad - img.grad).norm() / img.grad.norm()).item() < 1e-6
+    # the text grads DO depend on it -- the full path accumulates a 32-term bf16 dot product in one pass, the
+    # tiles sum 8-row partials -- so they differ at the bf16-ulp level (~2e-3) with or without the projection:
+    # inherent to chunking under bf16, and bounded here only against a gross error
+    assert ((txtc.grad - txt.grad).norm() / txt.grad.norm()).item() < 1e-2
+    torch.testing.assert_close(modelc.logit_scale.grad, model.logit_scale.grad, rtol=1e-4, atol=1e-5)
 
 
 def test_chunking_unsupported_with_infonce():

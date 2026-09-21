@@ -102,27 +102,18 @@ _BG_LINE_PANEL = "#FAF7F0"
 # (legible together, and under red-green color blindness)
 _DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
 # The residual family (the dalpha res / sres / ires strips, the KL figure's E_R / E_SR / E_IR) is
-# exp(-2 alpha)-small against the order-one entries of p* and y it is built from, and two marks say what a
-# batch's values are worth. Both key off PROVENANCE (resid_paths: the row fractions [hard closed form, feasible
-# exact zero, plain p* - y subtraction]), never off the value alone -- an unvalidated residual can read as a
-# noise floor, as an exact zero, or as a perfectly plausible number, so its magnitude certifies nothing.
-#   - unvalidated (hatched): some of the batch's rows came off the subtraction, the general solver path, which
-#     carries no validated error estimate. Marked on EVERY such batch, whatever the value reads.
-#   - unresolved (solid, over the hatch): additionally, the term sits below _DALPHA_RES_FLOOR of the full
-#     term's magnitude, where the difference is known to be arithmetic (a one-ulp artifact of p*_cap - y,
-#     ~1e-42 or ~1e-15, flipping between the two with alpha for no physical reason). A ONE-WAY test: below it
-#     the value is certainly not to be read, above it NOTHING is established -- A_full is a gradient magnitude,
-#     not a bound on the subtraction's error, and it shrinks with the fit while that error (set by p* and y
-#     themselves) does not, so on a well-fitted batch the floor drops under any noise. A fitted alpha-25 batch
-#     read kl_ir = 0 against a true 2.3e-22 with the floor down at 6e-30.
-# A batch whose rows all came off an exact path carries neither mark however small it reads. The curve is
-# always drawn -- a mark says how far to trust it, not that it is missing
-_DALPHA_RES_FLOOR = 100.0 * np.finfo(np.float64).eps  # ~2.2e-14
+# exp(-2 alpha)-small against the order-one entries of p* and y it is built from, so what a batch's values are
+# worth is a matter of PROVENANCE (resid_paths: the row fractions [hard closed form, feasible exact zero, plain
+# p* - y subtraction]) and never of the value: an unvalidated residual can read as a noise floor, as an exact
+# zero, or as a perfectly plausible number. One mark, hatched, on EVERY batch with rows off the subtraction --
+# the general solver path, which carries no validated error estimate -- whatever the value reads; a batch whose
+# rows all came off an exact path carries none, however small it reads. There is deliberately no magnitude
+# test beside it: the term against the full gradient's magnitude is not an error estimate in either direction
+# (small is not inaccurate; and A_full shrinks with the fit while the subtraction's error, set by p* and y
+# themselves, does not -- a fitted alpha-25 batch read kl_ir = 0 against a true 2.3e-22 and sailed under it).
+# The curve is always drawn -- the mark says how far to trust it, not that it is missing
 _DALPHA_RES_COMPS = ("res", "sres", "ires")
-_RESID_MARKS = {  # mark -> its axvspan style, under the curves and the grid
-    "unvalidated": dict(facecolor="none", edgecolor="#C4B99F", hatch="////", linewidth=0, zorder=0),
-    "unresolved": dict(color="#E8E1D3", linewidth=0, zorder=0),  # a shade down from _BG_LINE_PANEL
-}
+_RESID_UNVALIDATED = dict(facecolor="none", edgecolor="#C4B99F", hatch="////", linewidth=0, zorder=0)  # under the curves
 
 def _fold_hist_columns(cols, threshold):
     """(folded columns, group size) for a P heatmap strip: one histogram per recorded batch folded
@@ -2038,24 +2029,12 @@ def plot_general_curves(
 
 def _resid_unvalidated(data_epoch):
     """Per batch, whether any of its rows' residual family came off the plain p* - y subtraction
-    (resid_paths' third fraction): numerically unvalidated, whatever the values read (_RESID_MARKS)."""
+    (resid_paths' third fraction): numerically unvalidated, whatever the values read (_RESID_UNVALIDATED)."""
     return np.asarray(data_epoch["resid_paths"], dtype=float)[:, 2] > 0
 
 
-def _dalpha_unresolved(data_epoch, comp):
-    """Per batch, whether the residual dL/dalpha term `comp` is numerically unresolved -- the stronger of
-    the two marks (_RESID_MARKS), and a one-way test: an unvalidated batch (_resid_unvalidated) whose term
-    sits at or below _DALPHA_RES_FLOOR, its magnitude sum against the full term's. False establishes
-    nothing about the value. The ratio is
-    scale-free, so it is read off the dalpha family for both figures -- dlogalpha is alpha times dalpha,
-    which cancels, and the dalpha one stays defined where the clamp zeroes the dlogalpha family."""
-    A = np.asarray(data_epoch[f"dalpha_sum_abs_{comp}"], dtype=float)[:, 0]
-    A_full = np.asarray(data_epoch["dalpha_sum_abs_full"], dtype=float)[:, 0]
-    return _resid_unvalidated(data_epoch) & (A < _DALPHA_RES_FLOOR * A_full)
-
-
-def _mark_batches(ax, x_train, mask, mark):
-    """Mark a panel's `mask` batches as `mark` (_RESID_MARKS), one span per contiguous run, each
+def _mark_unvalidated(ax, x_train, mask):
+    """Hatch a panel's `mask` batches as unvalidated (_RESID_UNVALIDATED), one span per contiguous run, each
     carried half a sample either way so a lone batch still shows. Only the first span is labelled, the
     rest riding along out of the legend."""
     x = np.asarray(x_train, dtype=float)
@@ -2064,7 +2043,7 @@ def _mark_batches(ax, x_train, mask, mark):
     starts = np.flatnonzero(~padded[:-1] & padded[1:])
     ends = np.flatnonzero(padded[:-1] & ~padded[1:]) - 1
     for i, (s, e) in enumerate(zip(starts, ends)):
-        ax.axvspan(x[s] - half, x[e] + half, label=mark if i == 0 else "_nolegend_", **_RESID_MARKS[mark])
+        ax.axvspan(x[s] - half, x[e] + half, label="unvalidated" if i == 0 else "_nolegend_", **_RESID_UNVALIDATED)
 
 
 def plot_alpha_curves(
@@ -2119,14 +2098,17 @@ def plot_alpha_curves(
     # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
     # holds the parameter above its cap -- its sums zero and its C NaN, there being no pressure on the
     # parameter to cancel -- dalpha* still carrying the pressure on the effective scale.
-    # The three residual comps carry the provenance marks (_RESID_MARKS) on all three of their aggs: hatched
-    # over every batch with rows off the unvalidated subtraction, solid where the term is also unresolved.
+    # The three residual comps carry the provenance mark (_RESID_UNVALIDATED) on all three of their aggs:
+    # hatched over every batch with rows off the unvalidated subtraction.
 
     def dalpha_label(agg, comp):
         sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
                "sres": r"^{\text{SR}}", "ires": r"^{\text{IR}}"}[comp]
         if agg == "sum":
-            return rf"$\nabla_{{{sym}}}{sup} \mathcal{{L}}$"
+            # the full term shares the measured .grad panel's symbol, so it says what it is: the analytical term
+            # off the blended target distribution (no blend coefficient, no loss.unitless 1 / L), not the
+            # gradient the parameter received
+            return rf"$\nabla_{{{sym}}}{sup} \mathcal{{L}}$" + ("\n(analytic)" if comp == "full" else "")
         return rf"$\text{{{'A' if agg == 'sum_abs' else 'C'}}}_{{{sym}}}{sup}$"
 
     dalpha_panels = [
@@ -2135,14 +2117,9 @@ def plot_alpha_curves(
         for comp in ("full", "struct", "res", "sres", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
-    # the residual terms' marks (_RESID_MARKS), on all three of a term's aggs -- where the magnitude is
-    # unvalidated or arithmetic, so are the signed sum and the coherence ratio taken over it
+    # the residual terms' mark, on all three of a term's aggs -- where the magnitude is unvalidated, so are the
+    # signed sum and the coherence ratio taken over it
     unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
-    res_unresolved = {
-        comp: _dalpha_unresolved(data_epoch, comp)
-        for comp in _DALPHA_RES_COMPS
-        if len(data_epoch[f"dalpha_sum_abs_{comp}"]) == len(data_epoch["dalpha_sum_abs_full"]) == len(x_train)
-    }
     n_panels = len(scale_panels) + len(grad_panels) + len(dalpha_panels)
     if n_panels == 0:
         return
@@ -2219,9 +2196,7 @@ def plot_alpha_curves(
             else:
                 ax.axhline(0.0, color="gray", linewidth=0.5)
             if comp in _DALPHA_RES_COMPS and unvalidated is not None:
-                _mark_batches(ax, x_train, unvalidated, "unvalidated")
-            if comp in res_unresolved:
-                _mark_batches(ax, x_train, res_unresolved[comp], "unresolved")
+                _mark_unvalidated(ax, x_train, unvalidated)
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
             ax.grid(True)
         ax.set_ylabel(label, fontsize=fontsize_axes)
@@ -2268,8 +2243,7 @@ def plot_kl_curves(
     # positive, and any dip below it shows.
     # The three representational panels are the residual family's (E_IR differences -H(y) against a
     # cross-entropy equal to it to within exp(-2 alpha), E_SR reads p* - y), so they carry the unvalidated
-    # mark (_RESID_MARKS) over every batch with rows off the plain subtraction. There is no unresolved tier
-    # here: that one is a test on the dalpha magnitudes, and nothing comparable certifies a KL term.
+    # mark (_RESID_UNVALIDATED) over every batch with rows off the plain subtraction.
     kl_panels = [
         (vals, label, resid)
         for vals, label, resid in (
@@ -2295,7 +2269,7 @@ def plot_kl_curves(
         ax.plot(x_train, vals, color="darkmagenta", linewidth=1.0)
         ax.axhline(0.0, color="gray", linewidth=0.5)
         if resid and unvalidated is not None and unvalidated.any():
-            _mark_batches(ax, x_train, unvalidated, "unvalidated")
+            _mark_unvalidated(ax, x_train, unvalidated)
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.grid(True)

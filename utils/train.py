@@ -156,7 +156,7 @@ class TrialData:
             # kl_ir / kl_sr) came off each calculation -- [hard-target closed form, feasible row's exact zero,
             # plain p* - y subtraction] (utils.loss.infonce_batch_stats). The first two are exact at any alpha;
             # the third is numerically unvalidated -- no error estimate stands behind it -- and the curves mark
-            # every batch where it is non-zero, whatever its values read (utils.report._RESID_MARKS).
+            # every batch where it is non-zero, whatever its values read (utils.report._RESID_UNVALIDATED).
             # InfoNCE only, like dalpha_*.
             "resid_paths": [],
             # lambda_eff: per batch, loss2's term's share of a unitless loss blend's coefficients, lambda L_1 /

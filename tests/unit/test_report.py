@@ -2081,35 +2081,32 @@ def test_fit_ylabel_keeps_a_caption_that_fits() -> None:
     report.plt.close(fig)
 
 
-def test_residual_marks_key_off_provenance_not_magnitude() -> None:
-    # two marks (report._RESID_MARKS), both off resid_paths. UNVALIDATED: any row off the plain p* - y
-    # subtraction, whatever the value reads -- it can come out a noise floor, an exact zero or a plausible
-    # number, so magnitude certifies nothing. UNRESOLVED: additionally under the floor, where the difference
-    # is known to be arithmetic -- a one-way test, False establishing nothing. A residual off an exact path
-    # (hard closed form, feasible exact zero) carries neither, being as trustworthy at 1e-40 as at 1e-2
+def test_residual_mark_keys_off_provenance_not_magnitude() -> None:
+    # one mark (report._RESID_UNVALIDATED), off resid_paths alone: any row off the plain p* - y subtraction makes
+    # the batch unvalidated, WHATEVER the value reads -- it can come out a noise floor, an exact zero or a
+    # plausible number, so magnitude certifies nothing in either direction. A residual off an exact path (hard
+    # closed form, feasible exact zero) carries none, being as trustworthy at 1e-40 as at 1e-2
     tiny, fine = 1e-30, 1e-3
     data_epoch = {
         "dalpha_sum_abs_full": [[1.0, 0.5, 0.5]] * 5,
         "dalpha_sum_abs_res": [[v, v, v] for v in (tiny, tiny, 0.0, tiny, fine)],
         "resid_paths": [
-            [1.0, 0.0, 0.0],  # hard closed form, tiny: exact -- not shaded
-            [0.0, 0.0, 1.0],  # subtracted, tiny: unresolved
-            [0.0, 1.0, 0.0],  # feasible exact zero: exact -- not shaded
+            [1.0, 0.0, 0.0],  # hard closed form, tiny: exact -- not marked
+            [0.0, 0.0, 1.0],  # subtracted, tiny
+            [0.0, 1.0, 0.0],  # feasible exact zero: exact -- not marked
             [0.5, 0.0, 0.5],  # any subtracted row puts the batch's aggregate in doubt
-            [0.0, 0.0, 1.0],  # subtracted but well above its floor: the difference still resolves
+            [0.0, 0.0, 1.0],  # subtracted and plausible-looking: marked all the same
         ],
     }
-    assert report._dalpha_unresolved(data_epoch, "res").tolist() == [False, True, False, True, False]
-    # ... while every batch the subtraction touched is unvalidated, the well-resolved-looking last one too
     assert report._resid_unvalidated(data_epoch).tolist() == [False, True, False, True, True]
 
 
-def test_the_floor_passes_a_wrong_residual_on_a_well_fitted_batch() -> None:
-    # why "not shaded" must never read as "reliable": the floor is scaled by A_full, a gradient magnitude
-    # that shrinks with the fit, while the subtraction's error is set by the order-one entries of p* and y
-    # and does not. Four genuine unit vectors fitted to rows [0.6, 0.4, 0, 0] at alpha 25: A_full is down at
-    # 3e-16, so the floor is at 6e-30 and passes the batch -- whose kl_ir reads exactly 0 against a true
-    # 2.3e-22. Provenance still marks it
+def test_a_wrong_residual_on_a_well_fitted_batch_is_marked_whatever_it_reads() -> None:
+    # why the mark takes no magnitude test: a floor scaled by A_full (the term against the full gradient) scales
+    # with a gradient magnitude that shrinks with the fit, while the subtraction's error is set by the order-one
+    # entries of p* and y and does not. Four genuine unit vectors fitted to rows [0.6, 0.4, 0, 0] at alpha 25:
+    # A_full is down at 3e-16, so such a floor would sit at 6e-30 and pass the batch -- whose kl_ir reads
+    # exactly 0 against a true 2.3e-22. Provenance marks it regardless
     import math
     import torch
     from tests.unit.test_loss_targets import import_loss_module
@@ -2129,8 +2126,9 @@ def test_the_floor_passes_a_wrong_residual_on_a_well_fitted_batch() -> None:
     assert abs(stats["kl_ir"] - true_kl_ir) > 0.5 * true_kl_ir  # the reported value is simply wrong
     data_epoch = {key: [val] for key, val in stats.items()}
     assert stats["resid_paths"] == [0.0, 0.0, 1.0]
-    assert report._dalpha_unresolved(data_epoch, "res").tolist() == [False]  # the floor waves it through
-    assert report._resid_unvalidated(data_epoch).tolist() == [True]  # provenance does not
+    floor = 100 * np.finfo(np.float64).eps * stats["dalpha_sum_abs_full"][0]
+    assert stats["dalpha_sum_abs_res"][0] > floor  # the magnitude test this mark replaced would have passed it
+    assert report._resid_unvalidated(data_epoch).tolist() == [True]
 
 
 def _alpha_data_epoch(n, **series):
@@ -2205,9 +2203,10 @@ def _dalpha_series(n, prefix, res_abs):
 
 
 def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(tmp_path, monkeypatch) -> None:
-    # the residual comps are hatched "unvalidated" over every batch with rows off the subtraction, and solid
-    # "unresolved" where additionally under the floor; full / struct never are. And the agg blocks are ruled
-    # around the dalpha panels -- NOT shifted up by the .grad panel that sits among the scale ones
+    # the residual comps are hatched "unvalidated" over every batch with rows off the subtraction, whatever
+    # their magnitude; full / struct never are. The analytical full term says so in its caption, sharing its
+    # symbol with the measured .grad panel. And the agg blocks are ruled around the dalpha panels -- NOT shifted
+    # up by the .grad panel that sits among the scale ones
     n = 4
     paths = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
     data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale_grad=[-0.1] * n, resid_paths=paths,
@@ -2217,16 +2216,17 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
 
     nabla = lambda sup: rf"$\nabla_{{\log \alpha}}{sup} \mathcal{{L}}$"
     for sup in (r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}"):
-        assert marks[nabla(sup)] == ["unresolved", "unvalidated"]
-    assert marks[nabla("")] == [] and marks[nabla(r"^{\text{S}}")] == []
+        assert marks[nabla(sup)] == ["unvalidated"]
+    assert marks[nabla("") + "\n(analytic)"] == [] and marks[nabla(r"^{\text{S}}")] == []
     assert marks[nabla("") + "\n(.grad)"] == []
     # each block is one agg's five comps, in order: the sums' block opens on the analytical full term, not
     # on a scale or .grad panel
     assert [len(block) for block in blocks] == [5, 5, 5]
-    assert blocks[0][0] == nabla("") and blocks[0][-1] == nabla(r"^{\text{IR}}")
+    assert blocks[0][0] == nabla("") + "\n(analytic)" and blocks[0][-1] == nabla(r"^{\text{IR}}")
 
-    # above the floor the solid mark goes, the hatch stays: passing the floor certifies nothing
+    # the mark does not move with the magnitude: a plausible-looking residual is hatched just the same
     data_epoch.update(_dalpha_series(n, "dalpha", 1e-3))
+    data_epoch.update(_dalpha_series(n, "dlogalpha", 1e-3))
     _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
     assert _plot_alpha.seen["marks"][nabla(r"^{\text{R}}")] == ["unvalidated"]
 

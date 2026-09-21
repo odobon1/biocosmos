@@ -410,10 +410,13 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
         "killed": 1 if killed else None,  # the eval index a killed trial stopped at
         "progress": {"epoch": 2, "n_epochs": 2, "n_samps_seen": 200},  # the strips' epoch axis reads n_epochs
     }))
-    # the strip figures read every completed trial's recorded series; these trials track no logit scale, as
-    # a trial with frozen logit scalars doesn't, so an arm of them renders no strips -- the strip tests
-    # (_write_strip_trial) write their own trials with the series
-    save_pickle({"epoch": {"n_samps_seen": [], "scale": [], "logit_scale": []}}, dpath_trial / "data_trial.pkl")
+    # the strip figures read every completed trial's recorded series, and every trial records its logit scale
+    # (frozen or not), so these carry a minimal one: two batches, a BCE-family loss's empty bound trio. The
+    # strip tests (_write_strip_trial) write their own trials with the series under test
+    save_pickle({"epoch": {
+        "n_samps_seen": [100, 200], "scale": [10.0, 10.0], "logit_scale": [2.3, 2.3],
+        **{f"{p}alpha_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")},
+    }}, dpath_trial / "data_trial.pkl")
     fpath_meta_coord = dpath_coord / "coord_metadata.json"
     if not fpath_meta_coord.exists():
         # horizon: the coord's sample volume (utils.train.save_metadata_coord writes it for every coord);
@@ -718,14 +721,14 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
     assert vals == pytest.approx([-20.0, -30.0])
 
 
-def test_update_coord_strips_skip_coords_without_the_series(tmp_path, monkeypatch) -> None:
-    # a coord whose trials don't track a figure's scale (a frozen logit scalar: the series is empty) is
-    # left out of that figure, and an arm with no coord tracking it gets no figure at all. A coord whose
-    # loss records no target-implied bounds (BCE family) keeps its strip, with no bound lines on it.
+def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypatch) -> None:
+    # a coord with a frozen logit scale keeps its strip -- the series is recorded frozen or not, a flat line
+    # there -- as does one whose loss records no target-implied bounds (BCE family), with no bound lines on
+    # it. An arm with no completed trial at all gets no figure.
     dpath_phase = tmp_path / "_screen"
-    _write_strip_trial(dpath_phase, "cub", "hp", "a", 42, [], reqs=False)  # nothing tracked at all
+    _write_strip_trial(dpath_phase, "cub", "hp", "a", 42, [14.0, 14.0], reqs=False)  # frozen
     _write_strip_trial(dpath_phase, "cub", "hp", "b", 42, [1.0, 2.0], reqs=False)
-    _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"], seeds=[42])
+    _write_meta(dpath_phase, ["hp", "mp"], ["a", "b"], ["cub"], seeds=[42])
 
     calls = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
@@ -733,8 +736,41 @@ def test_update_coord_strips_skip_coords_without_the_series(tmp_path, monkeypatc
 
     report.update_coord_strips("cub", "hp", "std")
 
-    assert [[coord for coord, *_ in strips] for _, strips in calls] == [["b"], ["b"], ["b"], ["b"]]
+    assert [[coord for coord, *_ in strips] for _, strips in calls] == [["a", "b"]] * 4
     assert all(reqs == {} for _, strips in calls for *_, reqs in strips)
+    _, _, (vals, _), _ = calls[0][1][0]
+    assert vals == pytest.approx([14.0, 14.0])
+
+    calls.clear()
+    report.update_coord_strips("cub", "mp", "std")  # planned, nothing run
+    assert calls == []
+
+
+def test_render_strips_tick_a_flat_strip_at_its_value(tmp_path, monkeypatch) -> None:
+    # the strip figures draw the trial figures' scale panel, y axis included (_pin_flat_yaxis): a frozen scale
+    # with no bound beside it gets its value as the one tick; one read against a bound trio autoscales over
+    # both, as a learnable scale does
+    seen = {}
+
+    def finish(fig, axes, *args, **kwargs):
+        seen["yticks"] = [[t.get_text() for t in ax.get_yticklabels()] for ax in axes]
+        seen["ylims"] = [ax.get_ylim() for ax in axes]
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    x, flat = np.array([0.0, 1.0, 2.0]), (np.full(3, 14.2857), None)
+    reqs = {stat: (np.array([3.0, 4.0, 5.0]) + off, None) for stat, off in (("min", 0.0), ("mean", 1.0), ("max", 2.0))}
+    strips = [("frozen", x, flat, {}), ("frozen_bounded", x, flat, reqs), ("learnable", x, (np.array([1.0, 2.0, 3.0]), None), {})]
+
+    report._render_strips(strips, tmp_path / "x.png", r"\alpha", "t", "std", 12, 8, 8, 1, 10, 1.8, 0.8)
+
+    assert seen["yticks"][0] == ["14.29"]
+    lo, hi = seen["ylims"][0]
+    assert lo < 14.2857 < hi and (lo + hi) / 2 == pytest.approx(14.2857)  # the line centred on its tick
+    for idx, lowest in ((1, 3.0), (2, 1.0)):  # autoscaled: several ticks, over everything the strip draws
+        assert len(seen["yticks"][idx]) > 1
+        assert seen["ylims"][idx][0] <= lowest
+    assert seen["ylims"][1][1] >= 14.2857
 
 
 def test_strip_blocks_group_by_the_coords_top_level_dimension() -> None:
@@ -2136,7 +2172,7 @@ def _alpha_data_epoch(n, **series):
     keys = ["scale", "scale2", "logit_scale", "logit_scale2", "logit_scale_grad", "logit_scale2_grad",
             "dlogalpha_correction", "resid_paths",
             *(f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")),
-            *(f"{p}_{agg}_{comp}" for p in ("dalpha", "dlogalpha") for agg in ("sum", "sum_abs", "C")
+            *(f"{p}_{agg}_{comp}" for p in ("dalpha", "dlogalpha") for agg in report._DALPHA_AGGS
               for comp in ("full", "struct", "res", "sres", "ires"))]
     return {**{key: [] for key in keys}, **series}
 
@@ -2152,6 +2188,10 @@ def _plot_alpha(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
         seen["marks"] = {ax.get_ylabel(): sorted({patch.get_label() for patch in ax.patches} - {"_nolegend_"})
                          for ax in axes}
         seen["blocks"] = [[ax.get_ylabel() for ax in block] for block in kwargs.get("axes_blocks", ())]
+        seen["ylims"] = {ax.get_ylabel(): ax.get_ylim() for ax in axes}
+        seen["yticks"] = {ax.get_ylabel(): list(ax.get_yticks()) for ax in axes}
+        fig.canvas.draw()  # fills the autoscaled panels' tick labels in
+        seen["yticklabels"] = {ax.get_ylabel(): [t.get_text() for t in ax.get_yticklabels()] for ax in axes}
         plt.close(fig)
 
     monkeypatch.setattr(report, "_finish_curves", finish)
@@ -2192,12 +2232,56 @@ def test_logalpha_figure_draws_the_scale_parameters_grad_with_the_correction(tmp
     assert panels[3][1][".grad"] == [0.3] * n
 
 
+def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -> None:
+    # a frozen scale (loss.logits.scale.freeze) is recorded all the same: a flat line on the alpha figure and
+    # on the logalpha one, captioned as frozen and with no .grad panel under it (a frozen parameter has none
+    # -- the empty .grad series is how the figure reads it as frozen). The y axis of a panel drawing the one
+    # value and nothing else has no range to autoscale: it gets that value as its only tick, the line centred
+    n = 4
+    alpha = 1.0 / 0.07
+    frozen = dict(scale=[alpha] * n, logit_scale=[np.log(alpha)] * n)
+
+    for scale_key, prefix, sym, val, tick in (("scale", "dalpha", r"\alpha", alpha, "14.29"),
+                                              ("logit_scale", "dlogalpha", r"\log \alpha", np.log(alpha), "2.659")):
+        panels = _plot_alpha(_alpha_data_epoch(n, **frozen), n, tmp_path, monkeypatch, scale_key, prefix, sym)
+        label = rf"${sym}$" + "\n(frozen)"
+        assert [caption for caption, _ in panels] == [label]  # the scale's panel, and no .grad one
+        assert panels[0][1] == {rf"${sym}$": [val] * n}  # the recorded value, drawn as is
+        assert _plot_alpha.seen["yticklabels"][label] == [tick]
+        lo, hi = _plot_alpha.seen["ylims"][label]
+        assert lo < val < hi and (lo + hi) / 2 == pytest.approx(val)
+
+    # read against its target-implied bounds the panel has a range, and autoscales over the pair -- that
+    # comparison is what a frozen scale's panel is kept for
+    reqs = {f"alpha_req_{stat}": [v, v + 1.0, v + 2.0, v + 3.0] for stat, v in (("min", 2.0), ("mean", 5.0), ("max", 20.0))}
+    _plot_alpha(_alpha_data_epoch(n, **frozen, **reqs), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    label = r"$\alpha$" + "\n(frozen)"
+    lo, hi = _plot_alpha.seen["ylims"][label]
+    assert lo <= 2.0 and hi >= 23.0 and len(_plot_alpha.seen["yticklabels"][label]) > 1
+
+    # bounds all at infinity (hard binary targets under the linear tsm) draw nothing: the one value again
+    inf = {f"alpha_req_{stat}": [float("inf")] * n for stat in ("min", "mean", "max")}
+    _plot_alpha(_alpha_data_epoch(n, **frozen, **inf), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    assert _plot_alpha.seen["yticklabels"][label] == ["14.29"]
+
+    # a learnable scale is untouched: no frozen caption, its .grad panel under it, an autoscaled axis
+    learnable = dict(scale=[2.0, 2.2, 2.5, 2.7], logit_scale=[0.7, 0.8, 0.9, 1.0], logit_scale_grad=[-0.2] * n)
+    panels = _plot_alpha(_alpha_data_epoch(n, **learnable), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert [caption for caption, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)"]
+    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$"]) > 1
+
+    # separate logit scalars share loss.logits.scale.freeze, so the second scale is frozen alongside
+    both = dict(logit_scale=[0.7] * n, logit_scale2=[0.7] * n)
+    panels = _plot_alpha(_alpha_data_epoch(n, **both), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert [caption for caption, _ in panels] == [r"$\log \alpha$" + "\n(frozen)", r"$\log \alpha_2$" + "\n(frozen)"]
+
+
 def _dalpha_series(n, prefix, res_abs):
-    """The fifteen dalpha-family series of one figure, the residual comps' magnitudes at `res_abs`."""
+    """The twenty-five dalpha-family series of one figure, the residual comps' magnitudes at `res_abs`."""
     series = {}
-    for agg in ("sum", "sum_abs", "C"):
+    for agg in report._DALPHA_AGGS:
         for comp in ("full", "struct", "res", "sres", "ires"):
-            val = res_abs if (agg == "sum_abs" and comp in ("res", "sres", "ires")) else 0.5
+            val = res_abs if (agg in ("sum_abs", "row_abs") and comp in ("res", "sres", "ires")) else 0.5
             series[f"{prefix}_{agg}_{comp}"] = [[val, val, val]] * n
     return series
 
@@ -2221,14 +2305,55 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
     assert marks[nabla("") + "\n(.grad)"] == []
     # each block is one agg's five comps, in order: the sums' block opens on the analytical full term, not
     # on a scale or .grad panel
-    assert [len(block) for block in blocks] == [5, 5, 5]
+    assert [len(block) for block in blocks] == [5, 5, 5, 5, 5]
     assert blocks[0][0] == nabla("") + "\n(analytic)" and blocks[0][-1] == nabla(r"^{\text{IR}}")
+    # the blocks in order: the sums, the per-pair magnitude A and |sum| / A, the per-anchor magnitude B and
+    # |sum| / B -- a ratio captioned as the quotient it is, over its magnitude block's own symbol
+    sups = ("", r"^{\text{S}}", r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}")
+    for idx_block, mag in ((1, "A"), (3, "B")):
+        mags = [rf"\text{{{mag}}}_{{\log \alpha}}{sup}" for sup in sups]
+        assert blocks[idx_block] == [f"${m}$" for m in mags]
+        assert blocks[idx_block + 1] == [rf"$\frac{{|{nabla(sup)[1:-1]}|}}{{{m}}}$" for sup, m in zip(sups, mags)]
+    # the logalpha figure's ratio panels repeat the alpha figure's, so both ratio blocks are left blank there
+    # -- and drawn on the alpha figure, the per-anchor one included
+    drawn = lambda: {label: bool(lines) for label, lines in _plot_alpha.seen["panels"]}
+    assert not any(drawn()[label] for idx_block in (2, 4) for label in blocks[idx_block])
+    assert all(drawn()[label] for idx_block in (0, 1, 3) for label in blocks[idx_block])
+    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    assert all(drawn().values()) and len(drawn()) == 25
+    assert _plot_alpha.seen["blocks"][4][1] == r"$\frac{|\nabla_{\alpha}^{\text{S}} \mathcal{L}|}{\text{B}_{\alpha}^{\text{S}}}$"
 
     # the mark does not move with the magnitude: a plausible-looking residual is hatched just the same
     data_epoch.update(_dalpha_series(n, "dalpha", 1e-3))
     data_epoch.update(_dalpha_series(n, "dlogalpha", 1e-3))
     _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
     assert _plot_alpha.seen["marks"][nabla(r"^{\text{R}}")] == ["unvalidated"]
+
+
+def test_ratio_panels_keep_their_end_values_inside_the_limits(tmp_path, monkeypatch) -> None:
+    # a ratio of exactly 1 (perfect coherence: a hard target's SR / IR terms, throughout) or exactly 0 (total
+    # cancellation) is a reading, not a missing one -- but at y limits of exactly (0, 1) it lies under the
+    # panel's border, which is drawn over the curves, and the panel reads as empty. So both ends sit strictly
+    # inside the displayed limits, on both ratio blocks, the ticks staying on the ratio's own range
+    n = 4
+    series = _dalpha_series(n, "dalpha", 1e-3)
+    for agg in report._DALPHA_RATIO_AGGS:
+        series[f"dalpha_{agg}_sres"] = [[1.0, 1.0, 1.0]] * n
+        series[f"dalpha_{agg}_ires"] = [[0.0, 0.0, 0.0]] * n
+    panels = dict(_plot_alpha(_alpha_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha"))
+    ylims, yticks, blocks = (_plot_alpha.seen[key] for key in ("ylims", "yticks", "blocks"))
+
+    ratio_labels = blocks[2] + blocks[4]  # |sum| / A, |sum| / B
+    assert len(ratio_labels) == 10
+    for label in ratio_labels:
+        lo, hi = ylims[label]
+        drawn = [v for line in panels[label].values() for v in line]
+        assert drawn and lo < min(drawn) and max(drawn) < hi, label
+        assert lo < 0.0 and 1.0 < hi  # whatever this trial drew: the ends are inside on every ratio panel
+        assert yticks[label] == [0.0, 0.5, 1.0]
+    # the end values really were drawn, and drawn unchanged: padding the view, not offsetting the data
+    assert {v for line in panels[blocks[2][3]].values() for v in line} == {1.0}
+    assert {v for line in panels[blocks[4][4]].values() for v in line} == {0.0}
 
 
 def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) -> None:

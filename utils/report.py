@@ -101,6 +101,10 @@ _BG_LINE_PANEL = "#FAF7F0"
 # negative- (-) target-mass shares -- black for the total, Okabe-Ito blue / vermillion for the pair
 # (legible together, and under red-green color blindness)
 _DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
+# the dL/dalpha aggs in panel-block order (utils.loss.infonce_batch_stats): the signed sum, then each magnitude
+# -- per pair (sum_abs, A), per anchor row (row_abs, B) -- followed by its coherence ratio |sum| / magnitude
+_DALPHA_AGGS = ("sum", "sum_abs", "C", "row_abs", "C_row")
+_DALPHA_RATIO_AGGS = ("C", "C_row")
 # The residual family (the dalpha res / sres / ires strips, the KL figure's E_R / E_SR / E_IR) is
 # exp(-2 alpha)-small against the order-one entries of p* and y it is built from, so what a batch's values are
 # worth is a matter of PROVENANCE (resid_paths: the row fractions [hard closed form, feasible exact zero, plain
@@ -826,6 +830,20 @@ def _req_labels(reqs, sym):
         labels["mean"] = rf"${sym}_{{\text{{req}}}}$ (mean)"
     return labels
 
+def _pin_flat_yaxis(ax):
+    """The y axis of a scale panel whose every drawn value is the one number -- a frozen logit scale with no
+    bound line beside it (none recorded, or all of them at infinity). There is no range there for autoscale to
+    work with: matplotlib pads the value by +-5% and ticks the padding, which reads as a scale the data never
+    had while leaving the one value that matters off every tick. So that value becomes the panel's only
+    tick, labelled with it, the line centred on it. A panel with any spread at all -- a learnable scale, or a
+    frozen one read against its target-implied bounds, which is the comparison the panel is kept for -- is
+    left to autoscale. Shared by plot_alpha_curves' panels and the strip figures."""
+    vals = np.concatenate([np.asarray(line.get_ydata(), dtype=float) for line in ax.get_lines()])
+    vals = vals[np.isfinite(vals)]
+    if vals.size and np.ptp(vals) == 0.0:
+        ax.set_ylim(vals[0] - 1.0, vals[0] + 1.0)
+        ax.set_yticks([vals[0]], [f"{vals[0]:.4g}"])
+
 def _strip_data(panels, scale_key, req_key, spread_type):
     """One coord's strip, off its `panels` [(x_train, data_epoch)] -- (x, scale, reqs): `scale` the
     (values, spread) of the logit-scale series and `reqs` {stat: (values, spread)} its target-implied
@@ -886,6 +904,7 @@ def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_ax
                 ax.plot(x, vals, color="red", linestyle=linestyle, linewidth=1.0, label=labels_req.get(stat))
                 if spread is not None:
                     ax.fill_between(x, vals - spread, vals + spread, color="red", alpha=0.15)
+        _pin_flat_yaxis(ax)  # a frozen scale with no bound beside it: one tick, at its value
         # the coord names the strip, horizontal (a coord name reads badly rotated) and bold, on the side
         # its y ticks take -- alternating down the figure, so one margin doesn't carry every label
         side = "left" if len(axes) % 2 == 0 else "right"
@@ -953,9 +972,9 @@ def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ti
 
     The epoch axis is rebuilt the way the trial figures' is (n_samps_seen / samps_per_epoch), reading
     samps_per_epoch off the recorded artifacts -- coord_metadata.json's horizon (the coord's sample volume)
-    over trial_metadata.json's n_epochs -- rather than rebuilding a TrainConfig for it. A coord that doesn't
-    track a figure's scale (a frozen logit scalar: the series is empty) is left out of that figure, and an
-    arm with no coord tracking it gets no figure at all. Rendered with the arm's tables (update_arm_metrics)."""
+    over trial_metadata.json's n_epochs -- rather than rebuilding a TrainConfig for it. A coord with a frozen
+    logit scale keeps its strip -- a flat line, read against its bound trio where there is one and otherwise
+    ticked at its one value (_pin_flat_yaxis). Rendered with the arm's tables (update_arm_metrics)."""
     dpath_strips = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm / "arm_metrics"
                     / "coord_strips")
     panels = {}  # coord -> {seed: (x_train, data_epoch)}, completed trials only, campaign coord order
@@ -976,23 +995,18 @@ def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ti
             x_train = np.array([0.0, *(v / samps_per_epoch for v in data_epoch["n_samps_seen"][:-1])])
             panels.setdefault(coord, {})[dpath_trial.name] = (x_train, data_epoch)
 
+    if not panels:  # no completed trial on this dataset yet
+        return
     for scale_key, req_key, sym, name in _STRIP_FIGURES:
-        tracked = {
-            coord: {seed: panel for seed, panel in by_seed.items() if len(panel[1][scale_key]) == len(panel[0])}
-            for coord, by_seed in panels.items()
-        }
-        tracked = {coord: by_seed for coord, by_seed in tracked.items() if by_seed}
-        if not tracked:
-            continue
         plot_title = f"{arm}\n{DATASET_ALIAS2NAME[dataset]}"
         style = (fontsize_axes, fontsize_ticks, fontsize_legend, subplot_border_width, fig_width, height_fixed,
                  height_panel)
-        for seed in sorted({seed for by_seed in tracked.values() for seed in by_seed}, key=int):
+        for seed in sorted({seed for by_seed in panels.values() for seed in by_seed}, key=int):
             strips = [(coord, *_strip_data([by_seed[seed]], scale_key, req_key, None))
-                      for coord, by_seed in tracked.items() if seed in by_seed]
+                      for coord, by_seed in panels.items() if seed in by_seed]
             _render_strips(strips, dpath_strips / "seeds" / seed / f"{name}.png", sym, plot_title, spread_type, *style)
         strips = [(coord, *_strip_data(list(by_seed.values()), scale_key, req_key, spread_type))
-                  for coord, by_seed in tracked.items()]
+                  for coord, by_seed in panels.items()]
         _render_strips(strips, dpath_strips / "agg" / f"{name}.png", sym, plot_title, spread_type, *style)
 
 @rank0
@@ -2067,10 +2081,14 @@ def plot_alpha_curves(
     # symbol): scale / dalpha*, the alpha the logits carry (pinned at 100 while logits.scale.clamp
     # holds), and logit_scale / dlogalpha*, the log alpha parameter the model learns, as the model
     # holds it. A trial recording none of a figure's series gets no figure.
-    # On top, each tracked scale (TrialData; empty when untracked, e.g. frozen) gets a panel --
-    # the "2" series is loss2's term's own under separate logit scalars (loss.logits.shared false)
+    # On top, each scale gets a panel -- the "2" series is loss2's term's own under separate logit scalars
+    # (loss.logits.shared false), empty otherwise. A frozen scale (loss.logits.scale.freeze) keeps its panel:
+    # a flat line, but the alpha the bound lines on it and the gradient decomposition below read against.
+    # Its caption says so, which is also why no .grad panel follows it -- frozen is read off that: the
+    # parameter's .grad series is recorded for a learnable scale only (TrainPipeline._tracked_logit_scalars)
     scale_panels = [
-        (f"{scale_key}{suffix}", rf"${sym}{sub}$")
+        (f"{scale_key}{suffix}", rf"${sym}{sub}$"
+         + ("" if len(data_epoch[f"logit_scale{suffix}_grad"]) == len(x_train) else "\n(frozen)"))
         for suffix, sub in (("", ""), ("2", "_2"))
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     ]
@@ -2090,35 +2108,39 @@ def plot_alpha_curves(
         if scale_key == "logit_scale" and len(data_epoch[f"logit_scale{suffix}_grad"]) == len(x_train)
     }
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
-    # since only it records the series), fifteen panels: the per-pair dL/dalpha terms summed, summed in
-    # magnitude, and their coherence ratio C = |sum| / sum|.|, each for the full gradient, its
-    # structural / residual parts and the residual's own structural / irreducible split
+    # since only it records the series), twenty-five panels: the per-pair dL/dalpha terms summed, summed in
+    # magnitude (A) with the coherence ratio |sum| / A, then summed in magnitude per anchor row (B =
+    # sum_i |sum_j .|, each direction over its own anchors) with its ratio |sum| / B, each for the full
+    # gradient, its structural / residual parts and the residual's own structural / irreducible split
     # (utils.loss.infonce_batch_stats), every panel drawing the all /
-    # positive-mass / negative-mass attributions -- bar the logalpha figure's five C panels, which
+    # positive-mass / negative-mass attributions -- bar the logalpha figure's ten ratio panels, which
     # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
-    # holds the parameter above its cap -- its sums zero and its C NaN, there being no pressure on the
+    # holds the parameter above its cap -- its sums zero and its ratios NaN, there being no pressure on the
     # parameter to cancel -- dalpha* still carrying the pressure on the effective scale.
-    # The three residual comps carry the provenance mark (_RESID_UNVALIDATED) on all three of their aggs:
+    # The three residual comps carry the provenance mark (_RESID_UNVALIDATED) on all five of their aggs:
     # hatched over every batch with rows off the unvalidated subtraction.
 
     def dalpha_label(agg, comp):
         sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
                "sres": r"^{\text{SR}}", "ires": r"^{\text{IR}}"}[comp]
+        nabla = rf"\nabla_{{{sym}}}{sup} \mathcal{{L}}"
         if agg == "sum":
             # the full term shares the measured .grad panel's symbol, so it says what it is: the analytical term
             # off the blended target distribution (no blend coefficient, no loss.unitless 1 / L), not the
             # gradient the parameter received
-            return rf"$\nabla_{{{sym}}}{sup} \mathcal{{L}}$" + ("\n(analytic)" if comp == "full" else "")
-        return rf"$\text{{{'A' if agg == 'sum_abs' else 'C'}}}_{{{sym}}}{sup}$"
+            return rf"${nabla}$" + ("\n(analytic)" if comp == "full" else "")
+        mag = rf"\text{{{'A' if agg in ('sum_abs', 'C') else 'B'}}}_{{{sym}}}{sup}"
+        # a ratio is captioned as the quotient it is, over the magnitude panel's own symbol
+        return rf"$\frac{{|{nabla}|}}{{{mag}}}$" if agg in _DALPHA_RATIO_AGGS else rf"${mag}$"
 
     dalpha_panels = [
         (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg, comp)
-        for agg in ("sum", "sum_abs", "C")
+        for agg in _DALPHA_AGGS
         for comp in ("full", "struct", "res", "sres", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
-    # the residual terms' mark, on all three of a term's aggs -- where the magnitude is unvalidated, so are the
-    # signed sum and the coherence ratio taken over it
+    # the residual terms' mark, on all five of a term's aggs -- where the magnitudes are unvalidated, so are the
+    # signed sum and the coherence ratios taken over them
     unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
     n_panels = len(scale_panels) + len(grad_panels) + len(dalpha_panels)
     if n_panels == 0:
@@ -2160,6 +2182,7 @@ def plot_alpha_curves(
                         label=labels_req.get(stat))
             if labels_req:
                 legend_handles[ax] = ax.get_legend_handles_labels()[0]
+        _pin_flat_yaxis(ax)  # a frozen scale with no bound beside it: one tick, at its value
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -2181,18 +2204,24 @@ def plot_alpha_curves(
 
     for key, label, agg, comp in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        # the logalpha figure's C panels repeat the alpha figure's exactly -- alpha cancels in the
-        # ratio |sum| / sum|.| -- so they are drawn blank: the panel and its caption hold the row, so
+        # the logalpha figure's ratio panels repeat the alpha figure's exactly -- alpha cancels in the
+        # ratios |sum| / A and |sum| / B -- so they are drawn blank: the panel and its caption hold the row, so
         # the two figures stay aligned panel for panel, with the redundant curves, grid, y ticks and
         # legend all left off
-        if prefix == "dlogalpha" and agg == "C":
+        if prefix == "dlogalpha" and agg in _DALPHA_RATIO_AGGS:
             ax.set_yticks([])
         else:
             vals = np.array(data_epoch[key])  # [batch, (all, pos, neg)]
             for idx_attr, (attr_label, color) in enumerate(_DALPHA_ATTRIBUTIONS):
                 ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
-            if agg == "C":
-                ax.set_ylim(0.0, 1.0)  # a cancellation ratio
+            if agg in _DALPHA_RATIO_AGGS:
+                # a cancellation ratio, in [0, 1] -- with both ends readings in their own right (1: perfectly
+                # coherent, as a hard target's SR / IR terms are throughout; 0: total cancellation), so the
+                # limits are padded past them: at exactly (0, 1) such a curve lies under the panel's border,
+                # which is drawn over it, and the panel reads as empty. Display padding only, the ticks
+                # staying on the ratio's own range
+                ax.set_ylim(-0.05, 1.05)
+                ax.set_yticks([0.0, 0.5, 1.0])
             else:
                 ax.axhline(0.0, color="gray", linewidth=0.5)
             if comp in _DALPHA_RES_COMPS and unvalidated is not None:
@@ -2206,14 +2235,15 @@ def plot_alpha_curves(
     axes[-1].tick_params(labelbottom=True)
 
     # the dalpha panels come agg-major, so each agg's five comps are a consecutive block: the gradient
-    # sums, their magnitudes, their coherence ratios. Each block is ruled off top and bottom in a
-    # double-width line (_finish_curves' axes_blocks) -- the three read as one quantity apiece across the
+    # sums, their per-pair magnitudes and coherence ratios, their per-anchor magnitudes and coherence
+    # ratios. Each block is ruled off top and bottom in a
+    # double-width line (_finish_curves' axes_blocks) -- the five read as one quantity apiece across the
     # five decompositions, which the shared y scale of a block does not say on its own. The logalpha
-    # figure's blank C block is ruled like the others, the two figures staying aligned block for block.
+    # figure's blank ratio blocks are ruled like the others, the two figures staying aligned block for block.
     axes_dalpha = axes[len(scale_panels) + len(grad_panels):]  # in dalpha_panels order
     axes_blocks = [
         [ax for ax, panel in zip(axes_dalpha, dalpha_panels) if panel[2] == agg]
-        for agg in ("sum", "sum_abs", "C")
+        for agg in _DALPHA_AGGS
     ]
     _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
                    subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
@@ -2306,7 +2336,7 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
 
-    # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_alpha_curves' three
+    # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_alpha_curves' five
     # dL/dalpha aggs, the strip figures' top-level coord groups) is ruled off as one block: the horizontal
     # spines bounding it -- the top of its first panel and the bottom of its last -- go to twice the panel
     # border's width, the edges shared between panels inside it staying at the panel width. The sides stay

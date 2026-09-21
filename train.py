@@ -261,19 +261,22 @@ class TrainPipeline:
     @rank0
     def _tracked_logit_scalars(self):
         """{TrialData series -> model attribute} for the logit scalars that get a learning-curve panel:
-        the scale whenever it's learnable -- two series off the one parameter, scale (the alpha the
-        logits carry) and logit_scale (the parameter itself, log alpha) -- the bias only when the loss
-        is BCE-family (inert under InfoNCE) and learnable. Frozen scalars (and non-parameter buffers)
-        are left out -- a flat line says nothing. Under separate logit scalars
+        the scale always, frozen or not -- two series off the one parameter, scale (the alpha the
+        logits carry) and logit_scale (the parameter itself, log alpha); a frozen one is a flat line,
+        but it is the alpha the batch's target-implied bounds and gradient decomposition read against,
+        so its figures keep the panel -- the bias only when the loss
+        is BCE-family (inert under InfoNCE) and learnable: a frozen bias (or a non-parameter buffer)
+        is left out -- a flat line says nothing there. Under separate logit scalars
         (utils.loss.sep_logit_scalars) loss2's term's pair is tracked alike, as scale2 / logit_scale2 /
         bias2. A learnable scale gets a third series, logit_scale_grad: the parameter's own signed .grad
-        (_logit_scalar_values)."""
+        (_logit_scalar_values) -- a frozen one has none, which is also how the figures tell it is frozen
+        (utils.report.plot_alpha_curves)."""
         model = self.modelw._unwrapped_model
         tracked = {}
         for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
+            tracked[f"scale{suffix}"] = f"logit_scale{suffix}"
+            tracked[f"logit_scale{suffix}"] = f"logit_scale{suffix}"
             if getattr(model, f"logit_scale{suffix}").requires_grad:
-                tracked[f"scale{suffix}"] = f"logit_scale{suffix}"
-                tracked[f"logit_scale{suffix}"] = f"logit_scale{suffix}"
                 tracked[f"logit_scale{suffix}_grad"] = f"logit_scale{suffix}"
             if self.cfg.loss["crit"] in ("bce", "bif_bce") and getattr(model, f"logit_bias{suffix}").requires_grad:
                 tracked[f"bias{suffix}"] = f"logit_bias{suffix}"

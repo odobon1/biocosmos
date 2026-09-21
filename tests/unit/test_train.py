@@ -390,8 +390,8 @@ def _fake_pipe(loss_crit, requires_grad, sep=False):
     return SimpleNamespace(cfg=SimpleNamespace(loss=loss), modelw=SimpleNamespace(_unwrapped_model=SimpleNamespace(**attrs)))
 
 
-def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
-    # a scalar gets a learning-curve series only when it's learnable AND meaningful: the bias is
+def test_tracked_logit_scalars_keep_a_frozen_scale_and_skip_a_frozen_or_inert_bias() -> None:
+    # the bias gets a learning-curve series only when it's learnable AND meaningful: it is
     # BCE-family-only (inert under InfoNCE). The scale parameter feeds three series: scale (alpha),
     # logit_scale (the parameter itself, log alpha) and logit_scale_grad (that parameter's signed .grad)
     all_learnable = {"logit_scale": True, "logit_bias": True}
@@ -401,9 +401,14 @@ def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
     assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias"}
     assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
 
-    # frozen scalars are dropped -- a flat line says nothing
-    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {"bias": "logit_bias"}
-    assert tracked(_fake_pipe("infonce", {"logit_scale": False, "logit_bias": True})) == {}
+    # a frozen scale keeps its two value series -- a flat line, but the alpha its figures' bound lines and
+    # gradient decomposition read against -- and drops only the .grad one (a frozen parameter has none, which
+    # is also how the figures tell it is frozen); a frozen bias is dropped outright
+    frozen_scale = {"scale": "logit_scale", "logit_scale": "logit_scale"}
+    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {**frozen_scale, "bias": "logit_bias"}
+    assert tracked(_fake_pipe("infonce", {"logit_scale": False, "logit_bias": True})) == frozen_scale
+    assert tracked(_fake_pipe("bce", {"logit_scale": True, "logit_bias": False})) == {
+        "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
 
     # separate logit scalars: loss2's term's pair gets its own series, under the same rules
     assert tracked(_fake_pipe("bce", all_learnable, sep=True)) == {
@@ -412,7 +417,8 @@ def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
     assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {
         "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale",
         "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "logit_scale2_grad": "logit_scale2"}
-    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {"bias": "logit_bias", "bias2": "logit_bias2"}
+    assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {
+        **frozen_scale, "bias": "logit_bias", "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "bias2": "logit_bias2"}
 
 
 def test_logit_scalar_values_cap_the_scale_under_the_clamp() -> None:

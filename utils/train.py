@@ -72,13 +72,14 @@ class TrialData:
             "grad_norm_model": [],
             "delta_norm_model": [],  # ||delta theta||: the L2 norm of each step's parameter update
             "grad_sum_sim": [],
-            # learnable logit scalars, scale as the alpha the logits carry -- exp(logit_scale), capped at
+            # the logit scalars, scale as the alpha the logits carry -- exp(logit_scale), capped at
             # 100 under loss.logits.scale.clamp (TrainPipeline._logit_scalar_values), read before the
             # batch's optimizer step so a point is the value the batch's logits and batch stats were
             # computed under; logit_scale is the scale parameter itself, read off the model as is (log
             # alpha: no exp, no clamp -- so it keeps reading the raw value while a held clamp pins scale
-            # at 100). A series stays empty when its scalar is untracked
-            # (TrainPipeline._tracked_logit_scalars) and then gets no curve panel. scale2 / logit_scale2 /
+            # at 100). The scale's pair is recorded frozen or not (a frozen one a flat line on its figures);
+            # the bias only while learnable under a BCE-family loss, its series staying empty otherwise
+            # (TrainPipeline._tracked_logit_scalars) and then getting no curve panel. scale2 / logit_scale2 /
             # bias2: loss2's term's own pair under separate logit scalars (loss.logits.shared false),
             # empty otherwise
             "scale": [],
@@ -87,7 +88,9 @@ class TrialData:
             # before the optimizer step, so exactly what the optimizer consumes (TrainPipeline._logit_scalar_values).
             # THE measurement of what the scale receives; the dlogalpha_* family below is an analytical
             # decomposition and need not match it (blend coefficients, loss.unitless). logit_scale2_grad: the same
-            # for loss2's term's own scale under separate logit scalars.
+            # for loss2's term's own scale under separate logit scalars. Recorded for a learnable scale only (a
+            # frozen parameter has no .grad), so an empty series beside a recorded logit_scale is how the
+            # figures read a scale as frozen (utils.report.plot_alpha_curves).
             "logit_scale_grad": [],
             "logit_scale2_grad": [],
             "bias": [],
@@ -126,15 +129,17 @@ class TrialData:
             "log_alpha_req_min": [],
             "log_alpha_req_mean": [],
             "log_alpha_req_max": [],
-            # dalpha_{sum,sum_abs,C}_{full,struct,res,sres,ires}: per batch, the InfoNCE logit-scale gradient
-            # decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
+            # dalpha_{sum,sum_abs,C,row_abs,C_row}_{full,struct,res,sres,ires}: per batch, the InfoNCE logit-scale
+            # gradient decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
             # the target), the residual splitting again along s* = infonce_s_opt, the geometry that
             # realizes p*, into sres (the model's geometry standing off s*) and ires (what s* itself
-            # still pushes on alpha), each summed, summed in magnitude, and their coherence ratio C -- every
+            # still pushes on alpha), each summed, summed in magnitude (A) and their coherence ratio C =
+            # |sum| / A, then summed in magnitude per anchor row (B = sum_i |sum_j .|, over each direction's
+            # own anchors) and its ratio C_row = |sum| / B -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
             # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
-            # the model learns (alpha times the dalpha sums, the same C -- the sums zero and C NaN while
+            # the model learns (alpha times the dalpha sums, the same ratios -- the sums zero and the ratios NaN while
             # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient, so
             # there is no pressure on it whose cancellation could be reported;
             # dalpha_* is the pressure on the effective, post-clamp scale either way). Recorded only for
@@ -143,7 +148,7 @@ class TrialData:
             **{
                 f"{prefix}_{agg}_{comp}": []
                 for prefix in ("dalpha", "dlogalpha")
-                for agg in ("sum", "sum_abs", "C")
+                for agg in ("sum", "sum_abs", "C", "row_abs", "C_row")
                 for comp in ("full", "struct", "res", "sres", "ires")
             },
             # kl*: per batch, the InfoNCE KL decomposition (utils.loss.infonce_kl_terms, both anchor

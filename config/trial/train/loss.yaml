@@ -101,14 +101,16 @@ loss1:  # Primary target params; Inert iff (loss.blend.lambda: 1.0)
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
       # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make alpha_Q comparable to logits' alpha
       # i.e. target range --> similarity range
-      sm_scale: pinned  # {pinned, pinned1, [float]}
+      sm_scale: pinned  # {pinned, pinned1, pinned3, [float]}
       # (pinned) Target scale alpha_Q pinned to the logits' learnable logit-scale alpha = exp(logit_scale) (targs scaled by x2 first)
       # (pinned1) Same as pinned but without the x2 target scaling
-      # ([float]) Fixed alpha_Q (non-learnable), set =0.5 for no target scaling; inert if (loss.loss1.infonce.tsm.type: linear)
+      # (pinned3) Same as pinned but with x3 target scaling
+      # ([float]) Fixed alpha_Q (non-learnable), set =0.5 for no target scaling;
+      # Inert if (loss.loss1.infonce.tsm.type: linear)
 
 loss2:  # Secondary target params; Inert iff (loss.blend.lambda: 0.0)
   targ: phylo  # {sp, mp, tax, phylo}
   infonce:
     tsm:
       type: softmax  # {linear, softmax}
-      sm_scale: pinned  # {pinned, pinned1, [float]}
+      sm_scale: pinned  # {pinned, pinned1, pinned3, [float]}

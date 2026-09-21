@@ -387,7 +387,7 @@ class InfoNCECriterion(Criterion):
             Y = Q / Q_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         elif cfg_tsm["type"] == "softmax":
             scale_Q = cfg_tsm["sm_scale"]
-            if scale_Q == "pinned" or scale_Q == "pinned1":
+            if scale_Q in ("pinned", "pinned1", "pinned3"):
                 logit_scale = logit_scale.detach()
                 if self.cfg["logits"]["scale"]["clamp"]:
                     logit_scale = logit_scale.clamp(max=math.log(100))
@@ -395,6 +395,8 @@ class InfoNCECriterion(Criterion):
                     Y = F.softmax(2 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
                 elif scale_Q == "pinned1":
                     Y = F.softmax(Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                elif scale_Q == "pinned3":
+                    Y = F.softmax(3 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
             else:
                 Y = F.softmax(2 * Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         return Y
@@ -973,9 +975,17 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
       on a hard binary target it has a closed form (infonce_hard_resid) the subtraction cannot
       reproduce at scale, and it is the caller that knows which case this is (infonce_batch_stats)
 
-    Returns [2, 5, 3]: (sum, sum of |.|) x (full, struct, res, sres, ires) x (all, positive,
-    negative mass), each a per-anchor row sum averaged over the anchors -- so the full / all sum is
-    exactly this direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
+    Returns [3, 5, 3]: (sum, sum of |.|, sum of |row sum|) x (full, struct, res, sres, ires) x (all,
+    positive, negative mass), each a per-anchor row sum averaged over the anchors -- so the full / all
+    sum is exactly this direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
+    The third, sum_i |sum_j .|, takes the magnitude per ANCHOR rather than per pair: each row is one
+    anchor's own CE term, its row sum that term's scale gradient, so it sits between the other two
+    (|sum| <= sum of |row sum| <= sum of |.|) -- what is left of the pair magnitudes once each
+    anchor's pairs have cancelled among themselves, before the anchors cancel against each other.
+    All three reduce over the rows first and the anchors second, so the ordering holds in floating
+    point too, rounding being monotone along a shared reduction tree: taken off a flat GM.sum()
+    instead, a batch whose anchors all pull one way (|sum| = sum of |row sum| exactly) read a ratio
+    of 1 + 2e-16.
     """
     terms = ((P - Y) * S, (P - P_opt) * S, R * S, R * (S - S_opt), R * S_opt)
     masks = (None, Q, 1.0 - Q)
@@ -983,8 +993,9 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
     for G in terms:
         for M in masks:
             GM = G if M is None else G * M
-            sums.append(torch.stack([GM.sum(), GM.abs().sum()]))
-    return torch.stack(sums).view(5, 3, 2).permute(2, 0, 1) / S.size(0)
+            rows = GM.sum(dim=1)
+            sums.append(torch.stack([rows.sum(), GM.abs().sum(dim=1).sum(), rows.abs().sum()]))
+    return torch.stack(sums).view(5, 3, 3).permute(2, 0, 1) / S.size(0)
 
 
 def infonce_kl_terms(Y, log_P, P_opt, R, E_ir):
@@ -1039,16 +1050,26 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       cancellation, sum_abs = 0 is no pressure at all. An additive floor in the denominator would do
       worse than blur that case: the residual terms decay like exp(-2 alpha), so sum_abs reaches 1e-42
       by alpha 50 on targets whose rows sum to exactly 1, and any floor above it drags a perfectly
-      coherent C = 1 down towards zero -- reading as total cancellation where there is none. alpha is the
+      coherent C = 1 down towards zero -- reading as total cancellation where there is none. Beside
+      sum_abs (A, the magnitude per pair) sits row_abs (B = sum_i |sum_j .|, the magnitude per anchor:
+      infonce_scale_grad_sums' third aggregate) with its own ratio C_row = |sum| / row_abs, divided
+      the same way. Bidirectionally the anchors are the image rows of the I2T terms AND the text rows
+      of the T2I ones, 2B CE terms in all, each with its own row sum: B is taken within each
+      direction over that direction's anchors and the two averaged, as the sums and A are -- never
+      over a per-pair blend of the two directions, whose rows would mix one direction's anchors with
+      the other's candidates -- so |sum| <= row_abs <= sum_abs, and with it C <= C_row, holds across
+      the reported series. C reads all cancellation, C_row only that BETWEEN anchors; row_abs = 0
+      under a sum_abs > 0 (every anchor's own pairs cancelling exactly) leaves nothing between them
+      to report, hence NaN there too. alpha is the
       scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
       effective scale whether or not the parameter can follow it. The dlogalpha family is the
       gradient of the log-scale parameter the model actually learns (logits.scale: the param is
       log(alpha_raw), and z = exp(min(log alpha_raw, ln 100)) * s under logits.scale.clamp, exp(log
       alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dalpha per pair while the clamp is off
-      or slack, so its sums are alpha times the dalpha ones and its C, alpha cancelling in the ratio,
-      equals the dalpha one; once the clamp holds (the raw parameter above ln 100, where clamp's
+      or slack, so its sums are alpha times the dalpha ones and its C / C_row, alpha cancelling in the
+      ratio, equal the dalpha ones; once the clamp holds (the raw parameter above ln 100, where clamp's
       backward blocks the gradient) the parameter's gradient is exactly zero however hard the loss
-      pushes on the effective scale, so its sums both read zero and its C reads NaN -- the parameter
+      pushes on the effective scale, so its sums all read zero and its ratios read NaN -- the parameter
       is under no pressure to cancel -- while dalpha keeps reporting the pressure. The factor
       d(alpha)/d(log alpha_raw) is taken by autograd through the same clamp-then-exp path
       compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
@@ -1125,7 +1146,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
     - clamp ---------------- logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
 
-    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C}_{full,struct,res,sres,ires}: [all, pos, neg]} plus
+    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C,row_abs,C_row}_{full,struct,res,sres,ires}: [all, pos, neg]} plus
     {kl, kl_s, kl_ir, kl_sr: scalar}, {{alpha_req,log_alpha_req}_{min,mean,max}: scalar} and
     {resid_paths: [hard, feasible, subtracted]} (row fractions, summing to 1); the reductions are stacked
     so the device->host transfer is a single .cpu() sync.
@@ -1181,10 +1202,10 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
         reqs = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
         bounds = torch.cat([reqs, reqs.log()])  # the logalpha panel's lines are the alpha ones' logs
         families = []
-        for scaled in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
-            C = torch.where(scaled[1] > 0, scaled[0].abs() / scaled[1], torch.nan)  # NaN: no pressure, no ratio
-            families.append(torch.cat([scaled, C[None]]))
-        grad = torch.stack(families)  # [2, 3, 5, 3]
+        for G, A, B in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
+            C, C_row = (torch.where(D > 0, G.abs() / D, torch.nan) for D in (A, B))  # NaN: no pressure, no ratio
+            families.append(torch.stack([G, A, C, B, C_row]))
+        grad = torch.stack(families)  # [2, 5, 5, 3]
         packed = torch.cat([grad.flatten(), kl, bounds, paths]).cpu()
         vals = packed[:grad.numel()].view_as(grad).tolist()
         kl_vals = packed[grad.numel():grad.numel() + kl.numel()].tolist()
@@ -1194,7 +1215,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
         **{
             f"{prefix}_{agg}_{comp}": vals[f][a][c]
             for f, prefix in enumerate(("dalpha", "dlogalpha"))
-            for a, agg in enumerate(("sum", "sum_abs", "C"))
+            for a, agg in enumerate(("sum", "sum_abs", "C", "row_abs", "C_row"))
             for c, comp in enumerate(("full", "struct", "res", "sres", "ires"))
         },
         **dict(zip(("kl", "kl_s", "kl_ir", "kl_sr"), kl_vals)),

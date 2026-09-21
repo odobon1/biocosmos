@@ -8,7 +8,8 @@ model could still remove at this alpha -- and a residual (p* - y) s that no simi
 the residual splits again along s* into (p* - y)(s - s*) (the model's geometry standing off s*) and
 (p* - y) s* (what s* itself still pushes on alpha);
 each is attributed to the positive / negative target mass by the soft masks q / 1 - q, and reported
-summed, summed in magnitude, and as the coherence ratio C = |sum| / sum|.|; the dlogalpha family is
+summed, summed in magnitude (A) with the coherence ratio C = |sum| / A, and summed in magnitude per
+anchor row (B = sum_i |sum_j .|, over each direction's own anchors) with C_row = |sum| / B; the dlogalpha family is
 the log-scale parameter's own gradient, alpha times the dalpha sums, and zero while logits.scale.clamp
 holds the parameter above its cap. The KL decomposition: per anchor, D_KL(y || p) = D_KL(y || p*) +
 D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_s + E_sr, batch-meaned. Both averaged over the I2T /
@@ -185,7 +186,7 @@ def test_sums_decompose_and_full_sum_is_the_loss_gradient():
     P = torch.softmax(alpha * S, dim=1)
     P_opt = L.infonce_p_opt(Y, alpha)
     sums = L.infonce_scale_grad_sums(S, Q, Y, P, P_opt, L.infonce_s_opt(P_opt, alpha), P_opt - Y)
-    assert sums.shape == (2, 5, 3)
+    assert sums.shape == (3, 5, 3)
     # the full / all sum is d(per-anchor mean CE)/d(alpha), the direction's raw InfoNCE loss gradient
     a = torch.tensor(alpha, dtype=torch.float64, requires_grad=True)
     loss = -(Y * torch.log_softmax(a * S, dim=1)).sum(dim=1).mean()
@@ -200,6 +201,16 @@ def test_sums_decompose_and_full_sum_is_the_loss_gradient():
     assert torch.all(sums[1, 0] <= sums[1, 1] + sums[1, 2] + 1e-12)
     assert torch.all(sums[1, 2] <= sums[1, 3] + sums[1, 4] + 1e-12)
     assert torch.all(sums[1, :, 0] <= sums[1, :, 1] + sums[1, :, 2] + 1e-12)
+    # the per-anchor magnitude: sum_i |sum_j .|, anchor-averaged like the rest, between the other two
+    terms = ((P - Y) * S, (P - P_opt) * S, (P_opt - Y) * S)
+    for c, G in enumerate(terms):
+        for m, M in enumerate((torch.ones_like(Q), Q, 1.0 - Q)):
+            torch.testing.assert_close(sums[2, c, m], (G * M).sum(dim=1).abs().sum() / B)
+    assert torch.all(sums[0].abs() <= sums[2] + 1e-12) and torch.all(sums[2] <= sums[1] + 1e-12)
+    # strictly under the pair magnitudes here, each anchor's pairs cancelling inside its row -- while on
+    # this random geometry every anchor pulls alpha the same way, so nothing cancels between them
+    assert sums[2, 0, 0] < 0.99 * sums[1, 0, 0]
+    torch.testing.assert_close(sums[0, 0, 0].abs(), sums[2, 0, 0])
 
 
 def test_batch_stats_average_directions_and_take_C_on_the_averages():
@@ -209,29 +220,35 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
-    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
+    mags, ratios = {"sum_abs": 1, "row_abs": 2}, {"C": 1, "C_row": 2}  # agg -> infonce_scale_grad_sums' index
+    aggs, comps = ("sum", *mags, *ratios), ("full", "struct", "res", "sres", "ires")
     assert set(stats) == {f"{prefix}_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
         "kl", "kl_s", "kl_ir", "kl_sr", "resid_paths"} | {
         f"{prefix}alpha_req_{stat}" for prefix in ("", "log_") for stat in ("min", "mean", "max")}
-    # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same C
+    # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same ratios
     for comp in comps:
-        for agg in aggs[:2]:
+        for agg in ("sum", *mags):
             assert stats[f"dlogalpha_{agg}_{comp}"] == pytest.approx([alpha * v for v in stats[f"dalpha_{agg}_{comp}"]], rel=1e-12)
-        assert stats[f"dlogalpha_C_{comp}"] == pytest.approx(stats[f"dalpha_C_{comp}"], rel=1e-12)
+        for agg in ratios:
+            assert stats[f"dlogalpha_{agg}_{comp}"] == pytest.approx(stats[f"dalpha_{agg}_{comp}"], rel=1e-12)
     Sf, Qf, Yf = S.float().double(), Q.float().double(), _y_stats(Y.float())
     P_opt = L.infonce_p_opt(Yf, alpha)
     S_opt = L.infonce_s_opt(P_opt, alpha)
     i2t = L.infonce_scale_grad_sums(Sf, Qf, Yf, torch.softmax(logits.double(), dim=1), P_opt, S_opt, P_opt - Yf)
     t2i = L.infonce_scale_grad_sums(Sf.T, Qf.T, Yf, torch.softmax(logits.double().T, dim=1), P_opt, S_opt, P_opt - Yf)
     expected = 0.5 * (i2t + t2i)
-    for a, agg in enumerate(aggs[:2]):
+    for agg, a in {"sum": 0, **mags}.items():
         for c, comp in enumerate(comps):
             assert stats[f"dalpha_{agg}_{comp}"] == pytest.approx(expected[a, c].tolist(), rel=1e-9, abs=1e-12)
     for c, comp in enumerate(comps):
-        C = stats[f"dalpha_C_{comp}"]
-        assert torch.all(expected[1, c] > 0)  # nothing here is a zero-pressure term, so C is a plain ratio
-        assert C == pytest.approx((expected[0, c].abs() / expected[1, c]).tolist(), rel=1e-9, abs=1e-12)
-        assert all(0.0 <= v <= 1.0 for v in C)
+        for agg, a in ratios.items():
+            C = stats[f"dalpha_{agg}_{comp}"]
+            assert torch.all(expected[a, c] > 0)  # nothing here is a zero-pressure term, so C is a plain ratio
+            assert C == pytest.approx((expected[0, c].abs() / expected[a, c]).tolist(), rel=1e-9, abs=1e-12)
+            assert all(0.0 <= v <= 1.0 for v in C)
+        # |sum| <= B <= A across the reported (direction-averaged) series, so the per-pair ratio never
+        # reads above the per-anchor one
+        assert all(v <= w + 1e-12 for v, w in zip(stats[f"dalpha_C_{comp}"], stats[f"dalpha_C_row_{comp}"]))
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
     stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False)
@@ -241,6 +258,51 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
     for c, comp in enumerate(comps):
         assert stats_sym[f"dalpha_sum_{comp}"] == pytest.approx(one_dir[0, c].tolist(), rel=1e-9, abs=1e-12)
         assert stats_sym[f"dalpha_sum_abs_{comp}"] == pytest.approx(one_dir[1, c].tolist(), rel=1e-9, abs=1e-12)
+        assert stats_sym[f"dalpha_row_abs_{comp}"] == pytest.approx(one_dir[2, c].tolist(), rel=1e-9, abs=1e-12)
+
+
+def test_row_abs_is_over_the_anchors_of_both_directions():
+    # B = sum_i |sum_j .| takes the magnitude per ANCHOR, and the bidirectional loss has 2B of them: it is
+    # the mean of B image-anchor CE terms (the rows of the I2T terms) and B text-anchor ones (the rows of
+    # the T2I terms, i.e. the COLUMNS of the I2T layout). Each has its own scale gradient, so the reference
+    # is autograd's, term by term: row_abs_full is the mean |d(CE_k)/d(alpha)| over the 2B terms, the way
+    # sum_full is their signed mean (the loss gradient), and C_row the ratio of the two -- the cancellation
+    # BETWEEN anchors, each anchor's own pairs having cancelled inside its row sum
+    L = import_loss_module()
+    B, alpha = 12, 2.0
+    enc = torch.arange(B) % 4
+    Q = (enc[:, None] == enc[None, :]).double()
+    Y = Q / Q.sum(dim=1, keepdim=True)
+    S = _sims(B, seed=19)  # asymmetric, so the two directions differ
+    # half the image anchors fitted (positives above negatives: at this alpha they want it larger), the rest
+    # random (they want it smaller), so the anchors pull alpha both ways and the magnitudes have work to do
+    S[: B // 2] = (0.7 * (2 * Q - 1) + 0.3 * S)[: B // 2]
+    stats = L.infonce_batch_stats(S, Q, Y, alpha * S, _log_scale(alpha), False)
+
+    ce = lambda z: -(Y * torch.log_softmax(z, dim=1)).sum(dim=1)  # one CE term per anchor row
+    per_anchor = torch.autograd.functional.jacobian(
+        lambda a: torch.cat([ce(a * S), ce(a * S.T)]), torch.tensor(alpha, dtype=torch.float64))
+    assert per_anchor.shape == (2 * B,)
+    assert min((per_anchor > 0).sum(), (per_anchor < 0).sum()) >= B // 2  # they really do pull both ways
+    assert stats["dalpha_sum_full"][0] == pytest.approx(per_anchor.mean().item(), rel=1e-9)
+    assert stats["dalpha_row_abs_full"][0] == pytest.approx(per_anchor.abs().mean().item(), rel=1e-9)
+    assert stats["dalpha_C_row_full"][0] == pytest.approx((per_anchor.mean().abs() / per_anchor.abs().mean()).item(), rel=1e-9)
+    # |sum| < B < A, strictly: cancellation between the anchors, and inside their rows before that
+    assert stats["dalpha_C_full"][0] < 0.5 * stats["dalpha_C_row_full"][0] < 0.5
+
+    # the pos / neg attributions likewise, each direction masking its own rows (Q.T under the text anchors)
+    G_i2t = (torch.softmax(alpha * S, dim=1) - Y) * S  # [image anchor, text]
+    G_t2i = (torch.softmax(alpha * S.T, dim=1) - Y) * S.T  # [text anchor, image]
+    for m, (M_i2t, M_t2i) in enumerate(((1.0, 1.0), (Q, Q.T), (1.0 - Q, 1.0 - Q.T))):
+        expected = 0.5 * ((G_i2t * M_i2t).sum(dim=1).abs().sum() + (G_t2i * M_t2i).sum(dim=1).abs().sum()) / B
+        assert stats["dalpha_row_abs_full"][m] == pytest.approx(expected.item(), rel=1e-9)
+
+    # what it is NOT: the row sums of a per-pair blend of the directions, which adds image i's I2T row to
+    # the T2I terms of the texts it is a CANDIDATE of -- nor the T2I terms summed down the anchors
+    blended = 0.5 * (G_i2t + G_t2i.T)
+    wrong_axis = 0.5 * (G_i2t.sum(dim=1).abs().sum() + G_t2i.sum(dim=0).abs().sum()) / B
+    for wrong in (blended.sum(dim=1).abs().sum() / B, wrong_axis):
+        assert abs(stats["dalpha_row_abs_full"][0] - wrong.item()) > 1e-3 * stats["dalpha_row_abs_full"][0]
 
 
 def test_batch_stats_residual_is_not_the_float32_row_sum_deficit():
@@ -287,6 +349,9 @@ def test_coherence_is_exact_at_vanishing_gradient_magnitudes():
         assert 0.0 < A < 1e-30, (comp, A)  # under any floor that would have been added to it
         assert C == pytest.approx(abs(G) / A, rel=1e-12), comp
         assert C == pytest.approx(1.0, rel=1e-12), comp  # coherent: no cancellation at all
+        # the per-anchor magnitude and its ratio alike: no cancellation inside the rows leaves B on A
+        assert stats[f"dalpha_row_abs_{comp}"][0] == pytest.approx(A, rel=1e-12), comp
+        assert stats[f"dalpha_C_row_{comp}"][0] == pytest.approx(1.0, rel=1e-12), comp
 
 
 def test_batch_stats_row_wise_scale_bounds():
@@ -367,21 +432,23 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
         assert held
     elif log_alpha_raw < math.log(100):
         assert not held
-    aggs, comps = ("sum", "sum_abs", "C"), ("full", "struct", "res", "sres", "ires")
+    sums, ratios, comps = ("sum", "sum_abs", "row_abs"), ("C", "C_row"), ("full", "struct", "res", "sres", "ires")
     if held:
         assert any(v != 0.0 for v in on["dalpha_sum_full"])
         for comp in comps:
-            for agg in aggs[:2]:
+            for agg in sums:
                 assert on[f"dlogalpha_{agg}_{comp}"] == [0.0, 0.0, 0.0]
             # every pair's parameter gradient is zero, so there is no cancellation to report: the
             # coherence is undefined (NaN), not zero -- zero would read as total cancellation
-            assert all(math.isnan(v) for v in on[f"dlogalpha_C_{comp}"])
+            for agg in ratios:
+                assert all(math.isnan(v) for v in on[f"dlogalpha_{agg}_{comp}"])
     else:
         alpha = math.exp(log_alpha_raw)
         for comp in comps:
-            for agg in aggs[:2]:
+            for agg in sums:
                 assert on[f"dlogalpha_{agg}_{comp}"] == pytest.approx([alpha * v for v in on[f"dalpha_{agg}_{comp}"]], rel=1e-12)
-            assert on[f"dlogalpha_C_{comp}"] == pytest.approx(on[f"dalpha_C_{comp}"], rel=1e-12)
+            for agg in ratios:
+                assert on[f"dlogalpha_{agg}_{comp}"] == pytest.approx(on[f"dalpha_{agg}_{comp}"], rel=1e-12)
     # with the clamp off the parameter's gradient follows the raw scale wherever it sits
     off_raw = L.infonce_batch_stats(S, Q, Y, math.exp(log_alpha_raw) * S, log_scale, False)
     assert off_raw["dlogalpha_sum_full"][0] == pytest.approx(_grad_log_scale(S, Y, log_alpha_raw, clamp=False), rel=1e-9, abs=1e-12)

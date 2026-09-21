@@ -2079,3 +2079,176 @@ def test_fit_ylabel_keeps_a_caption_that_fits() -> None:
     report._fit_ylabel(ax)
     assert ax.yaxis.label.get_fontsize() == 12
     report.plt.close(fig)
+
+
+def test_residual_marks_key_off_provenance_not_magnitude() -> None:
+    # two marks (report._RESID_MARKS), both off resid_paths. UNVALIDATED: any row off the plain p* - y
+    # subtraction, whatever the value reads -- it can come out a noise floor, an exact zero or a plausible
+    # number, so magnitude certifies nothing. UNRESOLVED: additionally under the floor, where the difference
+    # is known to be arithmetic -- a one-way test, False establishing nothing. A residual off an exact path
+    # (hard closed form, feasible exact zero) carries neither, being as trustworthy at 1e-40 as at 1e-2
+    tiny, fine = 1e-30, 1e-3
+    data_epoch = {
+        "dalpha_sum_abs_full": [[1.0, 0.5, 0.5]] * 5,
+        "dalpha_sum_abs_res": [[v, v, v] for v in (tiny, tiny, 0.0, tiny, fine)],
+        "resid_paths": [
+            [1.0, 0.0, 0.0],  # hard closed form, tiny: exact -- not shaded
+            [0.0, 0.0, 1.0],  # subtracted, tiny: unresolved
+            [0.0, 1.0, 0.0],  # feasible exact zero: exact -- not shaded
+            [0.5, 0.0, 0.5],  # any subtracted row puts the batch's aggregate in doubt
+            [0.0, 0.0, 1.0],  # subtracted but well above its floor: the difference still resolves
+        ],
+    }
+    assert report._dalpha_unresolved(data_epoch, "res").tolist() == [False, True, False, True, False]
+    # ... while every batch the subtraction touched is unvalidated, the well-resolved-looking last one too
+    assert report._resid_unvalidated(data_epoch).tolist() == [False, True, False, True, True]
+
+
+def test_the_floor_passes_a_wrong_residual_on_a_well_fitted_batch() -> None:
+    # why "not shaded" must never read as "reliable": the floor is scaled by A_full, a gradient magnitude
+    # that shrinks with the fit, while the subtraction's error is set by the order-one entries of p* and y
+    # and does not. Four genuine unit vectors fitted to rows [0.6, 0.4, 0, 0] at alpha 25: A_full is down at
+    # 3e-16, so the floor is at 6e-30 and passes the batch -- whose kl_ir reads exactly 0 against a true
+    # 2.3e-22. Provenance still marks it
+    import math
+    import torch
+    from tests.unit.test_loss_targets import import_loss_module
+    L = import_loss_module()
+    alpha = 25.0
+    theta = math.acos(1.0 - math.log(1.5) / alpha)  # s_1 - s_2 = log(0.6 / 0.4) / alpha
+    u1 = torch.tensor([1.0, 0.0], dtype=torch.float64)
+    u2 = torch.tensor([math.cos(theta), math.sin(theta)], dtype=torch.float64)
+    V = torch.stack([u1, u2, -u1, -u2])
+    S = V @ V.T  # a real cosine Gram matrix
+    Y = torch.tensor([[.6, .4, 0, 0], [.4, .6, 0, 0], [0, 0, .6, .4], [0, 0, .4, .6]], dtype=torch.float64)
+    stats = L.infonce_batch_stats(S, (Y > 0).double(), Y, alpha * S, torch.tensor(math.log(alpha), dtype=torch.float64), False)
+
+    r = math.exp(-2 * alpha)
+    true_kl_ir = -0.6 * math.log1p(-2 * r / (1 + 2 * r))  # floor {the zeros}, interior {0.4}, cap {0.6}
+    assert true_kl_ir == pytest.approx(2.3e-22, rel=0.02)
+    assert abs(stats["kl_ir"] - true_kl_ir) > 0.5 * true_kl_ir  # the reported value is simply wrong
+    data_epoch = {key: [val] for key, val in stats.items()}
+    assert stats["resid_paths"] == [0.0, 0.0, 1.0]
+    assert report._dalpha_unresolved(data_epoch, "res").tolist() == [False]  # the floor waves it through
+    assert report._resid_unvalidated(data_epoch).tolist() == [True]  # provenance does not
+
+
+def _alpha_data_epoch(n, **series):
+    """A data_epoch carrying every series plot_alpha_curves indexes, empty unless given."""
+    keys = ["scale", "scale2", "logit_scale", "logit_scale2", "logit_scale_grad", "logit_scale2_grad",
+            "dlogalpha_correction", "resid_paths",
+            *(f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")),
+            *(f"{p}_{agg}_{comp}" for p in ("dalpha", "dlogalpha") for agg in ("sum", "sum_abs", "C")
+              for comp in ("full", "struct", "res", "sres", "ires"))]
+    return {**{key: [] for key in keys}, **series}
+
+
+def _plot_alpha(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
+    """plot_alpha_curves with the save intercepted: the panels' y labels, top to bottom, and the lines drawn
+    on each (label -> y data)."""
+    seen = {}
+
+    def finish(fig, axes, axes_hist, legend_handles, *args, **kwargs):
+        seen["panels"] = [(ax.get_ylabel(), {line.get_label(): list(line.get_ydata()) for line in ax.get_lines()})
+                          for ax in axes]
+        seen["marks"] = {ax.get_ylabel(): sorted({patch.get_label() for patch in ax.patches} - {"_nolegend_"})
+                         for ax in axes}
+        seen["blocks"] = [[ax.get_ylabel() for ax in block] for block in kwargs.get("axes_blocks", ())]
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    report.plot_alpha_curves(data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+                             scale_key, prefix, sym, plot_title="t", output_filename="x.png")
+    _plot_alpha.seen = seen
+    return seen["panels"]
+
+
+def test_logalpha_figure_draws_the_scale_parameters_grad_with_the_correction(tmp_path, monkeypatch) -> None:
+    # what the scale actually received, measured: model.logit_scale.grad (read post-backward, pre-step) gets
+    # its own panel directly under the log alpha it belongs to, with loss.infonce.block_residuals' correction
+    # drawn on it -- so the gradient without the intervention is the one line minus the other. Captioned
+    # (.grad) because the analytical dlogalpha full-term panel further down carries the same nabla, and the
+    # two need not agree (blend coefficients, loss.unitless)
+    n = 4
+    grad, corr = [-0.25, -0.20, -0.10, -0.05], [0.17, 0.12, 0.05, 0.01]
+    data_epoch = _alpha_data_epoch(n, scale=[2.0, 2.2, 2.5, 2.7], logit_scale=[0.7, 0.8, 0.9, 1.0],
+                                   logit_scale_grad=grad, dlogalpha_correction=corr)
+
+    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert [label for label, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)"]
+    lines = panels[1][1]
+    assert lines[".grad"] == grad and lines["correction"] == corr
+
+    # the parameter is log alpha, so the alpha figure gets no such panel
+    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    assert [label for label, _ in panels] == [r"$\alpha$"]
+
+    # separate logit scalars: each scale's own grad under its own panel; the correction is the primary's
+    data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale2=[0.4] * n, logit_scale_grad=grad,
+                                   logit_scale2_grad=[0.3] * n, dlogalpha_correction=corr)
+    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert [label for label, _ in panels] == [
+        r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)",
+        r"$\log \alpha_2$", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(.grad)"]
+    assert "correction" in panels[1][1] and "correction" not in panels[3][1]
+    assert panels[3][1][".grad"] == [0.3] * n
+
+
+def _dalpha_series(n, prefix, res_abs):
+    """The fifteen dalpha-family series of one figure, the residual comps' magnitudes at `res_abs`."""
+    series = {}
+    for agg in ("sum", "sum_abs", "C"):
+        for comp in ("full", "struct", "res", "sres", "ires"):
+            val = res_abs if (agg == "sum_abs" and comp in ("res", "sres", "ires")) else 0.5
+            series[f"{prefix}_{agg}_{comp}"] = [[val, val, val]] * n
+    return series
+
+
+def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(tmp_path, monkeypatch) -> None:
+    # the residual comps are hatched "unvalidated" over every batch with rows off the subtraction, and solid
+    # "unresolved" where additionally under the floor; full / struct never are. And the agg blocks are ruled
+    # around the dalpha panels -- NOT shifted up by the .grad panel that sits among the scale ones
+    n = 4
+    paths = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
+    data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale_grad=[-0.1] * n, resid_paths=paths,
+                                   **_dalpha_series(n, "dalpha", 1e-30), **_dalpha_series(n, "dlogalpha", 1e-30))
+    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    marks, blocks = _plot_alpha.seen["marks"], _plot_alpha.seen["blocks"]
+
+    nabla = lambda sup: rf"$\nabla_{{\log \alpha}}{sup} \mathcal{{L}}$"
+    for sup in (r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}"):
+        assert marks[nabla(sup)] == ["unresolved", "unvalidated"]
+    assert marks[nabla("")] == [] and marks[nabla(r"^{\text{S}}")] == []
+    assert marks[nabla("") + "\n(.grad)"] == []
+    # each block is one agg's five comps, in order: the sums' block opens on the analytical full term, not
+    # on a scale or .grad panel
+    assert [len(block) for block in blocks] == [5, 5, 5]
+    assert blocks[0][0] == nabla("") and blocks[0][-1] == nabla(r"^{\text{IR}}")
+
+    # above the floor the solid mark goes, the hatch stays: passing the floor certifies nothing
+    data_epoch.update(_dalpha_series(n, "dalpha", 1e-3))
+    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert _plot_alpha.seen["marks"][nabla(r"^{\text{R}}")] == ["unvalidated"]
+
+
+def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) -> None:
+    # E_R / E_SR / E_IR are the residual family's, so they carry the same unvalidated mark; the total and the
+    # structural part, which difference nothing against y, do not. A trial whose every row came off an exact
+    # path draws no mark at all
+    seen = {}
+
+    def finish(fig, axes, axes_hist, legend_handles, *args, **kwargs):
+        seen["marks"] = [sorted({patch.get_label() for patch in ax.patches} - {"_nolegend_"}) for ax in axes]
+        seen["legends"] = len(legend_handles)
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    n = 3
+    kl = {key: [0.1] * n for key in ("kl", "kl_s", "kl_ir", "kl_sr")}
+    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0)
+
+    report.plot_kl_curves({**kl, "resid_paths": [[0.5, 0.0, 0.5]] * n}, *args, plot_title="t", output_filename="x.png")
+    assert seen["marks"] == [[], [], ["unvalidated"], ["unvalidated"], ["unvalidated"]] and seen["legends"] == 3
+
+    report.plot_kl_curves({**kl, "resid_paths": [[1.0, 0.0, 0.0]] * n}, *args, plot_title="t", output_filename="x.png")
+    assert seen["marks"] == [[], [], [], [], []] and seen["legends"] == 0

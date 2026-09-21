@@ -25,6 +25,7 @@ def _cfg(crit, lambda_=0.0, cls_imb=None, focal_gamma=0.0, dsmr=False, neut=Fals
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
+        "infonce": {"block_residuals": False},
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
@@ -157,7 +158,7 @@ def test_bif_criterion_consumes_t2i_transposed():
     C = torch.randn(B, B, generator=g)
     crit = _make_crit(_cfg("bif_bce", cls_imb="inv_freq", dsmr=True, neut=True), K, B)
 
-    loss, _, _, _ = crit((A, C), class_encs_b, [None] * B, train=True, logit_scale=None)
+    loss, _, _, _ = crit((A, C), class_encs_b, [None] * B, train=True, logit_scale=None, sim=None)
 
     Y = (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float()
     w = (1.0 / crit.counts[class_encs_b].pow(0.5)).float()

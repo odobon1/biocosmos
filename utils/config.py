@@ -289,6 +289,37 @@ class TrainConfig:
         elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
             raise ValueError(f"Unknown loss.logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
 
+        block_resid = self.loss["infonce"]["block_residuals"]
+        if not isinstance(block_resid, bool):
+            raise ValueError(f"loss.infonce.block_residuals must be a bool, got {block_resid!r}")
+        if block_resid:
+            # utils.loss.infonce_block_resid removes the closed-form residual of a hard binary target from
+            # the plain cross-entropy's scale gradient: every loss term must train against such a target,
+            # and carry no weight the residual's derivation doesn't account for
+            if self.loss["crit"] != "infonce":
+                raise ValueError(f"loss.infonce.block_residuals requires loss.crit: infonce, got '{self.loss['crit']}'")
+            live_specs = [(name, cfg_targ) for w, name, cfg_targ in
+                          ((1.0 - lambda_, "loss.loss1", self.loss["loss1"]), (lambda_, "loss.loss2", self.loss["loss2"])) if w != 0.0]
+            for name, cfg_targ in live_specs:
+                if cfg_targ["targ"] not in ("sp", "mp") or cfg_targ["infonce"]["tsm"]["type"] != "linear":
+                    raise ValueError(
+                        f"loss.infonce.block_residuals applies to hard binary targets only: {name}.targ must be one of "
+                        f"{{sp, mp}} under {name}.infonce.tsm.type: linear, got targ '{cfg_targ['targ']}' under tsm.type "
+                        f"'{cfg_targ['infonce']['tsm']['type']}'"
+                    )
+            if len(live_specs) > 1 and self.loss["blend"]["type"] == "targ":
+                raise ValueError(
+                    "loss.infonce.block_residuals under two live targets requires loss.blend.type: loss -- a target "
+                    "blend's (1 - lambda) * Y1 + lambda * Y2 is not a hard binary distribution"
+                )
+            if self.loss["wting"]["cls_imb"]["type"] is not None or self.loss["wting"]["focal"]["gamma"] != 0.0:
+                raise ValueError(
+                    "loss.infonce.block_residuals is not implemented alongside class-imbalance weighting "
+                    f"(loss.wting.cls_imb.type: {self.loss['wting']['cls_imb']['type']!r}) or focal loss "
+                    f"(loss.wting.focal.gamma: {self.loss['wting']['focal']['gamma']}): the residual it removes is the "
+                    "unweighted cross-entropy's"
+                )
+
         # the augmentation config the `aug` switch selects: OpenCLIP's defaults, or config/trial/train/augmentation.yaml
         # (campaign trials inject the frozen snapshot; otherwise it is read live, and only when custom asks for it)
         if self.aug == "openclip":
@@ -352,6 +383,30 @@ class TrainConfig:
         return name_field in cls.__dataclass_fields__
 
 
+def targ_dependent_loss(loss: dict) -> bool:
+    """
+    Whether anything sets a loss blend apart from the target blend (utils.loss.Criterion), given a `loss`
+    config block: a loss factor that reads the term's own target -- without one the loss is affine in the
+    target, so the two blends coincide in value and gradients (focal gamma 0.0 drops its block from the
+    working config) -- or separate logit scalars, each term then scored on its own logits. So: whether
+    loss.blend.type is read at all, under two live targets.
+
+    Shared by inert_params and the config.json metadata cleaning (utils.train.ArtifactManager
+    .save_metadata_coord), which have to agree: the first decides whether a campaign may override
+    loss.blend.type, the second whether the trial's recorded config keeps it. Each factor is gated on the
+    criterion that reads it -- DSMR is BCE-only, targ_mass_neut bifurcated-only, block_residuals
+    InfoNCE-only -- since a criterion's own toggle sets nothing apart where it is never read.
+    """
+    crit = loss["crit"]
+    return (
+        loss["unitless"] or "focal" in loss["wting"] or not loss["logits"]["shared"]
+        or (crit != "infonce" and loss["wting"]["bce"]["dsmr"])
+        or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
+        # the residual blocked per term is its own target's, in closed form off that target's memberships
+        # (utils.loss.infonce_block_resid) -- a factor no target blend has
+        or (crit == "infonce" and loss["infonce"]["block_residuals"])
+    )
+
 def inert_params(cfg: TrainConfig) -> dict[str, str]:
     """The params the effective config never reads -- config/trial/train/train.yaml's 'Inert iff' annotations -- as
     {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
@@ -362,14 +417,7 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     cls_imb_type = cfg.loss["wting"]["cls_imb"]["type"]
     # the live target specs: loss1 carries weight 1 - lambda, loss2 weight lambda (utils.loss.targ_specs)
     live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, cfg.loss["loss1"]), (lambda_, cfg.loss["loss2"])) if w != 0.0]
-    # what sets a loss blend apart from the target blend (utils.loss.Criterion): a loss factor that reads the
-    # target -- without one the loss is affine in the target (focal gamma 0.0 drops its block from the working
-    # config) -- or separate logit scalars, each term then scored on its own logits
-    targ_dep = (
-        cfg.loss["unitless"] or "focal" in cfg.loss["wting"] or not cfg.loss["logits"]["shared"]
-        or (crit != "infonce" and cfg.loss["wting"]["bce"]["dsmr"])
-        or (crit == "bif_bce" and cfg.loss["bce"]["targ_mass_neut"])
-    )
+    targ_dep = targ_dependent_loss(cfg.loss)
     rules = [
         ("arch.clip", is_siglip, "arch.model_type is a SigLIP model"),
         ("arch.siglip", not is_siglip, "arch.model_type is a CLIP model"),
@@ -381,10 +429,11 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
         ("loss.loss2", lambda_ == 0.0, "loss.blend.lambda is 0.0"),
         ("loss.blend.type", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
         ("loss.blend.type", not targ_dep,
-         "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut) on shared logit scalars: "
-         "the blend types coincide"),
+         "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut, block_residuals) on "
+         "shared logit scalars: the blend types coincide"),
         ("loss.logits.shared", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
         ("loss.logits.shared", cfg.loss["blend"]["type"] == "targ", "loss.blend.type is targ (one loss on one set of logits)"),
+        ("loss.infonce", crit != "infonce", f"loss.crit is {crit}"),
         ("loss.bce", crit != "bif_bce", f"loss.crit is {crit}"),
         ("loss.bce", all(targ == "sp" for targ in live_targs), "every live target is sp (row mass already 1)"),
         ("loss.wting.bce", crit == "infonce", "loss.crit is infonce"),

@@ -20,9 +20,11 @@ import utils.loss as L
 from models import VLMWrapper
 
 
-def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr=False, neut=False, shared=True):
+def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr=False, neut=False, shared=True,
+         block_residuals=False):
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
+        "infonce": {"block_residuals": block_residuals},
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},

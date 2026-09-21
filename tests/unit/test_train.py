@@ -17,6 +17,7 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
         "sim": "cos",
         "blend": {"lambda": lambda_, "type": "targ"},
         "unitless": False,
+        "infonce": {"block_residuals": False},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {
@@ -156,7 +157,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
         "type": "class_bal", "class_bal": {"beta": 0.9999}, "norm": False,
     }
-    assert "bias" not in config["loss"]["logits"]["bce"]  # CLIP + bias.init null -> fixed 0.0 buffer
+    assert "bias" not in config["loss"]["logits"]["bce"]  # InfoNCE carries no logit bias, whichever the family
 
     # bif_bce: 1D per-anchor weighting, and the BCE-family blocks stay live
     (tmp_path / "s4").mkdir()
@@ -219,6 +220,23 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert (config["loss"]["blend"]["type"], config["loss"]["unitless"]) == ("loss", True)
     assert config["loss"]["logits"]["shared"] is True  # a live loss blend: its terms could run on separate scalars
     assert config["loss"]["wting"]["cls_imb"] == {"type": "inv_freq", "inv_freq": {"gamma": 0.5}}
+
+    # block_residuals is a target-dependent factor too (each term's residual is its own target's), so a
+    # loss blend under it keeps blend.type -- which that configuration REQUIRES, making a pruned one a
+    # recorded config the trial could not be rebuilt from (utils.config.targ_dependent_loss)
+    (tmp_path / "s8").mkdir()
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s8")
+    cfg = _FakeCoordCfg()
+    cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
+    cfg.loss["blend"]["type"] = "loss"
+    cfg.loss["infonce"]["block_residuals"] = True
+    cfg.loss["loss1"], cfg.loss["loss2"] = _targ_cfg("mp"), _targ_cfg("sp")
+    del cfg.loss["wting"]["focal"]
+    cfg.loss["wting"]["cls_imb"]["type"] = None
+    ArtifactManager.save_metadata_coord(cfg)
+    config = json.loads((tmp_path / "s8" / "config.json").read_text())
+    assert config["loss"]["blend"]["type"] == "loss"
+    assert config["loss"]["infonce"] == {"block_residuals": True}
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
@@ -374,14 +392,14 @@ def _fake_pipe(loss_crit, requires_grad, sep=False):
 
 def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
     # a scalar gets a learning-curve series only when it's learnable AND meaningful: the bias is
-    # BCE-family-only (inert under InfoNCE). The scale parameter feeds two series: scale (alpha) and
-    # logit_scale (the parameter itself, log alpha)
+    # BCE-family-only (inert under InfoNCE). The scale parameter feeds three series: scale (alpha),
+    # logit_scale (the parameter itself, log alpha) and logit_scale_grad (that parameter's signed .grad)
     all_learnable = {"logit_scale": True, "logit_bias": True}
     tracked = TrainPipeline._tracked_logit_scalars
 
-    assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias"}
-    assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias"}
-    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale"}
+    assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias"}
+    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
 
     # frozen scalars are dropped -- a flat line says nothing
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {"bias": "logit_bias"}
@@ -389,10 +407,11 @@ def test_tracked_logit_scalars_skips_frozen_and_inert() -> None:
 
     # separate logit scalars: loss2's term's pair gets its own series, under the same rules
     assert tracked(_fake_pipe("bce", all_learnable, sep=True)) == {
-        "scale": "logit_scale", "logit_scale": "logit_scale", "bias": "logit_bias",
-        "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "bias2": "logit_bias2"}
+        "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias",
+        "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "logit_scale2_grad": "logit_scale2", "bias2": "logit_bias2"}
     assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {
-        "scale": "logit_scale", "logit_scale": "logit_scale", "scale2": "logit_scale2", "logit_scale2": "logit_scale2"}
+        "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale",
+        "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "logit_scale2_grad": "logit_scale2"}
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {"bias": "logit_bias", "bias2": "logit_bias2"}
 
 
@@ -416,6 +435,23 @@ def test_logit_scalar_values_cap_the_scale_under_the_clamp() -> None:
     pipe._logit_scalars_tracked = {"scale": "logit_scale", "bias": "logit_bias"}
     pipe.cfg.loss["logits"]["scale"]["clamp"] = False  # unbounded: the raw scale, wherever it sits
     assert TrainPipeline._logit_scalar_values(pipe)["scale"] == pytest.approx(140.0, rel=1e-5)
+
+
+def test_logit_scalar_values_read_the_scale_parameters_own_signed_grad() -> None:
+    # the *_grad series is model.logit_scale.grad itself -- signed, untouched by the clamp / exp the value
+    # series go through, and per parameter under separate logit scalars. It is THE measurement of what the
+    # scale received: the train loop reads it after the batch's backward and before the optimizer step, and
+    # the dlogalpha_* strips (an analytical decomposition off the blended target distribution) cannot stand
+    # in for it -- they carry neither a term's blend coefficient nor loss.unitless' 1 / L
+    scale, scale2 = torch.nn.Parameter(torch.tensor(140.0).log()), torch.nn.Parameter(torch.tensor(2.0))
+    (-3.0 * scale + 0.25 * scale2).backward()  # a loss pulling the two scales opposite ways
+    pipe = SimpleNamespace(
+        cfg=SimpleNamespace(loss={"logits": {"scale": {"clamp": True}}}),  # a held clamp must not touch a grad
+        modelw=SimpleNamespace(_unwrapped_model=SimpleNamespace(logit_scale=scale, logit_scale2=scale2)),
+        _logit_scalars_tracked={"scale": "logit_scale", "logit_scale_grad": "logit_scale", "logit_scale2_grad": "logit_scale2"},
+    )
+    values = TrainPipeline._logit_scalar_values(pipe)
+    assert values == pytest.approx({"scale": 100.0, "logit_scale_grad": -3.0, "logit_scale2_grad": 0.25})
 
 
 def test_pass_epoch_span_shares_the_straddled_epoch_between_passes() -> None:

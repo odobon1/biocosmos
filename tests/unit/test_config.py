@@ -12,7 +12,8 @@ def _loss_cfg(lambda_=0.0, **overrides):
     """The dummy's minimal `loss` block (train.yaml's loss schema, the sections __post_init__ reads)."""
     cfg = {
         "crit": "bce", "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
-        "wting": {"focal": {"gamma": 0.0}},
+        "infonce": {"block_residuals": False},
+        "wting": {"cls_imb": {"type": None}, "focal": {"gamma": 0.0}},
         "logits": {"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}},
     }
     cfg.update(overrides)
@@ -773,6 +774,83 @@ def test_train_config_rejects_unknown_bias_init(monkeypatch: pytest.MonkeyPatch)
         TrainConfig(**cfg_dict)
 
 
+def _block_resid_cfg(lambda_=0.0, blend_type="targ", **loss_overrides):
+    # an InfoNCE loss with loss.infonce.block_residuals on (utils.loss.infonce_block_resid)
+    loss = _loss_cfg(crit="infonce", lambda_=lambda_, **loss_overrides)
+    loss["infonce"]["block_residuals"] = True
+    loss["blend"]["type"] = blend_type
+    return loss
+
+
+def _linear_targ(targ):
+    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+
+
+def test_train_config_block_residuals_requires_hard_binary_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the residual utils.loss.infonce_block_resid removes is the closed-form one of a hard binary target
+    # (sp / mp row-normalized): a graded target, a softmax tsm, or the target blend of two live specs --
+    # which is not hard binary however hard its parts are -- would all be mis-cancelled silently
+    patch_hw(monkeypatch)
+    targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
+
+    assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), **targs)).loss["infonce"]["block_residuals"]
+    # two live targets, each hard binary, under a loss blend: one term per spec, both in closed form
+    TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
+
+    with pytest.raises(ValueError, match="requires loss.blend.type: loss"):
+        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="targ"), **targs))
+    with pytest.raises(ValueError, match="hard binary targets only"):
+        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("phylo"), loss2=_linear_targ("mp")))
+    with pytest.raises(ValueError, match="hard binary targets only"):
+        TrainConfig(**make_train_config_dummy(
+            loss=_block_resid_cfg(), loss1={"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}},
+            loss2=_linear_targ("sp"),
+        ))
+    # the inert spec of a lone target is never read, so its shape is beside the point
+    TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("sp"), loss2=_linear_targ("phylo")))
+
+
+def test_inert_params_block_residuals_makes_blend_type_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    # block_residuals blocks each term's OWN target's residual, in closed form off that target's
+    # memberships (utils.loss.infonce_block_resid) -- a target-dependent loss factor, so it sets the two
+    # blend types apart. Left out of targ_dependent_loss, the sp + mp loss blend the feature supports is
+    # unreachable from a campaign: loss.yaml's blend.type is targ, so getting to it needs an override, and
+    # that override would be refused as inert
+    patch_hw(monkeypatch)
+    targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
+
+    off = TrainConfig(**make_train_config_dummy(loss=_loss_cfg(crit="infonce", lambda_=0.3), **targs))
+    assert inert_params(off)["loss.blend.type"].startswith("no target-dependent loss factor is live")
+
+    on = TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
+    assert "loss.blend.type" not in inert_params(on)
+    _check_overrides_live(on, {"loss.blend.type": "loss", "loss.infonce.block_residuals": True})
+
+
+def test_train_config_block_residuals_requires_an_unweighted_infonce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the decomposition is the plain cross-entropy's: class-imbalance and focal weights scale the scale
+    # gradient the residual was derived against, and the BCE family has no such decomposition at all
+    patch_hw(monkeypatch)
+    targs = {"loss1": _linear_targ("mp"), "loss2": _linear_targ("sp")}
+
+    with pytest.raises(ValueError, match="requires loss.crit: infonce"):
+        loss = _block_resid_cfg()
+        loss["crit"] = "bce"
+        TrainConfig(**make_train_config_dummy(loss=loss, **targs))
+    with pytest.raises(ValueError, match="not implemented alongside class-imbalance weighting"):
+        loss = _block_resid_cfg()
+        loss["wting"]["cls_imb"]["type"] = "inv_freq"
+        TrainConfig(**make_train_config_dummy(loss=loss, **targs))
+    with pytest.raises(ValueError, match="not implemented alongside class-imbalance weighting"):
+        loss = _block_resid_cfg()
+        loss["wting"]["focal"]["gamma"] = 2.0
+        TrainConfig(**make_train_config_dummy(loss=loss, **targs))
+    with pytest.raises(ValueError, match="loss.infonce.block_residuals must be a bool"):
+        loss = _block_resid_cfg()
+        loss["infonce"]["block_residuals"] = "true"
+        TrainConfig(**make_train_config_dummy(loss=loss, **targs))
+
+
 def test_train_config_rejects_identical_target_distributions_under_a_live_blend(monkeypatch: pytest.MonkeyPatch) -> None:
     # a blend of two identical target distributions is that distribution: loss.blend.lambda would do nothing
     patch_hw(monkeypatch)
@@ -843,6 +921,7 @@ def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):
     # the train.yaml loss schema in full: the dummy's minimal block lacks the sections the inert rules read
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": unitless,
+        "infonce": {"block_residuals": False},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {"type": cls_imb_type, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -892,6 +971,18 @@ def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pyte
     msg = str(excinfo.value)
     assert "loss.loss2.infonce.tsm.type (loss.blend.lambda is 0.0)" in msg
     assert "loss.loss2.targ (loss.blend.lambda is 0.0)" in msg
+
+
+def test_train_config_lets_either_family_train_under_either_criterion(monkeypatch: pytest.MonkeyPatch) -> None:
+    # loss.crit's family default (clip -> infonce, siglip -> bce) is a default, not a constraint: a pretrained
+    # model can be held fixed across a softmax-vs-sigmoid comparison. What makes that safe is that the logit
+    # bias follows the CRITERION (models.py) -- InfoNCE never carries one, a BCE-family loss always does -- so
+    # neither crossing puts a pretrained bias under a row softmax or a bias-free head under a sigmoid
+    patch_hw(monkeypatch)
+    for model_type in ("clip_vitb16", "bioclip", "siglip_vitb16"):
+        arch = {"model_type": model_type, "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}}
+        for crit in ("infonce", "bce", "bif_bce"):
+            assert TrainConfig(**make_train_config_dummy(arch=arch, loss=_loss_cfg(crit=crit))).loss["crit"] == crit
 
 
 def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> None:

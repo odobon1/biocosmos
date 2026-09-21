@@ -205,7 +205,7 @@ def full_batch_reference(toy, compute_sim, crit, fi, ft, fc, ftd):
         logit_scale = (toy.logit_scale, toy.logit_scale2)
     else:
         crit_logits, logit_scale = crit_logits[0], toy.logit_scale
-    loss, loss_raw, _, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=logit_scale)
+    loss, loss_raw, _, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=logit_scale, sim=sims[0])
     return loss, loss_raw, img, txt, sims
 
 

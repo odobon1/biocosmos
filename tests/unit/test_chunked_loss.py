@@ -172,7 +172,7 @@ def _full_reference(crit, img, txt, class_encs_b, targ_data_b, p):
         logit_scale = (p["scale"], p["scale2"])
     else:
         crit_logits, logit_scale = crit_logits[0], p["scale"]
-    loss, loss_raw, _, _ = crit(crit_logits, class_encs_b, targ_data_b, train=True, logit_scale=logit_scale)
+    loss, loss_raw, _, _ = crit(crit_logits, class_encs_b, targ_data_b, train=True, logit_scale=logit_scale, sim=sims[0])
     return loss, loss_raw, sims
 
 

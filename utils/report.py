@@ -101,16 +101,28 @@ _BG_LINE_PANEL = "#FAF7F0"
 # negative- (-) target-mass shares -- black for the total, Okabe-Ito blue / vermillion for the pair
 # (legible together, and under red-green color blindness)
 _DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
-# the residual strips (res / sres / ires) stop resolving once their magnitude reaches the float64
-# resolution of the decomposition itself. The terms decay like exp(-2 alpha), so past alpha ~16 what is
-# left is either the true value -- unreadably small against a full gradient of order 1 -- or a one-ulp
-# quantization artifact of p*_cap - y, ~1e-42 and ~1e-15 respectively, flipping between the two with
-# alpha for no physical reason. Each panel autoscales to its own series, so the artifact would otherwise
-# render as structure; batches below this multiple of eps (on A_comp / A_full, which is scale-free) are
-# shaded instead. The curve is still drawn -- the shading says not to read it, not that it is missing
+# The residual family (the dalpha res / sres / ires strips, the KL figure's E_R / E_SR / E_IR) is
+# exp(-2 alpha)-small against the order-one entries of p* and y it is built from, and two marks say what a
+# batch's values are worth. Both key off PROVENANCE (resid_paths: the row fractions [hard closed form, feasible
+# exact zero, plain p* - y subtraction]), never off the value alone -- an unvalidated residual can read as a
+# noise floor, as an exact zero, or as a perfectly plausible number, so its magnitude certifies nothing.
+#   - unvalidated (hatched): some of the batch's rows came off the subtraction, the general solver path, which
+#     carries no validated error estimate. Marked on EVERY such batch, whatever the value reads.
+#   - unresolved (solid, over the hatch): additionally, the term sits below _DALPHA_RES_FLOOR of the full
+#     term's magnitude, where the difference is known to be arithmetic (a one-ulp artifact of p*_cap - y,
+#     ~1e-42 or ~1e-15, flipping between the two with alpha for no physical reason). A ONE-WAY test: below it
+#     the value is certainly not to be read, above it NOTHING is established -- A_full is a gradient magnitude,
+#     not a bound on the subtraction's error, and it shrinks with the fit while that error (set by p* and y
+#     themselves) does not, so on a well-fitted batch the floor drops under any noise. A fitted alpha-25 batch
+#     read kl_ir = 0 against a true 2.3e-22 with the floor down at 6e-30.
+# A batch whose rows all came off an exact path carries neither mark however small it reads. The curve is
+# always drawn -- a mark says how far to trust it, not that it is missing
 _DALPHA_RES_FLOOR = 100.0 * np.finfo(np.float64).eps  # ~2.2e-14
 _DALPHA_RES_COMPS = ("res", "sres", "ires")
-_DALPHA_RES_SHADE = "#E8E1D3"  # a shade down from _BG_LINE_PANEL, under the curves and the grid
+_RESID_MARKS = {  # mark -> its axvspan style, under the curves and the grid
+    "unvalidated": dict(facecolor="none", edgecolor="#C4B99F", hatch="////", linewidth=0, zorder=0),
+    "unresolved": dict(color="#E8E1D3", linewidth=0, zorder=0),  # a shade down from _BG_LINE_PANEL
+}
 
 def _fold_hist_columns(cols, threshold):
     """(folded columns, group size) for a P heatmap strip: one histogram per recorded batch folded
@@ -2024,18 +2036,26 @@ def plot_general_curves(
 
     _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
+def _resid_unvalidated(data_epoch):
+    """Per batch, whether any of its rows' residual family came off the plain p* - y subtraction
+    (resid_paths' third fraction): numerically unvalidated, whatever the values read (_RESID_MARKS)."""
+    return np.asarray(data_epoch["resid_paths"], dtype=float)[:, 2] > 0
+
+
 def _dalpha_unresolved(data_epoch, comp):
-    """Per batch, whether the residual dL/dalpha term `comp` sits at or below the decomposition's own
-    float64 resolution (_DALPHA_RES_FLOOR): its magnitude sum against the full term's. The ratio is
+    """Per batch, whether the residual dL/dalpha term `comp` is numerically unresolved -- the stronger of
+    the two marks (_RESID_MARKS), and a one-way test: an unvalidated batch (_resid_unvalidated) whose term
+    sits at or below _DALPHA_RES_FLOOR, its magnitude sum against the full term's. False establishes
+    nothing about the value. The ratio is
     scale-free, so it is read off the dalpha family for both figures -- dlogalpha is alpha times dalpha,
     which cancels, and the dalpha one stays defined where the clamp zeroes the dlogalpha family."""
     A = np.asarray(data_epoch[f"dalpha_sum_abs_{comp}"], dtype=float)[:, 0]
     A_full = np.asarray(data_epoch["dalpha_sum_abs_full"], dtype=float)[:, 0]
-    return A < _DALPHA_RES_FLOOR * A_full
+    return _resid_unvalidated(data_epoch) & (A < _DALPHA_RES_FLOOR * A_full)
 
 
-def _shade_unresolved(ax, x_train, mask):
-    """Shade a panel's unresolved batches (_dalpha_unresolved), one span per contiguous run, each
+def _mark_batches(ax, x_train, mask, mark):
+    """Mark a panel's `mask` batches as `mark` (_RESID_MARKS), one span per contiguous run, each
     carried half a sample either way so a lone batch still shows. Only the first span is labelled, the
     rest riding along out of the legend."""
     x = np.asarray(x_train, dtype=float)
@@ -2044,8 +2064,7 @@ def _shade_unresolved(ax, x_train, mask):
     starts = np.flatnonzero(~padded[:-1] & padded[1:])
     ends = np.flatnonzero(padded[:-1] & ~padded[1:]) - 1
     for i, (s, e) in enumerate(zip(starts, ends)):
-        ax.axvspan(x[s] - half, x[e] + half, color=_DALPHA_RES_SHADE, linewidth=0, zorder=0,
-                   label="unresolved" if i == 0 else "_nolegend_")
+        ax.axvspan(x[s] - half, x[e] + half, label=mark if i == 0 else "_nolegend_", **_RESID_MARKS[mark])
 
 
 def plot_alpha_curves(
@@ -2077,6 +2096,20 @@ def plot_alpha_curves(
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     ]
     req_key = {"scale": "alpha_req", "logit_scale": "log_alpha_req"}[scale_key]  # the bounds in this figure's units
+    # under each scale panel of the LOGALPHA figure -- log alpha being the parameter the model learns -- the
+    # parameter's own signed .grad, as the optimizer consumed it (TrainPipeline._logit_scalar_values: read after
+    # the backward, before the step). It is the measurement; the dlogalpha panels further down are an analytical
+    # decomposition off the blended target distribution, which carries neither a term's blend coefficient nor
+    # loss.unitless' 1 / L and so need not agree with it. The primary scale's panel also draws
+    # loss.infonce.block_residuals' correction where recorded (dlogalpha_correction: the delta it made, so the
+    # gradient without it is the black line minus the orange one)
+    # The caption says .grad because the first dlogalpha panel below is captioned with the same nabla: that
+    # one is the analytical full term, this one what the parameter got
+    grad_panels = {
+        f"{scale_key}{suffix}": (f"logit_scale{suffix}_grad", rf"$\nabla_{{{sym}{sub}}} \mathcal{{L}}$" + "\n(.grad)")
+        for suffix, sub in (("", ""), ("2", "_2"))
+        if scale_key == "logit_scale" and len(data_epoch[f"logit_scale{suffix}_grad"]) == len(x_train)
+    }
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
     # since only it records the series), fifteen panels: the per-pair dL/dalpha terms summed, summed in
     # magnitude, and their coherence ratio C = |sum| / sum|.|, each for the full gradient, its
@@ -2086,8 +2119,8 @@ def plot_alpha_curves(
     # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
     # holds the parameter above its cap -- its sums zero and its C NaN, there being no pressure on the
     # parameter to cancel -- dalpha* still carrying the pressure on the effective scale.
-    # The three residual comps carry a shaded background over the batches they do not resolve
-    # (_DALPHA_RES_FLOOR), on all three of their aggs.
+    # The three residual comps carry the provenance marks (_RESID_MARKS) on all three of their aggs: hatched
+    # over every batch with rows off the unvalidated subtraction, solid where the term is also unresolved.
 
     def dalpha_label(agg, comp):
         sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
@@ -2102,14 +2135,15 @@ def plot_alpha_curves(
         for comp in ("full", "struct", "res", "sres", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
-    # the batches each residual term does not resolve, shaded on all three of its aggs: where the
-    # magnitude is arithmetic, so are the signed sum and the coherence ratio taken over it
+    # the residual terms' marks (_RESID_MARKS), on all three of a term's aggs -- where the magnitude is
+    # unvalidated or arithmetic, so are the signed sum and the coherence ratio taken over it
+    unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
     res_unresolved = {
         comp: _dalpha_unresolved(data_epoch, comp)
         for comp in _DALPHA_RES_COMPS
         if len(data_epoch[f"dalpha_sum_abs_{comp}"]) == len(data_epoch["dalpha_sum_abs_full"]) == len(x_train)
     }
-    n_panels = len(scale_panels) + len(dalpha_panels)
+    n_panels = len(scale_panels) + len(grad_panels) + len(dalpha_panels)
     if n_panels == 0:
         return
 
@@ -2154,6 +2188,20 @@ def plot_alpha_curves(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
+        if key in grad_panels:
+            key_grad, label_grad = grad_panels[key]
+            ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0])
+            ax.axhline(0.0, color="grey", linewidth=0.8, zorder=1)  # a signed series: which way it pushes
+            ax.plot(x_train, data_epoch[key_grad], color="black", linewidth=1.0, label=".grad", zorder=3)
+            if key == scale_key and len(data_epoch["dlogalpha_correction"]) == len(x_train):
+                ax.plot(x_train, data_epoch["dlogalpha_correction"], color="#E69F00", linewidth=1.0,
+                        label="correction", zorder=2)
+                legend_handles[ax] = ax.get_legend_handles_labels()[0]
+            ax.set_ylabel(label_grad, fontsize=fontsize_axes + 4)
+            ax.grid(True)
+            ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+            axes.append(ax)
+
     for key, label, agg, comp in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         # the logalpha figure's C panels repeat the alpha figure's exactly -- alpha cancels in the
@@ -2170,8 +2218,10 @@ def plot_alpha_curves(
                 ax.set_ylim(0.0, 1.0)  # a cancellation ratio
             else:
                 ax.axhline(0.0, color="gray", linewidth=0.5)
+            if comp in _DALPHA_RES_COMPS and unvalidated is not None:
+                _mark_batches(ax, x_train, unvalidated, "unvalidated")
             if comp in res_unresolved:
-                _shade_unresolved(ax, x_train, res_unresolved[comp])
+                _mark_batches(ax, x_train, res_unresolved[comp], "unresolved")
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
             ax.grid(True)
         ax.set_ylabel(label, fontsize=fontsize_axes)
@@ -2185,7 +2235,7 @@ def plot_alpha_curves(
     # double-width line (_finish_curves' axes_blocks) -- the three read as one quantity apiece across the
     # five decompositions, which the shared y scale of a block does not say on its own. The logalpha
     # figure's blank C block is ruled like the others, the two figures staying aligned block for block.
-    axes_dalpha = axes[len(scale_panels):]  # in dalpha_panels order
+    axes_dalpha = axes[len(scale_panels) + len(grad_panels):]  # in dalpha_panels order
     axes_blocks = [
         [ax for ax, panel in zip(axes_dalpha, dalpha_panels) if panel[2] == agg]
         for agg in ("sum", "sum_abs", "C")
@@ -2216,28 +2266,37 @@ def plot_kl_curves(
     # (E_SR because p is itself reachable; bf16 logit rounding can dip it a hair below), so each panel
     # draws a zero reference line and autoscales -- the line hugs the bottom while the series stays
     # positive, and any dip below it shows.
+    # The three representational panels are the residual family's (E_IR differences -H(y) against a
+    # cross-entropy equal to it to within exp(-2 alpha), E_SR reads p* - y), so they carry the unvalidated
+    # mark (_RESID_MARKS) over every batch with rows off the plain subtraction. There is no unresolved tier
+    # here: that one is a test on the dalpha magnitudes, and nothing comparable certifies a KL term.
     kl_panels = [
-        (vals, label)
-        for vals, label in (
-            (data_epoch["kl"], r"$D_{\mathrm{KL}}(\text{y}\|\text{p})$"),
-            (data_epoch["kl_s"], r"$\mathcal{E}^{\text{S}}$"),
-            (np.array(data_epoch["kl_sr"]) + np.array(data_epoch["kl_ir"]), r"$\mathcal{E}^{\text{R}}$"),
-            (data_epoch["kl_sr"], r"$\mathcal{E}^{\text{SR}}$"),
-            (data_epoch["kl_ir"], r"$\mathcal{E}^{\text{IR}}$"),
+        (vals, label, resid)
+        for vals, label, resid in (
+            (data_epoch["kl"], r"$D_{\mathrm{KL}}(\text{y}\|\text{p})$", False),
+            (data_epoch["kl_s"], r"$\mathcal{E}^{\text{S}}$", False),
+            (np.array(data_epoch["kl_sr"]) + np.array(data_epoch["kl_ir"]), r"$\mathcal{E}^{\text{R}}$", True),
+            (data_epoch["kl_sr"], r"$\mathcal{E}^{\text{SR}}$", True),
+            (data_epoch["kl_ir"], r"$\mathcal{E}^{\text{IR}}$", True),
         )
         if len(vals) == len(x_train)
     ]
     if not kl_panels:
         return
+    unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
 
     fig = plt.figure(figsize=(fig_width, height_fixed + len(kl_panels) * height_panel))
     gs = gridspec.GridSpec(len(kl_panels), 1, hspace=0)
+    legend_handles = {}  # panel -> its legend's handles, boxed outside the panel once the layout is settled
     axes = []
 
-    for vals, label in kl_panels:
+    for vals, label, resid in kl_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         ax.plot(x_train, vals, color="darkmagenta", linewidth=1.0)
         ax.axhline(0.0, color="gray", linewidth=0.5)
+        if resid and unvalidated is not None and unvalidated.any():
+            _mark_batches(ax, x_train, unvalidated, "unvalidated")
+            legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.set_ylabel(label, fontsize=fontsize_axes)
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
@@ -2245,7 +2304,7 @@ def plot_kl_curves(
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
-    _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
                    subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):

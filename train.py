@@ -266,13 +266,15 @@ class TrainPipeline:
         is BCE-family (inert under InfoNCE) and learnable. Frozen scalars (and non-parameter buffers)
         are left out -- a flat line says nothing. Under separate logit scalars
         (utils.loss.sep_logit_scalars) loss2's term's pair is tracked alike, as scale2 / logit_scale2 /
-        bias2."""
+        bias2. A learnable scale gets a third series, logit_scale_grad: the parameter's own signed .grad
+        (_logit_scalar_values)."""
         model = self.modelw._unwrapped_model
         tracked = {}
         for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
             if getattr(model, f"logit_scale{suffix}").requires_grad:
                 tracked[f"scale{suffix}"] = f"logit_scale{suffix}"
                 tracked[f"logit_scale{suffix}"] = f"logit_scale{suffix}"
+                tracked[f"logit_scale{suffix}_grad"] = f"logit_scale{suffix}"
             if self.cfg.loss["crit"] in ("bce", "bif_bce") and getattr(model, f"logit_bias{suffix}").requires_grad:
                 tracked[f"bias{suffix}"] = f"logit_bias{suffix}"
         return tracked
@@ -286,9 +288,19 @@ class TrainPipeline:
         # bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the value the
         # batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under, not the
         # post-update one.
+        # The *_grad series is the parameter's own signed .grad at that same point: after the batch's backward
+        # (DDP-synced on either loss path; the chunked one backpropagates and syncs inside batch_step_chunked),
+        # before the optimizer step, and this batch's alone (zero_grad(set_to_none) opens every iteration) --
+        # with no grad scaler (bf16), accumulation or clipping between, exactly what the optimizer consumes.
+        # It is the measurement; the dalpha / dlogalpha strips are an analytical decomposition built from the
+        # blended target distribution, which carries neither a term's blend coefficient (the primary term's
+        # 1 - lambda under separate scalars) nor loss.unitless' 1 / L, and so cannot stand in for it
         model = self.modelw._unwrapped_model
         values = {}
         for key, attr in self._logit_scalars_tracked.items():
+            if key.endswith("_grad"):
+                values[key] = getattr(model, attr).grad.item()
+                continue
             value = getattr(model, attr).detach()
             if key.startswith("scale"):
                 if self.cfg.loss["logits"]["scale"]["clamp"]:

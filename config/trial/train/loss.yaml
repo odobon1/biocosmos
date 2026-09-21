@@ -5,7 +5,11 @@
 # target distribution of target k (loss1 / loss2) under the criterion -- its target matrix Qk itself for the BCE
 # family, Qk through its own target simplex mapping (lossk.infonce.tsm) for InfoNCE
 crit: null  # {null, infonce, bce, bif_bce}; (null) Resolved from the model family's default
-# (model_specific.yaml: clip -> infonce, siglip -> bce). note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
+# (model_specific.yaml: clip -> infonce, siglip -> bce) -- a default only: either family trains under either criterion,
+# so a pretrained model can be held fixed across a softmax-vs-sigmoid comparison. The logit bias goes with the
+# criterion, not the family: InfoNCE never carries one (a shared scalar cannot move a row softmax; a SigLIP model's
+# pretrained bias is dropped), a BCE-family loss always does (loss.logits.bce.bias).
+# note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
 # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
 sim: cos  # {cos, geo1, geo2}
 blend:  # Blend of loss1's / loss2's targets, under weights (1 - lambda, lambda)
@@ -14,15 +18,25 @@ blend:  # Blend of loss1's / loss2's targets, under weights (1 - lambda, lambda)
   type: targ  # {targ, loss}; (targ) One loss against the blended target, L(Y); (loss) Blend of the per-target
   # losses, (1 - lambda) * L(Y1) + lambda * L(Y2) -- one criterion, sim and weighting config either way; on shared
   # logit scalars the loss is affine in the target, so the two coincide (value and gradients) unless a
-  # target-dependent factor is on: focal / DSMR / targ_mass_neut then read each term's own target, and unitless
-  # rescales each term; Inert iff (loss.blend.lambda: 0.0 | 1.0) or none of (loss.unitless, focal, DSMR,
-  # targ_mass_neut, loss.logits.shared: false) is live
+  # target-dependent factor is on: focal / DSMR / targ_mass_neut / infonce.block_residuals then read each term's
+  # own target, and unitless rescales each term; Inert iff (loss.blend.lambda: 0.0 | 1.0) or none of
+  # (loss.unitless, focal, DSMR, targ_mass_neut, infonce.block_residuals, loss.logits.shared: false) is live
 unitless: false  # {true, false}; (true) Rescale each loss term by its detached magnitude, L / L.detach() (bif_bce: by
 # L/2, its gradient-scale-equivalent value): a lone term reads a constant 1.0 (bif_bce 2.0), and under blend.type:
 # loss the terms are equalized to unit magnitude so lambda is loss2's share of the loss reading -- equivalently (with
 # target-independent weights) a target blend under lambda_eff = lambda * L1 / (lambda * L1 + (1 - lambda) * L2),
 # logged per batch (general log) and curved right above LR (needs diagnostics.batch_diagnostics.sim_targ_stats);
 # (false) Raw losses
+infonce:  # Inert iff (loss.crit != infonce)
+  block_residuals: false  # {true, false}; (true) Block the residual component of the logit scale's gradient --
+  # both its structural-residual and its irreducible-residual part (utils.loss.infonce_block_resid; the res /
+  # sres / ires terms of the dalpha strips) -- so alpha learns from its structural gradient alone: the pressure
+  # a target puts on the scale by being unreachable is dropped, the pressure the model's own geometry puts on it
+  # is kept. Applied as a zero-valued correction term, so the loss reading and every other gradient (the towers'
+  # included) are untouched; (false) The full gradient. Only applies to hard binary targets e.g. SP, MP (FLYP,
+  # SupCon), the residual being closed-form there: requires (loss.crit: infonce) with every live target in
+  # {sp, mp} under (lossk.infonce.tsm.type: linear), two live ones under (loss.blend.type: loss) -- a target
+  # blend of two hard binary targets is not itself hard binary -- and no class-imbalance or focal weighting
 bce:  # Inert iff (loss.crit != bif_bce)
   targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its (blended) target
   # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1: inert iff every
@@ -71,7 +85,8 @@ logits:
     # Chunked path (hw.loss_chunk_size) reproduces full-batch centering exactly; (sim) under chunking requires
     # sim: cos (config error otherwise -- no closed-form global mean for geo); sensitive to mixed precision
     bias:
-      init: null  # {null, pos_prevalence, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent);
+      init: null  # {null, pos_prevalence, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent,
+      # i.e. a CLIP model under a BCE-family loss);
       # (pos_prevalence) log(p / (1 - p)), p the expected positive prevalence of the blended target matrix under the
       # loss's class-imbalance / DSMR / targ_mass_neut weighting (utils.loss.pos_prevalence; sp: 1/B), so the initial
       # sigmoid matches the target prior where scaled sims average to zero; requires a BCE-family crit; ([float])

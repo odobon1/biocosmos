@@ -291,18 +291,30 @@ class VLMWrapper(abc.ABC):
                 if hasattr(self.model, "logit_scale"):  # logit_scale attribute exists
                     with torch.no_grad():
                         self.model.logit_scale.fill_(math.log(cfg_logits["scale"]["init"]))  # alpha -> log(alpha)
-            bias_init = resolve_bias_init(config)
-            if bias_init is None:  # (bias.init: null) in config
-                if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
-                    delattr(self.model, "logit_bias")
-                    self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
-            else:  # bias.init set in config
-                if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
-                    with torch.no_grad():
-                        self.model.logit_bias.fill_(bias_init)
-                else:  # logit_bias attribute is not a nn.Parameter
-                    delattr(self.model, "logit_bias")
-                    self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(bias_init, device=self.device)))
+            # the logit bias is the sigmoid / BCE path's, so it goes with the CRITERION, not the model family
+            # (either family may train under either: a CLIP model under bce, a SigLIP model under infonce):
+            # - InfoNCE carries none, whichever the family -- logit_bias = None, as open_clip itself spells a
+            #   bias-free model, and compute_logits then adds nothing. A shared scalar bias cannot move a row
+            #   softmax, so nothing is lost; and it is dropped outright rather than left in unused, which
+            #   would leave a SigLIP model's trainable parameter for DDP to wait on a gradient for (no
+            #   find_unused_parameters)
+            # - a BCE-family loss always carries one: a SigLIP model's own, and for a CLIP model (none of its
+            #   own) a fixed 0.0 buffer under bias.init: null, a learnable parameter under a set one
+            if config.loss["crit"] == "infonce":
+                self.model.logit_bias = None
+            else:
+                bias_init = resolve_bias_init(config)
+                if bias_init is None:  # (bias.init: null) in config
+                    if self.model.logit_bias is None:  # logit bias attribute is None (CLIP default)
+                        delattr(self.model, "logit_bias")
+                        self.model.register_buffer("logit_bias", torch.tensor(0.0, device=self.device))
+                else:  # bias.init set in config
+                    if isinstance(self.model.logit_bias, nn.Parameter):  # logit_bias attribute is a nn.Parameter
+                        with torch.no_grad():
+                            self.model.logit_bias.fill_(bias_init)
+                    else:  # logit_bias attribute is not a nn.Parameter
+                        delattr(self.model, "logit_bias")
+                        self.model.register_parameter("logit_bias", nn.Parameter(torch.tensor(bias_init, device=self.device)))
             if cfg_logits["scale"]["freeze"] and isinstance(self.model.logit_scale, nn.Parameter):
                 self.model.logit_scale.requires_grad_(False)
             if cfg_logits["bce"]["bias"]["freeze"] and isinstance(self.model.logit_bias, nn.Parameter):
@@ -310,11 +322,14 @@ class VLMWrapper(abc.ABC):
 
             # separate logit scalars (loss.logits.shared false under a live loss blend): loss2's term runs on
             # its own pair, logit_scale2 / logit_bias2 (compute_logits' secondary) -- a copy of the first
-            # pair as just initialized, so the two share loss.logits.* (init, freeze) and part ways in training
+            # pair as just initialized, so the two share loss.logits.* (init, freeze) and part ways in training.
+            # Under InfoNCE there is no bias to copy, so the second pair has none either (logit_bias2 = None)
             if sep_logit_scalars(config.loss):
                 for attr in ("logit_scale", "logit_bias"):
                     scalar = getattr(self.model, attr)
-                    if isinstance(scalar, nn.Parameter):
+                    if scalar is None:
+                        setattr(self.model, f"{attr}2", None)
+                    elif isinstance(scalar, nn.Parameter):
                         self.model.register_parameter(f"{attr}2", nn.Parameter(scalar.detach().clone(), requires_grad=scalar.requires_grad))
                     else:
                         self.model.register_buffer(f"{attr}2", scalar.detach().clone())
@@ -437,7 +452,17 @@ class VLMWrapper(abc.ABC):
         secondary: bool = False,
     ) -> torch.Tensor:
         """
-        Scales similarity matrix by exp(learnable logit scale) (alpha = 1 / tau) and adds logit bias if applicable (BCE).
+        Scales similarity matrix by exp(learnable logit scale) (alpha = 1 / tau) and adds the logit bias where the
+        model carries one: under a BCE-family loss, never under InfoNCE (logit_bias is None there -- see __init__).
+
+        The head runs in float32 whatever the sims came in as: under bf16 autocast the cos sims arrive in bf16,
+        and scaling and biasing them THERE rounds the result to bf16's grid at the LOGITS' exponent, which near
+        the sigmoid's decision threshold -- alpha * sim + bias ~ 0, the two terms cancelling -- is far coarser
+        than the pairs' own differences. At SigLIP's own scale (alpha ~ 117, bias -12.93) the bf16 sims
+        0.11035 and 0.11084 both come out at logit 0.0, where float32 arithmetic on the SAME bf16 sims gives
+        -0.0213 and +0.0359. So the cast comes first: upcasting already-rounded logits afterwards (as the BCE
+        criteria do) restores nothing. A large alpha is no protection -- it is the cancellation that sets the
+        exponent -- and the sims' own bf16 quantization is untouched by this, being upstream of the head.
 
         `secondary` selects the second logit-scalar pair (logit_scale2 / logit_bias2), loss2's term's own
         under separate logit scalars (loss.logits.shared false; utils.loss.sep_logit_scalars) -- the pair
@@ -469,6 +494,7 @@ class VLMWrapper(abc.ABC):
         -> the full BxB reductions computed here.
         """
         model = self._unwrapped_model
+        sim = sim.float()
         if secondary:
             logit_scale, logit_bias = model.logit_scale2, model.logit_bias2
         else:
@@ -491,6 +517,9 @@ class VLMWrapper(abc.ABC):
 
         if center == "sim":
             sim_scaled = sim_scaled - (sim_scaled.mean() if center_global is None else center_global * logit_scale.exp())
+
+        if logit_bias is None:  # InfoNCE: no bias (see __init__), the row softmax scores the scaled sims
+            return sim_scaled
 
         logits = sim_scaled + logit_bias
 
@@ -576,7 +605,8 @@ class VLMWrapper(abc.ABC):
         else:
             crit_logits, logit_scale = crit_logits[0], model.logit_scale
 
-        loss, loss_raw, targs, y = crit(crit_logits, class_encs_all, targ_data_all, self.model.training, logit_scale)
+        # sims[0]: branch values are identical, and an InfoNCE loss (the only reader) is never bifurcated
+        loss, loss_raw, targs, y = crit(crit_logits, class_encs_all, targ_data_all, self.model.training, logit_scale, sims[0])
 
         return loss, loss_raw, logits, sims, targs, y
 
@@ -603,6 +633,8 @@ class VLMWrapper(abc.ABC):
             stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), cfg_loss["logits"]["scale"]["clamp"]))
         if self.crit.lambda_eff is not None:  # a unitless loss blend's effective lambda (Criterion.term_coeffs)
             stats["lambda_eff"] = self.crit.lambda_eff.item()
+        if self.crit.dlogalpha_correction is not None:  # block_residuals' delta to logit_scale's gradient
+            stats["dlogalpha_correction"] = self.crit.dlogalpha_correction.item()
         return stats
 
     def _global_batch_loss(

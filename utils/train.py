@@ -17,7 +17,7 @@ from utils.utils import (
     TimeTracker,
     Timer,
 )
-from utils.config import eval_groups
+from utils.config import eval_groups, targ_dependent_loss
 from utils.ddp import rank0
 
 import pdb
@@ -83,6 +83,13 @@ class TrialData:
             # empty otherwise
             "scale": [],
             "logit_scale": [],
+            # logit_scale_grad: per batch, model.logit_scale's own signed .grad -- read after the backward and
+            # before the optimizer step, so exactly what the optimizer consumes (TrainPipeline._logit_scalar_values).
+            # THE measurement of what the scale receives; the dlogalpha_* family below is an analytical
+            # decomposition and need not match it (blend coefficients, loss.unitless). logit_scale2_grad: the same
+            # for loss2's term's own scale under separate logit scalars.
+            "logit_scale_grad": [],
+            "logit_scale2_grad": [],
             "bias": [],
             "scale2": [],
             "logit_scale2": [],
@@ -145,11 +152,27 @@ class TrialData:
             # kl_ir = E_ir = D_KL(y || p*) (irreducible: the target outside the reachable set) and
             # kl_sr = E_sr, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
             **{f"kl{suffix}": [] for suffix in ("", "_s", "_ir", "_sr")},
+            # resid_paths: per batch, the fractions of anchor rows whose residual family (res / sres / ires,
+            # kl_ir / kl_sr) came off each calculation -- [hard-target closed form, feasible row's exact zero,
+            # plain p* - y subtraction] (utils.loss.infonce_batch_stats). The first two are exact at any alpha;
+            # the third is numerically unvalidated -- no error estimate stands behind it -- and the curves mark
+            # every batch where it is non-zero, whatever its values read (utils.report._RESID_MARKS).
+            # InfoNCE only, like dalpha_*.
+            "resid_paths": [],
             # lambda_eff: per batch, loss2's term's share of a unitless loss blend's coefficients, lambda L_1 /
             # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where loss.unitless moves the
             # blend off the nominal loss.blend.lambda; a scalar, one curve strip right above LR. Recorded only under
             # loss.unitless over a live loss blend (loss.blend.type loss), so the series stays empty otherwise.
             "lambda_eff": [],
+            # dlogalpha_correction: per batch, the delta loss.infonce.block_residuals made to model.logit_scale's
+            # gradient, signed so that grad_after = grad_before + dlogalpha_correction -- i.e. MINUS the blocked
+            # residual, sum_k c_k * d(alpha)/d(log alpha_raw) * (the term's residual scale gradient)
+            # (utils.loss.infonce_block_resid). The correction the parameter actually received: zero while
+            # logits.scale.clamp holds or the scale is frozen. The exact reading of the intervention: the
+            # dlogalpha_* family is built from the blended target distribution, which on a loss blend is not what
+            # the correction is applied per term against (see utils.loss.infonce_batch_stats). A scalar; recorded
+            # only under loss.infonce.block_residuals, so the series stays empty otherwise.
+            "dlogalpha_correction": [],
         }
         self.data_eval = {
             "n_samps_seen": [],
@@ -371,22 +394,20 @@ class ArtifactManager:
             is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
 
             # blend.type: a lone target has nothing to blend, and on shared logit scalars without a loss
-            # factor that reads the target (unitless, focal, DSMR, targ_mass_neut) the loss is affine in it
-            # -- a loss blend is then the target blend's loss, value and gradients. logits.shared: only a
-            # live loss blend has two terms to give separate logit scalars
-            targ_dep = (
-                loss["unitless"] or "focal" in loss["wting"] or not loss["logits"]["shared"]
-                or (is_bce_family and loss["wting"]["bce"]["dsmr"])
-                or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
-            )
+            # factor that reads the target (unitless, focal, DSMR, targ_mass_neut, block_residuals) the loss
+            # is affine in it -- a loss blend is then the target blend's loss, value and gradients. Taken
+            # from the one predicate inert_params reads, so a param this prunes is exactly one a campaign
+            # may not override. logits.shared: only a live loss blend has two terms to give separate scalars
+            targ_dep = targ_dependent_loss(loss)
             if lambda_ in (0.0, 1.0) or loss["blend"]["type"] == "targ":
                 del loss["logits"]["shared"]
             if lambda_ in (0.0, 1.0) or not targ_dep:
                 del loss["blend"]["type"]
 
-            # CLIP + bias.init null: logit_bias becomes a fixed 0.0 buffer (models.py), so the
-            # whole bias block is a no-op (logits = sim * scale.exp() + 0)
-            if not is_siglip and loss["logits"]["bce"]["bias"]["init"] is None:
+            # the logit bias goes with the criterion (models.py): InfoNCE carries none, whichever the family,
+            # so the whole bias block is never read; and under a BCE-family loss a CLIP model's is a fixed 0.0
+            # buffer under bias.init: null (logits = sim * scale.exp() + 0), a no-op block just the same
+            if crit == "infonce" or (not is_siglip and loss["logits"]["bce"]["bias"]["init"] is None):
                 del loss["logits"]["bce"]["bias"]
 
             # per-target infonce sub-block: the BCE losses never read it, and under sp the linear tsm
@@ -394,6 +415,10 @@ class ArtifactManager:
             for key in ("loss1", "loss2"):
                 if key in loss and (is_bce_family or loss[key]["targ"] == "sp"):
                     del loss[key]["infonce"]
+
+            # infonce sub-block (block_residuals): the BCE losses never read it
+            if is_bce_family:
+                del loss["infonce"]
 
             # bce sub-block (targ_mass_neut): read only by the bifurcated variant
             if crit != "bif_bce":

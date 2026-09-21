@@ -25,7 +25,16 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FormatStrFormatter
+from matplotlib.ticker import (
+    AutoLocator,
+    FixedLocator,
+    FormatStrFormatter,
+    LogFormatterSciNotation,
+    LogLocator,
+    MaxNLocator,
+    NullFormatter,
+    ScalarFormatter,
+)
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -81,7 +90,7 @@ _LW_COMP = 2.2
 _LW_PARTITION = 1.8
 _LW_MODALITY = 1.5
 
-# Max heatmap columns in a P/Q strip before adjacent ones are folded together. Each recorded batch
+# Max heatmap columns in an S/P/Q strip before adjacent ones are folded together. Each recorded batch
 # contributes one histogram column; once there are more than this, every 2 consecutive columns are
 # averaged into one (then every 4, every 8, ...) so the strip keeps a readable cell width instead of
 # collapsing into a smear. Columns therefore oscillate between this and half of it as training runs.
@@ -90,8 +99,12 @@ P_HEATMAP_HORIZONTAL_THRESHOLD = 128
 # white page so empty bins vanish into it. Deeper and more saturated than matplotlib's Blues/Purples,
 # whose muted tops leave a sparse strip washed out. The purple stops are the blue ones hue-rotated
 # at the same saturation and lightness, so the two strips read as one style in two hues.
+# The similarities' teals sit on the S Stats panel's hue (#008080), the strip right above theirs -- darkened
+# rather than rotated like the purples: at the blues' saturation and lightness a teal is a pale cyan, three
+# times the blues' luminance, and the strip washes out against the page.
 _P_CMAP = LinearSegmentedColormap.from_list("p_density", ["#FFFFFF", "#4C7FE8", "#0A1FB0"])
 _Q_CMAP = LinearSegmentedColormap.from_list("q_density", ["#FFFFFF", "#9A4CE8", "#5D0AB0"])
+_S_CMAP = LinearSegmentedColormap.from_list("s_density", ["#FFFFFF", "#33B0B0", "#005A5A"])
 # most of the mass sits in one bin (a BCE run starts with every pair near 0), so a linear ramp would
 # leave the rest invisible -- sqrt scaling lifts the sparse bins into view
 _HIST_NORM = PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0)
@@ -832,15 +845,21 @@ def _req_labels(reqs, sym):
 
 def _pin_flat_yaxis(ax):
     """The y axis of a scale panel whose every drawn value is the one number -- a frozen logit scale with no
-    bound line beside it (none recorded, or all of them at infinity). There is no range there for autoscale to
+    bound line beside it (none recorded, or all of them at infinity), or the flat zero of the (actual)
+    gradient panel under it. There is no range there for autoscale to
     work with: matplotlib pads the value by +-5% and ticks the padding, which reads as a scale the data never
     had while leaving the one value that matters off every tick. So that value becomes the panel's only
     tick, labelled with it, the line centred on it. A panel with any spread at all -- a learnable scale, or a
     frozen one read against its target-implied bounds, which is the comparison the panel is kept for -- is
-    left to autoscale. Shared by plot_alpha_curves' panels and the strip figures."""
+    left to autoscale. Shared by plot_alpha_curves' panels and the strip figures.
+    One number up to float noise, that is: a spread under 1e-6 of the values' magnitude is rounding, not
+    signal. A scale frozen at 100 under a softmax target mapping pinned to it draws its bound trio ON it, but
+    in log units the two are derived apart -- the float32 parameter holds log(100) rounded up by 6.4e-8, the
+    bounds the float64 log of an alpha_req that comes out exactly 100 -- and autoscale would zoom into that
+    one rounding step until it filled the panel, the scale at the top and the trio at the bottom."""
     vals = np.concatenate([np.asarray(line.get_ydata(), dtype=float) for line in ax.get_lines()])
     vals = vals[np.isfinite(vals)]
-    if vals.size and np.ptp(vals) == 0.0:
+    if vals.size and np.ptp(vals) <= 1e-6 * np.abs(vals).max():
         ax.set_ylim(vals[0] - 1.0, vals[0] + 1.0)
         ax.set_yticks([vals[0]], [f"{vals[0]:.4g}"])
 
@@ -1645,7 +1664,9 @@ def plot_metrics(
     # trial with no eval data -- the trainval phase -- gets none), and the rest, the same for every group,
     # to general.png (loss, gradients, batch stats, LR), alpha.png / logalpha.png (the logit scale, as
     # the alpha the logits carry / as the log alpha parameter the model learns, over its InfoNCE
-    # gradient decomposition) and KL.png (the InfoNCE KL decomposition). Within a figure every panel is
+    # gradient decomposition), KL.png (the InfoNCE KL decomposition), bias.png (the learnable logit biases)
+    # and unitless_loss_blend.png (a unitless loss blend's effective lambda) -- the last three only for a
+    # trial recording their series. Within a figure every panel is
     # the same height (in; height_panel_scores for the scores, height_panel_general for the rest), and
     # the figure is as tall as its panels plus the ~1.8 in its title and x label take -- so a panel is
     # the same size however many the figure holds.
@@ -1719,6 +1740,32 @@ def plot_metrics(
         plot_title=title_prefix,
         output_filename="learning_curves/KL.png",
     )
+    for name, panels in (
+        # each tracked logit bias (TrialData bias series; empty when untracked: a BCE-family loss with a learnable
+        # bias only) -- bias2 is loss2's term's own under separate logit scalars (loss.logits.shared false). The
+        # logit scales have their own figures (plot_alpha_curves)
+        ("bias", [("bias", r"$b$", dict(color="blue")), ("bias2", r"$b_2$", dict(color="blue"))]),
+        # the effective lambda (sim_targ_stats on; loss.unitless over a live loss blend only): loss2's term's share
+        # of the unitless blend coefficients, lambda L_1 / (lambda L_1 + (1 - lambda) L_2)
+        # (utils.loss.Criterion.term_coeffs) -- where unitless moves the blend off the nominal loss.blend.lambda,
+        # batch by batch
+        ("unitless_loss_blend", [("lambda_eff", r"$\lambda_{\mathrm{eff}}$", dict(color="tab:olive", linewidth=1.0))]),
+    ):
+        plot_scalar_curves(
+            data_epoch,
+            x_train,
+            dpath_trial,
+            fontsize_axes,
+            fontsize_ticks,
+            fontsize_legend,
+            subplot_border_width,
+            fig_width,
+            height_fixed,
+            height_panel_general,
+            panels,
+            plot_title=title_prefix,
+            output_filename=f"learning_curves/{name}.png",
+        )
 
 def plot_score_curves(
     data_eval,
@@ -1847,28 +1894,22 @@ def plot_general_curves(
     output_filename,
 ):
     # a reporting.batch_diagnostics component that was off never recorded its series, and its panel(s)
-    # are omitted outright: model grad norm, ||delta theta||, sim-grad sums, the S stats panel
+    # are omitted outright: model grad norm, ||delta theta||, sim-grad sums, the S / Q panels
     has_grad_norm = len(data_epoch["grad_norm_model"]) == len(x_train)
     has_delta_norm = len(data_epoch["delta_norm_model"]) == len(x_train)
     has_grad_sum_sim = len(data_epoch["grad_sum_sim"]) == len(x_train)
     has_sim_stats = len(data_epoch["sim_min"]) == len(x_train)
-    # the Q-stats panel, when the blended targets carry distributional signal -- TrainPipeline records
-    # targ stats only for graded targets (a lone sp/mp target is a 0/1 indicator), so an empty series
-    # gets no panel.
-    targ_panels = [("targ_hist", "Q")] if len(data_epoch["targ_hist"]) == len(x_train) else []
-    # the P strip (sigmoid(logits), the predicted pair probabilities) sits between S and Q, on Q's [0, 1]
-    # axis so predictions and targets read against each other. Recorded only for a BCE-family loss,
+    # the S Hist. strip, the similarities' per-batch distribution over [-1, 1], directly under the S Stats
+    # panel whose point stats it fills in, in that panel's teal
+    sim_panels = [("sim_hist", "S Hist.")] if len(data_epoch["sim_hist"]) == len(x_train) else []
+    # the Q Hist. strip, the blended targets' per-batch distribution over [0, 1] -- for every target, a lone
+    # sp / mp one included (a 0/1 indicator: its two end bins, the strip reading the batch's positive share)
+    targ_panels = [("targ_hist", "Q Hist.")] if len(data_epoch["targ_hist"]) == len(x_train) else []
+    # the P Hist. strip (sigmoid(logits), the predicted pair probabilities) sits between S Hist. and Q Hist., on
+    # Q's [0, 1] axis so predictions and targets read against each other. Recorded only for a BCE-family loss,
     # so under InfoNCE there is no series and no panel.
-    p_panels = [("p_hist", "P")] if len(data_epoch["p_hist"]) == len(x_train) else []
-    # each tracked logit bias (TrialData bias series; empty when untracked) gets a strip between the
-    # Q panels and LR -- bias2 is loss2's term's own under separate logit scalars (loss.logits.shared
-    # false). The logit scales have their own figures (plot_alpha_curves)
-    scalar_panels = [
-        (key, rf"${sym}$")
-        for key, sym in (("bias", "b"), ("bias2", "b_2"))
-        if len(data_epoch[key]) == len(x_train)
-    ]
-    # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above LR, panels
+    p_panels = [("p_hist", "P Hist.")] if len(data_epoch["p_hist"]) == len(x_train) else []
+    # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above the S panels,
     # each drawing one line per reporting.learning_curves.hpsm.kappas value: with
     # hpsm.multimodal the I2T and T2I directions and then their mean, else the mean alone
     hpsm_kappas = hpsm["kappas"]
@@ -1878,17 +1919,12 @@ def plot_general_curves(
         for suffix, prefix in (*margin_dirs, ("", ""))
         if len(data_epoch[f"sim_margin{suffix}"]) == len(x_train)
     ]
-    # the effective-lambda strip (sim_targ_stats on; loss.unitless over a live loss blend only) sits right
-    # above LR: loss2's term's share of the unitless blend coefficients, lambda L_1 /
-    # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where unitless moves the blend
-    # off the nominal loss.blend.lambda, batch by batch
-    has_lambda_eff = len(data_epoch["lambda_eff"]) == len(x_train)
 
     # every panel is the loss panel's height, one grid row each: the loss and LR panels, which are
     # always drawn, plus the optional ones above
     n_panels = (
-        2 + has_grad_norm + has_delta_norm + has_grad_sum_sim + has_sim_stats + len(p_panels) + len(targ_panels)
-        + len(scalar_panels) + len(margin_panels) + has_lambda_eff
+        2 + has_grad_norm + has_delta_norm + has_grad_sum_sim + has_sim_stats + len(sim_panels) + len(p_panels)
+        + len(targ_panels) + len(margin_panels)
     )
     fig = plt.figure(figsize=(fig_width, height_fixed + n_panels * height_panel))
     gs = gridspec.GridSpec(n_panels, 1, hspace=0)
@@ -1945,7 +1981,23 @@ def plot_general_curves(
         ax7.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax7)
 
-    # the S panel: min/max solid,
+    for key, label in margin_panels:
+        # mean hard-pair similarity margin (hard_pair_similarity_margin): per row, the hardness-weighted
+        # mean sim of the positives minus that of the negatives, averaged over rows; kappa 0 is the plain
+        # mean-separation margin, larger kappas weight each side toward its hard pairs
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        margins = np.array(data_epoch[key])  # [batch, kappa]
+        colors = plt.cm.viridis(np.linspace(0.0, 0.75, len(hpsm_kappas)))
+        for idx_kappa in reversed(range(len(hpsm_kappas))):  # drawn last-to-first, so a smaller kappa sits on top
+            ax.plot(x_train, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {_kappa_label(hpsm_kappas[idx_kappa])}$")
+        ax.axhline(0.0, color="gray", linewidth=0.5)
+        ax.set_ylabel(label, fontsize=fontsize_axes + 4)
+        legend_handles[ax] = ax.get_legend_handles_labels()[0][::-1]  # legend in config order
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    # the S Stats panel: min/max solid,
     # mean dashed, median dotted; teal/rose is a dark, mutually contrasting pair that also stays
     # clear of the orange gradient panels above and the purple scale panels below.
     axes_hist = []  # the heatmap strips, which keep the colormap's own background
@@ -1967,8 +2019,8 @@ def plot_general_curves(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-    def add_hist_panel(hist_key, ylabel, cmap):
-        """The per-batch distribution histograms as a density heatmap strip."""
+    def add_hist_panel(hist_key, ylabel, ylim, cmap):
+        """The per-batch distribution histograms as a density heatmap strip, their bins spanning `ylim`."""
         ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
         axes_hist.append(ax)
         grid, stride = _fold_hist_columns(data_epoch[hist_key], P_HEATMAP_HORIZONTAL_THRESHOLD)
@@ -1980,51 +2032,21 @@ def plot_general_curves(
             x_train[i] if i < len(x_train) else x_train[-1] + step
             for i in (c * stride for c in range(len(grid) + 1))
         ])
-        ax.pcolormesh(x_edges, np.linspace(0.0, 1.0, grid.shape[1] + 1), grid.T,
+        ax.pcolormesh(x_edges, np.linspace(*ylim, grid.shape[1] + 1), grid.T,
                       cmap=cmap, norm=_HIST_NORM, shading="flat")
         ax.set_ylabel(ylabel, fontsize=fontsize_axes)
-        ax.set_ylim(0.0, 1.0)
+        ax.set_ylim(*ylim)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
     if has_sim_stats:
-        add_stat_panel("sim", "S", (-1.0, 1.0), "#008080")
+        add_stat_panel("sim", "S Stats", (-1.0, 1.0), "#008080")
+    for hist_key, label in sim_panels:
+        add_hist_panel(hist_key, label, (-1.0, 1.0), _S_CMAP)
     for hist_key, label in p_panels:
-        add_hist_panel(hist_key, label, _P_CMAP)
+        add_hist_panel(hist_key, label, (0.0, 1.0), _P_CMAP)
     for hist_key, label in targ_panels:
-        add_hist_panel(hist_key, label, _Q_CMAP)
-
-    for key, label in scalar_panels:
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax.plot(x_train, data_epoch[key], color="blue")
-        ax.set_ylabel(label, fontsize=fontsize_axes + 4)
-        ax.grid(True)
-        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax)
-
-    for key, label in margin_panels:
-        # mean hard-pair similarity margin (hard_pair_similarity_margin): per row, the hardness-weighted
-        # mean sim of the positives minus that of the negatives, averaged over rows; kappa 0 is the plain
-        # mean-separation margin, larger kappas weight each side toward its hard pairs
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        margins = np.array(data_epoch[key])  # [batch, kappa]
-        colors = plt.cm.viridis(np.linspace(0.0, 0.75, len(hpsm_kappas)))
-        for idx_kappa in reversed(range(len(hpsm_kappas))):  # drawn last-to-first, so a smaller kappa sits on top
-            ax.plot(x_train, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {_kappa_label(hpsm_kappas[idx_kappa])}$")
-        ax.axhline(0.0, color="gray", linewidth=0.5)
-        ax.set_ylabel(label, fontsize=fontsize_axes + 4)
-        legend_handles[ax] = ax.get_legend_handles_labels()[0][::-1]  # legend in config order
-        ax.grid(True)
-        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax)
-
-    if has_lambda_eff:
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax.plot(x_train, data_epoch["lambda_eff"], color="tab:olive", linewidth=1.0)
-        ax.set_ylabel(r"$\lambda_{\mathrm{eff}}$", fontsize=fontsize_axes + 4)
-        ax.grid(True)
-        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-        axes.append(ax)
+        add_hist_panel(hist_key, label, (0.0, 1.0), _Q_CMAP)
 
     ax10 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
     if len(data_epoch["lr"]) == len(x_train):
@@ -2040,6 +2062,43 @@ def plot_general_curves(
     axes.append(ax10)
 
     _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+
+def plot_scalar_curves(
+    data_epoch,
+    x_train,
+    dpath_trial,
+    fontsize_axes,
+    fontsize_ticks,
+    fontsize_legend,
+    subplot_border_width,
+    fig_width,
+    height_fixed,
+    height_panel,
+    panels,
+    plot_title,
+    output_filename,
+):
+    # a figure of per-batch scalar series, one line panel apiece: `panels` its (series, caption, line style),
+    # top to bottom, each drawn only where recorded. A trial recording none of them gets no figure.
+    panels = [panel for panel in panels if len(data_epoch[panel[0]]) == len(x_train)]
+    if not panels:
+        return
+
+    fig = plt.figure(figsize=(fig_width, height_fixed + len(panels) * height_panel))
+    gs = gridspec.GridSpec(len(panels), 1, hspace=0)
+    axes = []
+
+    for key, label, style in panels:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        ax.plot(x_train, data_epoch[key], **style)
+        ax.set_ylabel(label, fontsize=fontsize_axes + 4)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+    axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    axes[-1].tick_params(labelbottom=True)
+
+    _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
 def _resid_unvalidated(data_epoch):
     """Per batch, whether any of its rows' residual family came off the plain p* - y subtraction
@@ -2084,8 +2143,8 @@ def plot_alpha_curves(
     # On top, each scale gets a panel -- the "2" series is loss2's term's own under separate logit scalars
     # (loss.logits.shared false), empty otherwise. A frozen scale (loss.logits.scale.freeze) keeps its panel:
     # a flat line, but the alpha the bound lines on it and the gradient decomposition below read against.
-    # Its caption says so, which is also why no .grad panel follows it -- frozen is read off that: the
-    # parameter's .grad series is recorded for a learnable scale only (TrainPipeline._tracked_logit_scalars)
+    # Its caption says so -- frozen is read off the parameter's .grad series, recorded for a learnable scale
+    # only (TrainPipeline._tracked_logit_scalars)
     scale_panels = [
         (f"{scale_key}{suffix}", rf"${sym}{sub}$"
          + ("" if len(data_epoch[f"logit_scale{suffix}_grad"]) == len(x_train) else "\n(frozen)"))
@@ -2093,19 +2152,24 @@ def plot_alpha_curves(
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     ]
     req_key = {"scale": "alpha_req", "logit_scale": "log_alpha_req"}[scale_key]  # the bounds in this figure's units
-    # under each scale panel of the LOGALPHA figure -- log alpha being the parameter the model learns -- the
-    # parameter's own signed .grad, as the optimizer consumed it (TrainPipeline._logit_scalar_values: read after
-    # the backward, before the step). It is the measurement; the dlogalpha panels further down are an analytical
+    # under each scale panel, the gradient the scale actually received. On the LOGALPHA figure -- log alpha being
+    # the parameter the model learns -- the parameter's own signed .grad, as the optimizer consumed it
+    # (TrainPipeline._logit_scalar_values: read after the backward, before the step); on the alpha figure that
+    # same .grad carried into alpha's units, (1 / alpha) * .grad (alpha = exp(log alpha), so dL/dlogalpha =
+    # alpha * dL/dalpha) -- zero like the .grad it is derived from wherever logits.scale.clamp holds, the dalpha
+    # panels below still carrying the pressure on the effective scale. A frozen scale has no .grad series and
+    # draws flat zero on both figures: the parameter received nothing.
+    # It is the measurement; the dalpha / dlogalpha panels further down are an analytical
     # decomposition off the blended target distribution, which carries neither a term's blend coefficient nor
     # loss.unitless' 1 / L and so need not agree with it. The primary scale's panel also draws
     # loss.infonce.block_residuals' correction where recorded (dlogalpha_correction: the delta it made, so the
-    # gradient without it is the black line minus the orange one)
-    # The caption says .grad because the first dlogalpha panel below is captioned with the same nabla: that
+    # gradient without it is the black line minus the orange one), in the figure's units alike
+    # The caption says actual because the first dalpha panel below is captioned with the same nabla: that
     # one is the analytical full term, this one what the parameter got
     grad_panels = {
-        f"{scale_key}{suffix}": (f"logit_scale{suffix}_grad", rf"$\nabla_{{{sym}{sub}}} \mathcal{{L}}$" + "\n(.grad)")
+        f"{scale_key}{suffix}": (f"logit_scale{suffix}_grad", rf"$\nabla_{{{sym}{sub}}} \mathcal{{L}}$" + "\n(actual)")
         for suffix, sub in (("", ""), ("2", "_2"))
-        if scale_key == "logit_scale" and len(data_epoch[f"logit_scale{suffix}_grad"]) == len(x_train)
+        if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     }
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
     # since only it records the series), twenty-five panels: the per-pair dL/dalpha terms summed, summed in
@@ -2125,7 +2189,7 @@ def plot_alpha_curves(
                "sres": r"^{\text{SR}}", "ires": r"^{\text{IR}}"}[comp]
         nabla = rf"\nabla_{{{sym}}}{sup} \mathcal{{L}}"
         if agg == "sum":
-            # the full term shares the measured .grad panel's symbol, so it says what it is: the analytical term
+            # the full term shares the measured (actual) panel's symbol, so it says what it is: the analytical term
             # off the blended target distribution (no blend coefficient, no loss.unitless 1 / L), not the
             # gradient the parameter received
             return rf"${nabla}$" + ("\n(analytic)" if comp == "full" else "")
@@ -2188,19 +2252,23 @@ def plot_alpha_curves(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-        if key in grad_panels:
-            key_grad, label_grad = grad_panels[key]
-            ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0])
-            ax.axhline(0.0, color="grey", linewidth=0.8, zorder=1)  # a signed series: which way it pushes
-            ax.plot(x_train, data_epoch[key_grad], color="black", linewidth=1.0, label=".grad", zorder=3)
-            if key == scale_key and len(data_epoch["dlogalpha_correction"]) == len(x_train):
-                ax.plot(x_train, data_epoch["dlogalpha_correction"], color="#E69F00", linewidth=1.0,
-                        label="correction", zorder=2)
-                legend_handles[ax] = ax.get_legend_handles_labels()[0]
-            ax.set_ylabel(label_grad, fontsize=fontsize_axes + 4)
-            ax.grid(True)
-            ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
-            axes.append(ax)
+        key_grad, label_grad = grad_panels[key]
+        # the recorded series are log alpha's; the alpha figure's panel (whose `key` series is alpha itself)
+        # carries them into its own units
+        unit = 1.0 / np.asarray(data_epoch[key], dtype=float) if scale_key == "scale" else 1.0
+        grad = data_epoch[key_grad] if len(data_epoch[key_grad]) == len(x_train) else np.zeros(len(x_train))  # frozen
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0])
+        ax.axhline(0.0, color="grey", linewidth=0.8, zorder=1)  # a signed series: which way it pushes
+        ax.plot(x_train, unit * np.asarray(grad, dtype=float), color="black", linewidth=1.0, label="actual", zorder=3)
+        if key == scale_key and len(data_epoch["dlogalpha_correction"]) == len(x_train):
+            ax.plot(x_train, unit * np.asarray(data_epoch["dlogalpha_correction"], dtype=float), color="#E69F00",
+                    linewidth=1.0, label="correction", zorder=2)
+            legend_handles[ax] = ax.get_legend_handles_labels()[0]
+        _pin_flat_yaxis(ax)  # a frozen scale's flat zero: one tick, at 0
+        ax.set_ylabel(label_grad, fontsize=fontsize_axes + 4)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
 
     for key, label, agg, comp in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
@@ -2313,8 +2381,8 @@ def plot_kl_curves(
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
                    subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
-    The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_alpha_curves /
-    plot_kl_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
+    The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_scalar_curves /
+    plot_alpha_curves / plot_kl_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
     the heatmap strips, keep their own background), the title, the layout, the outside legends
     (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule
     off as blocks, `box_blocks` closing each block's sides too (see below). `alternate_sides` flips every
@@ -2355,10 +2423,13 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
     axes[0].set_title(plot_title, loc="left", fontweight="bold", fontsize=20)
     plt.subplots_adjust(hspace=0)
     plt.tight_layout()
-    # each y label is shrunk to its panel's height, and each legend goes in a box outside its panel, on
+    # each panel's y ticks are thinned to what its height holds and labelled in full (_format_yticks), each y
+    # label is shrunk to its panel's height, and each legend goes in a box outside its panel, on
     # the side away from the panel's y label and tick labels, no taller than the panel: sized against
-    # the panel heights the layout above settled, then a second pass makes room for the boxes
+    # the panel heights the layout above settled, then a second pass makes room for the boxes and the
+    # tick labels' new widths
     for idx_ax, ax in enumerate(axes):
+        _format_yticks(ax)
         _fit_ylabel(ax)
         if ax in legend_handles:
             side = "left" if not alternate_sides or idx_ax % 2 == 1 else "right"
@@ -2367,6 +2438,62 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
     fpath_plot.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fpath_plot, dpi=300)
     plt.close(fig)
+
+class _SciTickFormatter(ScalarFormatter):
+    """A linear axis' tick labels with the scientific multiplier written into each one, m x 10^e -- the way a log
+    axis labels its ticks (the loss panel) -- where the stock ScalarFormatter prints it once, as a bare "1e-7"
+    floating over the panel's corner, against ticks that then read as small integers. The exponent is still the
+    one ScalarFormatter settles on for the axis, shared by every tick; an axis it leaves in plain notation reads
+    as before. No additive offset either (useOffset off), which floats in that same spot."""
+
+    def __init__(self):
+        super().__init__(useOffset=False)
+
+    def __call__(self, x, pos=None):
+        mantissa = x / 10.0 ** self.orderOfMagnitude
+        if self.orderOfMagnitude == 0 or abs(mantissa) < 1e-8:  # plain notation, or the zero tick
+            return super().__call__(x, pos)
+        return rf"$\mathdefault{{{self.format % mantissa}\times10^{{{self.orderOfMagnitude}}}}}$"
+
+    def get_offset(self):
+        return ""
+
+def _log_ticks(vmin, vmax, n_max):
+    """At most `n_max` tick values for a log axis over [vmin, vmax], no two closer than 1 / n_max of its length:
+    the 1-9 multiples of the decades in view, taken by niceness -- the decades themselves, then the 5s, the 2s,
+    the rest -- while there is room. A view too narrow to hold two of them (well under a decade, where a log
+    axis is as good as linear) gets MaxNLocator's round linear values instead."""
+    lo, hi = np.log10(vmin), np.log10(vmax)
+    ticks = []
+    for coeff in (1, 5, 2, 3, 7, 4, 6, 8, 9):
+        for exponent in range(math.floor(lo), math.ceil(hi) + 1):
+            tick = exponent + np.log10(coeff)
+            if lo <= tick <= hi and len(ticks) < n_max and all(abs(tick - t) >= (hi - lo) / n_max for t in ticks):
+                ticks.append(tick)
+    if len(ticks) < 2:
+        ticks_linear = MaxNLocator(nbins=n_max - 1, steps=[1, 2, 2.5, 5, 10]).tick_values(vmin, vmax)
+        return [tick for tick in ticks_linear if vmin <= tick <= vmax]
+    return sorted(10.0 ** np.array(ticks))
+
+def _format_yticks(ax):
+    """
+    The y ticks of a panel whose ticks matplotlib places (one with ticks set by hand -- a ratio panel's 0 / 0.5 /
+    1, a pinned flat one's single value, a blank one's none -- keeps them): at most five, and no more than the
+    panel's height has room for (the axis' own tick space, which the stock log axis ignores: under a decade it
+    labels every minor tick, crowding a short panel into overlap), every label complete in itself
+    (_SciTickFormatter; a log axis labels its major ticks m x 10^e and leaves the minor ones bare). Called once
+    the layout has settled the panel heights.
+    """
+    locator = ax.yaxis.get_major_locator()
+    n_max = min(5, 1 + max(1, ax.yaxis.get_tick_space()))
+    if isinstance(locator, LogLocator):
+        ax.yaxis.set_major_locator(FixedLocator(_log_ticks(*ax.get_ylim(), n_max)))
+        ax.yaxis.set_major_formatter(LogFormatterSciNotation(minor_thresholds=(np.inf, np.inf)))  # label every major tick
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    elif isinstance(locator, AutoLocator):
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=n_max - 1, steps=[1, 2, 2.5, 5, 10]))
+        if isinstance(ax.yaxis.get_major_formatter(), ScalarFormatter):  # the LR panel keeps its own format
+            ax.yaxis.set_major_formatter(_SciTickFormatter())
 
 def _fit_ylabel(ax):
     """

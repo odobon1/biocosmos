@@ -25,7 +25,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.config import eval_groups, get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
-from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, targ_specs
+from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
@@ -167,7 +167,6 @@ class TrainPipeline:
 
         self.data = self._init_trial_data(trial_state)  # TrialData on rank 0; None elsewhere
         self._logit_scalars_tracked = self._tracked_logit_scalars()
-        self._targ_stats_tracked = self._tracked_targ_stats()
         self._batch_diag = self.cfg.reporting["batch_diagnostics"]
         self._params_prev = None  # pre-step parameter snapshot, allocated on the first step
 
@@ -270,7 +269,7 @@ class TrainPipeline:
         (utils.loss.sep_logit_scalars) loss2's term's pair is tracked alike, as scale2 / logit_scale2 /
         bias2. A learnable scale gets a third series, logit_scale_grad: the parameter's own signed .grad
         (_logit_scalar_values) -- a frozen one has none, which is also how the figures tell it is frozen
-        (utils.report.plot_alpha_curves)."""
+        (utils.report.plot_alpha_curves), drawing its (actual) gradient panels flat zero."""
         model = self.modelw._unwrapped_model
         tracked = {}
         for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
@@ -312,23 +311,16 @@ class TrainPipeline:
             values[key] = value.item()
         return values
 
-    def _tracked_targ_stats(self):
-        """Whether the blended target matrix is worth curving (the Q panel): graded when a live target is
-        phylo or tax, or when two distinct targets are blended (0 < lambda < 1 puts their disagreements at
-        lambda / 1 - lambda). A lone sp / mp target is a 0/1 indicator whose spread says nothing. When untracked,
-        the targ stats are dropped before TrialData records them, so they get no learning-curve panel."""
-        live = [cfg_targ["targ"] for _, cfg_targ in targ_specs(self.cfg.loss["blend"]["lambda"], self.cfg.loss["loss1"], self.cfg.loss["loss2"])]
-        return any(targ in ("phylo", "tax") for targ in live) or len(set(live)) > 1
-
     @rank0
     def _record_train_batch(self, lr, loss, loss_raw, grad_norm_model, delta_norm_model, batch_stats,
                             grad_sum_sim, logit_scalars):
-        # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); the
-        # curve series keep only the histogram, and only when the targets are worth curving
+        # the batch logs still get every stat (incl. the targ point stats sim_targ.log prints); of the
+        # targ stats the curve series keep only the histogram -- for every target, a lone sp / mp one's
+        # 0/1 indicator included
         if batch_stats is not None:
             batch_stats = {
                 key: val for key, val in batch_stats.items()
-                if not key.startswith("targ") or (key == "targ_hist" and self._targ_stats_tracked)
+                if not key.startswith("targ") or key == "targ_hist"
             }
         self.data.update_train_batch(
             self.n_samps_seen,

@@ -479,27 +479,16 @@ def test_pass_epoch_span_without_chaining_is_one_epoch_per_pass() -> None:
     assert [pass_epoch_span(cfg, p) for p in range(1, 6)] == [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
 
 
-def _fake_targ_pipe(targ1, targ2, lambda_):
-    return SimpleNamespace(cfg=SimpleNamespace(
-        loss={"blend": {"lambda": lambda_}, "loss1": {"targ": targ1}, "loss2": {"targ": targ2}}))
-
-
-def test_tracked_targ_stats_graded_blends_only() -> None:
-    # the blended targets are curved when graded: a live phylo/tax target, or two distinct targets
-    # blended (their disagreements sit at lambda / 1 - lambda); a lone sp/mp target is a 0/1 indicator whose
-    # spread says nothing, and a spec with zero weight does not count
-    tracked = TrainPipeline._tracked_targ_stats
-
-    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.3)) is True
-    assert tracked(_fake_targ_pipe("mp", "phylo", 0.3)) is True
-    assert tracked(_fake_targ_pipe("tax", "sp", 0.3)) is True
-    assert tracked(_fake_targ_pipe("sp", "mp", 0.3)) is True  # distinct 0/1 targets blend to a graded matrix
-    assert tracked(_fake_targ_pipe("sp", "sp", 0.3)) is False
-    # a zero-weight spec is irrelevant however it's configured
-    assert tracked(_fake_targ_pipe("phylo", "phylo", 0.0)) is True
-    assert tracked(_fake_targ_pipe("mp", "phylo", 0.0)) is False
-    assert tracked(_fake_targ_pipe("mp", "phylo", 1.0)) is True
-    assert tracked(_fake_targ_pipe("phylo", "mp", 1.0)) is False
+def test_record_train_batch_curves_the_targ_hist_and_drops_the_targ_point_stats() -> None:
+    # of the targ stats the curve series keep only the histogram (the Q Hist. strip) -- whatever the target,
+    # a lone sp / mp one's 0/1 indicator included; the point stats are sim_targ.log's alone. The sim stats
+    # and histogram (the S Stats / S Hist. panels) pass through untouched
+    recorded = {}
+    pipe = SimpleNamespace(n_samps_seen=64, data=SimpleNamespace(
+        update_train_batch=lambda n_samps_seen, **series: recorded.update(series)))
+    batch_stats = {"sim_min": -0.2, "sim_hist": [0.5, 0.5], "targ_min": 0.0, "targ_mean": 0.1, "targ_hist": [0.9, 0.1]}
+    TrainPipeline._record_train_batch(pipe, 1e-4, 0.5, 0.6, None, None, batch_stats, None, {})
+    assert recorded["batch_stats"] == {"sim_min": -0.2, "sim_hist": [0.5, 0.5], "targ_hist": [0.9, 0.1]}
 
 
 def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:

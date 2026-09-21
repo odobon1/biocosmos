@@ -19,7 +19,6 @@ from utils.loss import (
     chunked_bce_loss_backward,
     hard_pair_similarity_margin,
     infonce_batch_stats,
-    HIST_BINS,
     pos_prevalence,
     sep_logit_scalars,
 )
@@ -123,7 +122,7 @@ class _ZeroSumGradConst(torch.autograd.Function):
     def backward(ctx: Any, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         return g - ctx.c, None
 
-def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: List[float],
+def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: List[float], hist_bins: int,
                          logits: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """
     Per-batch distribution stats over the full BxB similarity and target matrices; drives
@@ -138,13 +137,14 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
                 are directly comparable. Under InfoNCE the row-softmax carries no such reading.
     - hpsm_kappas -- the kappa values the mean hard-pair similarity margins are reported at
                 (reporting.learning_curves.hpsm.kappas; one curve-strip line each).
+    - hist_bins --- the bins of each *_hist entry (reporting.learning_curves.hist_bins).
 
     Returns min/max/median/mean for sim/targ as flat keys (the batch logs read those), the mean
     hard-pair similarity margins (hard_pair_similarity_margin averaged over anchors, each a list
     with one entry per hpsm_kappas value): sim_margin_i2t over S (image anchors), sim_margin_t2i
     over S.T (text anchors) and sim_margin, their mean -- the bidirectional reading; each its own
-    curve strip -- plus targ_hist and -- when logits are given -- p_hist: the targets and predicted
-    probabilities as HIST_BINS
+    curve strip -- plus sim_hist, targ_hist and -- when logits are given -- p_hist: the similarities
+    as hist_bins fractions over [-1, 1], the targets and predicted probabilities as hist_bins
     fractions over [0, 1] (distributions, not point stats; the curve strips render them as heatmap
     columns). Reductions are stacked so the device->host transfer is a single .cpu() sync.
     """
@@ -159,14 +159,17 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
         # per kappa, the I2T (image-anchored rows of S) and T2I (text-anchored rows of S.T) means
         reductions += [hard_pair_similarity_margin(M, N, kappa).mean() for kappa in hpsm_kappas for M, N in ((S, Q), (S.T, Q.T))]
         packed = torch.stack([r.float() for r in reductions])
-        packed = torch.cat([packed, torch.histc(t.float(), bins=HIST_BINS, min=0.0, max=1.0) / t.numel()])
+        # clamped: histc drops what falls outside its range, and a cosine can round an ulp past +-1
+        packed = torch.cat([packed, torch.histc(S.clamp(-1.0, 1.0), bins=hist_bins, min=-1.0, max=1.0) / S.numel(),
+                            torch.histc(t.float(), bins=hist_bins, min=0.0, max=1.0) / t.numel()])
         if logits is not None:
             p = logits.detach().float().sigmoid()
-            packed = torch.cat([packed, torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()])
+            packed = torch.cat([packed, torch.histc(p, bins=hist_bins, min=0.0, max=1.0) / p.numel()])
         vals = packed.cpu().tolist()
     n_kappas = len(hpsm_kappas)
     margin_i2t = vals[8:8 + 2 * n_kappas:2]
     margin_t2i = vals[9:8 + 2 * n_kappas:2]
+    hists = vals[8 + 2 * n_kappas:]  # hist_bins apiece, in packing order
     stats = {
         "sim_min":     vals[0],
         "sim_max":     vals[1],
@@ -179,10 +182,11 @@ def sim_targ_batch_stats(sim: torch.Tensor, targs: torch.Tensor, hpsm_kappas: Li
         "sim_margin_i2t": margin_i2t,
         "sim_margin_t2i": margin_t2i,
         "sim_margin":     [0.5 * (a + b) for a, b in zip(margin_i2t, margin_t2i)],
-        "targ_hist":      vals[8 + 2 * n_kappas:8 + 2 * n_kappas + HIST_BINS],
+        "sim_hist":       hists[:hist_bins],
+        "targ_hist":      hists[hist_bins:2 * hist_bins],
     }
     if logits is not None:
-        stats["p_hist"] = vals[8 + 2 * n_kappas + HIST_BINS:]
+        stats["p_hist"] = hists[2 * hist_bins:]
     return stats
 
 def stat_logits(logits, cfg_loss):
@@ -631,8 +635,9 @@ class VLMWrapper(abc.ABC):
         parameter's own gradient, whether the clamp holds it.
         """
         cfg_loss = self.cfg.loss
-        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
-        stats = sim_targ_batch_stats(sims[0], targs, kappas, logits=stat_logits(logits, cfg_loss))
+        cfg_curves = self.cfg.reporting["learning_curves"]
+        stats = sim_targ_batch_stats(sims[0], targs, cfg_curves["hpsm"]["kappas"], cfg_curves["hist_bins"],
+                                     logits=stat_logits(logits, cfg_loss))
         if cfg_loss["crit"] == "infonce":
             logit_scale = self._unwrapped_model.logit_scale
             stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), cfg_loss["logits"]["scale"]["clamp"]))
@@ -828,7 +833,7 @@ class VLMWrapper(abc.ABC):
         mixed_prec = self.cfg.hw.mixed_prec
         device = self.cfg.device
         diag = self.cfg.reporting["batch_diagnostics"]
-        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
+        cfg_curves = self.cfg.reporting["learning_curves"]
 
         # DDP.forward must run under no_sync too, so the reducer is never armed for this step (we sync
         # gradients manually below); otherwise DDP would expect a matching synced backward. The reducer
@@ -851,7 +856,8 @@ class VLMWrapper(abc.ABC):
             loss, loss_raw, batch_stats, grad_sum_sim = chunked_bce_loss_backward(
                 img, txt, class_encs_b, targ_data_b, self.crit, self.compute_logits, chunk, mixed_prec, device,
                 rank, self.world_size, sim_grad_sums=diag["sim_grad_sums"],
-                sim_targ_stats=diag["sim_targ_stats"], hpsm_kappas=kappas
+                sim_targ_stats=diag["sim_targ_stats"], hpsm_kappas=cfg_curves["hpsm"]["kappas"],
+                hist_bins=cfg_curves["hist_bins"],
             )
 
             # representation gradient: push the accumulated band-partial dL/dembs into the encoder (one
@@ -946,11 +952,11 @@ class VLMWrapper(abc.ABC):
 
         loss_total = 0.0
         chunk_stats = []
-        kappas = self.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
+        cfg_curves = self.cfg.reporting["learning_curves"]
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
             _, loss_raw, _, sims, targs, _ = self._loss_full_batch(embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl])
-            chunk_stats.append(sim_targ_batch_stats(sims[0], targs, kappas))
+            chunk_stats.append(sim_targ_batch_stats(sims[0], targs, cfg_curves["hpsm"]["kappas"], cfg_curves["hist_bins"]))
             loss_total += loss_raw.item()
 
         return loss_total / len(chunk_stats), chunk_stats

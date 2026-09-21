@@ -3,7 +3,7 @@
 
 dev: false  # {true, false}
 
-kill_thresh: 0.2  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
+kill_thresh: null  # {null, (0.0, 1.0)}; Fraction of the training run at which a trial that has not improved on its
 # base model is killed: at the train-time eval nearest that fraction, rounded up (ceil(kill_thresh * n_chkpts)), if no
 # eval so far has beaten the base eval's Composite-All Native mAP, the trial ends there and counts as complete --
 # scored at its own best checkpoint and shaded yellow in the stats tables (see README); (null) Never kill

@@ -43,6 +43,7 @@ def _targ(targ, tsm_type="linear"):
 
 
 CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "infonce": L.InfoNCECriterion}
+HIST_BINS = 20  # the harness' reporting.learning_curves.hist_bins
 
 
 def _make_crit(cfg, K, B, targ1="mp", targ2="sp"):
@@ -85,7 +86,7 @@ def _make_harness(model, crit):
     h.cfg = SimpleNamespace(
         loss=crit.cfg,
         reporting={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
-                 "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}}},
+                 "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}, "hist_bins": HIST_BINS}},
     )
     return h
 
@@ -219,15 +220,20 @@ def test_target_blend_through_global_batch_loss(crit_name):
     # a BCE-family loss reports a probability histogram over sigmoid(its logits): bin fractions summing to 1
     p = logits[0].detach().sigmoid()
     hist = batch_stats["p_hist"]
-    assert len(hist) == L.HIST_BINS
+    assert len(hist) == HIST_BINS
     assert sum(hist) == pytest.approx(1.0, abs=1e-5)
-    expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
+    expected = torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()
     assert hist == pytest.approx(expected.tolist(), abs=1e-5)
+    # the similarities get one too, its bins spanning the cosine's [-1, 1]
+    s = sims[0].detach()
+    expected_s = torch.histc(s, bins=HIST_BINS, min=-1.0, max=1.0) / s.numel()
+    assert batch_stats["sim_hist"] == pytest.approx(expected_s.tolist(), abs=1e-5)
+    assert sum(batch_stats["sim_hist"]) == pytest.approx(1.0, abs=1e-5)
     assert "alpha_req_max" not in batch_stats  # the target-implied scale bounds are InfoNCE-only
     # the target stats read the blended target matrix Q = (1 - lambda) MP + lambda I: its histogram, and one
     # margin per configured kappa per direction plus their mean, all over the blended memberships
     Q = (1.0 - lambda_) * (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float() + lambda_ * torch.eye(B)
-    expected_q = torch.histc(Q, bins=L.HIST_BINS, min=0.0, max=1.0) / Q.numel()
+    expected_q = torch.histc(Q, bins=HIST_BINS, min=0.0, max=1.0) / Q.numel()
     assert batch_stats["targ_hist"] == pytest.approx(expected_q.tolist(), abs=1e-5)
     assert batch_stats["targ_mean"] == pytest.approx(Q.mean().item(), abs=1e-5)
     s = sims[0].detach()

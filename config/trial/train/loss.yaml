@@ -25,7 +25,8 @@ unitless: false  # {true, false}; (true) Rescale each loss term by its detached 
 # L/2, its gradient-scale-equivalent value): a lone term reads a constant 1.0 (bif_bce 2.0), and under blend.type:
 # loss the terms are equalized to unit magnitude so lambda is loss2's share of the loss reading -- equivalently (with
 # target-independent weights) a target blend under lambda_eff = lambda * L1 / (lambda * L1 + (1 - lambda) * L2),
-# logged per batch (general log) and curved right above LR (needs diagnostics.batch_diagnostics.sim_targ_stats);
+# logged per batch (general log) and curved in learning_curves/unitless_loss_blend.png (needs
+# diagnostics.batch_diagnostics.sim_targ_stats);
 # (false) Raw losses
 infonce:  # Inert iff (loss.crit != infonce)
   block_residuals: false  # {true, false}; (true) Block the residual component of the logit scale's gradient --

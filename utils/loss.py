@@ -835,9 +835,6 @@ def bce_dsmr_mass(spec_fns, class_encs_b, B, chunk_size, lo, hi, world_size):
     return mass_pos, mass_neg
 
 
-HIST_BINS = 20  # bins spanning [0, 1] for the target / predicted-probability histogram strips
-
-
 def hard_pair_similarity_margin(S, Q, kappa):
     """
     Hardness-weighted continuous-Q hard-pair similarity margin, per row.
@@ -1230,9 +1227,9 @@ class _SimTargStatsAccum:
     Streams the batch's sim/target/probability distribution stats over the loss tiles so the chunked
     path can report the same batch_stats keys as sim_targ_batch_stats without holding
     the full BxB matrices. sim/targ min/max/mean are exact; their median is over a strided subsample
-    of each tile (an exact BxB median would need the whole matrix). Targets and probabilities are
-    also summarized as HIST_BINS histograms, which stream exactly -- counts just add across tiles
-    and ranks. The mean hard-pair similarity margins (sim_margin*, one entry per hpsm_kappas
+    of each tile (an exact BxB median would need the whole matrix). Similarities, targets and probabilities
+    are also summarized as histograms of `hist_bins` bins (reporting.learning_curves.hist_bins), which stream
+    exactly -- counts just add across tiles and ranks. The mean hard-pair similarity margins (sim_margin*, one entry per hpsm_kappas
     value) are exact too. I2T (image anchors): every tile holds whole rows, so the per-row margins just
     sum across tiles and ranks. T2I (text anchors): a text's weights over the images span every tile
     and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
@@ -1241,14 +1238,15 @@ class _SimTargStatsAccum:
     is BCE-family only, so p_hist is always reported here.
     """
     _FIELDS = ("sim", "targ")
-    _HIST_FIELDS = ("targ", "p")
+    _HIST_FIELDS = {"sim": (-1.0, 1.0), "targ": (0.0, 1.0), "p": (0.0, 1.0)}  # field -> the range its bins span
 
-    def __init__(self, device, hpsm_kappas, B):
+    def __init__(self, device, hpsm_kappas, hist_bins, B):
         self.mins = {f: torch.tensor(float("inf"), device=device) for f in self._FIELDS}
         self.maxs = {f: torch.tensor(float("-inf"), device=device) for f in self._FIELDS}
         self.sums = {f: torch.zeros((), dtype=torch.float64, device=device) for f in self._FIELDS}
         self.samps = {f: [] for f in self._FIELDS}
-        self.hists = {f: torch.zeros(HIST_BINS, dtype=torch.float64, device=device) for f in self._HIST_FIELDS}
+        self.hists = {f: torch.zeros(hist_bins, dtype=torch.float64, device=device) for f in self._HIST_FIELDS}
+        self.hist_bins = hist_bins
         self.count = 0
         self.kappas = hpsm_kappas
         self.B = B
@@ -1269,8 +1267,9 @@ class _SimTargStatsAccum:
             self.sums[field] += vals.double().sum()
             stride = max(1, vals.numel() // 4096)  # bound the median subsample per tile
             self.samps[field].append(vals[::stride])
-        for field in self._HIST_FIELDS:
-            self.hists[field] += torch.histc(tiles[field], bins=HIST_BINS, min=0.0, max=1.0).double()
+        for field, (lo, hi) in self._HIST_FIELDS.items():
+            # clamped: histc drops what falls outside its range, and a cosine can round an ulp past +-1
+            self.hists[field] += torch.histc(tiles[field].clamp(lo, hi), bins=self.hist_bins, min=lo, max=hi).double()
         self.count += tiles["sim"].numel()
         S, Q = sim_tile.float(), targs_tile.float()
         self.margin_sums += torch.stack([hard_pair_similarity_margin(S, Q, kappa).double().sum() for kappa in self.kappas])
@@ -1570,7 +1569,8 @@ def _gsum_hook(acc):
     return hook
 
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute_logits, chunk_size, mixed_prec,
-                              device, rank, world_size, sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,)):
+                              device, rank, world_size, sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,),
+                              *, hist_bins):
     """
     Tiled + row-band-sharded global-batch BCE-family loss + backward (GradCache-style representation
     gradients). Computes the exact same weighted loss and gradients as the full-batch path
@@ -1604,6 +1604,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sim None.
     - sim_targ_stats ---- False skips the per-tile stats accumulation and returns batch_stats None.
     - hpsm_kappas ------- kappa values the sim_margin* stats are reported at (one entry each).
+    - hist_bins --------- bins of the *_hist stats (reporting.learning_curves.hist_bins).
 
     Returns (loss, loss_raw, batch_stats, grad_sum_sim), all detached; gradients left in the leaves' /
     params' .grad. grad_sum_sim = sum(dL/dsim), the full-batch sum accumulated tile-by-tile via backward
@@ -1655,7 +1656,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
 
     wbce_tot = torch.zeros((), dtype=torch.float64, device=device)
     raw_tot = torch.zeros((), dtype=torch.float64, device=device)
-    stats = _SimTargStatsAccum(device, hpsm_kappas, B)
+    stats = _SimTargStatsAccum(device, hpsm_kappas, hist_bins, B)
     n_pairs = n_scalar_pairs(crit)
 
     for rs in range(lo, hi, chunk_size):

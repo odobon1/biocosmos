@@ -90,7 +90,7 @@ class TrialData:
             # decomposition and need not match it (blend coefficients, loss.unitless). logit_scale2_grad: the same
             # for loss2's term's own scale under separate logit scalars. Recorded for a learnable scale only (a
             # frozen parameter has no .grad), so an empty series beside a recorded logit_scale is how the
-            # figures read a scale as frozen (utils.report.plot_alpha_curves).
+            # figures read a scale as frozen (utils.report.plot_alpha_curves), drawing its (actual) panels flat zero.
             "logit_scale_grad": [],
             "logit_scale2_grad": [],
             "bias": [],
@@ -109,11 +109,11 @@ class TrialData:
             "sim_margin_i2t": [],
             "sim_margin_t2i": [],
             "sim_margin": [],
-            # targ_hist / p_hist: per batch, the blended targets and predicted pair probabilities
-            # binned over [0, 1] (a list of bin fractions, not a scalar) -- the curve strips render
-            # them as heatmap columns. targ_hist is recorded only when the blended targets are graded
-            # (TrainPipeline._tracked_targ_stats) and p_hist only for a BCE-family loss
-            # (sim_targ_batch_stats), so an excluded series stays empty.
+            # sim_hist / targ_hist / p_hist: per batch, the similarities binned over [-1, 1] and the blended
+            # targets and predicted pair probabilities binned over [0, 1] (a list of bin fractions, not a
+            # scalar) -- the curve strips render them as heatmap columns. p_hist is recorded only for a
+            # BCE-family loss (sim_targ_batch_stats), so an excluded series stays empty.
+            "sim_hist": [],
             "targ_hist": [],
             "p_hist": [],
             # alpha_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
@@ -166,7 +166,7 @@ class TrialData:
             "resid_paths": [],
             # lambda_eff: per batch, loss2's term's share of a unitless loss blend's coefficients, lambda L_1 /
             # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where loss.unitless moves the
-            # blend off the nominal loss.blend.lambda; a scalar, one curve strip right above LR. Recorded only under
+            # blend off the nominal loss.blend.lambda; a scalar, its own figure (unitless_loss_blend.png). Recorded only under
             # loss.unitless over a live loss blend (loss.blend.type loss), so the series stays empty otherwise.
             "lambda_eff": [],
             # dlogalpha_correction: per batch, the delta loss.infonce.block_residuals made to model.logit_scale's

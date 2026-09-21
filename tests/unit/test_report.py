@@ -2095,6 +2095,159 @@ def test_fold_hist_columns_stride_is_smallest_power_of_two_that_fits() -> None:
         assert grid.shape[1] == 10  # bins preserved
 
 
+def test_general_figure_closes_on_the_margin_and_s_q_panels_above_lr(tmp_path, monkeypatch) -> None:
+    # the similarity / target block closes the figure: the mean hard-pair margins, then S Stats over the S Hist.
+    # strip filling its point stats in, then Q Hist., then LR. S Hist. bins the cosine's [-1, 1] (S Stats' own
+    # axis), Q Hist. the targets' [0, 1] -- drawn for a hard 0/1 target like any other
+    n, bins = 4, 8
+    keys = ["grad_norm_model", "delta_norm_model", "grad_sum_sim", "sim_hist", "targ_hist", "p_hist",
+            "sim_margin_i2t", "sim_margin_t2i", "sim_margin", "loss_train", "loss_raw_train", "lr",
+            *(f"sim_{stat}" for stat in ("min", "max", "mean", "median"))]
+    hard = [[0.9] + [0.0] * (bins - 2) + [0.1]] * n  # an sp / mp indicator: the two end bins
+    data_epoch = {**{key: [] for key in keys}, "loss_train": [1.0] * n, "lr": [1e-4] * n,
+                  "sim_margin": [[0.1]] * n, "sim_hist": [[1.0 / bins] * bins] * n, "targ_hist": hard,
+                  **{f"sim_{stat}": [val] * n for stat, val in (("min", -0.4), ("max", 0.9), ("mean", 0.1), ("median", 0.0))}}
+    seen = {}
+
+    def finish(fig, axes, axes_hist, *args, **kwargs):
+        seen["panels"] = [(ax.get_ylabel(), ax.get_ylim(), ax in axes_hist) for ax in axes]
+        seen["mesh"] = {ax.get_ylabel(): ax.collections[0].get_array().reshape(bins, n) for ax in axes_hist}
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+                               {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
+
+    assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-4:] == [
+        ("S Stats", False), ("S Hist.", True), ("Q Hist.", True), ("η", False)]
+    assert seen["panels"][-5][0] == r"$\overline{\Delta S}_{\kappa}$"
+    ylims = {label: ylim for label, ylim, _ in seen["panels"]}
+    assert ylims["S Stats"] == ylims["S Hist."] == (-1.0, 1.0) and ylims["Q Hist."] == (0.0, 1.0)
+    assert seen["mesh"]["Q Hist."][:, 0].tolist() == hard[0]  # bottom bin to top, one column per batch
+
+    # a BCE-family loss records the predicted pair probabilities too: P Hist., directly above the Q Hist. it
+    # reads against, on the same [0, 1] axis
+    data_epoch["p_hist"] = [[1.0 / bins] * bins] * n
+    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+                               {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
+    assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-5:] == [
+        ("S Stats", False), ("S Hist.", True), ("P Hist.", True), ("Q Hist.", True), ("η", False)]
+    assert {label: ylim for label, ylim, _ in seen["panels"]}["P Hist."] == (0.0, 1.0)
+
+
+def test_scalar_figures_materialize_only_where_their_series_are_recorded(tmp_path, monkeypatch) -> None:
+    # bias.png / unitless_loss_blend.png (plot_metrics' panel specs): a figure of one line panel per recorded
+    # series, and no figure at all -- no file -- for a trial recording none of them (an InfoNCE loss or a
+    # frozen bias; anything but a unitless loss blend)
+    n = 4
+    bias_panels = [("bias", r"$b$", dict(color="blue")), ("bias2", r"$b_2$", dict(color="blue"))]
+    lambda_panels = [("lambda_eff", r"$\lambda_{\mathrm{eff}}$", dict(color="tab:olive", linewidth=1.0))]
+    plot = lambda data_epoch, panels, name: report.plot_scalar_curves(
+        data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.8, 0.8, panels, plot_title="a\nb\nc", output_filename=name)
+
+    unrecorded = {"bias": [], "bias2": [], "lambda_eff": []}
+    plot(unrecorded, bias_panels, "learning_curves/bias.png")
+    plot(unrecorded, lambda_panels, "learning_curves/unitless_loss_blend.png")
+    assert not (tmp_path / "learning_curves").exists()
+
+    recorded = {"bias": [-10.0, -9.8, -9.5, -9.1], "bias2": [], "lambda_eff": [0.3, 0.35, 0.4, 0.42]}
+    plot(recorded, lambda_panels, "learning_curves/unitless_loss_blend.png")
+    assert [p.name for p in (tmp_path / "learning_curves").iterdir()] == ["unitless_loss_blend.png"]
+
+    seen = {}
+    monkeypatch.setattr(report, "_finish_curves", lambda fig, axes, *args, **kwargs: seen.update(
+        panels=[(ax.get_ylabel(), list(ax.get_lines()[0].get_ydata())) for ax in axes]))
+    plot(recorded, bias_panels, "learning_curves/bias.png")  # shared logit scalars: the one bias, no b_2 panel
+    assert seen["panels"] == [(r"$b$", recorded["bias"])]
+    plot({**recorded, "bias2": [-5.0] * n}, bias_panels, "learning_curves/bias.png")
+    assert [label for label, _ in seen["panels"]] == [r"$b$", r"$b_2$"]
+    plt.close("all")
+
+
+def _ytick_labels(ax, which="major"):
+    """The non-empty y tick labels drawn inside the panel's view, bottom to top."""
+    ax.figure.canvas.draw()
+    lo, hi = ax.get_ylim()
+    ticks = ax.yaxis.get_major_ticks() if which == "major" else ax.yaxis.get_minor_ticks()
+    return [t.label1.get_text() for t in ticks if lo <= t.get_loc() <= hi and t.label1.get_text()]
+
+
+def test_format_yticks_writes_the_exponent_into_every_label_and_thins_the_ticks() -> None:
+    # a linear panel of tiny values: the stock formatter ticks it "0 / 2 / 4" under a bare "1e-7" floating over
+    # the panel's corner; every label carries its own exponent instead, as a log axis' do, and nothing floats.
+    # Panels are the learning curves' 0.8 in, which holds four ticks
+    x = list(range(8))
+    fig = report.plt.figure(figsize=(10, 0.8))
+    ax = fig.add_axes([0.1, 0.0, 0.8, 1.0])
+    ax.plot(x, [5.4e-7, 2.2e-7, 1.2e-7, 8e-8, 8e-8, 8e-8, 8e-8, 0.0])
+    ax.tick_params(labelsize=8)
+    report._format_yticks(ax)
+    assert _ytick_labels(ax) == ["0", r"$\mathdefault{2\times10^{-7}}$", r"$\mathdefault{4\times10^{-7}}$"]
+    assert ax.yaxis.get_offset_text().get_text() == ""
+
+    # a signed one, and values matplotlib leaves in plain notation read as they always did
+    ax.clear()
+    ax.plot(x, [-8e-8, 6e-8, 1e-8, 0, 0, 0, 0, 0])
+    report._format_yticks(ax)
+    assert r"$\mathdefault{-5\times10^{-8}}$" in _ytick_labels(ax) and r"$\mathdefault{5\times10^{-8}}$" in _ytick_labels(ax)
+    ax.clear()
+    ax.plot(x, [-0.3, 0.25, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
+    report._format_yticks(ax)
+    assert [label.replace("\N{MINUS SIGN}", "-") for label in _ytick_labels(ax)] == ["-0.25", "0.00", "0.25"]
+
+    # a log panel under a decade (the loss, 7.2 - 7.8): stock matplotlib labels every minor tick, seven labels
+    # crowding the panel. Round linear values instead, no more than the panel holds, the minor ticks left bare
+    ax.clear()
+    ax.plot(x, [7.18, 7.63, 7.63, 7.78, 7.63, 7.63, 7.63, 7.63])
+    ax.set_yscale("log")
+    ax.minorticks_on()
+    report._format_yticks(ax)
+    assert _ytick_labels(ax) == [rf"$\mathdefault{{{m}\times10^{{0}}}}$" for m in ("7.25", "7.5", "7.75")]
+    assert _ytick_labels(ax, "minor") == []
+    # over many decades: the decades, strided to fit
+    ax.clear()
+    ax.plot(x, [3e1, 4e0, 2e-1, 3e-2, 5e-3, 4e-4, 6e-5, 2e-6])
+    ax.set_yscale("log")
+    report._format_yticks(ax)
+    assert _ytick_labels(ax) == [rf"$\mathdefault{{10^{{{e}}}}}$" for e in (-6, -4, -2, 0)]
+
+    # ticks a figure set by hand stay: a ratio panel's 0 / 0.5 / 1, a blank panel's none, the LR panel's own format
+    ax.clear()
+    ax.plot(x, [0.5] * 8)
+    ax.set_yticks([0.0, 0.5, 1.0])
+    report._format_yticks(ax)
+    assert list(ax.get_yticks()) == [0.0, 0.5, 1.0]
+    ax.set_yticks([])
+    report._format_yticks(ax)
+    assert list(ax.get_yticks()) == []
+    ax.clear()
+    ax.plot(x, [4e-4, 4e-4, 3e-4, 3e-4, 2e-4, 1e-4, 5e-5, 0.0])
+    ax.yaxis.set_major_formatter(report.FormatStrFormatter("%.1e"))
+    report._format_yticks(ax)
+    assert _ytick_labels(ax) == ["0.0e+00", "2.0e-04", "4.0e-04"]
+
+    # a taller panel (the score curves' 1.83 in) has room for more, and is still held to five
+    report.plt.close(fig)
+    fig = report.plt.figure(figsize=(10, 1.83))
+    ax = fig.add_axes([0.1, 0.0, 0.8, 1.0])
+    ax.plot(x, [0.0, 0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 1.0])
+    ax.set_ylim(0, 1)
+    ax.tick_params(labelsize=8)
+    report._format_yticks(ax)
+    assert [float(label) for label in _ytick_labels(ax)] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    report.plt.close(fig)
+
+
+def test_log_ticks_are_nice_spaced_and_capped() -> None:
+    # the decades first, strided while n_max would be exceeded or two would sit closer than 1 / n_max of the axis
+    assert report._log_ticks(1e-8, 1.0, 4) == pytest.approx([1e-8, 1e-6, 1e-4, 1e-2])
+    assert report._log_ticks(1e-3, 3.0, 4) == pytest.approx([1e-3, 1e-2, 1e-1, 1.0])
+    # a decade or so: its 5s / 2s fill in where there is room
+    assert report._log_ticks(0.03, 0.9, 4) == pytest.approx([0.03, 0.1, 0.5])
+    # too narrow for two of those: round linear values, inside the view
+    assert report._log_ticks(7.17, 7.81, 4) == pytest.approx([7.25, 7.5, 7.75])
+
+
 def test_fit_ylabel_shrinks_a_caption_taller_than_its_axes() -> None:
     # the label is rotated, so its height is its longest line's length: a two-line caption fits the same way
     for caption in ("n-shot Acc. (ID I2T)", "n-shot Acc.\n(ID I2T)", r"$\mathcal{E}_{\text{ir}} = D_{\mathrm{KL}}(y\|p^*)$"):
@@ -2205,38 +2358,44 @@ def test_logalpha_figure_draws_the_scale_parameters_grad_with_the_correction(tmp
     # what the scale actually received, measured: model.logit_scale.grad (read post-backward, pre-step) gets
     # its own panel directly under the log alpha it belongs to, with loss.infonce.block_residuals' correction
     # drawn on it -- so the gradient without the intervention is the one line minus the other. Captioned
-    # (.grad) because the analytical dlogalpha full-term panel further down carries the same nabla, and the
+    # (actual) because the analytical dlogalpha full-term panel further down carries the same nabla, and the
     # two need not agree (blend coefficients, loss.unitless)
     n = 4
+    alpha = [2.0, 2.2, 2.5, 2.7]
     grad, corr = [-0.25, -0.20, -0.10, -0.05], [0.17, 0.12, 0.05, 0.01]
-    data_epoch = _alpha_data_epoch(n, scale=[2.0, 2.2, 2.5, 2.7], logit_scale=[0.7, 0.8, 0.9, 1.0],
+    data_epoch = _alpha_data_epoch(n, scale=alpha, logit_scale=[0.7, 0.8, 0.9, 1.0],
                                    logit_scale_grad=grad, dlogalpha_correction=corr)
 
     panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    assert [label for label, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)"]
+    assert [label for label, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)"]
     lines = panels[1][1]
-    assert lines[".grad"] == grad and lines["correction"] == corr
+    assert lines["actual"] == grad and lines["correction"] == corr
 
-    # the parameter is log alpha, so the alpha figure gets no such panel
+    # the parameter is log alpha, so the alpha figure's panel is that .grad carried into alpha's units by the
+    # chain rule -- (1 / alpha) * .grad, alpha being exp(log alpha) -- and the correction with it
     panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
-    assert [label for label, _ in panels] == [r"$\alpha$"]
+    assert [label for label, _ in panels] == [r"$\alpha$", r"$\nabla_{\alpha} \mathcal{L}$" + "\n(actual)"]
+    lines = panels[1][1]
+    assert lines["actual"] == pytest.approx([g / a for g, a in zip(grad, alpha)])
+    assert lines["correction"] == pytest.approx([c / a for c, a in zip(corr, alpha)])
 
     # separate logit scalars: each scale's own grad under its own panel; the correction is the primary's
     data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale2=[0.4] * n, logit_scale_grad=grad,
                                    logit_scale2_grad=[0.3] * n, dlogalpha_correction=corr)
     panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
     assert [label for label, _ in panels] == [
-        r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)",
-        r"$\log \alpha_2$", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(.grad)"]
+        r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)",
+        r"$\log \alpha_2$", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(actual)"]
     assert "correction" in panels[1][1] and "correction" not in panels[3][1]
-    assert panels[3][1][".grad"] == [0.3] * n
+    assert panels[3][1]["actual"] == [0.3] * n
 
 
 def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -> None:
     # a frozen scale (loss.logits.scale.freeze) is recorded all the same: a flat line on the alpha figure and
-    # on the logalpha one, captioned as frozen and with no .grad panel under it (a frozen parameter has none
-    # -- the empty .grad series is how the figure reads it as frozen). The y axis of a panel drawing the one
-    # value and nothing else has no range to autoscale: it gets that value as its only tick, the line centred
+    # on the logalpha one, captioned as frozen, its (actual) gradient panel under it flat zero (a frozen
+    # parameter has no .grad: it received nothing -- the empty .grad series is how the figure reads it as
+    # frozen). The y axis of a panel drawing the one value and nothing else has no range to autoscale: it gets
+    # that value as its only tick, the line centred
     n = 4
     alpha = 1.0 / 0.07
     frozen = dict(scale=[alpha] * n, logit_scale=[np.log(alpha)] * n)
@@ -2244,12 +2403,13 @@ def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -
     for scale_key, prefix, sym, val, tick in (("scale", "dalpha", r"\alpha", alpha, "14.29"),
                                               ("logit_scale", "dlogalpha", r"\log \alpha", np.log(alpha), "2.659")):
         panels = _plot_alpha(_alpha_data_epoch(n, **frozen), n, tmp_path, monkeypatch, scale_key, prefix, sym)
-        label = rf"${sym}$" + "\n(frozen)"
-        assert [caption for caption, _ in panels] == [label]  # the scale's panel, and no .grad one
+        label, label_grad = rf"${sym}$" + "\n(frozen)", rf"$\nabla_{{{sym}}} \mathcal{{L}}$" + "\n(actual)"
+        assert [caption for caption, _ in panels] == [label, label_grad]
         assert panels[0][1] == {rf"${sym}$": [val] * n}  # the recorded value, drawn as is
         assert _plot_alpha.seen["yticklabels"][label] == [tick]
         lo, hi = _plot_alpha.seen["ylims"][label]
         assert lo < val < hi and (lo + hi) / 2 == pytest.approx(val)
+        assert panels[1][1]["actual"] == [0.0] * n and _plot_alpha.seen["yticklabels"][label_grad] == ["0"]
 
     # read against its target-implied bounds the panel has a range, and autoscales over the pair -- that
     # comparison is what a frozen scale's panel is kept for
@@ -2264,16 +2424,39 @@ def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -
     _plot_alpha(_alpha_data_epoch(n, **frozen, **inf), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
     assert _plot_alpha.seen["yticklabels"][label] == ["14.29"]
 
-    # a learnable scale is untouched: no frozen caption, its .grad panel under it, an autoscaled axis
+    # a scale frozen at 100 under a softmax target mapping pinned to it draws its bound trio ON it: bit for bit
+    # in alpha units, but one float32 rounding step apart in log units -- the parameter holds float32(log 100),
+    # the bounds are the float64 log of an alpha_req of exactly 100. That step is float noise, not a spread to
+    # autoscale into (it would fill the panel, the scale at the top and the trio at the bottom): one tick, as
+    # on the alpha figure
+    log_param, log_req = float(np.float32(np.log(100.0))), float(np.log(100.0))
+    assert 0.0 < log_param - log_req < 1e-7
+    pinned = dict(scale=[100.0] * n, logit_scale=[log_param] * n,
+                  **{f"alpha_req_{stat}": [100.0] * n for stat in ("min", "mean", "max")},
+                  **{f"log_alpha_req_{stat}": [log_req] * n for stat in ("min", "mean", "max")})
+    for scale_key, prefix, sym, tick in (("scale", "dalpha", r"\alpha", "100"),
+                                         ("logit_scale", "dlogalpha", r"\log \alpha", "4.605")):
+        _plot_alpha(_alpha_data_epoch(n, **pinned), n, tmp_path, monkeypatch, scale_key, prefix, sym)
+        assert _plot_alpha.seen["yticklabels"][rf"${sym}$" + "\n(frozen)"] == [tick]
+    # a spread that small but real -- 1e-4 of the value -- is still a range, and autoscales
+    drift = dict(pinned, logit_scale=[log_param * (1.0 + 1e-4 * i / n) for i in range(n)])
+    _plot_alpha(_alpha_data_epoch(n, **drift), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$" + "\n(frozen)"]) > 1
+
+    # a learnable scale is untouched: no frozen caption, its recorded .grad under it, autoscaled axes
     learnable = dict(scale=[2.0, 2.2, 2.5, 2.7], logit_scale=[0.7, 0.8, 0.9, 1.0], logit_scale_grad=[-0.2] * n)
     panels = _plot_alpha(_alpha_data_epoch(n, **learnable), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    assert [caption for caption, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(.grad)"]
-    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$"]) > 1
+    label_grad = r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)"
+    assert [caption for caption, _ in panels] == [r"$\log \alpha$", label_grad]
+    assert panels[1][1]["actual"] == [-0.2] * n
+    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$"]) > 1 and len(_plot_alpha.seen["yticklabels"][label_grad]) > 1
 
     # separate logit scalars share loss.logits.scale.freeze, so the second scale is frozen alongside
     both = dict(logit_scale=[0.7] * n, logit_scale2=[0.7] * n)
     panels = _plot_alpha(_alpha_data_epoch(n, **both), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    assert [caption for caption, _ in panels] == [r"$\log \alpha$" + "\n(frozen)", r"$\log \alpha_2$" + "\n(frozen)"]
+    assert [caption for caption, _ in panels] == [
+        r"$\log \alpha$" + "\n(frozen)", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)",
+        r"$\log \alpha_2$" + "\n(frozen)", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(actual)"]
 
 
 def _dalpha_series(n, prefix, res_abs):
@@ -2289,8 +2472,8 @@ def _dalpha_series(n, prefix, res_abs):
 def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(tmp_path, monkeypatch) -> None:
     # the residual comps are hatched "unvalidated" over every batch with rows off the subtraction, whatever
     # their magnitude; full / struct never are. The analytical full term says so in its caption, sharing its
-    # symbol with the measured .grad panel. And the agg blocks are ruled around the dalpha panels -- NOT shifted
-    # up by the .grad panel that sits among the scale ones
+    # symbol with the measured (actual) panel. And the agg blocks are ruled around the dalpha panels -- NOT shifted
+    # up by the (actual) panel that sits among the scale ones
     n = 4
     paths = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
     data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale_grad=[-0.1] * n, resid_paths=paths,
@@ -2302,9 +2485,9 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
     for sup in (r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}"):
         assert marks[nabla(sup)] == ["unvalidated"]
     assert marks[nabla("") + "\n(analytic)"] == [] and marks[nabla(r"^{\text{S}}")] == []
-    assert marks[nabla("") + "\n(.grad)"] == []
+    assert marks[nabla("") + "\n(actual)"] == []
     # each block is one agg's five comps, in order: the sums' block opens on the analytical full term, not
-    # on a scale or .grad panel
+    # on a scale or (actual) panel
     assert [len(block) for block in blocks] == [5, 5, 5, 5, 5]
     assert blocks[0][0] == nabla("") + "\n(analytic)" and blocks[0][-1] == nabla(r"^{\text{IR}}")
     # the blocks in order: the sums, the per-pair magnitude A and |sum| / A, the per-anchor magnitude B and

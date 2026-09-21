@@ -72,6 +72,7 @@ def _targ(targ):
 
 
 CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}
+HIST_BINS = 20  # the chunked calls' reporting.learning_curves.hist_bins
 
 
 def _make_crit(cfg, K, B, targ1="mp", targ2="sp"):
@@ -295,6 +296,7 @@ def _assert_chunked_matches_full(cfg, targ1, targ2, C):
     pc = _params(1)
     loss_c, loss_raw_c, stats_c, gsum_c = L.chunked_bce_loss_backward(
         imgc, txtc, class_encs_b, targ_data_b, crit, _compute_logits_fn(pc), C, False, device, rank=0, world_size=1,
+        hist_bins=HIST_BINS,
     )
 
     torch.testing.assert_close(loss_c, loss_ref.detach(), rtol=1e-4, atol=1e-6)
@@ -328,7 +330,7 @@ def test_stats_min_max_mean_exact():
     _, _, stats, _ = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, targ_data_b, crit,
         lambda s, clamp, center=None, center_global=None, half_live=False, secondary=False: s * 10.0 - 0.5, C, False, torch.device("cpu"), rank=0, world_size=1,
-        hpsm_kappas=(0.0, 5.0),
+        hpsm_kappas=(0.0, 5.0), hist_bins=HIST_BINS,
     )
     assert stats["sim_min"] == pytest.approx(sim.min().item(), abs=1e-5)
     assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
@@ -344,8 +346,11 @@ def test_stats_min_max_mean_exact():
     # the streamed probability histogram matches a full-batch one over the stub's logits
     # (sim * 10 - 0.5): counts just add across tiles, so it is exact, not subsampled
     p = (sim * 10.0 - 0.5).sigmoid()
-    expected = torch.histc(p, bins=L.HIST_BINS, min=0.0, max=1.0) / p.numel()
+    expected = torch.histc(p, bins=HIST_BINS, min=0.0, max=1.0) / p.numel()
     assert stats["p_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
+    # and so does the similarity histogram, its bins spanning the cosine's [-1, 1]
+    expected = torch.histc(sim, bins=HIST_BINS, min=-1.0, max=1.0) / sim.numel()
+    assert stats["sim_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
 
 
 def test_stats_over_blended_targets():
@@ -362,11 +367,12 @@ def test_stats_over_blended_targets():
     targs = (1.0 - lambda_) * (class_encs_b.unsqueeze(1) == class_encs_b.unsqueeze(0)).float() + lambda_ * torch.eye(B)
     _, _, stats, _ = L.chunked_bce_loss_backward(
         img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(_params(1)), C, False, torch.device("cpu"), rank=0, world_size=1,
+        hist_bins=HIST_BINS,
     )
     assert stats["targ_min"] == pytest.approx(targs.min().item(), abs=1e-5)
     assert stats["targ_max"] == pytest.approx(targs.max().item(), abs=1e-5)
     assert stats["targ_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
-    expected = torch.histc(targs, bins=L.HIST_BINS, min=0.0, max=1.0) / targs.numel()
+    expected = torch.histc(targs, bins=HIST_BINS, min=0.0, max=1.0) / targs.numel()
     assert stats["targ_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
     assert "alpha_req_max" not in stats  # the target-implied scale bounds are InfoNCE-only
     # default kappas (0.0,): the bidirectional mean over the blended memberships
@@ -391,7 +397,7 @@ def test_batch_diagnostics_off():
         p = _params(1)
         loss, loss_raw, stats, gsum = L.chunked_bce_loss_backward(
             img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(p), C, False, torch.device("cpu"), rank=0, world_size=1,
-            sim_grad_sums=sim_grad_sums, sim_targ_stats=sim_targ_stats,
+            sim_grad_sums=sim_grad_sums, sim_targ_stats=sim_targ_stats, hist_bins=HIST_BINS,
         )
         return loss, loss_raw, stats, gsum, img, txt, p
 
@@ -447,6 +453,7 @@ def test_chunked_matches_full_under_mixed_precision_with_the_real_head(center):
     modelc, compute_logits_c = head()
     loss_c, _, _, gsum_c = L.chunked_bce_loss_backward(
         imgc, txtc, class_encs_b, targ_data_b, crit, compute_logits_c, C, True, device, rank=0, world_size=1,
+        hist_bins=HIST_BINS,
     )
 
     torch.testing.assert_close(loss_c, loss.detach(), rtol=1e-5, atol=1e-6)
@@ -483,7 +490,7 @@ def test_chunked_asserts_on_geo_sim_center():
     class_encs_b = torch.randint(0, K, (B,), generator=g)
     with pytest.raises(AssertionError, match="requires cos sim"):
         L.chunked_bce_loss_backward(img, txt, class_encs_b, [None] * B, crit, _compute_logits_fn(_params(1)), 8, False,
-                                    torch.device("cpu"), rank=0, world_size=1)
+                                    torch.device("cpu"), rank=0, world_size=1, hist_bins=HIST_BINS)
 
 
 def _synthetic_vcv():

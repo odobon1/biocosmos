@@ -109,7 +109,11 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     rep_a = {"logging": True}
     dev_a = {"n_epochs": 1}
     ht_a = {"kernel": "bm"}
-    al_a = {"config": {"param": {"a": "A"}}}
+    # param_value / universal_value keys are override VALUES (floats/ints/bools/null) -- the reload must
+    # hand them back with their types intact (_freeze_aliases / _thaw_aliases), not json-stringified
+    al_a = {"config": {"param": {"a": "A"},
+                       "param_value": {"lr.init": {6.0e-5: "6e-5"}, "batch_size": {2_048: "2k"}},
+                       "universal_value": {True: "T", False: "F", None: "N"}}}
 
     train_b = {"campaign": "changed", "split": {"split": "dev"}, "operational": {"dev": False}}
     hw_b = {"mixed_prec": False, "prefetch_factor": 2}
@@ -120,7 +124,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     rep_b = {"logging": False}
     dev_b = {"n_epochs": 2}
     ht_b = {"kernel": "ou"}
-    al_b = {"config": {"param": {"b": "B"}}}
+    al_b = {"config": {"param": {"b": "B"}, "param_value": {}, "universal_value": {}}}
 
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_a)
     monkeypatch.setattr(cr, "load_hardware_config_dict", lambda: hw_a)
@@ -174,7 +178,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     monkeypatch.setattr(cr, "load_reporting_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_dev_config_dict", lambda: {})
     monkeypatch.setattr(cr, "load_htargs_config_dict", lambda: {})
-    monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: {})
+    monkeypatch.setattr(cr, "load_aliases_config_dict", lambda: {"config": {"param_value": {}, "universal_value": {}}})
 
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 

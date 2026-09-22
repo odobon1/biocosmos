@@ -222,6 +222,30 @@ def _is_dirty(name: str) -> bool:
         return subprocess.run(["git", *args], cwd=Path(__file__).parent, capture_output=True, text=True, check=True).stdout.strip()
     return bool(git("status", "--porcelain", "--untracked-files=no")) or not git("ls-files", "--", f"config/campaigns/{name}.yaml")
 
+def _freeze_aliases(aliases: dict) -> dict:
+    """The alias tables in json-safe form for cfg_baseline.json: config.param_value's per-key tables and
+    config.universal_value are keyed by override VALUES -- floats/ints (lr.init, batch_size), bools/null
+    (universal_value) -- and json object keys are strings, so a plain dump would silently stringify them.
+    The reloaded tables would then no longer match the values they alias: every aliased arm / coord name
+    shifts on the campaign's first from-disk read, and the plan diff takes the renames for removals +
+    additions (completed trials deleted and rerun). Held as [value, alias] pair lists on disk instead;
+    _thaw_aliases rebuilds the dicts."""
+    cfg = aliases["config"]
+    return {**aliases, "config": {
+        **cfg,
+        "param_value": {param: [[v, a] for v, a in table.items()] for param, table in cfg["param_value"].items()},
+        "universal_value": [[v, a] for v, a in cfg["universal_value"].items()],
+    }}
+
+def _thaw_aliases(aliases: dict) -> dict:
+    """Inverse of _freeze_aliases: the pair-list tables back to dicts, non-string keys intact."""
+    cfg = aliases["config"]
+    return {**aliases, "config": {
+        **cfg,
+        "param_value": {param: dict(pairs) for param, pairs in cfg["param_value"].items()},
+        "universal_value": dict(cfg["universal_value"]),
+    }}
+
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
@@ -243,10 +267,13 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     whose `aug` is `custom`. Every later relaunch (resume or matrix extension) reloads that
     snapshot rather than re-reading the YAML, so edits to any config file after a campaign's first launch
     never alter that campaign -- all of its trials, original or added later, train against the same
-    frozen config."""
+    frozen config. The alias tables ride as [value, alias] pairs on disk and are rebuilt on load
+    (_freeze_aliases / _thaw_aliases), so their non-string keys survive the json round trip."""
     fpath = _dpath_phase(campaign, "_screen") / "cfg_baseline.json"
     if fpath.exists():
-        return load_json(fpath)
+        cfg_snapshot = load_json(fpath)
+        cfg_snapshot["aliases"] = _thaw_aliases(cfg_snapshot["aliases"])
+        return cfg_snapshot
 
     cfg_dev = load_dev_config_dict()
     cfg_general = apply_dev_overrides(load_train_config_dict(), cfg_dev)
@@ -263,7 +290,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
         "aliases": load_aliases_config_dict(),
     }
     fpath.parent.mkdir(parents=True, exist_ok=True)
-    save_json(cfg_snapshot, fpath)
+    save_json({**cfg_snapshot, "aliases": _freeze_aliases(cfg_snapshot["aliases"])}, fpath)
     return cfg_snapshot
 
 def _fmt_name_value(v) -> str:
@@ -769,7 +796,7 @@ def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
     dpath_phase.mkdir(parents=True, exist_ok=True)
     fpath = dpath_phase / "cfg_baseline.json"
     if not fpath.exists():
-        save_json(cfg_snapshot, fpath)
+        save_json({**cfg_snapshot, "aliases": _freeze_aliases(cfg_snapshot["aliases"])}, fpath)
 
 def _copy_qual_picks(campaign: str, matrix: dict, cfg_snapshot: dict) -> None:
     """Seed the qual tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),

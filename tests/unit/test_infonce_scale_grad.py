@@ -490,7 +490,7 @@ def test_block_resid_is_the_hard_target_residual_in_closed_form(alpha, targ):
     log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
     a = log_scale.exp().item()
 
-    term, correction = L.infonce_block_resid(Q, S, log_scale, clamp=False)
+    term, correction = L.infonce_block_resid(Q, S, log_scale, clamp=False, full=False)
     (grad,) = torch.autograd.grad(term, log_scale)
 
     assert term.item() == 0.0
@@ -517,7 +517,7 @@ def test_block_resid_keeps_the_half_the_p_opt_subtraction_loses():
     log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
     a = log_scale.exp().item()
 
-    (grad,) = torch.autograd.grad(L.infonce_block_resid(Q, S, log_scale, clamp=False)[0], log_scale)
+    (grad,) = torch.autograd.grad(L.infonce_block_resid(Q, S, log_scale, clamp=False, full=False)[0], log_scale)
 
     P_opt = L.infonce_p_opt(Y, alpha)
     subtracted = -a * 0.5 * (((P_opt - Y) * (S + S.T)).sum(dim=1)).mean().item()
@@ -552,7 +552,7 @@ def test_block_resid_reads_the_sims_not_the_logits():
         with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
             Z = sim * log_scale.exp() + torch.tensor(b)
         assert Z.dtype == torch.bfloat16
-        grads.append(torch.autograd.grad(L.infonce_block_resid(Q, sim, log_scale, clamp=False)[0], log_scale)[0].item())
+        grads.append(torch.autograd.grad(L.infonce_block_resid(Q, sim, log_scale, clamp=False, full=False)[0], log_scale)[0].item())
     # the bias cannot reach the correction at all now: one gradient, whatever the logits were shifted to
     assert grads[0] == grads[1] != 0.0
     Qd = Q.double()
@@ -569,7 +569,7 @@ def test_block_resid_reads_the_sims_not_the_logits():
         Z2 = sim2 * torch.tensor(0.0).exp() + torch.tensor(bias)
     assert Z2.double().unique().numel() == 1  # every pair rounded to one logit
     log_scale = torch.tensor(0.0, requires_grad=True)
-    (grad2,) = torch.autograd.grad(L.infonce_block_resid(torch.eye(2), sim2, log_scale, clamp=False)[0], log_scale)
+    (grad2,) = torch.autograd.grad(L.infonce_block_resid(torch.eye(2), sim2, log_scale, clamp=False, full=False)[0], log_scale)
     assert grad2 != 0.0
     assert sim2.double().unique().numel() > 1  # the sims themselves never lost the structure
 
@@ -786,8 +786,8 @@ def test_block_residuals_leaves_the_criterion_only_its_structural_scale_gradient
     class_encs, Q, Y = _hard_targs(B, 4, targ)
     S = _sims(B, seed=23)
 
-    off = _run_crit(L, targ, class_encs, S, log_alpha, block=False)
-    on = _run_crit(L, targ, class_encs, S, log_alpha, block=True)
+    off = _run_crit(L, targ, class_encs, S, log_alpha, block=None)
+    on = _run_crit(L, targ, class_encs, S, log_alpha, block="alpha")
 
     for i in (0, 1, 3):  # loss, loss_raw, dL/dS
         torch.testing.assert_close(on[i], off[i], rtol=0.0, atol=0.0)
@@ -797,6 +797,37 @@ def test_block_residuals_leaves_the_criterion_only_its_structural_scale_gradient
     assert off[2].item() == pytest.approx(full, rel=1e-5)  # the loss scores against a float32 Y
     assert on[2].item() == pytest.approx(struct, rel=1e-5)
     assert (on[2] - off[2]).item() == pytest.approx(blocking, rel=1e-9)  # exactly the term's gradient
+
+
+@pytest.mark.parametrize("targ", ["mp", "sp"])
+def test_block_residuals_full_leaves_the_whole_model_only_its_structural_gradient(targ):
+    # under full the same residual leaves dL/dS too: the loss reading is untouched and the scale's
+    # gradient is what alpha gives it (the scale's part is one term either way), while the gradient
+    # into the sims drops to what the loss would send the towers against the reachable optimum p* in
+    # place of y -- per pair and anchor direction alpha (p - p*) / B, p* off the solve here rather than
+    # the closed form the term is built on
+    L = import_loss_module()
+    B, log_alpha = 16, math.log(3.0)
+    class_encs, Q, Y = _hard_targs(B, 4, targ)
+    S = _sims(B, seed=23)
+    alpha = math.exp(log_alpha)
+
+    off = _run_crit(L, targ, class_encs, S, log_alpha, block=None)
+    scale = _run_crit(L, targ, class_encs, S, log_alpha, block="alpha")
+    full = _run_crit(L, targ, class_encs, S, log_alpha, block="full")
+
+    for i in (0, 1):  # loss, loss_raw
+        torch.testing.assert_close(full[i], off[i], rtol=0.0, atol=0.0)
+    assert full[2].item() == pytest.approx(scale[2].item(), rel=1e-12)
+    P_opt = L.infonce_p_opt(Y, alpha)
+    Z = alpha * S
+    P, Pt = torch.softmax(Z, dim=1), torch.softmax(Z.T, dim=1)
+    dS_full = 0.5 * alpha * ((P - Y) + (Pt - Y).T) / B
+    dS_struct = 0.5 * alpha * ((P - P_opt) + (Pt - P_opt).T) / B
+    assert (dS_full - dS_struct).abs().max() > 1e-3 * dS_full.abs().max()  # a real share at this alpha
+    torch.testing.assert_close(off[3], dS_full, rtol=1e-5, atol=1e-8)  # the loss scores against a float32 Y
+    torch.testing.assert_close(scale[3], dS_full, rtol=1e-5, atol=1e-8)
+    torch.testing.assert_close(full[3], dS_struct, rtol=1e-5, atol=1e-8)
 
 
 @pytest.mark.parametrize("unitless", [False, True])
@@ -822,8 +853,8 @@ def test_blocked_stat_is_the_correction_a_loss_blend_actually_applies(unitless):
         loss.backward()
         return log_scale.grad.item(), crit.dlogalpha_correction
 
-    grad_off, correction_off = run(False)
-    grad_on, correction_on = run(True)
+    grad_off, correction_off = run(None)
+    grad_on, correction_on = run("alpha")
 
     assert correction_off is None  # nothing recorded when the toggle is off
     # the stat IS the delta the intervention made to the parameter's gradient, to float64, and signed
@@ -849,7 +880,7 @@ def test_correction_is_the_one_the_parameter_actually_receives(case):
     }[case]
     log_scale = torch.tensor(log_alpha, dtype=torch.float64, requires_grad=live)
 
-    term, correction = L.infonce_block_resid(Q, S, log_scale, clamp)
+    term, correction = L.infonce_block_resid(Q, S, log_scale, clamp, full=False)
 
     actual = torch.autograd.grad(term, log_scale)[0].item() if live else 0.0
     assert correction.item() == pytest.approx(actual, rel=1e-12, abs=0.0)
@@ -863,7 +894,7 @@ def test_correction_state_is_per_forward():
     B, K = 16, 4
     class_encs = torch.arange(B) % K
     S = _sims(B, seed=42)
-    crit = _hard_targ_crit(L, "mp", B, K, True)
+    crit = _hard_targ_crit(L, "mp", B, K, "alpha")
     log_scale = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
 
     crit(S * log_scale.exp(), class_encs, None, True, log_scale, S)

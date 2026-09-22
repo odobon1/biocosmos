@@ -291,23 +291,32 @@ def infonce_hard_kl_ir(Q, alpha):
     r = torch.exp(-2.0 * torch.as_tensor(alpha, dtype=torch.float64, device=Q.device))
     return torch.log1p(M * r / K)
 
-def infonce_block_resid(Q, sim, logit_scale, clamp):
+def infonce_block_resid(Q, sim, logit_scale, clamp, full):
     """
     The zero-valued loss term that blocks the residual part of one hard-binary-target InfoNCE term's
-    logit-scale gradient (loss.infonce.block_residuals), leaving its structural part to flow alone.
+    gradient (loss.infonce.block_residuals) -- the logit scale's alone (alpha), or the whole model's: the
+    scale's and, through the similarities, the towers' (full) -- leaving its structural part to flow alone.
 
-    Per pair the term's scale gradient splits (infonce_scale_grad_sums) as
+    Per pair and anchor direction the term's gradient at the logits z = alpha * s splits as
 
-        dL/dalpha = (p - y) s = (p - p*) s + (p* - y) s,
+        dL/dz = (p - y) / B = (p - p*) / B + (p* - y) / B,
 
     p* = infonce_p_opt(Y, alpha) the closest distribution a row softmax can realize under bounded-cosine
     logits: the structural part is what the model could still remove at this alpha, the residual (its
-    sres + ires halves alike) what no similarity geometry can. Blocked, a target the logits cannot reach
-    stops pushing on the scale by being unreachable. The residual is taken in closed form
-    (infonce_hard_resid), which is what makes this safe at scales where the solve is not.
+    sres + ires halves alike) what no similarity geometry can. Everything downstream of the logits reads
+    that split through its own Jacobian -- the scale's gradient (infonce_scale_grad_sums) as
+
+        dL/dalpha = (p - y) s = (p - p*) s + (p* - y) s,
+
+    the similarities' as dL/ds = alpha (p - y) / B. Blocked, a target the logits cannot reach stops
+    pushing on the scale by being unreachable (alpha), or on the model at all (full): its towers then
+    receive the gradient the loss would send them against p* in place of y, the reachable optimum,
+    while the loss reading keeps scoring y. The residual is taken in closed form (infonce_hard_resid),
+    which is what makes this safe at scales where the solve is not.
 
     Both anchor directions score Y's rows (as InfoNCECriterion does) and Q is symmetric, so their
-    per-anchor residual sums fold into one contraction against sim + sim.T.
+    per-anchor residual sums fold into one contraction against sim + sim.T for the scale, and into
+    R + R.T against sim for the similarities.
 
     - Q ------------ [B, B] the term's binary target memberships (compute_targets), unit diagonal
     - sim ---------- [B, B] the batch's similarity matrix, the quantity the log-scale parameter's own
@@ -319,15 +328,19 @@ def infonce_block_resid(Q, sim, logit_scale, clamp):
                      the pairs' differences below an ulp, the recovered matrix comes back constant and
                      the correction silently zero. InfoNCE's logits carry no bias and come off a float32
                      head (models.py), so the live path no longer builds such logits; the correction
-                     does not depend on that staying true. Read detached: the term touches the scale
-                     alone, never the embeddings' dL/dsim
+                     does not depend on that staying true. Read detached for the scale's part, so under
+                     alpha the term never touches the embeddings' dL/dsim; under full the similarities'
+                     part reads it live, that being the path the residual leaves the towers by
     - logit_scale -- the term's raw log logit-scale parameter (model.logit_scale)
     - clamp -------- logits.scale.clamp, so the term takes compute_logits' clamp-then-exp path and is
                      held at zero with the parameter once the cap holds
+    - full --------- block the residual from the similarities' gradient too (block_residuals: full),
+                     not the scale's alone (alpha)
 
     Returns (term, correction):
     - term -------- a scalar of value exactly 0 whose gradient is minus the residual part of the term's
-                    d(loss)/d(log logit scale); added to the term's loss it leaves the loss reading untouched
+                    d(loss)/d(log logit scale) -- and, under full, of its d(loss)/d(sim); added to the
+                    term's loss it leaves the loss reading untouched
     - correction -- the gradient `term` ADDS to the raw log-scale parameter, detached: signed as a delta,
                     so grad_after = grad_before + correction, and it is MINUS the blocked residual (a
                     residual pushing alpha up is negative, its correction positive). It is the correction
@@ -341,9 +354,10 @@ def infonce_block_resid(Q, sim, logit_scale, clamp):
                     part, and p* is not linear in the target (see infonce_batch_stats)
     """
     alpha = (logit_scale.clamp(max=math.log(100)) if clamp else logit_scale).exp()
+    R = infonce_hard_resid(Q, alpha.detach().double())
     T = sim.detach().double()
     T = T + T.T  # both anchor directions contracted at once
-    resid = 0.5 * (infonce_hard_resid(Q, alpha.detach().double()) * T).sum(dim=1).mean()
+    resid = 0.5 * (R * T).sum(dim=1).mean()
     resid = resid.to(alpha.dtype)
     if logit_scale.requires_grad:
         log_alpha = logit_scale.detach().requires_grad_(True)
@@ -351,7 +365,14 @@ def infonce_block_resid(Q, sim, logit_scale, clamp):
         correction = -dalpha_dlog * resid
     else:
         correction = torch.zeros_like(resid)
-    return -(alpha - alpha.detach()) * resid, correction
+    term = -(alpha - alpha.detach()) * resid
+    if full:
+        # the residual's part of dL/dsim: per pair alpha (p* - y) / B, the two anchor directions folded
+        # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij). Off the live sim, so the
+        # gradient reaches the towers; alpha detached, the scale's own part being the term above
+        G = 0.5 * alpha.detach().double() * (R + R.T) / Q.size(0)
+        term = term - ((sim - sim.detach()) * G).sum().to(term.dtype)
+    return term, correction
 
 class InfoNCECriterion(Criterion):
     """
@@ -452,13 +473,14 @@ class InfoNCECriterion(Criterion):
         coeffs = self.term_coeffs([w for w, _ in terms], losses)
         loss = sum(c * L for c, L in zip(coeffs, losses))
 
-        if self.cfg["infonce"]["block_residuals"]:
+        block = self.cfg["infonce"]["block_residuals"]
+        if block is not None:
             # every term's target is hard binary here (config gates it), so each pairs with its own
             # spec's memberships: a lone spec under blend.type targ, spec k under blend.type loss. The
             # one sim matrix serves every term -- it is the terms' logit scalars that differ, not it
             clamp = self.cfg["logits"]["scale"]["clamp"]
             log_scales = self._per_term(lambda t: t, logit_scale, len(terms))
-            blocks = [infonce_block_resid(Q_k, sim, log_scale, clamp)
+            blocks = [infonce_block_resid(Q_k, sim, log_scale, clamp, block == "full")
                       for Q_k, log_scale in zip(Qs, log_scales)]
             loss = loss + sum(c * term for c, (term, _) in zip(coeffs, blocks))
             # the delta this made to model.logit_scale's gradient (grad_after = grad_before + it), for

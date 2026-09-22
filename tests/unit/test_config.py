@@ -12,7 +12,7 @@ def _loss_cfg(lambda_=0.0, **overrides):
     """The dummy's minimal `loss` block (train.yaml's loss schema, the sections __post_init__ reads)."""
     cfg = {
         "crit": "bce", "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
-        "infonce": {"block_residuals": False},
+        "infonce": {"block_residuals": None},
         "wting": {"cls_imb": {"type": None}, "focal": {"gamma": 0.0}},
         "logits": {"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}},
     }
@@ -798,10 +798,10 @@ def test_train_config_rejects_unknown_bias_init(monkeypatch: pytest.MonkeyPatch)
         TrainConfig(**cfg_dict)
 
 
-def _block_resid_cfg(lambda_=0.0, blend_type="targ", **loss_overrides):
+def _block_resid_cfg(lambda_=0.0, blend_type="targ", block="alpha", **loss_overrides):
     # an InfoNCE loss with loss.infonce.block_residuals on (utils.loss.infonce_block_resid)
     loss = _loss_cfg(crit="infonce", lambda_=lambda_, **loss_overrides)
-    loss["infonce"]["block_residuals"] = True
+    loss["infonce"]["block_residuals"] = block
     loss["blend"]["type"] = blend_type
     return loss
 
@@ -817,7 +817,8 @@ def test_train_config_block_residuals_requires_hard_binary_targets(monkeypatch: 
     patch_hw(monkeypatch)
     targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
 
-    assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), **targs)).loss["infonce"]["block_residuals"]
+    for block in ("alpha", "full"):
+        assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs)).loss["infonce"]["block_residuals"] == block
     # two live targets, each hard binary, under a loss blend: one term per spec, both in closed form
     TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
 
@@ -848,7 +849,7 @@ def test_inert_params_block_residuals_makes_blend_type_live(monkeypatch: pytest.
 
     on = TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
     assert "loss.blend.type" not in inert_params(on)
-    _check_overrides_live(on, {"loss.blend.type": "loss", "loss.infonce.block_residuals": True})
+    _check_overrides_live(on, {"loss.blend.type": "loss", "loss.infonce.block_residuals": "alpha"})
 
 
 def test_train_config_block_residuals_requires_an_unweighted_infonce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -869,10 +870,9 @@ def test_train_config_block_residuals_requires_an_unweighted_infonce_loss(monkey
         loss = _block_resid_cfg()
         loss["wting"]["focal"]["gamma"] = 2.0
         TrainConfig(**make_train_config_dummy(loss=loss, **targs))
-    with pytest.raises(ValueError, match="loss.infonce.block_residuals must be a bool"):
-        loss = _block_resid_cfg()
-        loss["infonce"]["block_residuals"] = "true"
-        TrainConfig(**make_train_config_dummy(loss=loss, **targs))
+    for block in (True, "true", "both"):
+        with pytest.raises(ValueError, match="loss.infonce.block_residuals must be one of"):
+            TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs))
 
 
 def test_train_config_rejects_identical_target_distributions_under_a_live_blend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -945,7 +945,7 @@ def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):
     # the train.yaml loss schema in full: the dummy's minimal block lacks the sections the inert rules read
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": unitless,
-        "infonce": {"block_residuals": False},
+        "infonce": {"block_residuals": None},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {"type": cls_imb_type, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},

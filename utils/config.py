@@ -305,12 +305,13 @@ class TrainConfig:
             raise ValueError(f"Unknown loss.logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
 
         block_resid = self.loss["infonce"]["block_residuals"]
-        if not isinstance(block_resid, bool):
-            raise ValueError(f"loss.infonce.block_residuals must be a bool, got {block_resid!r}")
-        if block_resid:
+        if block_resid not in (None, "alpha", "full"):
+            raise ValueError(f"loss.infonce.block_residuals must be one of {{null, alpha, full}}, got {block_resid!r}")
+        if block_resid is not None:
             # utils.loss.infonce_block_resid removes the closed-form residual of a hard binary target from
-            # the plain cross-entropy's scale gradient: every loss term must train against such a target,
-            # and carry no weight the residual's derivation doesn't account for
+            # the plain cross-entropy's gradient (the scale's alone, or the whole model's): every loss term
+            # must train against such a target, and carry no weight the residual's derivation doesn't
+            # account for
             if self.loss["crit"] != "infonce":
                 raise ValueError(f"loss.infonce.block_residuals requires loss.crit: infonce, got '{self.loss['crit']}'")
             live_specs = [(name, cfg_targ) for w, name, cfg_targ in
@@ -419,7 +420,7 @@ def targ_dependent_loss(loss: dict) -> bool:
         or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
         # the residual blocked per term is its own target's, in closed form off that target's memberships
         # (utils.loss.infonce_block_resid) -- a factor no target blend has
-        or (crit == "infonce" and loss["infonce"]["block_residuals"])
+        or (crit == "infonce" and loss["infonce"]["block_residuals"] is not None)
     )
 
 def inert_params(cfg: TrainConfig) -> dict[str, str]:

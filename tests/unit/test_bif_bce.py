@@ -25,7 +25,7 @@ def _cfg(crit, lambda_=0.0, cls_imb=None, focal_gamma=0.0, dsmr=False, neut=Fals
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
-        "infonce": {"block_residuals": False},
+        "infonce": {"block_residuals": None},
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},

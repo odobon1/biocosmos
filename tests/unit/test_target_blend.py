@@ -21,7 +21,7 @@ from models import VLMWrapper
 
 
 def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr=False, neut=False, shared=True,
-         block_residuals=False):
+         block_residuals=None):
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
         "infonce": {"block_residuals": block_residuals},

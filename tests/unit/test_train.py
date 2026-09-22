@@ -17,7 +17,7 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
         "sim": "cos",
         "blend": {"lambda": lambda_, "type": "targ"},
         "unitless": False,
-        "infonce": {"block_residuals": False},
+        "infonce": {"block_residuals": None},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {
@@ -226,14 +226,14 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg = _FakeCoordCfg()
     cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
     cfg.loss["blend"]["type"] = "loss"
-    cfg.loss["infonce"]["block_residuals"] = True
+    cfg.loss["infonce"]["block_residuals"] = "alpha"
     cfg.loss["loss1"], cfg.loss["loss2"] = _targ_cfg("mp"), _targ_cfg("sp")
     del cfg.loss["wting"]["focal"]
     cfg.loss["wting"]["cls_imb"]["type"] = None
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s8" / "config.json").read_text())
     assert config["loss"]["blend"]["type"] == "loss"
-    assert config["loss"]["infonce"] == {"block_residuals": True}
+    assert config["loss"]["infonce"] == {"block_residuals": "alpha"}
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

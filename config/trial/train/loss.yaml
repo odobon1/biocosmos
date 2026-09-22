@@ -29,15 +29,18 @@ unitless: false  # {true, false}; (true) Rescale each loss term by its detached 
 # diagnostics.batch_diagnostics.sim_targ_stats);
 # (false) Raw losses
 infonce:  # Inert iff (loss.crit != infonce)
-  block_residuals: false  # {true, false}; (true) Block the residual component of the logit scale's gradient --
-  # both its structural-residual and its irreducible-residual part (utils.loss.infonce_block_resid; the res /
-  # sres / ires terms of the dalpha strips) -- so alpha learns from its structural gradient alone: the pressure
-  # a target puts on the scale by being unreachable is dropped, the pressure the model's own geometry puts on it
-  # is kept. Applied as a zero-valued correction term, so the loss reading and every other gradient (the towers'
-  # included) are untouched; (false) The full gradient. Only applies to hard binary targets e.g. SP, MP (FLYP,
-  # SupCon), the residual being closed-form there: requires (loss.crit: infonce) with every live target in
-  # {sp, mp} under (lossk.infonce.tsm.type: linear), two live ones under (loss.blend.type: loss) -- a target
-  # blend of two hard binary targets is not itself hard binary -- and no class-imbalance or focal weighting
+  block_residuals: null  # {null, alpha, full}; Block the residual component of the gradient -- both its
+  # structural-residual and its irreducible-residual part (utils.loss.infonce_block_resid; the res / sres / ires
+  # terms of the dalpha strips): the pressure a target puts on the model by being unreachable is dropped, the
+  # pressure the model's own geometry puts on it is kept. (alpha) From the logit scale's gradient alone, so alpha
+  # learns from its structural gradient while every other gradient (the towers' included) is untouched; (full)
+  # From the whole model's -- the logit scale's and, through the similarities, the towers' -- so every parameter
+  # trains as it would against the target's reachable optimum p* in place of the target; (null) The full
+  # gradient. Applied as a zero-valued correction term, so the loss reading is untouched. Only applies to hard
+  # binary targets e.g. SP, MP (FLYP, SupCon), the residual being closed-form there: requires (loss.crit: infonce)
+  # with every live target in {sp, mp} under (lossk.infonce.tsm.type: linear), two live ones under
+  # (loss.blend.type: loss) -- a target blend of two hard binary targets is not itself hard binary -- and no
+  # class-imbalance or focal weighting
 bce:  # Inert iff (loss.crit != bif_bce)
   targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its (blended) target
   # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1: inert iff every

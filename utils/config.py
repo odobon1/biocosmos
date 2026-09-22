@@ -25,8 +25,9 @@ _CFG_ALIASES = load_aliases_config_dict()["config"]
 CFG_PARAM_ALIASES = _CFG_ALIASES["param"]
 CFG_PARAM_VALUE_ALIASES = _CFG_ALIASES["param_value"]
 CFG_UNIVERSAL_VALUE_ALIASES = _CFG_ALIASES["universal_value"]
-# config file stem -> the cfg key a campaign's `ablation_arms` / `hpo_coords` overrides reach its
-# contents through (config/trial/aliases.yaml's config.file); only the overridable configs are listed
+# config file stem -> the cfg key its contents live under (config/trial/aliases.yaml's config.file), the
+# prefix every dot-path reaches them through; an unlisted file's key is its stem (cfg_key), and train.yaml's
+# fields alone sit at the top level unprefixed
 CFG_FILE_ALIASES = _CFG_ALIASES["file"]
 # eval group key -> the name it is reported under (config/trial/aliases.yaml's eval_groups); a group
 # without an alias passes through verbatim. Read live like CFG_FILE_ALIASES rather than from a campaign's
@@ -48,13 +49,25 @@ def eval_groups(cfg_reporting: dict) -> dict:
         if key == "native" or cfg_reporting["eval"][key]
     }
 
+def cfg_key(stem: str) -> str:
+    """The cfg key a config file's contents live under: its config.file alias, else its stem."""
+    return CFG_FILE_ALIASES.get(stem, stem)
+
+def canonical_key_path(key_path: str) -> str:
+    """A dot-path config key in its cfg-key spelling: a leading config file stem replaced by its cfg_key
+    (hardware.mixed_prec -> hw.mixed_prec, optimizer.wd -> opt.wd), so a file's fields are addressable under
+    either spelling while every consumer -- the dict walk, the alias / inert tables, arm and coord names,
+    overrides.json -- sees one. Anything else passes through verbatim."""
+    first, sep, rest = key_path.partition(".")
+    return cfg_key(first) + sep + rest
+
 def inject_snapshots(cfg_dict: dict, cfg_snapshot: dict) -> None:
     """Lay every sibling snapshot of a frozen campaign config onto a trial's config dict (`train` is
     the base config itself, not a sibling)."""
-    for stem, key in CFG_FILE_ALIASES.items():  # the overridable ones, under their campaign-facing key
-        cfg_dict[key] = cfg_snapshot[stem]
-    # campaign-global: no arm / coord sweeps them. dev.yaml lands under `dev_overrides`, not `dev` --
-    # that key is train.yaml's on/off switch, and a (truthy) dict there would force dev overrides on
+    for stem in ("hardware", "htargs"):  # the overridable ones, under their cfg key
+        cfg_dict[cfg_key(stem)] = cfg_snapshot[stem]
+    # campaign-global: no arm / coord sweeps them. dev.yaml lands under `dev_overrides`: it is the override
+    # set operational.dev switches on, not a config section of its own
     cfg_dict["manifold_viz"] = cfg_snapshot["manifold_viz"]
     cfg_dict["model_specific"] = cfg_snapshot["model_specific"]
     cfg_dict["dataset_specific"] = cfg_snapshot["dataset_specific"]
@@ -97,28 +110,28 @@ class TrainConfig:
     coord: str
     seed: int | None
     dataset: str
-    split: str
-    train_pt: str
 
+    # train.yaml's fields: the one config file addressed unprefixed
     n_epochs: int
     chain_floor: int | None
     n_chkpts: int
     batch_size: int
     dv_batching: bool
-
-    arch: dict
-    dropout: dict
-    freeze: dict
-    htarg: dict
-    loss: dict
     text_template: dict
-    opt: dict
-    lr: dict
 
-    dev: bool  # {true, false}; (true) lay config/trial/train/dev.yaml's overrides over the config and force the dev split
+    # the sibling config files, each whole under its cfg key (config/trial/aliases.yaml's config.file alias, else its stem)
+    split: dict  # split.yaml: {split, train_pt}
+    model: dict  # model.yaml: {arch, dropout, freeze}
+    operational: dict  # operational.yaml: {dev, kill_thresh, del_base_eval_cache} -- dev {true, false}, (true) lay
+    # config/trial/train/dev.yaml's overrides over the config and force the dev split; kill_thresh {null, (0.0, 1.0)}, the fraction of
+    # the run at which a trial that has not beaten its base eval is killed; del_base_eval_cache {null, campaign, trial}, when the
+    # campaign runner deletes base_eval_cache/
+    opt: dict  # optimizer.yaml
+    lr: dict  # lr_schedule.yaml
+    loss: dict
+    htarg: dict  # htargs.yaml
+
     reporting: dict  # reporting.yaml contents (get_config_train reads it live when not supplied)
-    kill_thresh: float | None  # {null, (0.0, 1.0)}; fraction of the run at which a trial that has not beaten its base eval is killed
-    del_base_eval_cache: str | None  # {null, campaign, trial}; when the campaign runner deletes base_eval_cache/
 
     aug: str = "openclip"  # {openclip, custom}; which augmentation config the trial trains under -> self.aug_cfg
     augmentation: dict | None = None  # augmentation.yaml contents, read by aug: custom; resolved from the yaml when not supplied
@@ -136,11 +149,11 @@ class TrainConfig:
         if self.dataset not in ("bryo", "cub", "lepid", "nymph"):
             raise ValueError(f"Unknown dataset: '{self.dataset}', must be one of {{bryo, cub, lepid, nymph}}")
 
-        if self.train_pt not in ("train", "trainval"):
-            raise ValueError(f"Unknown train partition: '{self.train_pt}', must be one of {{train, trainval}}")
+        if self.split["train_pt"] not in ("train", "trainval"):
+            raise ValueError(f"Unknown split.train_pt: '{self.split['train_pt']}', must be one of {{train, trainval}}")
 
-        split = load_split(self.dataset, self.split)
-        size_train = len(split.get_data(self.train_pt))
+        split = load_split(self.dataset, self.split["split"])
+        size_train = len(split.get_data(self.split["train_pt"]))
 
         # bool guard: True/False are ints; a null n_epochs / n_chkpts reaches here only when it skipped
         # dataset-specific resolution (get_config_train / apply_dataset_specific_defaults)
@@ -218,15 +231,17 @@ class TrainConfig:
                 f"(native is always in play), got {sorted(self.reporting['eval'])}"
             )
 
-        if self.del_base_eval_cache not in (None, "campaign", "trial"):
-            raise ValueError(f"del_base_eval_cache must be null, 'campaign' or 'trial', got {self.del_base_eval_cache!r}")
+        del_base_eval_cache = self.operational["del_base_eval_cache"]
+        if del_base_eval_cache not in (None, "campaign", "trial"):
+            raise ValueError(f"operational.del_base_eval_cache must be null, 'campaign' or 'trial', got {del_base_eval_cache!r}")
 
-        if self.kill_thresh is not None and not 0.0 < self.kill_thresh < 1.0:
-            raise ValueError(f"kill_thresh must be null or a fraction in (0.0, 1.0), got {self.kill_thresh!r}")
+        kill_thresh = self.operational["kill_thresh"]
+        if kill_thresh is not None and not 0.0 < kill_thresh < 1.0:
+            raise ValueError(f"operational.kill_thresh must be null or a fraction in (0.0, 1.0), got {kill_thresh!r}")
 
-        if self.arch["siglip"]["vis_proj_head"] is None and self.dropout["siglip"]["proj_head"] > 0.0:
+        if self.model["arch"]["siglip"]["vis_proj_head"] is None and self.model["dropout"]["siglip"]["proj_head"] > 0.0:
             raise ValueError(
-                "dropout.siglip.proj_head > 0 requires arch.siglip.vis_proj_head to be 'linear' or 'mlp' "
+                "model.dropout.siglip.proj_head > 0 requires model.arch.siglip.vis_proj_head to be 'linear' or 'mlp' "
                 "(projection-head dropout needs a projection head)"
             )
 
@@ -345,7 +360,7 @@ class TrainConfig:
         self.use_img_cache = self.hw.use_img_cache
         self.n_workers, self.prefetch_factor, slurm_alloc = compute_dataloader_workers_prefetch(
             batch_size=self.batch_size,
-            model_type=self.arch["model_type"],
+            model_type=self.model["arch"]["model_type"],
             max_n_workers_gpu=self.hw.max_n_workers_gpu,
             prefetch_factor=self.hw.prefetch_factor,
         )
@@ -411,7 +426,7 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     """The params the effective config never reads -- config/trial/train/train.yaml's 'Inert iff' annotations -- as
     {dot-path prefix: the setting that makes it so}; a prefix covers its whole subtree. A prefix two rules
     render inert keeps the first-listed reason."""
-    is_siglip = "siglip" in cfg.arch["model_type"].lower()
+    is_siglip = "siglip" in cfg.model["arch"]["model_type"].lower()
     lambda_ = cfg.loss["blend"]["lambda"]
     crit = cfg.loss["crit"]
     cls_imb_type = cfg.loss["wting"]["cls_imb"]["type"]
@@ -419,10 +434,10 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     live_targs = [cfg_targ["targ"] for w, cfg_targ in ((1.0 - lambda_, cfg.loss["loss1"]), (lambda_, cfg.loss["loss2"])) if w != 0.0]
     targ_dep = targ_dependent_loss(cfg.loss)
     rules = [
-        ("arch.clip", is_siglip, "arch.model_type is a SigLIP model"),
-        ("arch.siglip", not is_siglip, "arch.model_type is a CLIP model"),
-        ("dropout.siglip", not is_siglip, "arch.model_type is a CLIP model"),
-        ("dropout.siglip.proj_head", cfg.arch["siglip"]["vis_proj_head"] is None, "arch.siglip.vis_proj_head is null"),
+        ("model.arch.clip", is_siglip, "model.arch.model_type is a SigLIP model"),
+        ("model.arch.siglip", not is_siglip, "model.arch.model_type is a CLIP model"),
+        ("model.dropout.siglip", not is_siglip, "model.arch.model_type is a CLIP model"),
+        ("model.dropout.siglip.proj_head", cfg.model["arch"]["siglip"]["vis_proj_head"] is None, "model.arch.siglip.vis_proj_head is null"),
         ("htarg", "phylo" not in live_targs, "no live target is phylo"),
         ("htarg.exp", cfg.htarg["kernel"] == "bm", "htarg.kernel is bm"),
         ("loss.loss1", lambda_ == 1.0, "loss.blend.lambda is 1.0"),
@@ -463,11 +478,13 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
 def _check_overrides_live(cfg: TrainConfig, overrides: dict) -> None:
     """Refuse campaign overrides (dot-path keys) of params the effective config renders inert: the arm / coord
     would advertise a setting the trial never reads, whatever its value -- one equal to the baseline's included.
-    Each hit is reported with its outermost cause (the shortest covering inert_params prefix)."""
+    Each hit is reported with its outermost cause (the shortest covering inert_params prefix). Keys are matched in
+    their cfg-key spelling (canonical_key_path), as apply_overrides applies them."""
     inert = inert_params(cfg)
     hits = {}
     for key in overrides:
-        covering = [prefix for prefix in inert if key == prefix or key.startswith(prefix + ".")]
+        key_c = canonical_key_path(key)
+        covering = [prefix for prefix in inert if key_c == prefix or key_c.startswith(prefix + ".")]
         if covering:
             hits[key] = inert[min(covering, key=len)]
     if hits:
@@ -477,14 +494,14 @@ def _check_overrides_live(cfg: TrainConfig, overrides: dict) -> None:
         )
 
 def apply_dev_overrides(cfg_dict: dict, dev_config: dict | None = None) -> dict:
-    """With train.yaml's `dev` on, lays config/trial/train/dev.yaml over the config -- its keys are dot-paths into
-    this config (e.g. lr.warmup) -- and forces the dev split. Inert with `dev` off."""
-    if not cfg_dict["dev"]:
+    """With operational.yaml's `dev` on, lays config/trial/train/dev.yaml over the config -- its keys are dot-paths
+    into this config (e.g. lr.warmup) -- and forces the dev split. Inert with `dev` off."""
+    if not cfg_dict["operational"]["dev"]:
         return dict(cfg_dict)
     if dev_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
         dev_config = load_dev_config_dict()
     cfg_dict = apply_overrides(cfg_dict, dev_config)
-    cfg_dict["split"] = "dev"  # forced after the overrides: a dev run always uses the dev split
+    cfg_dict["split"]["split"] = "dev"  # forced after the overrides: a dev run always uses the dev split
     return cfg_dict
 
 def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
@@ -493,9 +510,10 @@ def _set_by_dot_path(cfg_dict: dict, key_path: str, value) -> None:
     Every segment must already be declared: overrides replace declared fields, never create them.
     A typo'd or stale key (a renamed param still swept in a campaign's `ablation_arms` / `hpo_coords`)
     would otherwise land silently in a field nothing reads, and the campaign runs the baseline value
-    under an arm / coord name advertising the override.
+    under an arm / coord name advertising the override. The path is walked in its cfg-key spelling
+    (canonical_key_path), so a sibling file's fields are reachable under its stem or its alias alike.
     """
-    keys = [key for key in key_path.split(".") if key]
+    keys = [key for key in canonical_key_path(key_path).split(".") if key]
     if not keys:
         raise ValueError(f"Invalid dot-style override key: '{key_path}'")
 
@@ -521,11 +539,12 @@ def apply_overrides(cfg_dict: dict, overrides: dict | None) -> dict:
     return merged
 
 def load_train_config_dict() -> dict:
-    """The base training config, assembled from config/trial/ plus config/trial/operational.yaml. Its shape is
-    what every dot-path override addresses (opt.wd, loss.blend.lambda, loss.loss1.targ, ...), so the pieces
-    merge into the one flat dict the rest of the pipeline has always seen: optimizer.yaml and
-    lr_schedule.yaml land whole under `opt` and `lr`, and loss.yaml whole under `loss` -- its per-target
-    `loss1` / `loss2` blocks included, so they are addressed as loss.loss1.* / loss.loss2.*."""
+    """The base training config, assembled from config/trial/ and config/trial/train/. Its shape is what every
+    dot-path override addresses: train.yaml's fields sit at the top level unprefixed, and every sibling file
+    lands whole under its cfg key (its config/trial/aliases.yaml config.file alias, else its stem) -- split.yaml
+    under `split`, model.yaml under `model`, operational.yaml under `operational`, optimizer.yaml and
+    lr_schedule.yaml under their aliases `opt` and `lr`, loss.yaml under `loss` (its per-target `loss1` /
+    `loss2` blocks included, so they are addressed as loss.loss1.* / loss.loss2.*)."""
     def _load(fpath):
         with open(fpath) as f:
             return yaml.safe_load(f)
@@ -533,12 +552,9 @@ def load_train_config_dict() -> dict:
     dpath_trial = paths["config"] / "trial"
     dpath = dpath_trial / "train"
     cfg = _load(dpath / "train.yaml")
-    cfg.update(_load(dpath_trial / "split.yaml"))
-    cfg.update(_load(dpath / "model.yaml"))
-    cfg.update(_load(dpath_trial / "operational.yaml"))
-    cfg["opt"] = _load(dpath / "optimizer.yaml")
-    cfg["lr"] = _load(dpath / "lr_schedule.yaml")
-    cfg["loss"] = _load(dpath / "loss.yaml")
+    for fpath in (dpath_trial / "split.yaml", dpath / "model.yaml", dpath_trial / "operational.yaml",
+                  dpath / "optimizer.yaml", dpath / "lr_schedule.yaml", dpath / "loss.yaml"):
+        cfg[cfg_key(fpath.stem)] = _load(fpath)
     return cfg
 
 def load_augmentation_config_dict() -> dict:
@@ -575,11 +591,12 @@ def _resolve_model_family(model_type: str) -> str:
 def _get_by_dot_path(cfg_dict: dict, key_path: str):
     """Read an existing config field addressed by dot-path. Every segment must already be declared --
     the same contract as _set_by_dot_path, so a stale key in a defaults file fails loudly."""
+    keys = canonical_key_path(key_path).split(".")
     cursor = cfg_dict
-    for depth, key in enumerate(key_path.split(".")):
+    for depth, key in enumerate(keys):
         if not isinstance(cursor, dict) or key not in cursor:
             raise ValueError(
-                f"Unknown config key '{key_path}': '{'.'.join(key_path.split('.')[:depth + 1])}' is not a config field."
+                f"Unknown config key '{key_path}': '{'.'.join(keys[:depth + 1])}' is not a config field."
             )
         cursor = cursor[key]
     return cursor
@@ -589,11 +606,7 @@ def apply_model_specific_defaults(cfg_dict: dict, model_specific_config: dict | 
     (clip / siglip), each ONLY if null. Its keys are dot-paths into this config (opt.wd, loss.crit, ...),
     so a value set in the config proper wins and a family default only ever fills a hole."""
     cfg_out = deepcopy(cfg_dict)
-    arch = cfg_out.get("arch", {})
-    if not isinstance(arch, dict) or "model_type" not in arch:
-        raise ValueError("Config field 'arch/model_type' is required to resolve model-specific defaults.")
-
-    family = _resolve_model_family(arch["model_type"])
+    family = _resolve_model_family(cfg_out["model"]["arch"]["model_type"])
     if model_specific_config is None:  # load live when no snapshot supplied; campaign trials pass the frozen snapshot
         model_specific_config = load_model_specific_config_dict()
     family_defaults = model_specific_config.get(family)
@@ -792,7 +805,9 @@ class CampaignConfig:
     phase), then -- with trainval -- each of those picks retrained on the trainval partition up to its
     qual-selected checkpoint, one run per qual seed (the trainval phase). baseline_overrides is a flat set of
     overrides laid on every trial of the campaign, nameless -- arm / coord names read as if it were empty.
-    suffix is appended to the campaign name (null: none)."""
+    suffix is appended to the campaign name (null: none). Override keys are dot-paths into the trial config
+    (utils.config.load_train_config_dict's shape: a sibling file's fields under its stem or its config.file
+    alias, train.yaml's unprefixed), rewritten here to their cfg-key spelling (canonical_key_path)."""
 
     n_trials_screen: int
     n_trials_qual: int | None
@@ -828,6 +843,15 @@ class CampaignConfig:
                 "trainval: true requires a qual phase (n_trials_qual set): the trainval phase trains each qual pick "
                 "up to its qual-selected checkpoint"
             )
+
+        # one spelling per key from here on (hardware.x -> hw.x), so the names, overrides.json, the disjointness /
+        # inert checks and the alias tables never see the same field under two keys
+        def canonical_items(combo_groups):
+            return [[{k if k == "name" else canonical_key_path(k): v for k, v in item.items()} for item in group]
+                    for group in combo_groups]
+        self.baseline_overrides = {canonical_key_path(k): v for k, v in self.baseline_overrides.items()}
+        self.ablation_arms = canonical_items(self.ablation_arms)
+        self.hpo_coords = canonical_items(self.hpo_coords)
 
 
 @dataclass

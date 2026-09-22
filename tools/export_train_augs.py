@@ -55,7 +55,7 @@ def main() -> None:
     cfg_dict.update({"campaign": "tool", "phase": "_screen", "arm": "tool", "coord": "tool", "seed": None, "dataset": DATASET})
     cfg = get_config_train(cfg_dict)
 
-    split = load_split(cfg.dataset, cfg.split)
+    split = load_split(cfg.dataset, cfg.split["split"])
     train_rows = list(split.get_data("train"))
     random.shuffle(train_rows)
 
@@ -66,7 +66,7 @@ def main() -> None:
     output_root = OUTPUT_DIR
     output_root.mkdir(parents=True, exist_ok=True)
 
-    img_res = resolve_img_res_from_model(cfg.arch["model_type"])
+    img_res = resolve_img_res_from_model(cfg.model["arch"]["model_type"])
     augmenter = build_train_augmentation_transforms(img_res, aug_cfg=cfg.aug_cfg)
     convert_mode = MaybeConvertMode()
     imgs_root = paths["imgs"][cfg.dataset]

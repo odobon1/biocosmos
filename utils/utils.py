@@ -627,7 +627,7 @@ class PrintLog:
                 ("Arm",      cfg_train.arm),
                 ("Coord",    cfg_train.coord),
                 ("Dataset",  cfg_train.dataset),
-                ("Split",    cfg_train.split),
+                ("Split",    cfg_train.split["split"]),
                 ("Seed",     cfg_train.seed),
             )),
             "",
@@ -640,8 +640,8 @@ class PrintLog:
             "",
             "=== Architecture ===",
             PrintLog._dash_aligned_lines((
-                ("Model Type", cfg_train.arch['model_type']),
-                ("Non-Causal", cfg_train.arch['clip']['non_causal']),
+                ("Model Type", cfg_train.model["arch"]["model_type"]),
+                ("Non-Causal", cfg_train.model["arch"]["clip"]["non_causal"]),
             )),
             "",
         ]
@@ -649,8 +649,8 @@ class PrintLog:
         lines.extend([  # freeze block
             "=== Freeze ===",
             PrintLog._dash_aligned_lines((
-                ("Image", cfg_train.freeze["image"]),
-                ("Text",  cfg_train.freeze["text"]),
+                ("Image", cfg_train.model["freeze"]["image"]),
+                ("Text",  cfg_train.model["freeze"]["text"]),
             )),
             "",
         ])

@@ -8,7 +8,11 @@
 
 # Name mappings, all of the same shape: anything without an alias passes through verbatim.
 #
-# `config.file` maps a config file stem to the cfg key a campaign's overrides reach its contents through.
+# `config.file` maps a config file stem to the cfg key its contents live under -- the prefix every dot-path
+# (a campaign's overrides, dev.yaml's, model_specific.yaml's) reaches them through; an unlisted file's key is
+# its stem, and train.yaml's fields alone carry no prefix. Either spelling addresses a field
+# (hardware.mixed_prec == hw.mixed_prec): a leading stem is mapped to its alias at the boundary
+# (utils.config.canonical_key_path), so everything downstream sees the alias.
 #
 # `eval_groups` names the eval groups (reporting.yaml's `eval`) wherever they are reported -- stats table
 # and workbook titles/banners, learning-curve plot titles, the eval printout's section headers. The group
@@ -28,6 +32,8 @@ config:
   file:
     hardware: hw
     htargs: htarg
+    optimizer: opt
+    lr_schedule: lr
   param:  # override key -> name component
     n_epochs: E
     batch_size: BS

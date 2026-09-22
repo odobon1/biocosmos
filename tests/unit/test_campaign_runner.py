@@ -66,10 +66,9 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
         "coord": "base_coord",
         "seed": 0,
         "dataset": "cub",
-        "split": "D10",
+        "split": {"split": "D10", "train_pt": "train"},
         "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}},
-        "del_base_eval_cache": None,
-        "dev": False,
+        "operational": {"dev": False, "del_base_eval_cache": None},
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
         "train": baseline,
@@ -101,7 +100,7 @@ def _setup_completing_campaign(tmp_path, monkeypatch) -> list:
 def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
-    train_a = {"campaign": "dev", "split": "D10", "dev": False}
+    train_a = {"campaign": "dev", "split": {"split": "D10"}, "operational": {"dev": False}}
     hw_a = {"mixed_prec": True, "prefetch_factor": 4}
     mviz_a = {"tsne": {"perplexity": 30, "n_iter": 1000}}
     ms_a = {"siglip": {"wd": 0.0, "beta2": 0.95}, "clip": {"wd": 0.2, "beta2": 0.98}}
@@ -112,7 +111,7 @@ def test_load_or_create_campaign_config_reuses_existing_file(tmp_path, monkeypat
     ht_a = {"kernel": "bm"}
     al_a = {"config": {"param": {"a": "A"}}}
 
-    train_b = {"campaign": "changed", "split": "dev", "dev": False}
+    train_b = {"campaign": "changed", "split": {"split": "dev"}, "operational": {"dev": False}}
     hw_b = {"mixed_prec": False, "prefetch_factor": 2}
     mviz_b = {"tsne": {"perplexity": 5, "n_iter": 250}}
     ms_b = {"siglip": {"wd": 0.1, "beta2": 0.5}, "clip": {"wd": 0.3, "beta2": 0.7}}
@@ -160,10 +159,10 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
 
     train_cfg = {
         "campaign": "dev",
-        "dev": False,
+        "operational": {"dev": False},
         "n_epochs": None,
         "n_chkpts": None,
-        "arch": {"model_type": "siglip_vitb16"},
+        "model": {"arch": {"model_type": "siglip_vitb16"}},
         "opt": {"wd": None, "beta2": None},
     }
     monkeypatch.setattr(cr, "load_train_config_dict", lambda: train_cfg)
@@ -180,7 +179,7 @@ def test_load_or_create_campaign_config_keeps_unresolved_nulls(tmp_path, monkeyp
     snapshot = cr._load_or_create_campaign_config("cmp_ms")
 
     # model-family and dataset-specific defaults are NOT resolved into the train snapshot -- they stay
-    # null so a per-arm/coord arch.model_type override / the trial's dataset can pick up the matching
+    # null so a per-arm/coord model.arch.model_type override / the trial's dataset can pick up the matching
     # value per trial (resolution happens in the trial, from the model_specific/dataset_specific snapshots).
     assert snapshot["train"]["opt"]["wd"] is None
     assert snapshot["train"]["opt"]["beta2"] is None
@@ -196,11 +195,9 @@ def _stub_campaign_config(monkeypatch, hardware=None, manifold_viz=None, train_e
         "coord": "base_coord",
         "seed": 0,
         "dataset": "cub",
-        "split": "D10",
-        "train_pt": "train",
+        "split": {"split": "D10", "train_pt": "train"},
         "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}},
-        "del_base_eval_cache": None,
-        "dev": False,
+        "operational": {"dev": False, "del_base_eval_cache": None},
         **(train_extra or {}),
     }
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
@@ -452,7 +449,7 @@ def test_run_campaign_renders_tables_at_exit(tmp_path, monkeypatch, interrupted:
 def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-    _stub_campaign_config(monkeypatch, train_extra={"del_base_eval_cache": "campaign"})
+    _stub_campaign_config(monkeypatch, train_extra={"operational": {"dev": False, "del_base_eval_cache": "campaign"}})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -480,7 +477,7 @@ def test_run_campaign_del_base_eval_cache_campaign_deletes_only_at_creation(tmp_
 def test_run_campaign_del_base_eval_cache_trial_deletes_before_each_trial(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache", "root": tmp_path / "root"})
-    _stub_campaign_config(monkeypatch, train_extra={"del_base_eval_cache": "trial"})
+    _stub_campaign_config(monkeypatch, train_extra={"operational": {"dev": False, "del_base_eval_cache": "trial"}})
 
     dpath_cache = tmp_path / "root" / "base_eval_cache"
     dpath_cache.mkdir(parents=True)
@@ -1024,7 +1021,7 @@ def test_run_campaign_allows_opt_override_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cr, "SEED0", 9)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
     _stub_campaign_config(monkeypatch, train_extra={
-        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}},
+        "model": {"arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}}},
         "opt": {
             "lr": {"decay_factor": 1.0e-3},
             "wd": None,
@@ -1592,7 +1589,7 @@ def _stub_img_cache_campaign(tmp_path, monkeypatch, use_img_cache: bool) -> None
     monkeypatch.setattr(cr, "SEED0", 42)
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {"bryo": None, "cub": None}, "img_cache": tmp_path / "img_cache"})
     monkeypatch.setattr(cr, "_load_or_create_campaign_config", lambda campaign: {
-        "train": {"campaign": "c", "arm": "a", "coord": "c", "seed": 0, "dataset": "cub", "split": "D10", "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}}, "del_base_eval_cache": None, "dev": False},
+        "train": {"campaign": "c", "arm": "a", "coord": "c", "seed": 0, "dataset": "cub", "split": {"split": "D10", "train_pt": "train"}, "loss": {"crit": "bce", "sim": "cos", "loss1": {"targ": "sp"}}, "operational": {"dev": False, "del_base_eval_cache": None}},
         "hardware": {"max_retries": 2, "use_img_cache": use_img_cache},
         "manifold_viz": {},
         "model_specific": {},

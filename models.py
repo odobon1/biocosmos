@@ -37,7 +37,7 @@ def resolve_bias_init(config):
     """
     init = config.loss["logits"]["bce"]["bias"]["init"]
     if init == "pos_prevalence":
-        p = pos_prevalence(config.loss, config.loss["loss1"], config.loss["loss2"], config.dataset, config.split, config.train_pt, config.batch_size)
+        p = pos_prevalence(config.loss, config.loss["loss1"], config.loss["loss2"], config.dataset, config.split["split"], config.split["train_pt"], config.batch_size)
         init = math.log(p / (1 - p))
         if dist.get_rank() == 0:
             print(f"logit bias init from positive prevalence: p = {p:.4g} -> bias = {init:.4f}")
@@ -225,13 +225,14 @@ class VLMWrapper(abc.ABC):
         # Native CLIP takes only patch_dropout, via open_clip's force_patch_dropout.
         force_patch_dropout = None
         vision_cfg_extra = {}
-        is_siglip = config.arch["model_type"] in SIGLIP_MODELS
+        arch = config.model["arch"]
+        is_siglip = arch["model_type"] in SIGLIP_MODELS
 
-        if is_siglip and config.arch["siglip"]["vis_proj_head"] is not None:
-            vision_cfg_extra["timm_proj"] = config.arch["siglip"]["vis_proj_head"]
+        if is_siglip and arch["siglip"]["vis_proj_head"] is not None:
+            vision_cfg_extra["timm_proj"] = arch["siglip"]["vis_proj_head"]
 
-        if hasattr(config, "dropout"):
-            dropout = config.dropout
+        if "dropout" in config.model:
+            dropout = config.model["dropout"]
             if is_siglip:
                 vision_cfg_extra["patch_dropout"] = dropout["patch_dropout"]
                 vision_cfg_extra["timm_drop"] = dropout["siglip"]["proj_head"]
@@ -275,7 +276,7 @@ class VLMWrapper(abc.ABC):
         self.world_size = dist.get_world_size()
 
         self.device = config.device
-        self.type = config.arch["model_type"]
+        self.type = config.model["arch"]["model_type"]
         self.model = model.to(self.device).eval()
         self.img_pp_train = img_pp_train
         self.img_pp_inf = img_pp_inf
@@ -353,16 +354,17 @@ class VLMWrapper(abc.ABC):
         if verbose:
             print("Loading base model...")
 
-        if config.arch["model_type"] in CLIP_MODELS:
+        arch = config.model["arch"]
+        if arch["model_type"] in CLIP_MODELS:
             modelw = CLIPWrapper(config)
-        elif config.arch["model_type"] in SIGLIP_MODELS:
+        elif arch["model_type"] in SIGLIP_MODELS:
             modelw = SigLIPWrapper(config)
         else:
-            raise ValueError(f"Unknown model_type: '{config.arch['model_type']}'")
+            raise ValueError(f"Unknown model_type: '{arch['model_type']}'")
 
         modelw.set_image_preprocessors()
 
-        if config.arch["clip"]["non_causal"]:
+        if arch["clip"]["non_causal"]:
             modelw.disable_causal_mask_text()
 
         if verbose:
@@ -963,7 +965,7 @@ class VLMWrapper(abc.ABC):
 
 class CLIPWrapper(VLMWrapper):
     def __init__(self, config: TrainConfig) -> None:
-        model_name, pretrained, quick_gelu = CLIP_MODELS[config.arch["model_type"]]
+        model_name, pretrained, quick_gelu = CLIP_MODELS[config.model["arch"]["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_inf.transforms[1].size[0]
@@ -990,7 +992,7 @@ class CLIPWrapper(VLMWrapper):
 
 class SigLIPWrapper(VLMWrapper):
     def __init__(self, config: TrainConfig) -> None:
-        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.arch["model_type"]]
+        model_name, pretrained, quick_gelu = SIGLIP_MODELS[config.model["arch"]["model_type"]]
         super().__init__(config, model_name, pretrained, quick_gelu)
 
         self.img_res = self.img_pp_inf.transforms[0].size[0]

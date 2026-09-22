@@ -38,7 +38,7 @@ def test_get_config_train_resolves_clip_model_opt_defaults(monkeypatch: pytest.M
 
     cfg_dict = load_train_config_dict()
     cfg_dict.update({"campaign": "test", "phase": "_screen", "arm": "test", "coord": "test", "seed": 42, "dataset": "bryo"})
-    cfg_dict["arch"]["model_type"] = "clip_vitb16"
+    cfg_dict["model"]["arch"]["model_type"] = "clip_vitb16"
     cfg_dict["opt"]["wd"] = None
     cfg_dict["opt"]["beta2"] = None
 

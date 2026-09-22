@@ -156,11 +156,11 @@ class PartitionEvaluationPipeline:
         self.mixed_prec = config.hw.mixed_prec
 
         if self.partition == "id":
-            split = load_split(config.dataset, config.split)
+            split = load_split(config.dataset, config.split["split"])
             self.nshot_bucket_names = list(split.nshot["names"])
             self.class_enc_to_bucket = build_class_enc_to_train_nshot_bucket(
                 config.dataset,
-                config.split,
+                config.split["split"],
                 self.cid2enc,
                 eval_pt,
             )
@@ -686,7 +686,7 @@ class EvaluationPipeline:
         self.eval_groups = list(eval_groups(config.reporting))
         self.galleries = {EVAL_GROUP_SPECS[group_key][0] for group_key in self.eval_groups}
 
-        self.split = load_split(config.dataset, config.split)
+        self.split = load_split(config.dataset, config.split["split"])
         self.nshot_bucket_names = list(self.split.nshot["names"])
         self.partitions = list_eval_partitions(self.split, eval_pt)
         self.partition_pipes = {

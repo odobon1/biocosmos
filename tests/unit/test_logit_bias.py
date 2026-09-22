@@ -54,7 +54,7 @@ def _build(monkeypatch, model_type, crit, bias_init=None, bias_freeze=False, sep
                    "bce": {"bias": {"init": bias_init, "freeze": bias_freeze}}},
     }
     config = SimpleNamespace(
-        arch={"model_type": model_type, "siglip": {"vis_proj_head": None}}, device=torch.device("cpu"),
+        model={"arch": {"model_type": model_type, "siglip": {"vis_proj_head": None}}}, device=torch.device("cpu"),
         hw=SimpleNamespace(act_chkpt=False), loss=loss,
     )
     return (SigLIPWrapper if siglip else CLIPWrapper)(config).model

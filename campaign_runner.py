@@ -237,7 +237,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     `dev` overrides per trial is idempotent -- they are already folded into `train` -- but keeps a later
     `config/trial/train/dev.yaml` edit out of the campaign.
     Model-family `opt` defaults are left unresolved in `train` (kept `null`) and filled per trial from the
-    `model_specific` snapshot, so a per-arm/coord `arch.model_type` override still picks up the matching
+    `model_specific` snapshot, so a per-arm/coord `model.arch.model_type` override still picks up the matching
     family's defaults; a null `n_epochs` / `n_chkpts` is likewise left unresolved and filled per trial from the
     `dataset_specific` snapshot as per the trial's dataset. The `augmentation` snapshot is read only by a trial
     whose `aug` is `custom`. Every later relaunch (resume or matrix extension) reloads that
@@ -536,10 +536,11 @@ def _stash_nccl_dumps(dpath_phase: Path) -> None:
 
 def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, phase: str, arm: str, coord: str, overrides: dict,
                           seed: int, dataset: str, idx_seed: int,
-                          idx_trial: int | None = None, n_trials_total: int | None = None, injections: dict | None = None) -> dict:
+                          idx_trial: int | None = None, n_trials_total: int | None = None, chkpt_stop: int | None = None) -> dict:
     """Effective per-trial config dict: frozen campaign snapshot + trial identity (incl. the phase whose tree the
-    trial writes to) + `injections` (phase-level settings laid over the snapshot -- the trainval phase's train_pt /
-    chkpt_stop; not overrides, so not recorded as such) + the merged arm + coord overrides."""
+    trial writes to) + the trainval phase's `chkpt_stop` (phase-level settings laid over the snapshot: the trainval
+    partition, and the checkpoint training stops at; not overrides, so not recorded as such) + the merged arm +
+    coord overrides."""
     cfg_dict = deepcopy(cfg_snapshot["train"])
     cfg_dict["campaign"] = campaign
     cfg_dict["phase"] = phase
@@ -552,8 +553,9 @@ def _build_trial_cfg_dict(cfg_snapshot: dict, campaign: str, phase: str, arm: st
     cfg_dict["n_trials_total"] = n_trials_total
     inject_snapshots(cfg_dict, cfg_snapshot)
     cfg_dict["_overrides"] = overrides
-    if injections:
-        cfg_dict.update(injections)
+    if chkpt_stop is not None:
+        cfg_dict["split"]["train_pt"] = "trainval"
+        cfg_dict["chkpt_stop"] = chkpt_stop
     return apply_overrides(cfg_dict, overrides)
 
 def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -> None:
@@ -902,7 +904,7 @@ class _Camp:
                     f"restore n_trials_screen / n_trials_qual."
                 )
         # Seed only needs to be representative -- config validation is seed-independent beyond requiring a non-null
-        # seed -- and the phase-level injections (the trainval phase's train_pt / chkpt_stop) are internal, so the
+        # seed -- and the phase-level injection (the trainval phase's chkpt_stop) is internal, so the
         # screening-phase config stands for every phase's.
         for dataset in cfg.datasets:
             for arm, arm_payload in arms:
@@ -976,7 +978,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM."""
     dpath_phase = _dpath_phase(campaign, phase)
     max_retries = cfg_snapshot["hardware"]["max_retries"]  # consecutive no-progress trial retries before giving up
-    del_base_eval_cache = cfg_snapshot["train"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
+    del_base_eval_cache = cfg_snapshot["train"]["operational"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
     # the eval groups every table/plot of the phase is rendered per -- off the FROZEN snapshot, the set
     # its trials actually scored, so a later reporting.yaml edit can't ask for a group never written
     groups = eval_groups(cfg_snapshot["reporting"])
@@ -1024,7 +1026,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         trial_id = f"{dataset}/{arm}/{coord}/{seed}"
         # the trainval phase trains every combo on the trainval partition and stops it at its qual-selected checkpoint
         # (TrainConfig.chkpt_stop) instead of running to sample_volume
-        injections = {"train_pt": "trainval", "chkpt_stop": plan.chkpt_stops[(dataset, arm, coord)]} if plan.chkpt_stops is not None else {}
+        chkpt_stop = plan.chkpt_stops[(dataset, arm, coord)] if plan.chkpt_stops is not None else None
 
         # the coord dir (and with it the arm dir) is created here, at trial launch, not when the plan is
         # applied -- a planned arm/coord whose trials never start leaves no
@@ -1033,7 +1035,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
 
         cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord,
                                          {**cfg.baseline_overrides, **arm_payloads[arm], **coord_payloads[coord]},
-                                         seed, dataset, plan.seeds.index(seed), idx_trial, n_trials_total, injections=injections)
+                                         seed, dataset, plan.seeds.index(seed), idx_trial, n_trials_total, chkpt_stop=chkpt_stop)
 
         if dpath_trial.exists():
             print(f"[{idx_trial}/{n_trials_total}] RESUME: {trial_id}")
@@ -1171,7 +1173,7 @@ def run_campaign(campaign: str, name: str) -> bool:
     # is not a new beginning, so the cache the campaign's own trials built survives it
     first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
     cfg_snapshot = _load_or_create_campaign_config(campaign)
-    if first_launch and cfg_snapshot["train"]["del_base_eval_cache"] == "campaign":
+    if first_launch and cfg_snapshot["train"]["operational"]["del_base_eval_cache"] == "campaign":
         _del_base_eval_cache()
 
     camp = _Camp(campaign, name, cfg_snapshot)

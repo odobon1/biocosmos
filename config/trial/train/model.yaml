@@ -3,11 +3,11 @@
 
 arch:  # Architecture
   model_type: clip_vitb16  # {bioclip, clip_vitb16, siglip_vitb16}
-  clip:  # CLIP-specific; Inert iff (arch.model_type: siglip_*)
+  clip:  # CLIP-specific; Inert iff (model.arch.model_type: siglip_*)
     non_causal: false  # {true, false}; (true) Converts text encoder causal attention mask to non-causal (zeros on 
     # diagonal + lower triangle, -inf on upper --> all zeros); Base eval: the native causal mask is always restored 
     # (non_causal undone) so the shared base_eval_cache stays a stable pretrained-as-released reference
-  siglip:  # SigLIP-specific; Inert iff (arch.model_type: clip_*, bioclip*)
+  siglip:  # SigLIP-specific; Inert iff (model.arch.model_type: clip_*, bioclip*)
     vis_proj_head: null  # {null, linear, mlp}; Vision projection head over the attention-pooled image representation; 
     # (null) No projection head; (linear) Linear(D->D); (mlp) GeLU-MLP(D->2*D->D); (linear | mlp) Randomly-initialized 
     # params added; Note: this head is always skipped for base model evaluation (headless pretrained output used) so 
@@ -15,9 +15,9 @@ arch:  # Architecture
 
 dropout:  # Applies only to the vision tower
   patch_dropout: 0.0  # [0.0, 1.0); Fraction of image patches dropped each training step; (0.0) Disabled
-  siglip:  # SigLIP-specific params; Inert iff (arch.model_type: [clip model])
+  siglip:  # SigLIP-specific params; Inert iff (model.arch.model_type: [clip model])
     proj_head: 0.0  # [0.0, 1.0); Dropout on the vision projection head; (0.0) Disabled; Inert iff
-    # (arch.siglip.vis_proj_head: null)
+    # (model.arch.siglip.vis_proj_head: null)
     stoch_depth: null  # {null, [0.0, 1.0)}; (null) Disabled; ([float]) Stochastic depth / drop-path rate
 
 freeze:

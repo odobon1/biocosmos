@@ -34,7 +34,7 @@ cfg_dict.update({"campaign": "protos", "phase": "_screen", "arm": "protos", "coo
 cfg = get_config_train(cfg_dict)
 cfg.device = device  # set local device
 
-split_p = load_split(cfg.dataset, cfg.split)
+split_p = load_split(cfg.dataset, cfg.split["split"])
 enc2cid = split_p.enc2cid
 
 di_val_id = split_p.get_data("val_id")

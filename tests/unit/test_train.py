@@ -54,19 +54,15 @@ class _FakeCoordCfg:
     idx_trial: int = 1
     n_trials_total: int = 8
     dataset: str = "cub"
-    split: str = "D10"
+    split: dict = field(default_factory=lambda: {"split": "D10", "train_pt": "train"})
     n_epochs: int = 5
     n_chkpts: int = 5
     batch_size: int = 1_024
-    dev: bool = False
     reporting: dict = field(default_factory=dict)
-    kill_thresh: float | None = None
-    del_base_eval_cache: str | None = None
-    arch: dict = field(default_factory=lambda: {
-        "model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None},
-    })
-    dropout: dict = field(default_factory=lambda: {
-        "patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None},
+    operational: dict = field(default_factory=lambda: {"dev": False, "kill_thresh": None, "del_base_eval_cache": None})
+    model: dict = field(default_factory=lambda: {
+        "arch": {"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
+        "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
     })
     loss: dict = field(default_factory=_full_loss_cfg)
     opt: dict = field(default_factory=dict)
@@ -87,6 +83,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "config.json").read_text())
     assert "loss" in config and "loss1" in config["loss"] and "phase" not in config and "arm" not in config and "coord" not in config  # config params kept, identity keys stripped
+    assert config["split"] == {"train_pt": "train"} and "operational" not in config  # the split name and the run-management knobs stripped, the partition kept
     assert "n_epochs" not in config and "n_chkpts" not in config  # dataset-resolved, not coord params
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
@@ -126,9 +123,9 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s1")
     ArtifactManager.save_metadata_coord(_FakeCoordCfg())
     config = json.loads((tmp_path / "s1" / "config.json").read_text())
-    assert "clip" not in config["arch"]  # non_causal is CLIP-only
-    assert "proj_head" not in config["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
-    assert "stoch_depth" in config["dropout"]["siglip"]
+    assert "clip" not in config["model"]["arch"]  # non_causal is CLIP-only
+    assert "proj_head" not in config["model"]["dropout"]["siglip"]  # arch.siglip.vis_proj_head null -> no head to drop out
+    assert "stoch_depth" in config["model"]["dropout"]["siglip"]
     assert "loss2" not in config["loss"]  # lambda 0.0
     assert "type" not in config["loss"]["blend"] and config["loss"]["unitless"] is False  # a lone target: nothing to blend
     assert "shared" not in config["loss"]["logits"]  # ... and no second term to give its own logit scalars
@@ -143,14 +140,14 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     (tmp_path / "s2").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s2")
     cfg = _FakeCoordCfg()
-    cfg.arch = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
+    cfg.model["arch"] = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
     cfg.loss = _full_loss_cfg(crit="infonce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
     cfg.loss["wting"]["cls_imb"]["norm"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
-    assert "siglip" not in config["arch"] and "siglip" not in config["dropout"]
-    assert config["arch"]["clip"] == {"non_causal": True}
+    assert "siglip" not in config["model"]["arch"] and "siglip" not in config["model"]["dropout"]
+    assert config["model"]["arch"]["clip"] == {"non_causal": True}
     assert config["loss"]["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
@@ -347,8 +344,8 @@ def test_base_eval_key_normalizes_family_inert_components() -> None:
     # share one cache entry
     def cfg(model_type, non_causal=False, vis_proj_head=None):
         return SimpleNamespace(
-            arch={"model_type": model_type, "clip": {"non_causal": non_causal}, "siglip": {"vis_proj_head": vis_proj_head}},
-            dataset="cub", split="dev",
+            model={"arch": {"model_type": model_type, "clip": {"non_causal": non_causal}, "siglip": {"vis_proj_head": vis_proj_head}}},
+            dataset="cub", split={"split": "dev", "train_pt": "train"},
             text_template={"train": "train", "eval": "sci"}, seed=42,
         )
 
@@ -505,15 +502,15 @@ def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:
 def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
     # kill_thresh is a fraction of the run; the kill check runs at the train-time eval nearest it,
     # rounded up (ceil(kill_thresh * n_chkpts)); null turns it off
-    cfg = SimpleNamespace(n_chkpts=10, kill_thresh=None)
+    cfg = SimpleNamespace(n_chkpts=10, operational={"kill_thresh": None})
     assert kill_chkpt(cfg) is None
-    cfg.kill_thresh = 0.05
+    cfg.operational["kill_thresh"] = 0.05
     assert kill_chkpt(cfg) == 1
-    cfg.kill_thresh = 0.25
+    cfg.operational["kill_thresh"] = 0.25
     assert kill_chkpt(cfg) == 3
-    cfg.kill_thresh = 0.3
+    cfg.operational["kill_thresh"] = 0.3
     assert kill_chkpt(cfg) == 3
-    cfg.kill_thresh = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
+    cfg.operational["kill_thresh"] = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
     assert kill_chkpt(cfg) == 7
 
 

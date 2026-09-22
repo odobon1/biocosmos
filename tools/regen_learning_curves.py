@@ -59,7 +59,7 @@ def regen_learning_curves(campaign):
                         inject_snapshots(cfg_dict, cfg_snapshot)
                         cfg_dict["_overrides"] = {**overrides["baseline"], **overrides["arm"], **overrides["coord"]}
                         if phase == "trainval":  # the runner's phase-level injection; chkpt_stop doesn't touch the epoch axis
-                            cfg_dict["train_pt"] = "trainval"
+                            cfg_dict["split"]["train_pt"] = "trainval"
                         cfg = get_config_train(cfg_dict)
 
                         ArtifactManager.dataset = dataset
@@ -67,8 +67,8 @@ def regen_learning_curves(campaign):
                             data_tracker = SimpleNamespace(data=pickle.load(f))
                         # mirrors train.py's call: bucket names from the split when eval ran, else []
                         nshot_bucket_names = (
-                            list(load_split(cfg.dataset, cfg.split).nshot["names"])
-                            if cfg.train_pt != "trainval"
+                            list(load_split(cfg.dataset, cfg.split["split"]).nshot["names"])
+                            if cfg.split["train_pt"] != "trainval"
                             else []
                         )
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,

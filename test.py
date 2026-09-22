@@ -130,7 +130,7 @@ def main():
         cfg_dict = _build_trial_cfg_dict(
             cfg_snapshot, campaign, "trainval", arm, coord, {**overrides["baseline"], **overrides["arm"], **overrides["coord"]},
             combo_seeds[0], dataset, seeds.index(combo_seeds[0]),
-            injections={"train_pt": "trainval", "chkpt_stop": chkpt_stop},
+            chkpt_stop=chkpt_stop,
         )
         cfgs[(dataset, arm, coord)] = get_config_train(cfg_dict=cfg_dict)
 
@@ -158,7 +158,7 @@ def main():
         apply_backend_flags(cfg.hw)
         # the wrapper resolves a pos_prevalence bias init at build (overwritten by the checkpoint below),
         # which under a phylo target needs the run's phylo-target params set, as in train.py
-        configure_phylo_targs(cfg.split, cfg.train_pt, cfg.batch_size,
+        configure_phylo_targs(cfg.split["split"], cfg.split["train_pt"], cfg.batch_size,
                               cfg.htarg["kernel"], cfg.htarg["exp"]["beta"], cfg.htarg["shuffle"], cfg.seed)
         modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
         text_template_eval = get_text_template(cfg.text_template["eval"], dataset=dataset)

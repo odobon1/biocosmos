@@ -600,7 +600,7 @@ def spawn_partition_data(config: TrainConfig, partition: str, eval_pt: str = "va
     - eval_pt --- [str] --- Eval tier an "id"/"ood" partition resolves against: "val" (val_id/val_ood) or
       "test" (test_id/test_ood); inert for the train partitions
     """
-    split = load_split(config.dataset, config.split)
+    split = load_split(config.dataset, config.split["split"])
     if partition in ("train", "trainval"):
         index_data = split.get_data(partition)
     else:

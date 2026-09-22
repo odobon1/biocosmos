@@ -28,24 +28,24 @@ def make_train_config_dummy(**overrides):
         "coord": "base",
         "seed": 7,
         "dataset": "cub",
-        "split": "D10",
-        "train_pt": "train",
+        "split": {"split": "D10", "train_pt": "train"},
         "n_epochs": 1,
         "n_chkpts": 10,
         "batch_size": 8,
         "chain_floor": None,
         "dv_batching": False,
         "htarg": {"kernel": "laplace", "exp": {"beta": 1.0}, "shuffle": False},
-        "dev": False,
         "reporting": {
             "logging": False,
             "plot_every": "trial",
             "eval": {"native_macro": False, "joint": False, "joint_macro": True},
         },
-        "kill_thresh": None,
-        "del_base_eval_cache": None,
-        "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
-        "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
+        "operational": {"dev": False, "kill_thresh": None, "del_base_eval_cache": None},
+        "model": {
+            "arch": {"model_type": "clip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
+            "dropout": {"patch_dropout": 0.0, "siglip": {"proj_head": 0.0, "stoch_depth": None}},
+            "freeze": {"text": False, "image": True},
+        },
         "loss": _loss_cfg(),
         "lr": {"init": 1.0e-5, "decay_factor": 1.0e-3, "warmup": 0.02},
         "opt": {
@@ -54,7 +54,6 @@ def make_train_config_dummy(**overrides):
             "beta2": 0.95,
             "eps": 1.0e-6,
         },
-        "freeze": {"text": False, "image": True},
         "text_template": {"train": "train", "eval": "sci"},
         "hw": {
             "mixed_prec": True,
@@ -72,10 +71,13 @@ def make_train_config_dummy(**overrides):
             "max_retries": 2,
         },
     }
-    # loss1 / loss2 are blocks of `loss` now, but stay kwargs here so callers read unchanged
+    # loss1 / loss2 are blocks of `loss` now, and arch / dropout / freeze blocks of `model`, but stay kwargs here
+    # so callers read unchanged
     targs = {k: overrides.pop(k) for k in ("loss1", "loss2") if k in overrides}
+    model = {k: overrides.pop(k) for k in ("arch", "dropout", "freeze") if k in overrides}
     config.update(overrides)
     config["loss"] = {**config["loss"], "loss1": {"targ": "sp"}, "loss2": {"targ": "sp"}, **targs}
+    config["model"] = {**config["model"], **model}
     return config
 
 
@@ -89,7 +91,7 @@ def patch_hw(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_train_config_rejects_head_dropout_without_proj_head(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    with pytest.raises(ValueError, match="requires arch.siglip.vis_proj_head"):
+    with pytest.raises(ValueError, match="requires model.arch.siglip.vis_proj_head"):
         TrainConfig(**make_train_config_dummy(
             arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
             dropout={"patch_dropout": 0.0, "siglip": {"proj_head": 0.3, "stoch_depth": None}},
@@ -100,7 +102,7 @@ def test_train_config_accepts_freezing_both_encoders(monkeypatch: pytest.MonkeyP
     patch_hw(monkeypatch)
 
     cfg = TrainConfig(**make_train_config_dummy(freeze={"text": True, "image": True}))
-    assert cfg.freeze == {"text": True, "image": True}
+    assert cfg.model["freeze"] == {"text": True, "image": True}
 
 
 def test_train_config_rejects_invalid_secondary_lambda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,8 +242,8 @@ def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.Mo
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["del_base_eval_cache"] = "always"
-    with pytest.raises(ValueError, match="del_base_eval_cache must be null, 'campaign' or 'trial'"):
+    cfg_dict["operational"]["del_base_eval_cache"] = "always"
+    with pytest.raises(ValueError, match="operational.del_base_eval_cache must be null, 'campaign' or 'trial'"):
         TrainConfig(**cfg_dict)
 
 
@@ -251,12 +253,12 @@ def test_train_config_rejects_kill_thresh_out_of_range(monkeypatch: pytest.Monke
 
     for kill_thresh in (0.0, 1.0, -0.1, 1.5):
         cfg_dict = make_train_config_dummy()
-        cfg_dict["kill_thresh"] = kill_thresh
-        with pytest.raises(ValueError, match="kill_thresh must be null or a fraction in"):
+        cfg_dict["operational"]["kill_thresh"] = kill_thresh
+        with pytest.raises(ValueError, match="operational.kill_thresh must be null or a fraction in"):
             TrainConfig(**cfg_dict)
     cfg_dict = make_train_config_dummy()
-    cfg_dict["kill_thresh"] = 0.25
-    assert TrainConfig(**cfg_dict).kill_thresh == 0.25
+    cfg_dict["operational"]["kill_thresh"] = 0.25
+    assert TrainConfig(**cfg_dict).operational["kill_thresh"] == 0.25
 
 
 def test_train_config_rejects_htarg_shuffle_without_phylo_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -427,6 +429,28 @@ def test_apply_overrides_allows_declared_null_field() -> None:
 
     assert out["opt"]["wd"] == 0.1
     assert out["opt"]["beta2"] is None
+
+
+def test_apply_overrides_reaches_a_sibling_file_under_its_stem_or_alias() -> None:
+    # a sibling config file's fields are addressed under its file stem or its config.file alias alike
+    # (hardware/hw, htargs/htarg, optimizer/opt, lr_schedule/lr): the stem is mapped to the alias, the cfg key
+    base = make_train_config_dummy()
+    out = apply_overrides(base, {"hardware.mixed_prec": False, "htargs.kernel": "bm", "optimizer.wd": 0.3, "lr_schedule.init": 2.0e-6})
+    assert (out["hw"]["mixed_prec"], out["htarg"]["kernel"], out["opt"]["wd"], out["lr"]["init"]) == (False, "bm", 0.3, 2.0e-6)
+    out = apply_overrides(base, {"hw.mixed_prec": False, "htarg.kernel": "bm", "opt.wd": 0.3, "lr.init": 2.0e-6})
+    assert (out["hw"]["mixed_prec"], out["htarg"]["kernel"], out["opt"]["wd"], out["lr"]["init"]) == (False, "bm", 0.3, 2.0e-6)
+    # a file without an alias is reached under its stem only; train.yaml's fields alone carry no prefix
+    out = apply_overrides(base, {"model.arch.model_type": "siglip_vitb16", "split.train_pt": "trainval", "operational.kill_thresh": 0.5, "batch_size": 16})
+    assert out["model"]["arch"]["model_type"] == "siglip_vitb16" and out["split"]["train_pt"] == "trainval"
+    assert out["operational"]["kill_thresh"] == 0.5 and out["batch_size"] == 16
+
+
+def test_apply_overrides_rejects_a_sibling_file_field_unprefixed() -> None:
+    # model.yaml's blocks are not top-level config: arch.model_type addresses nothing, model.arch.model_type does
+    base = make_train_config_dummy()
+    for key in ("arch.model_type", "dropout.patch_dropout", "freeze.image", "train_pt", "kill_thresh", "train.batch_size"):
+        with pytest.raises(ValueError, match=f"Unknown override key '{key}'"):
+            apply_overrides(base, {key: 0})
 
 
 def test_model_specific_defaults_resolve_siglip_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -991,7 +1015,7 @@ def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> Non
 
     inert = inert_params(cfg)
     assert {
-        "arch.siglip", "dropout.siglip", "htarg", "loss.loss2",
+        "model.arch.siglip", "model.dropout.siglip", "htarg", "loss.loss2",
         "loss.loss1.infonce", "loss.bce", "loss.wting.cls_imb.inv_freq", "loss.wting.cls_imb.class_bal",
         "loss.wting.cls_imb.norm", "loss.logits.bce.bias.freeze",  # CLIP's fixed 0.0 bias buffer
     } <= inert.keys()
@@ -999,7 +1023,7 @@ def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "loss.loss1" not in inert
     # live: the family's own block, the toggles themselves, the BCE-path logit params under a BCE crit
     _check_overrides_live(cfg, {
-        "arch.clip.non_causal": True, "dropout.patch_dropout": 0.1, "loss.blend.lambda": 0.0, "loss.loss1.targ": "sp",
+        "model.arch.clip.non_causal": True, "model.dropout.patch_dropout": 0.1, "loss.blend.lambda": 0.0, "loss.loss1.targ": "sp",
         "loss.wting.cls_imb.type": None, "loss.wting.focal.gamma": 0.0, "loss.wting.bce.dsmr": False,
         "loss.logits.bce.center": None, "loss.logits.bce.bias.init": None, "aug": "custom",
     })
@@ -1017,13 +1041,13 @@ def test_inert_params_siglip_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> N
 
     inert = inert_params(cfg)
     assert {
-        "arch.clip", "dropout.siglip.proj_head", "htarg.exp",
+        "model.arch.clip", "model.dropout.siglip.proj_head", "htarg.exp",
         "loss.bce", "loss.wting.bce", "loss.logits.bce", "loss.wting.cls_imb.class_bal", "loss.loss2.infonce.tsm.sm_scale",
     } <= inert.keys()
     assert inert["loss.loss2.infonce.tsm.sm_scale"] == "loss.loss2.infonce.tsm.type is linear"
     assert not {"loss1", "loss2", "loss.loss1.infonce", "loss.loss2.infonce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
     _check_overrides_live(cfg, {
-        "dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.blend.lambda": 0.5,
+        "model.dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.blend.lambda": 0.5,
         "loss.loss1.infonce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
         "loss.loss2.targ": "mp", "loss.loss2.infonce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
     })
@@ -1185,6 +1209,20 @@ def test_campaign_config_baseline_overrides_take_scalars_only() -> None:
         CampaignConfig(**_make_campaign_config_dummy(baseline_overrides=[[{"batch_size": 1_024}]]))
     assert CampaignConfig(**_make_campaign_config_dummy(
         baseline_overrides={"batch_size": 1_024, "aug": "custom"})).baseline_overrides["aug"] == "custom"
+
+
+def test_campaign_config_canonicalizes_override_keys() -> None:
+    # a key written under a config file's stem is rewritten to its config.file alias (hardware.x -> hw.x) in
+    # every override set, so the names, overrides.json and the alias / inert tables never see two spellings;
+    # keys under the alias, unaliased stems and train.yaml's fields pass through, as does an item's name
+    cfg = CampaignConfig(**_make_campaign_config_dummy(
+        baseline_overrides={"hardware.mixed_prec": True, "htarg.shuffle": False, "batch_size": 512},
+        ablation_arms=[[{"optimizer.wd": 0.1, "model.arch.model_type": "siglip_vitb16", "name": "sig"}, {"opt.wd": 0.2}]],
+        hpo_coords=[[{"lr_schedule.init": [1.0e-5, 2.0e-5], "name": None}]],
+    ))
+    assert cfg.baseline_overrides == {"hw.mixed_prec": True, "htarg.shuffle": False, "batch_size": 512}
+    assert cfg.ablation_arms == [[{"opt.wd": 0.1, "model.arch.model_type": "siglip_vitb16", "name": "sig"}, {"opt.wd": 0.2}]]
+    assert cfg.hpo_coords == [[{"lr.init": [1.0e-5, 2.0e-5], "name": None}]]
 
 
 def test_train_config_rejects_chkpt_stop_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:

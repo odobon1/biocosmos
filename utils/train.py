@@ -278,7 +278,7 @@ class ArtifactManager:
         ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / cfg_train.dataset / "_arms" / cfg_train.arm
                                        / "_coords" / cfg_train.coord)
         ArtifactManager.dataset = cfg_train.dataset
-        ArtifactManager.split = cfg_train.split
+        ArtifactManager.split = cfg_train.split["split"]
 
         trial_name = cfg_train.seed
         ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / "_seeds" / str(trial_name)
@@ -361,7 +361,7 @@ class ArtifactManager:
             del metadata["idx_trial"]
             del metadata["n_trials_total"]
             del metadata["dataset"]
-            del metadata["split"]
+            del metadata["split"]["split"]  # split.train_pt stays: the trainval phase's partition is recorded
             # dataset-resolved duration and checkpoint count (config/trial/train/dataset_specific.yaml fills a null
             # n_epochs / n_chkpts per dataset), not arm/coord params; the duration is recorded in
             # coord_metadata.json's horizon (and each trial's trial_metadata.json progress), the
@@ -369,23 +369,22 @@ class ArtifactManager:
             del metadata["n_epochs"]
             del metadata["n_chkpts"]
 
-            del metadata["dev"]
             del metadata["reporting"]
-            # campaign/run-management knobs, not arm/coord params: when the runner kills a hopeless
-            # trial, and when it clears base_eval_cache/
-            del metadata["kill_thresh"]
-            del metadata["del_base_eval_cache"]
+            # the dev switch and the campaign/run-management knobs (when the runner kills a hopeless trial, and
+            # when it clears base_eval_cache/), not arm/coord params
+            del metadata["operational"]
 
             # family-specific sections: models.py reads arch.siglip / dropout.siglip only when
             # is_siglip, and arch.clip.non_causal drives disable_causal_mask_text (CLIPWrapper-only)
-            is_siglip = "siglip" in metadata["arch"]["model_type"].lower()
+            model = metadata["model"]
+            is_siglip = "siglip" in model["arch"]["model_type"].lower()
             if is_siglip:
-                del metadata["arch"]["clip"]
-                if metadata["arch"]["siglip"]["vis_proj_head"] is None:
-                    del metadata["dropout"]["siglip"]["proj_head"]  # head dropout needs a projection head
+                del model["arch"]["clip"]
+                if model["arch"]["siglip"]["vis_proj_head"] is None:
+                    del model["dropout"]["siglip"]["proj_head"]  # head dropout needs a projection head
             else:
-                del metadata["arch"]["siglip"]
-                del metadata["dropout"]["siglip"]
+                del model["arch"]["siglip"]
+                del model["dropout"]["siglip"]
 
             # target specs: loss2 carries weight lambda, loss1 weight 1 - lambda (utils.loss.targ_specs)
             lambda_ = metadata["loss"]["blend"]["lambda"]
@@ -589,14 +588,15 @@ class ArtifactManager:
         share one entry: non_causal is CLIP-only, vis_proj_head is SigLIP-only, and seed only enters
         through the random init of a linear/mlp vis_proj_head."""
         from models import CLIP_MODELS, SIGLIP_MODELS  # local: models pulls open_clip/transformers, too heavy for module import
-        model_type = cfg_train.arch["model_type"]
-        non_causal = cfg_train.arch["clip"]["non_causal"] if model_type in CLIP_MODELS else None
-        vis_proj_head = cfg_train.arch["siglip"]["vis_proj_head"] if model_type in SIGLIP_MODELS else None
+        arch = cfg_train.model["arch"]
+        model_type = arch["model_type"]
+        non_causal = arch["clip"]["non_causal"] if model_type in CLIP_MODELS else None
+        vis_proj_head = arch["siglip"]["vis_proj_head"] if model_type in SIGLIP_MODELS else None
         seed = cfg_train.seed if vis_proj_head is not None else None
         return (
             model_type,
             cfg_train.dataset,
-            cfg_train.split,
+            cfg_train.split["split"],
             non_causal,
             cfg_train.text_template["eval"],
             vis_proj_head,

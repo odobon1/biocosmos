@@ -92,10 +92,11 @@ def kill_chkpt(cfg):
     """The train-time eval index the kill check runs at (kill_thresh, a fraction of the run, rounded up to
     the nearest checkpoint: ceil(kill_thresh * n_chkpts)), or None with the check off. An index of n_chkpts
     lands on the final eval, where there is nothing left to cut short, so it never kills."""
-    if cfg.kill_thresh is None:
+    kill_thresh = cfg.operational["kill_thresh"]
+    if kill_thresh is None:
         return None
     # rounded first so float noise (0.7 * 10 = 7.000000000000001) can't push the ceiling one eval late
-    return math.ceil(round(cfg.kill_thresh * cfg.n_chkpts, 6))
+    return math.ceil(round(kill_thresh * cfg.n_chkpts, 6))
 
 
 class TrainPipeline:
@@ -120,7 +121,7 @@ class TrainPipeline:
         self._resume_state = resume_state
         self._local_rank = local_rank
 
-        index_data, _, enc2cid = spawn_partition_data(config=self.cfg, partition=self.cfg.train_pt)
+        index_data, _, enc2cid = spawn_partition_data(config=self.cfg, partition=self.cfg.split["train_pt"])
         text_template_train = get_text_template(self.cfg.text_template["train"], dataset=self.cfg.dataset)
         self.dataloader = spawn_dataloader(
             index_data=index_data,
@@ -134,7 +135,7 @@ class TrainPipeline:
             persistent_workers=self.cfg.hw.persistent_workers["train"],
         )
 
-        self.eval_enabled = self.cfg.train_pt != "trainval"
+        self.eval_enabled = self.cfg.split["train_pt"] != "trainval"
         # manifold viz runs for a window of each arm/coord/dataset group's seed sweep: the manifold_viz.n_seeds
         # seeds starting at manifold_viz.n_seeds_offset. A window the sweep hasn't reached selects nothing (no
         # error, no warning) -- raising the campaign's seed count later pulls those trials into it.
@@ -757,7 +758,7 @@ def run_training(cfg):
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
     apply_backend_flags(cfg.hw)
-    configure_phylo_targs(cfg.split, cfg.train_pt, cfg.batch_size,
+    configure_phylo_targs(cfg.split["split"], cfg.split["train_pt"], cfg.batch_size,
                           cfg.htarg["kernel"], cfg.htarg["exp"]["beta"], cfg.htarg["shuffle"], cfg.seed)
 
     ArtifactManager.set_paths(cfg)
@@ -765,11 +766,11 @@ def run_training(cfg):
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_coord(cfg)
     if cfg.reporting["logging"]:
-        PrintLog.create_logs(ArtifactManager.dpath_trial / "logs", cfg.train_pt != "trainval")
+        PrintLog.create_logs(ArtifactManager.dpath_trial / "logs", cfg.split["train_pt"] != "trainval")
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
-    modelw.crit = Criterion.build(cfg.loss, cfg.loss["loss1"], cfg.loss["loss2"], cfg.dataset, cfg.split, cfg.train_pt, device, cfg.batch_size)
+    modelw.crit = Criterion.build(cfg.loss, cfg.loss["loss1"], cfg.loss["loss2"], cfg.dataset, cfg.split["split"], cfg.split["train_pt"], device, cfg.batch_size)
 
     resume_state = None
     trial_state = None
@@ -782,7 +783,7 @@ def run_training(cfg):
     # "module."), and DDP builds its reducer over the params trainable at wrap time -- a tower frozen after
     # the wrap never reports its grads ready, so the next backward errors; with the logit scalars frozen
     # too there is nothing left to train and DDP refuses to wrap at all
-    modelw.freeze(cfg.freeze["text"], cfg.freeze["image"])
+    modelw.freeze(cfg.model["freeze"]["text"], cfg.model["freeze"]["image"])
     modelw.model = DDP(modelw.model, device_ids=[local_gpu_rank], output_device=local_gpu_rank)
 
     train_pipe = TrainPipeline(

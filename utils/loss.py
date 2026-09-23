@@ -303,7 +303,7 @@ def infonce_block_resid(Q, sim, logit_scale, clamp, full):
 
     p* = infonce_p_opt(Y, alpha) the closest distribution a row softmax can realize under bounded-cosine
     logits: the structural part is what the model could still remove at this alpha, the residual (its
-    sres + ires halves alike) what no similarity geometry can. Everything downstream of the logits reads
+    ures + ires halves alike) what no similarity geometry can. Everything downstream of the logits reads
     that split through its own Jacobian -- the scale's gradient (infonce_scale_grad_sums) as
 
         dL/dalpha = (p - y) s = (p - p*) s + (p* - y) s,
@@ -916,7 +916,7 @@ def infonce_p_opt(Y, alpha, n_iter=60):
     same feasibility the alpha panels' red lines plot -- and p* = y then sums to 1 by construction. Left
     to the solve, such a row comes back off y by the ~1e-16 the log/exp roundtrip leaves, which is
     nothing against y but is everything against a residual that is mathematically zero: the kl_ir /
-    kl_sr and res / sres / ires strips would read that roundtrip (~1e-15) instead of 0. The branch is
+    kl_ur and res / ures / ires strips would read that roundtrip (~1e-15) instead of 0. The branch is
     continuous at the boundary -- the true residual goes to zero with the excess range -- so it needs no
     tolerance. A row holding an exact zero (an sp / mp negative) has log range inf and is never feasible,
     which is the case infonce_hard_resid covers in closed form.
@@ -977,9 +977,9 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
     targets steeper than exp(2 * alpha) allows). The residual splits again along s* =
     infonce_s_opt(P_opt, alpha), the geometry that realizes p*:
 
-        (p*_ij - y_ij) s_ij = (p*_ij - y_ij)(s_ij - s*_ij) + (p*_ij - y_ij) s*_ij    (sres + ires)
+        (p*_ij - y_ij) s_ij = (p*_ij - y_ij)(s_ij - s*_ij) + (p*_ij - y_ij) s*_ij    (ures + ires)
 
-    -- 'sres' the part carried by the model's geometry standing off the optimal one (it vanishes as
+    -- 'ures' the part carried by the model's geometry standing off the optimal one (it vanishes as
     s approaches s*, however unreachable the target is), 'ires' what the optimal geometry itself
     still pushes on alpha, the pressure that survives at p = p*. Each term is also attributed to the
     positive and negative target mass by the soft masks q_ij and 1 - q_ij (generalizing the binary
@@ -994,7 +994,7 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
       on a hard binary target it has a closed form (infonce_hard_resid) the subtraction cannot
       reproduce at scale, and it is the caller that knows which case this is (infonce_batch_stats)
 
-    Returns [3, 5, 3]: (sum, sum of |.|, sum of |row sum|) x (full, struct, res, sres, ires) x (all,
+    Returns [3, 5, 3]: (sum, sum of |.|, sum of |row sum|) x (full, struct, res, ures, ires) x (all,
     positive, negative mass), each a per-anchor row sum averaged over the anchors -- so the full / all
     sum is exactly this direction's d(loss_raw)/d(alpha) (the per-anchor mean CE the loss carries).
     The third, sum_i |sum_j .|, takes the magnitude per ANCHOR rather than per pair: each row is one
@@ -1017,20 +1017,118 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
     return torch.stack(sums).view(5, 3, 3).permute(2, 0, 1) / S.size(0)
 
 
+def _norm_entropy(A, dim):
+    """The Shannon entropy of |A| normalized to unit mass along `dim` (0 log 0 = 0), over log(n) for that dim's
+    size, so it reads in [0, 1]: 1 where the magnitude is spread uniformly over the entries, 0 where it sits on
+    one. NaN where the mass is zero -- no gradient, no concentration to report (the coherence ratios' convention
+    under no pressure, infonce_batch_stats)."""
+    A = A.abs()
+    G = A / A.sum(dim=dim, keepdim=True)
+    return -torch.xlogy(G, G).sum(dim=dim) / math.log(A.size(dim))
+
+
+def _anchor_entropy(M):
+    """One anchor set's entropy and active fraction, [2]: _norm_entropy over the rows of `M` that carry any
+    gradient mass, averaged (NaN with none), and the fraction of rows that do."""
+    active = M.abs().sum(dim=1) > 0
+    return torch.stack([_norm_entropy(M[active], 1).mean(), active.double().mean()])
+
+
+def _anchor_entropies(M_a, M_b):
+    """Two anchor sets' _anchor_entropy combined, [2]: the entropies averaged over the sets with an active anchor
+    at all -- both, equally, as a rule; the one that has any when the other has none, whose mean is no reading
+    (NaN) rather than a value to average in; NaN with neither -- and the active fractions averaged over both
+    regardless, a set with none active counting as such."""
+    sets = torch.stack([_anchor_entropy(M_a), _anchor_entropy(M_b)])  # [2, (H, f)]
+    has_active = sets[:, 1] > 0
+    return torch.stack([sets[has_active, 0].mean(), sets[:, 1].mean()])
+
+
+def infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R):
+    """
+    Where the InfoNCE similarity-level gradient's magnitude sits across the batch: the normalized Shannon entropy
+    (_norm_entropy) of |dL/dS| per pair -- over the whole B x B matrix, against log B^2 -- and per anchor -- each
+    row over its B candidates, against log B, averaged over the anchors -- for the gradient and the two parts of
+    its decomposition through p* = infonce_p_opt (the dalpha family's, infonce_scale_grad_sums):
+
+        dL/ds_ij = alpha (p_ij - y_ij) / B = alpha (p_ij - p*_ij) / B + alpha (p*_ij - y_ij) / B    (full = struct + res)
+
+    Complementary to the scale gradient's coherence ratios: those read the directional cancellation of the pressure
+    on alpha, these how concentrated the representation-learning signal is -- 1 where the magnitude is spread
+    uniformly over the pairs (a row's candidates), 0 where it sits on few. The pair entropy confounds the
+    concentration within each anchor's row with that of the rows' total magnitudes between anchors; the anchor
+    entropy reads the first alone. The residual goes no further here: its split along s* = infonce_s_opt is the
+    SCALE gradient's, (p* - y) s = (p* - y)(s - s*) + (p* - y) s*, and the similarity-level residual carries no s
+    factor to split on -- alpha (p* - y) / B does not depend on the geometry at all.
+
+    Directions: the pair entropy is of the gradient the towers receive, dL/dS itself -- the two anchor directions'
+    per-pair terms folded, (i2t + t2i.T) / 2 (the common factor alpha / B drops out under the normalization) --
+    while the anchor entropy takes each direction over its own anchors' rows (image anchors on softmax(logits),
+    text anchors on softmax(logits.T), Y -- with it p* and R -- serving both as in InfoNCECriterion) and averages
+    the two: never over a per-pair blend of the two directions, whose rows would mix one direction's anchors with
+    the other's candidates (infonce_batch_stats' row_abs convention).
+
+    An anchor whose row carries no gradient mass at all has no entropy: its normalization is 0 / 0 -- a different
+    thing from a row concentrated on one pair, which reads 0 -- so the anchor entropy is the mean over the ACTIVE
+    anchors, those with mass (a residual's feasible rows sit at exactly zero and drop out; one such row must not
+    turn the other B - 1 readings into NaN), NaN only with none active, and the active fraction |A| / B is
+    reported beside it: an entropy of 0.8 over every anchor and one over the 5% of anchors that carry any
+    residual are different readings, and only the fraction tells them apart. Taken per direction like the
+    entropy, over that direction's own anchors, and averaged -- the entropy over the directions with an active
+    anchor at all (a direction with none has no reading to average in, so one side going quiet leaves the other's
+    reading rather than NaN; NaN with neither), the fraction over both (_anchor_entropies).
+
+    - Y, P_opt, R --- [B, B] as infonce_scale_grad_sums takes them: target distributions, the reachable optimum
+      and the residual p* - y (closed-form on hard rows)
+    - P_i2t, P_t2i -- [B, B] the image anchors' and the text anchors' predicted row distributions
+      (softmax(logits) and softmax(logits.T))
+
+    Returns [3, 3]: (pair, anchor, active) x (full, struct, res), float64 -- active the fraction of anchors the
+    anchor entropy is the mean over.
+    """
+    i2t, t2i = (P_i2t - Y, P_i2t - P_opt, R), (P_t2i - Y, P_t2i - P_opt, R)  # per direction, rows = its anchors
+    pair = torch.stack([_norm_entropy(0.5 * (M_i2t + M_t2i.T).flatten(), 0) for M_i2t, M_t2i in zip(i2t, t2i)])
+    anchors = torch.stack([_anchor_entropies(M_i2t, M_t2i) for M_i2t, M_t2i in zip(i2t, t2i)])  # [3, (H, f)]
+    return torch.stack([pair, anchors[:, 0], anchors[:, 1]])
+
+
+def sim_grad_entropies_actual(grad_sim):
+    """
+    infonce_sim_grad_entropies' pair / anchor / active trio off the similarity gradient the towers ACTUALLY
+    received: the retained sims' .grad after the backward (batch_diagnostics.sim_grad_sums; bf16 under mixed
+    precision, read as it is), which carries every weight the loss does -- class-imbalance, focal, the blend
+    coefficients, loss.unitless, block_residuals' correction -- where the analytic family reads the unweighted
+    loss_raw gradient off the blended target distribution. The measurement beside the decomposition, as the alpha
+    figures' (actual) panel is beside their dalpha ones.
+
+    The pair entropy is the same construction as the analytic one, over the folded dL/dS. The anchor entropy
+    is not quite: the analytic reads each anchor's own CE term's gradient row, per direction, before the two
+    fold, and after the backward only the fold exists -- so here an anchor's row is what its similarity row
+    (an image anchor) or column (a text anchor) received, the other direction's pushes on its candidates
+    included. The active set and fraction are taken over those rows and columns alike.
+
+    Returns {sim_grad_entropy_{pair,anchor,active}_actual: scalar}, one .cpu() sync.
+    """
+    G = grad_sim.detach().double()
+    anchor = _anchor_entropies(G, G.T)  # rows and columns are active together or not at all: G is zero or it is not
+    vals = torch.stack([_norm_entropy(G.flatten(), 0), anchor[0], anchor[1]]).cpu().tolist()
+    return dict(zip(("sim_grad_entropy_pair_actual", "sim_grad_entropy_anchor_actual", "sim_grad_entropy_active_actual"), vals))
+
+
 def infonce_kl_terms(Y, log_P, P_opt, R, E_ir):
     """
     One anchor direction's InfoNCE target-to-prediction divergence, decomposed through the reachable
     optimum p* = infonce_p_opt(Y, alpha):
 
         D_KL(y || p) = D_KL(y || p*) + D_KL(p* || p) + <y - p*, log(p* / p)>
-                     =     E_ir      +      E_s      +        E_sr
+                     =     E_ir      +      E_u      +        E_ur
 
     per anchor row, each averaged over the anchors. D_KL(y || p) is the direction's raw loss (the
     per-anchor CE) less the targets' entropy -- the part of the loss training can drive down. E_ir
     is the part no similarity geometry can remove at this alpha (the target lies outside the
-    reachable set), E_s the part the model still could (its p is not p*), E_sr the cross term. All
-    four are >= 0: the divergences by definition, E_sr because p is itself reachable -- with A the
-    target mass the cap clips off, E_sr = A * (2 alpha - the mean log-ratio of p between the capped
+    reachable set), E_u the part the model still could (its p is not p*), E_ur the cross term. All
+    four are >= 0: the divergences by definition, E_ur because p is itself reachable -- with A the
+    target mass the cap clips off, E_ur = A * (2 alpha - the mean log-ratio of p between the capped
     and the floored entries), and no two entries of p differ by more than 2 alpha in logit; it is
     zero iff p keeps every capped entry the full 2 alpha above every floored one, as p* does.
 
@@ -1043,17 +1141,17 @@ def infonce_kl_terms(Y, log_P, P_opt, R, E_ir):
     - E_ir --- [R] D_KL(y || p*) per anchor: both passed in rather than built here, since on a hard
                binary target they have closed forms (infonce_hard_resid, infonce_hard_kl_ir) that
                their subtractions cannot reproduce at scale -- E_ir differences -H(y) against a
-               cross-entropy equal to it to within exp(-2 alpha), and E_sr reads R. Only E_s and the
+               cross-entropy equal to it to within exp(-2 alpha), and E_ur reads R. Only E_u and the
                total D_KL(y || p) difference quantities that stay apart, so they are taken here
 
-    Returns [4]: the batch means of (D_KL(y || p), E_s, E_ir, E_sr).
+    Returns [4]: the batch means of (D_KL(y || p), E_u, E_ir, E_ur).
     """
     log_P_opt = P_opt.log()
     neg_H = torch.xlogy(Y, Y).sum(dim=1)  # -H(y); 0 log 0 = 0
     kl = neg_H - (Y * log_P).sum(dim=1)
-    E_s = (P_opt * (log_P_opt - log_P)).sum(dim=1)
-    E_sr = -(R * (log_P_opt - log_P)).sum(dim=1)
-    return torch.stack([kl.mean(), E_s.mean(), E_ir.mean(), E_sr.mean()])
+    E_u = (P_opt * (log_P_opt - log_P)).sum(dim=1)
+    E_ur = -(R * (log_P_opt - log_P)).sum(dim=1)
+    return torch.stack([kl.mean(), E_u.mean(), E_ir.mean(), E_ur.mean()])
 
 
 def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
@@ -1062,22 +1160,22 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     both anchor directions and averaged -- the loss is the mean of the two directions' CE:
 
     - the logit-scale gradient decomposition (the dalpha_* and dlogalpha_* learning-curve strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
-      the coherence C = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
-      cancellation ratio, so C = |sum| / sum_abs holds across the reported series). The ratio is
+      the coherence ratio = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
+      cancellation ratio, so ratio = |sum| / sum_abs holds across the reported series). The ratio is
       divided exactly, with sum_abs = 0 reading NaN rather than 0: a term whose every pair is zero has
       no cancellation to report, and the two must not be conflated -- sum_abs > 0 with sum = 0 is total
       cancellation, sum_abs = 0 is no pressure at all. An additive floor in the denominator would do
       worse than blur that case: the residual terms decay like exp(-2 alpha), so sum_abs reaches 1e-42
       by alpha 50 on targets whose rows sum to exactly 1, and any floor above it drags a perfectly
-      coherent C = 1 down towards zero -- reading as total cancellation where there is none. Beside
-      sum_abs (A, the magnitude per pair) sits row_abs (B = sum_i |sum_j .|, the magnitude per anchor:
-      infonce_scale_grad_sums' third aggregate) with its own ratio C_row = |sum| / row_abs, divided
+      coherent ratio = 1 down towards zero -- reading as total cancellation where there is none. Beside
+      sum_abs (A, the magnitude per pair) sits row_abs (C = sum_i |sum_j .|, the magnitude per anchor:
+      infonce_scale_grad_sums' third aggregate) with its own ratio_row = |sum| / row_abs, divided
       the same way. Bidirectionally the anchors are the image rows of the I2T terms AND the text rows
-      of the T2I ones, 2B CE terms in all, each with its own row sum: B is taken within each
+      of the T2I ones, 2B CE terms in all, each with its own row sum: C is taken within each
       direction over that direction's anchors and the two averaged, as the sums and A are -- never
       over a per-pair blend of the two directions, whose rows would mix one direction's anchors with
-      the other's candidates -- so |sum| <= row_abs <= sum_abs, and with it C <= C_row, holds across
-      the reported series. C reads all cancellation, C_row only that BETWEEN anchors; row_abs = 0
+      the other's candidates -- so |sum| <= row_abs <= sum_abs, and with it ratio <= ratio_row, holds across
+      the reported series. ratio reads all cancellation, ratio_row only that BETWEEN anchors; row_abs = 0
       under a sum_abs > 0 (every anchor's own pairs cancelling exactly) leaves nothing between them
       to report, hence NaN there too. alpha is the
       scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
@@ -1085,7 +1183,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       gradient of the log-scale parameter the model actually learns (logits.scale: the param is
       log(alpha_raw), and z = exp(min(log alpha_raw, ln 100)) * s under logits.scale.clamp, exp(log
       alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dalpha per pair while the clamp is off
-      or slack, so its sums are alpha times the dalpha ones and its C / C_row, alpha cancelling in the
+      or slack, so its sums are alpha times the dalpha ones and its ratio / ratio_row, alpha cancelling in the
       ratio, equal the dalpha ones; once the clamp holds (the raw parameter above ln 100, where clamp's
       backward blocks the gradient) the parameter's gradient is exactly zero however hard the loss
       pushes on the effective scale, so its sums all read zero and its ratios read NaN -- the parameter
@@ -1107,7 +1205,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       actually received (grad_after = grad_before + dlogalpha_correction; zero under a held clamp or a
       frozen scale, as the parameter's own gradient is).
 
-      The residual family (res, sres, ires, and the kl_ir / kl_sr strips below) is exp(-2 alpha)-small
+      The residual family (res, ures, ires, and the kl_ir / kl_ur strips below) is exp(-2 alpha)-small
       against quantities of order one, so how it is computed decides whether it survives at scale.
       The case is decided per row, off the row's own distribution Y (not the memberships, which are
       the blend's attribution masks and need not describe Y), and exactly -- a zero target and a
@@ -1135,8 +1233,13 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       order-one entries of p* and y) does not, so it passes exactly the batches it should catch. An
       exact zero, a tiny but exactly computed residual and an unvalidated difference are three
       different things, and only provenance tells them apart.
-    - the KL decomposition (the kl* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_s + E_sr
+    - the KL decomposition (the kl* strips): infonce_kl_terms, D_KL(y || p) = E_ir + E_u + E_ur
       per anchor, batch-meaned.
+    - the similarity-level gradient's concentration (the sim_grad_entropy strips): infonce_sim_grad_entropies, the
+      normalized Shannon entropy of |dL/dS| over the batch's pairs and per anchor row (each direction over its own
+      anchors that carry any gradient mass, the two averaged, with the fraction of anchors that did beside it), for
+      the full gradient and its structural / residual parts. Its residual entries read the same R as the residual
+      family above, so they carry the same provenance (resid_paths).
     - the row-wise target-implied scale bounds (the alpha panels' red lines): for row i, the smallest
       alpha whose logit range alpha * S over S in [-1, 1] spans Y_i as optimal logits log(Y_i) (up to
       a constant), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as its min / mean / max over rows.
@@ -1165,9 +1268,10 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
     - clamp ---------------- logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
 
-    Returns {{dalpha,dlogalpha}_{sum,sum_abs,C,row_abs,C_row}_{full,struct,res,sres,ires}: [all, pos, neg]} plus
-    {kl, kl_s, kl_ir, kl_sr: scalar}, {{alpha_req,log_alpha_req}_{min,mean,max}: scalar} and
-    {resid_paths: [hard, feasible, subtracted]} (row fractions, summing to 1); the reductions are stacked
+    Returns {{dalpha,dlogalpha}_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: [all, pos, neg]} plus
+    {kl, kl_u, kl_ir, kl_ur: scalar}, {{alpha_req,log_alpha_req}_{min,mean,max}: scalar} and
+    {resid_paths: [hard, feasible, subtracted]} (row fractions, summing to 1) and
+    {sim_grad_entropy_{pair,anchor,active}_{full,struct,res}: scalar}; the reductions are stacked
     so the device->host transfer is a single .cpu() sync.
     """
     with torch.no_grad():
@@ -1213,34 +1317,42 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
                            torch.xlogy(Y, Y).sum(dim=1) - (Y * P_opt.log()).sum(dim=1))
         paths = torch.stack([hard, feasible, ~(hard | feasible)]).double().mean(dim=1)  # row fractions
         log_P_i2t, log_P_t2i = torch.log_softmax(Z, dim=1), torch.log_softmax(Z.T, dim=1)
-        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, log_P_i2t.exp(), P_opt, S_opt, R)
-                      + infonce_scale_grad_sums(S.T, Q.T, Y, log_P_t2i.exp(), P_opt, S_opt, R))
+        P_i2t, P_t2i = log_P_i2t.exp(), log_P_t2i.exp()
+        sums = 0.5 * (infonce_scale_grad_sums(S, Q, Y, P_i2t, P_opt, S_opt, R)
+                      + infonce_scale_grad_sums(S.T, Q.T, Y, P_t2i, P_opt, S_opt, R))
         kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt, R, E_ir)
                     + infonce_kl_terms(Y, log_P_t2i, P_opt, R, E_ir))
+        entropies = infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R)  # [3, 3]
         alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
         reqs = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
         bounds = torch.cat([reqs, reqs.log()])  # the logalpha panel's lines are the alpha ones' logs
         families = []
-        for G, A, B in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
-            C, C_row = (torch.where(D > 0, G.abs() / D, torch.nan) for D in (A, B))  # NaN: no pressure, no ratio
-            families.append(torch.stack([G, A, C, B, C_row]))
+        for G, A, C in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
+            ratio, ratio_row = (torch.where(D > 0, G.abs() / D, torch.nan) for D in (A, C))  # NaN: no pressure, no ratio
+            families.append(torch.stack([G, A, ratio, C, ratio_row]))
         grad = torch.stack(families)  # [2, 5, 5, 3]
-        packed = torch.cat([grad.flatten(), kl, bounds, paths]).cpu()
-        vals = packed[:grad.numel()].view_as(grad).tolist()
-        kl_vals = packed[grad.numel():grad.numel() + kl.numel()].tolist()
-        bound_vals = packed[grad.numel() + kl.numel():-paths.numel()].tolist()
-        path_vals = packed[-paths.numel():].tolist()
+        packed = torch.cat([grad.flatten(), kl, bounds, paths, entropies.flatten()]).cpu()
+        grad_vals, kl_vals, bound_vals, path_vals, entropy_vals = packed.split(
+            [grad.numel(), kl.numel(), bounds.numel(), paths.numel(), entropies.numel()])
+        vals = grad_vals.view_as(grad).tolist()
+        kl_vals, bound_vals, path_vals = kl_vals.tolist(), bound_vals.tolist(), path_vals.tolist()
+        entropy_vals = entropy_vals.view_as(entropies).tolist()
     return {
         **{
             f"{prefix}_{agg}_{comp}": vals[f][a][c]
             for f, prefix in enumerate(("dalpha", "dlogalpha"))
-            for a, agg in enumerate(("sum", "sum_abs", "C", "row_abs", "C_row"))
-            for c, comp in enumerate(("full", "struct", "res", "sres", "ires"))
+            for a, agg in enumerate(("sum", "sum_abs", "ratio", "row_abs", "ratio_row"))
+            for c, comp in enumerate(("full", "struct", "res", "ures", "ires"))
         },
-        **dict(zip(("kl", "kl_s", "kl_ir", "kl_sr"), kl_vals)),
+        **dict(zip(("kl", "kl_u", "kl_ir", "kl_ur"), kl_vals)),
         **dict(zip(("alpha_req_min", "alpha_req_mean", "alpha_req_max",
                     "log_alpha_req_min", "log_alpha_req_mean", "log_alpha_req_max"), bound_vals)),
         "resid_paths": path_vals,
+        **{
+            f"sim_grad_entropy_{level}_{comp}": entropy_vals[l][c]
+            for l, level in enumerate(("pair", "anchor", "active"))
+            for c, comp in enumerate(("full", "struct", "res"))
+        },
     }
 
 

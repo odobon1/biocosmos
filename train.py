@@ -25,7 +25,7 @@ from utils.utils import (
 from models import VLMWrapper
 from utils.config import eval_groups, get_config_stats
 from utils.data import spawn_dataloader, spawn_partition_data
-from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars
+from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, sim_grad_entropies_actual
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
 from utils.train import TrialData, ArtifactManager, parse_scores
@@ -469,6 +469,11 @@ class TrainPipeline:
             # non-bifurcated sum(dL/dsim) -- consistent with the 2x loss reading. A branch with no
             # retained grad (e.g. the t2i branch under a frozen text tower) contributes nothing.
             grad_sum_sim = sum(s.grad.float().sum().item() for s in sims if s.grad is not None)
+            # the entropies of that gradient beside the batch stats' analytic ones (the sim_grad_entropy figure's
+            # (actual) panels): an InfoNCE loss only, whose one branch carries it, where the stats are on and the
+            # sims took a gradient at all (both towers frozen: none)
+            if batch_stats is not None and self.cfg.loss["crit"] == "infonce" and sims[0].grad is not None:
+                batch_stats.update(sim_grad_entropies_actual(sims[0].grad))
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sim
 
     def _step_optimizer(self):

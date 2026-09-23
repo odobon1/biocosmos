@@ -2326,7 +2326,7 @@ def _alpha_data_epoch(n, **series):
             "dlogalpha_correction", "resid_paths",
             *(f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")),
             *(f"{p}_{agg}_{comp}" for p in ("dalpha", "dlogalpha") for agg in report._DALPHA_AGGS
-              for comp in ("full", "struct", "res", "sres", "ires"))]
+              for comp in ("full", "struct", "res", "ures", "ires"))]
     return {**{key: [] for key in keys}, **series}
 
 
@@ -2463,8 +2463,8 @@ def _dalpha_series(n, prefix, res_abs):
     """The twenty-five dalpha-family series of one figure, the residual comps' magnitudes at `res_abs`."""
     series = {}
     for agg in report._DALPHA_AGGS:
-        for comp in ("full", "struct", "res", "sres", "ires"):
-            val = res_abs if (agg in ("sum_abs", "row_abs") and comp in ("res", "sres", "ires")) else 0.5
+        for comp in ("full", "struct", "res", "ures", "ires"):
+            val = res_abs if (agg in ("sum_abs", "row_abs") and comp in ("res", "ures", "ires")) else 0.5
             series[f"{prefix}_{agg}_{comp}"] = [[val, val, val]] * n
     return series
 
@@ -2482,18 +2482,18 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
     marks, blocks = _plot_alpha.seen["marks"], _plot_alpha.seen["blocks"]
 
     nabla = lambda sup: rf"$\nabla_{{\log \alpha}}{sup} \mathcal{{L}}$"
-    for sup in (r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}"):
+    for sup in (r"^{\text{R}}", r"^{\text{UR}}", r"^{\text{IR}}"):
         assert marks[nabla(sup)] == ["unvalidated"]
-    assert marks[nabla("") + "\n(analytic)"] == [] and marks[nabla(r"^{\text{S}}")] == []
+    assert marks[nabla("") + "\n(analytic)"] == [] and marks[nabla(r"^{\text{U}}")] == []
     assert marks[nabla("") + "\n(actual)"] == []
     # each block is one agg's five comps, in order: the sums' block opens on the analytical full term, not
     # on a scale or (actual) panel
     assert [len(block) for block in blocks] == [5, 5, 5, 5, 5]
     assert blocks[0][0] == nabla("") + "\n(analytic)" and blocks[0][-1] == nabla(r"^{\text{IR}}")
-    # the blocks in order: the sums, the per-pair magnitude A and |sum| / A, the per-anchor magnitude B and
-    # |sum| / B -- a ratio captioned as the quotient it is, over its magnitude block's own symbol
-    sups = ("", r"^{\text{S}}", r"^{\text{R}}", r"^{\text{SR}}", r"^{\text{IR}}")
-    for idx_block, mag in ((1, "A"), (3, "B")):
+    # the blocks in order: the sums, the per-pair magnitude A and |sum| / A, the per-anchor magnitude C and
+    # |sum| / C -- a ratio captioned as the quotient it is, over its magnitude block's own symbol
+    sups = ("", r"^{\text{U}}", r"^{\text{R}}", r"^{\text{UR}}", r"^{\text{IR}}")
+    for idx_block, mag in ((1, "A"), (3, "C")):
         mags = [rf"\text{{{mag}}}_{{\log \alpha}}{sup}" for sup in sups]
         assert blocks[idx_block] == [f"${m}$" for m in mags]
         assert blocks[idx_block + 1] == [rf"$\frac{{|{nabla(sup)[1:-1]}|}}{{{m}}}$" for sup, m in zip(sups, mags)]
@@ -2504,7 +2504,7 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
     assert all(drawn()[label] for idx_block in (0, 1, 3) for label in blocks[idx_block])
     _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
     assert all(drawn().values()) and len(drawn()) == 25
-    assert _plot_alpha.seen["blocks"][4][1] == r"$\frac{|\nabla_{\alpha}^{\text{S}} \mathcal{L}|}{\text{B}_{\alpha}^{\text{S}}}$"
+    assert _plot_alpha.seen["blocks"][4][1] == r"$\frac{|\nabla_{\alpha}^{\text{U}} \mathcal{L}|}{\text{C}_{\alpha}^{\text{U}}}$"
 
     # the mark does not move with the magnitude: a plausible-looking residual is hatched just the same
     data_epoch.update(_dalpha_series(n, "dalpha", 1e-3))
@@ -2514,19 +2514,19 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
 
 
 def test_ratio_panels_keep_their_end_values_inside_the_limits(tmp_path, monkeypatch) -> None:
-    # a ratio of exactly 1 (perfect coherence: a hard target's SR / IR terms, throughout) or exactly 0 (total
+    # a ratio of exactly 1 (perfect coherence: a hard target's UR / IR terms, throughout) or exactly 0 (total
     # cancellation) is a reading, not a missing one -- but at y limits of exactly (0, 1) it lies under the
     # panel's border, which is drawn over the curves, and the panel reads as empty. So both ends sit strictly
     # inside the displayed limits, on both ratio blocks, the ticks staying on the ratio's own range
     n = 4
     series = _dalpha_series(n, "dalpha", 1e-3)
     for agg in report._DALPHA_RATIO_AGGS:
-        series[f"dalpha_{agg}_sres"] = [[1.0, 1.0, 1.0]] * n
+        series[f"dalpha_{agg}_ures"] = [[1.0, 1.0, 1.0]] * n
         series[f"dalpha_{agg}_ires"] = [[0.0, 0.0, 0.0]] * n
     panels = dict(_plot_alpha(_alpha_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha"))
     ylims, yticks, blocks = (_plot_alpha.seen[key] for key in ("ylims", "yticks", "blocks"))
 
-    ratio_labels = blocks[2] + blocks[4]  # |sum| / A, |sum| / B
+    ratio_labels = blocks[2] + blocks[4]  # |sum| / A, |sum| / C
     assert len(ratio_labels) == 10
     for label in ratio_labels:
         lo, hi = ylims[label]
@@ -2540,7 +2540,7 @@ def test_ratio_panels_keep_their_end_values_inside_the_limits(tmp_path, monkeypa
 
 
 def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) -> None:
-    # E_R / E_SR / E_IR are the residual family's, so they carry the same unvalidated mark; the total and the
+    # E_R / E_UR / E_IR are the residual family's, so they carry the same unvalidated mark; the total and the
     # structural part, which difference nothing against y, do not. A trial whose every row came off an exact
     # path draws no mark at all
     seen = {}
@@ -2552,7 +2552,7 @@ def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(report, "_finish_curves", finish)
     n = 3
-    kl = {key: [0.1] * n for key in ("kl", "kl_s", "kl_ir", "kl_sr")}
+    kl = {key: [0.1] * n for key in ("kl", "kl_u", "kl_ir", "kl_ur")}
     args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0)
 
     report.plot_kl_curves({**kl, "resid_paths": [[0.5, 0.0, 0.5]] * n}, *args, plot_title="t", output_filename="x.png")
@@ -2560,3 +2560,50 @@ def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) 
 
     report.plot_kl_curves({**kl, "resid_paths": [[1.0, 0.0, 0.0]] * n}, *args, plot_title="t", output_filename="x.png")
     assert seen["marks"] == [[], [], [], [], []] and seen["legends"] == 0
+
+
+def test_sim_grad_entropy_figure_panels_blocks_and_marks(tmp_path, monkeypatch) -> None:
+    # twelve panels -- pair, then anchor, then the active fractions, each level's (actual) reading then its
+    # analytic three, each level ruled off as a block; one line apiece (no attribution split), pinned to [0, 1];
+    # the residual comp of each block carries the unvalidated mark, the others not. The (actual) panels go
+    # wherever their series is unrecorded (sim_grad_sums off), the blocks closing up; a trial recording none of
+    # the series gets no figure
+    seen = {}
+
+    def finish(fig, axes, axes_hist, legend_handles, *args, **kwargs):
+        seen["panels"] = [(ax.get_ylabel(), len(ax.get_lines()), ax.get_ylim()) for ax in axes]
+        seen["marks"] = [sorted({patch.get_label() for patch in ax.patches} - {"_nolegend_"}) for ax in axes]
+        seen["blocks"] = [[ax.get_ylabel() for ax in block] for block in kwargs["axes_blocks"]]
+        seen["legends"] = len(legend_handles)
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    n = 3
+    comps = ("actual", "full", "struct", "res")
+    series = {f"sim_grad_entropy_{level}_{comp}": [0.5] * n for level in ("pair", "anchor", "active") for comp in comps}
+    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0)
+
+    report.plot_sim_grad_entropy_curves({**series, "resid_paths": [[0.5, 0.0, 0.5]] * n}, *args, plot_title="t",
+                                        output_filename="x.png")
+    sups, notes = ["", "", r"^{\text{U}}", r"^{\text{R}}"], ["\n(actual)", "\n(analytic)", "", ""]
+    pair = [rf"$\tilde{{H}}_{{S,\text{{pair}}}}{sup}$" + note for sup, note in zip(sups, notes)]
+    anchor = [rf"$\overline{{\widetilde{{H}}}}_{{S,\mathrm{{anchor}}}}{sup}$" + note for sup, note in zip(sups, notes)]
+    active = [rf"$f_{{\mathrm{{active}}}}{sup}$" + note for sup, note in zip(sups, notes)]
+    assert [label for label, _, _ in seen["panels"]] == pair + anchor + active
+    assert all(n_lines == 1 and ylim == (-0.05, 1.05) for _, n_lines, ylim in seen["panels"])
+    assert seen["blocks"] == [pair, anchor, active]
+    assert seen["marks"] == [[], [], [], ["unvalidated"]] * 3 and seen["legends"] == 3
+
+    report.plot_sim_grad_entropy_curves({**series, "resid_paths": [[1.0, 0.0, 0.0]] * n}, *args, plot_title="t",
+                                        output_filename="x.png")
+    assert seen["marks"] == [[]] * 12 and seen["legends"] == 0
+
+    analytic = {key: [] if key.endswith("_actual") else vals for key, vals in series.items()}
+    report.plot_sim_grad_entropy_curves({**analytic, "resid_paths": [[1.0, 0.0, 0.0]] * n}, *args, plot_title="t",
+                                        output_filename="x.png")
+    assert seen["blocks"] == [pair[1:], anchor[1:], active[1:]]
+
+    seen.clear()
+    report.plot_sim_grad_entropy_curves({key: [] for key in (*series, "resid_paths")}, *args, plot_title="t",
+                                        output_filename="x.png")
+    assert seen == {}

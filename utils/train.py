@@ -129,14 +129,14 @@ class TrialData:
             "log_alpha_req_min": [],
             "log_alpha_req_mean": [],
             "log_alpha_req_max": [],
-            # dalpha_{sum,sum_abs,C,row_abs,C_row}_{full,struct,res,sres,ires}: per batch, the InfoNCE logit-scale
+            # dalpha_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: per batch, the InfoNCE logit-scale
             # gradient decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
             # the target), the residual splitting again along s* = infonce_s_opt, the geometry that
-            # realizes p*, into sres (the model's geometry standing off s*) and ires (what s* itself
-            # still pushes on alpha), each summed, summed in magnitude (A) and their coherence ratio C =
-            # |sum| / A, then summed in magnitude per anchor row (B = sum_i |sum_j .|, over each direction's
-            # own anchors) and its ratio C_row = |sum| / B -- every
+            # realizes p*, into ures (the model's geometry standing off s*) and ires (what s* itself
+            # still pushes on alpha), each summed, summed in magnitude (A) and their coherence ratio
+            # |sum| / A, then summed in magnitude per anchor row (C = sum_i |sum_j .|, over each direction's
+            # own anchors) and its ratio_row = |sum| / C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
             # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
             # the model learns (alpha times the dalpha sums, the same ratios -- the sums zero and the ratios NaN while
@@ -148,17 +148,36 @@ class TrialData:
             **{
                 f"{prefix}_{agg}_{comp}": []
                 for prefix in ("dalpha", "dlogalpha")
-                for agg in ("sum", "sum_abs", "C", "row_abs", "C_row")
-                for comp in ("full", "struct", "res", "sres", "ires")
+                for agg in ("sum", "sum_abs", "ratio", "row_abs", "ratio_row")
+                for comp in ("full", "struct", "res", "ures", "ires")
+            },
+            # sim_grad_entropy_{pair,anchor,active}_{actual,full,struct,res}: per batch, the concentration of the
+            # InfoNCE similarity-level gradient's magnitude (utils.loss.infonce_sim_grad_entropies): the normalized
+            # Shannon entropy of |dL/dS| over the batch's pairs (against log B^2) and per anchor row over its
+            # candidates (against log B, each direction over its own anchors that carry any gradient mass, the two
+            # averaged) -- 1 where the magnitude is spread uniformly, 0 where it sits on few pairs -- for the
+            # gradient and its structural / residual parts (the dalpha_* split; the residual goes no further, the
+            # sim-level residual having no s factor to split along s*), and active, the fraction of anchors the
+            # anchor entropy is the mean over (a residual's feasible rows sit at exactly zero and drop out; NaN
+            # only with none active). Those three are analytic, off the unweighted loss_raw gradient on the blended
+            # target distribution; actual is the same trio off the gradient the towers actually received, the
+            # retained sims' .grad after the backward (utils.loss.sim_grad_entropies_actual, TrainPipeline._step_train;
+            # so under batch_diagnostics.sim_grad_sums too) -- every weight the loss carries -- its anchor entropy
+            # over the folded gradient's rows and columns where the analytic reads each anchor's own CE term before
+            # the fold. Scalars, one curve strip each (sim_grad_entropy.png). InfoNCE only, like dalpha_*.
+            **{
+                f"sim_grad_entropy_{level}_{comp}": []
+                for level in ("pair", "anchor", "active")
+                for comp in ("actual", "full", "struct", "res")
             },
             # kl*: per batch, the InfoNCE KL decomposition (utils.loss.infonce_kl_terms, both anchor
             # directions averaged): kl = D_KL(y || p), the raw loss less the targets' entropy, and its
-            # parts kl_s = E_s = D_KL(p* || p) (structural: the model's p vs the reachable optimum),
+            # parts kl_u = E_u = D_KL(p* || p) (structural: the model's p vs the reachable optimum),
             # kl_ir = E_ir = D_KL(y || p*) (irreducible: the target outside the reachable set) and
-            # kl_sr = E_sr, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
-            **{f"kl{suffix}": [] for suffix in ("", "_s", "_ir", "_sr")},
-            # resid_paths: per batch, the fractions of anchor rows whose residual family (res / sres / ires,
-            # kl_ir / kl_sr) came off each calculation -- [hard-target closed form, feasible row's exact zero,
+            # kl_ur = E_ur, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
+            **{f"kl{suffix}": [] for suffix in ("", "_u", "_ir", "_ur")},
+            # resid_paths: per batch, the fractions of anchor rows whose residual family (res / ures / ires,
+            # kl_ir / kl_ur) came off each calculation -- [hard-target closed form, feasible row's exact zero,
             # plain p* - y subtraction] (utils.loss.infonce_batch_stats). The first two are exact at any alpha;
             # the third is numerically unvalidated -- no error estimate stands behind it -- and the curves mark
             # every batch where it is non-zero, whatever its values read (utils.report._RESID_UNVALIDATED).

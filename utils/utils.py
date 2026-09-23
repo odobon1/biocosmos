@@ -518,16 +518,16 @@ class PrintLog:
                     + "\n"
                 )
             # the InfoNCE KL decomposition, the kl.log line's five values -- the raw D_KL(y || p), its
-            # structural part, the two representational parts summed (E_R = E_SR + E_IR, derived here as
+            # structural part, the two representational parts summed (E_R = E_UR + E_IR, derived here as
             # it is in the KL panels) and each of them. InfoNCE only (infonce_batch_stats), so a
             # BCE-family loss's line is skipped like its panels are
             if batch_stats is not None and "kl" in batch_stats:
                 PrintLog.log_batch_kl.write(
                     f"{batch_str:<10} "
                     f"KL={batch_stats['kl']: .4e} "
-                    f"E_S={batch_stats['kl_s']: .4e} "
-                    f"E_R={batch_stats['kl_sr'] + batch_stats['kl_ir']: .4e} "
-                    f"E_SR={batch_stats['kl_sr']: .4e} "
+                    f"E_U={batch_stats['kl_u']: .4e} "
+                    f"E_R={batch_stats['kl_ur'] + batch_stats['kl_ir']: .4e} "
+                    f"E_UR={batch_stats['kl_ur']: .4e} "
                     f"E_IR={batch_stats['kl_ir']: .4e}"
                     f"\n"
                 )

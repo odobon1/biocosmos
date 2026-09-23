@@ -8,11 +8,11 @@ model could still remove at this alpha -- and a residual (p* - y) s that no simi
 the residual splits again along s* into (p* - y)(s - s*) (the model's geometry standing off s*) and
 (p* - y) s* (what s* itself still pushes on alpha);
 each is attributed to the positive / negative target mass by the soft masks q / 1 - q, and reported
-summed, summed in magnitude (A) with the coherence ratio C = |sum| / A, and summed in magnitude per
-anchor row (B = sum_i |sum_j .|, over each direction's own anchors) with C_row = |sum| / B; the dlogalpha family is
+summed, summed in magnitude (A) with the coherence ratio |sum| / A, and summed in magnitude per
+anchor row (C = sum_i |sum_j .|, over each direction's own anchors) with |sum| / C; the dlogalpha family is
 the log-scale parameter's own gradient, alpha times the dalpha sums, and zero while logits.scale.clamp
 holds the parameter above its cap. The KL decomposition: per anchor, D_KL(y || p) = D_KL(y || p*) +
-D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_s + E_sr, batch-meaned. Both averaged over the I2T /
+D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_u + E_ur, batch-meaned. Both averaged over the I2T /
 T2I anchor directions.
 
 loss.infonce.block_residuals acts on that decomposition: utils.loss.infonce_block_resid contributes a
@@ -22,8 +22,8 @@ loss blend of two the strips are built from the BLENDED distribution and the cor
 term's own, which p*'s nonlinearity keeps apart. The dlogalpha_correction stat is the delta the parameter's
 gradient actually received (grad_after = grad_before + it).
 
-The residual family is exp(-2 alpha)-small against quantities of order one, so the reported res / sres
-/ ires and kl_ir / kl_sr come off closed forms where one exists -- infonce_hard_resid /
+The residual family is exp(-2 alpha)-small against quantities of order one, so the reported res / ures
+/ ires and kl_ir / kl_ur come off closed forms where one exists -- infonce_hard_resid /
 infonce_hard_kl_ir on a hard binary target, and an exact zero on a graded row inside the reachable band
 (infonce_p_opt's feasibility branch) -- rather than off p* - y, which above alpha ~ 17 reports the
 solve's own float64 noise. A graded row outside the band is the one case still on the subtraction.
@@ -171,8 +171,8 @@ def test_residual_split_matches_the_single_row_reference():
     S = _sims(B, seed=5)
     P_opt = L.infonce_p_opt(Y, alpha)
     sums = L.infonce_scale_grad_sums(S, Q, Y, torch.softmax(alpha * S, dim=1), P_opt, L.infonce_s_opt(P_opt, alpha), P_opt - Y)
-    sres, ires = zip(*(_residual_terms_single_row(y, s, alpha) for y, s in zip(Y, S)))
-    for c, expected in ((3, sres), (4, ires)):
+    ures, ires = zip(*(_residual_terms_single_row(y, s, alpha) for y, s in zip(Y, S)))
+    for c, expected in ((3, ures), (4, ires)):
         assert sums[0, c, 0].item() == pytest.approx(torch.stack(expected).sum().item() / B, rel=1e-9, abs=1e-12)
     # neither part is the residual on its own: the split is doing work on this batch
     assert all(abs(sums[0, c, 0].item()) > 1e-6 for c in (3, 4))
@@ -192,7 +192,7 @@ def test_sums_decompose_and_full_sum_is_the_loss_gradient():
     loss = -(Y * torch.log_softmax(a * S, dim=1)).sum(dim=1).mean()
     (dloss_dalpha,) = torch.autograd.grad(loss, a)
     torch.testing.assert_close(sums[0, 0, 0], dloss_dalpha)
-    # full = struct + res, res = sres + ires, all = pos + neg (exact for the sums; the magnitudes only
+    # full = struct + res, res = ures + ires, all = pos + neg (exact for the sums; the magnitudes only
     # bound them)
     torch.testing.assert_close(sums[0, 0], sums[0, 1] + sums[0, 2])
     torch.testing.assert_close(sums[0, 2], sums[0, 3] + sums[0, 4])
@@ -213,18 +213,19 @@ def test_sums_decompose_and_full_sum_is_the_loss_gradient():
     torch.testing.assert_close(sums[0, 0, 0].abs(), sums[2, 0, 0])
 
 
-def test_batch_stats_average_directions_and_take_C_on_the_averages():
+def test_batch_stats_average_directions_and_take_ratios_on_the_averages():
     L = import_loss_module()
     B, alpha = 12, 4.0
     Q, Y = _targets(B, 4, seed=6)
     S = _sims(B, seed=7)
     logits = (alpha * S).float() + 0.3  # a bias is inert under the row softmax
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
-    mags, ratios = {"sum_abs": 1, "row_abs": 2}, {"C": 1, "C_row": 2}  # agg -> infonce_scale_grad_sums' index
-    aggs, comps = ("sum", *mags, *ratios), ("full", "struct", "res", "sres", "ires")
+    mags, ratios = {"sum_abs": 1, "row_abs": 2}, {"ratio": 1, "ratio_row": 2}  # agg -> infonce_scale_grad_sums' index
+    aggs, comps = ("sum", *mags, *ratios), ("full", "struct", "res", "ures", "ires")
     assert set(stats) == {f"{prefix}_{agg}_{comp}" for prefix in ("dalpha", "dlogalpha") for agg in aggs for comp in comps} | {
-        "kl", "kl_s", "kl_ir", "kl_sr", "resid_paths"} | {
-        f"{prefix}alpha_req_{stat}" for prefix in ("", "log_") for stat in ("min", "mean", "max")}
+        "kl", "kl_u", "kl_ir", "kl_ur", "resid_paths"} | {
+        f"{prefix}alpha_req_{stat}" for prefix in ("", "log_") for stat in ("min", "mean", "max")} | {
+        f"sim_grad_entropy_{level}_{comp}" for level in ("pair", "anchor", "active") for comp in ("full", "struct", "res")}
     # the log-scale family: d/d(log alpha) = alpha * d/dalpha, so alpha times the sums and the same ratios
     for comp in comps:
         for agg in ("sum", *mags):
@@ -242,13 +243,13 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
             assert stats[f"dalpha_{agg}_{comp}"] == pytest.approx(expected[a, c].tolist(), rel=1e-9, abs=1e-12)
     for c, comp in enumerate(comps):
         for agg, a in ratios.items():
-            C = stats[f"dalpha_{agg}_{comp}"]
-            assert torch.all(expected[a, c] > 0)  # nothing here is a zero-pressure term, so C is a plain ratio
-            assert C == pytest.approx((expected[0, c].abs() / expected[a, c]).tolist(), rel=1e-9, abs=1e-12)
-            assert all(0.0 <= v <= 1.0 for v in C)
-        # |sum| <= B <= A across the reported (direction-averaged) series, so the per-pair ratio never
+            ratio = stats[f"dalpha_{agg}_{comp}"]
+            assert torch.all(expected[a, c] > 0)  # nothing here is a zero-pressure term, so the ratio is a plain one
+            assert ratio == pytest.approx((expected[0, c].abs() / expected[a, c]).tolist(), rel=1e-9, abs=1e-12)
+            assert all(0.0 <= v <= 1.0 for v in ratio)
+        # |sum| <= C <= A across the reported (direction-averaged) series, so the per-pair ratio never
         # reads above the per-anchor one
-        assert all(v <= w + 1e-12 for v, w in zip(stats[f"dalpha_C_{comp}"], stats[f"dalpha_C_row_{comp}"]))
+        assert all(v <= w + 1e-12 for v, w in zip(stats[f"dalpha_ratio_{comp}"], stats[f"dalpha_ratio_row_{comp}"]))
     # a symmetric S (and Q, Y) makes the two directions coincide, so the reported values are either's
     S_sym = 0.5 * (S + S.T)
     stats_sym = L.infonce_batch_stats(S_sym, Q, Y, alpha * S_sym, _log_scale(alpha), False)
@@ -262,11 +263,11 @@ def test_batch_stats_average_directions_and_take_C_on_the_averages():
 
 
 def test_row_abs_is_over_the_anchors_of_both_directions():
-    # B = sum_i |sum_j .| takes the magnitude per ANCHOR, and the bidirectional loss has 2B of them: it is
+    # C = sum_i |sum_j .| takes the magnitude per ANCHOR, and the bidirectional loss has 2B of them: it is
     # the mean of B image-anchor CE terms (the rows of the I2T terms) and B text-anchor ones (the rows of
     # the T2I terms, i.e. the COLUMNS of the I2T layout). Each has its own scale gradient, so the reference
     # is autograd's, term by term: row_abs_full is the mean |d(CE_k)/d(alpha)| over the 2B terms, the way
-    # sum_full is their signed mean (the loss gradient), and C_row the ratio of the two -- the cancellation
+    # sum_full is their signed mean (the loss gradient), and ratio_row the ratio of the two -- the cancellation
     # BETWEEN anchors, each anchor's own pairs having cancelled inside its row sum
     L = import_loss_module()
     B, alpha = 12, 2.0
@@ -286,9 +287,9 @@ def test_row_abs_is_over_the_anchors_of_both_directions():
     assert min((per_anchor > 0).sum(), (per_anchor < 0).sum()) >= B // 2  # they really do pull both ways
     assert stats["dalpha_sum_full"][0] == pytest.approx(per_anchor.mean().item(), rel=1e-9)
     assert stats["dalpha_row_abs_full"][0] == pytest.approx(per_anchor.abs().mean().item(), rel=1e-9)
-    assert stats["dalpha_C_row_full"][0] == pytest.approx((per_anchor.mean().abs() / per_anchor.abs().mean()).item(), rel=1e-9)
-    # |sum| < B < A, strictly: cancellation between the anchors, and inside their rows before that
-    assert stats["dalpha_C_full"][0] < 0.5 * stats["dalpha_C_row_full"][0] < 0.5
+    assert stats["dalpha_ratio_row_full"][0] == pytest.approx((per_anchor.mean().abs() / per_anchor.abs().mean()).item(), rel=1e-9)
+    # |sum| < C < A, strictly: cancellation between the anchors, and inside their rows before that
+    assert stats["dalpha_ratio_full"][0] < 0.5 * stats["dalpha_ratio_row_full"][0] < 0.5
 
     # the pos / neg attributions likewise, each direction masking its own rows (Q.T under the text anchors)
     G_i2t = (torch.softmax(alpha * S, dim=1) - Y) * S  # [image anchor, text]
@@ -320,7 +321,7 @@ def test_batch_stats_residual_is_not_the_float32_row_sum_deficit():
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y32, (alpha * S).float(), _log_scale(alpha), False)
     # the residual sits orders under the deficit, not on it (un-renormalized it lands within a factor of
     # two of it, the magnitudes not cancelling across the two anchor directions the way the signed sums do)
-    for comp in ("res", "sres", "ires"):
+    for comp in ("res", "ures", "ires"):
         assert abs(stats[f"dalpha_sum_{comp}"][0]) < deficit / 100, comp
         assert stats[f"dalpha_sum_abs_{comp}"][0] < deficit / 100, comp
     assert abs(stats["kl_ir"]) < deficit / 100
@@ -329,10 +330,10 @@ def test_batch_stats_residual_is_not_the_float32_row_sum_deficit():
 
 
 def test_coherence_is_exact_at_vanishing_gradient_magnitudes():
-    # C = |sum| / sum_abs is divided exactly, not against an additive floor in the denominator. The
+    # ratio = |sum| / sum_abs is divided exactly, not against an additive floor in the denominator. The
     # residual terms decay like exp(-2 alpha), and on targets whose rows sum to exactly 1 (even class
     # counts, no arithmetic floor under them) they are down at ~1e-42 by alpha 50 while staying
-    # perfectly coherent -- every pair pulling the same way, C = 1. A floor of 1e-30 would report
+    # perfectly coherent -- every pair pulling the same way, ratio = 1. A floor of 1e-30 would report
     # ~1e-12 there, i.e. near-total cancellation where there is none
     L = import_loss_module()
     B, alpha = 64, 50.0
@@ -344,14 +345,14 @@ def test_coherence_is_exact_at_vanishing_gradient_magnitudes():
     S = (0.6 * (2 * Q - 1) + 0.4 * (torch.rand(B, B, generator=g).double() * 2 - 1)).clamp(-1, 1)
     S = 0.5 * (S + S.T)  # a partly-trained geometry: positives above negatives, so the residual coheres
     stats = L.infonce_batch_stats(S, Q, Y, alpha * S, _log_scale(alpha), False)
-    for comp in ("res", "sres", "ires"):
-        G, A, C = (stats[f"dalpha_{k}_{comp}"][0] for k in ("sum", "sum_abs", "C"))
+    for comp in ("res", "ures", "ires"):
+        G, A, ratio = (stats[f"dalpha_{k}_{comp}"][0] for k in ("sum", "sum_abs", "ratio"))
         assert 0.0 < A < 1e-30, (comp, A)  # under any floor that would have been added to it
-        assert C == pytest.approx(abs(G) / A, rel=1e-12), comp
-        assert C == pytest.approx(1.0, rel=1e-12), comp  # coherent: no cancellation at all
-        # the per-anchor magnitude and its ratio alike: no cancellation inside the rows leaves B on A
+        assert ratio == pytest.approx(abs(G) / A, rel=1e-12), comp
+        assert ratio == pytest.approx(1.0, rel=1e-12), comp  # coherent: no cancellation at all
+        # the per-anchor magnitude and its ratio alike: no cancellation inside the rows leaves C on A
         assert stats[f"dalpha_row_abs_{comp}"][0] == pytest.approx(A, rel=1e-12), comp
-        assert stats[f"dalpha_C_row_{comp}"][0] == pytest.approx(1.0, rel=1e-12), comp
+        assert stats[f"dalpha_ratio_row_{comp}"][0] == pytest.approx(1.0, rel=1e-12), comp
 
 
 def test_batch_stats_row_wise_scale_bounds():
@@ -424,7 +425,7 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
     off_eff = L.infonce_batch_stats(S, Q, Y, logits, torch.tensor(log_alpha_eff, dtype=torch.float64), False)
     for key in on:
         if not key.startswith("dlogalpha"):
-            assert on[key] == pytest.approx(off_eff[key], rel=1e-12), key
+            assert on[key] == pytest.approx(off_eff[key], rel=1e-12, nan_ok=True), key  # NaN: an entropy with no mass behind it, on either path
     grad_ref = _grad_log_scale(S, Y, log_alpha_raw, clamp=True)
     assert on["dlogalpha_sum_full"][0] == pytest.approx(grad_ref, rel=1e-9, abs=1e-12)
     held = grad_ref == 0.0
@@ -432,7 +433,7 @@ def test_batch_stats_log_scale_family_is_the_parameter_gradient_through_the_clam
         assert held
     elif log_alpha_raw < math.log(100):
         assert not held
-    sums, ratios, comps = ("sum", "sum_abs", "row_abs"), ("C", "C_row"), ("full", "struct", "res", "sres", "ires")
+    sums, ratios, comps = ("sum", "sum_abs", "row_abs"), ("ratio", "ratio_row"), ("full", "struct", "res", "ures", "ires")
     if held:
         assert any(v != 0.0 for v in on["dalpha_sum_full"])
         for comp in comps:
@@ -577,7 +578,7 @@ def test_block_resid_reads_the_sims_not_the_logits():
 @pytest.mark.parametrize("per_cls", [1, 4, 16])  # K = 1 (sp), and mp at two class-count ratios
 @pytest.mark.parametrize("alpha", [3.0, 15.0, 25.0, 55.0, 200.0])
 def test_batch_stats_residual_is_exact_on_hard_targets_at_every_scale(alpha, per_cls):
-    # the strips the plots read, not just the helper: on a hard binary target res / sres / ires and
+    # the strips the plots read, not just the helper: on a hard binary target res / ures / ires and
     # kl_ir come off the closed forms, so they keep tracking the true exp(-2 alpha) decay instead of
     # breaking down above alpha ~ 17. The subtraction they replace fails two ways there, depending on
     # where the solve's eta lands against log(1/K): it either floors on float64 noise (6e5 x the truth
@@ -602,9 +603,9 @@ def test_batch_stats_residual_is_exact_on_hard_targets_at_every_scale(alpha, per
     expected = 0.5 * ((r / (K + M * r)) * ((T.sum(dim=1) - pos) - (M / K) * pos)).mean().item()
     assert stats["dalpha_sum_res"][0] == pytest.approx(expected, rel=1e-9)
     assert stats["kl_ir"] == pytest.approx(torch.log1p(M * r / K).mean().item(), rel=1e-9)
-    # res still splits into sres + ires, and the whole thing is still a real number at every scale
-    assert stats["dalpha_sum_res"][0] == pytest.approx(stats["dalpha_sum_sres"][0] + stats["dalpha_sum_ires"][0], rel=1e-9)
-    assert all(math.isfinite(stats[f"dalpha_sum_{c}"][0]) for c in ("res", "sres", "ires"))
+    # res still splits into ures + ires, and the whole thing is still a real number at every scale
+    assert stats["dalpha_sum_res"][0] == pytest.approx(stats["dalpha_sum_ures"][0] + stats["dalpha_sum_ires"][0], rel=1e-9)
+    assert all(math.isfinite(stats[f"dalpha_sum_{c}"][0]) for c in ("res", "ures", "ires"))
     if alpha >= 25.0:  # the subtraction this replaced is materially wrong here, whichever way it fails
         subtracted = 0.5 * ((L.infonce_p_opt(Y, alpha) - Y) * T).sum(dim=1).mean().item()
         assert abs(subtracted - expected) > 0.1 * abs(expected)
@@ -622,13 +623,13 @@ def test_batch_stats_residual_is_exactly_zero_on_a_feasible_graded_target(alpha)
     stats = L.infonce_batch_stats(S, Y, Y, alpha * S, _log_scale(alpha), False)
 
     assert alpha > 0.5 * math.log(6)  # the row really is feasible at this scale
-    for comp in ("res", "sres", "ires"):
+    for comp in ("res", "ures", "ires"):
         assert stats[f"dalpha_sum_{comp}"] == [0.0, 0.0, 0.0], comp
         assert stats[f"dalpha_sum_abs_{comp}"] == [0.0, 0.0, 0.0], comp
-    assert stats["kl_ir"] == 0.0 and stats["kl_sr"] == 0.0
+    assert stats["kl_ir"] == 0.0 and stats["kl_ur"] == 0.0
     # the structural part is untouched: the model is still short of p*, and that is all the loss's own
     assert stats["dalpha_sum_struct"][0] == pytest.approx(stats["dalpha_sum_full"][0], rel=1e-9)
-    assert stats["kl"] == pytest.approx(stats["kl_s"], rel=1e-9)
+    assert stats["kl"] == pytest.approx(stats["kl_u"], rel=1e-9)
 
 
 def test_batch_stats_do_not_take_a_nearly_hard_full_support_target_for_a_hard_one():
@@ -646,10 +647,10 @@ def test_batch_stats_do_not_take_a_nearly_hard_full_support_target_for_a_hard_on
 
     stats = L.infonce_batch_stats(S, Q, Y, 10.0 * S, _log_scale(10.0), False)
 
-    for comp in ("res", "sres", "ires"):
+    for comp in ("res", "ures", "ires"):
         assert stats[f"dalpha_sum_{comp}"] == [0.0, 0.0, 0.0], comp
         assert stats[f"dalpha_sum_abs_{comp}"] == [0.0, 0.0, 0.0], comp
-    assert stats["kl_ir"] == 0.0 and stats["kl_sr"] == 0.0
+    assert stats["kl_ir"] == 0.0 and stats["kl_ur"] == 0.0
     assert stats["dalpha_sum_struct"] == pytest.approx(stats["dalpha_sum_full"], rel=1e-12)  # it adds up
     # the same memberships under the linear tsm ARE hard, and read the closed form
     hard = L.infonce_batch_stats(S, Q, Q.clone(), 10.0 * S, _log_scale(10.0), False)
@@ -716,7 +717,7 @@ def test_batch_stats_report_which_calculation_computed_each_row():
 
 def test_hard_rows_read_a_closed_form_p_opt_in_the_structural_terms():
     # the structural terms difference p against p*, so at p = p* they read whatever p* is off by: from
-    # the solve that is ~|log lam| ulps (kl_s ~ -7e-15 at alpha 25, negative for a divergence), from
+    # the solve that is ~|log lam| ulps (kl_u ~ -7e-15 at alpha 25, negative for a divergence), from
     # the closed form p* = y + (p* - y) it is rounding alone
     L = import_loss_module()
     B, alpha = 16, 25.0
@@ -727,11 +728,11 @@ def test_hard_rows_read_a_closed_form_p_opt_in_the_structural_terms():
 
     stats = L.infonce_batch_stats(S_ideal, Q, Y, alpha * S_ideal, _log_scale(alpha), False)
 
-    assert abs(stats["kl_s"]) < 1e-15
+    assert abs(stats["kl_u"]) < 1e-15
     assert abs(stats["dalpha_sum_struct"][0]) < 1e-15
-    solver_kl_s = L.infonce_kl_terms(Y, torch.log_softmax(alpha * S_ideal, dim=1), L.infonce_p_opt(Y, alpha),
+    solver_kl_u = L.infonce_kl_terms(Y, torch.log_softmax(alpha * S_ideal, dim=1), L.infonce_p_opt(Y, alpha),
                                      *_subtracted(Y, L.infonce_p_opt(Y, alpha)))[1].item()
-    assert abs(stats["kl_s"]) < abs(solver_kl_s)  # and it is an improvement on the solve's, not a wash
+    assert abs(stats["kl_u"]) < abs(solver_kl_u)  # and it is an improvement on the solve's, not a wash
 
 
 def test_feasibility_branch_is_continuous_at_the_boundary():
@@ -916,16 +917,16 @@ def test_kl_terms_match_their_definitions_and_decompose():
     log_P = torch.log_softmax(alpha * S, dim=1)
     P = log_P.exp()
     P_opt = L.infonce_p_opt(Y, alpha)
-    kl, E_s, E_ir, E_sr = L.infonce_kl_terms(Y, log_P, P_opt, *_subtracted(Y, P_opt))
+    kl, E_u, E_ir, E_ur = L.infonce_kl_terms(Y, log_P, P_opt, *_subtracted(Y, P_opt))
     # each term by its definition, batch-meaned
     torch.testing.assert_close(kl, _kl_rows(Y, P).mean())
-    torch.testing.assert_close(E_s, _kl_rows(P_opt, P).mean())
+    torch.testing.assert_close(E_u, _kl_rows(P_opt, P).mean())
     torch.testing.assert_close(E_ir, _kl_rows(Y, P_opt).mean())
-    torch.testing.assert_close(E_sr, ((Y - P_opt) * (P_opt / P).log()).sum(dim=1).mean())
+    torch.testing.assert_close(E_ur, ((Y - P_opt) * (P_opt / P).log()).sum(dim=1).mean())
     # the decomposition is exact, every part nonnegative, and D_KL(y || p) is this direction's raw
     # InfoNCE loss (per-anchor CE, anchor-averaged) less the targets' mean entropy
-    torch.testing.assert_close(kl, E_ir + E_s + E_sr)
-    assert kl > 0 and E_s > 0 and E_ir > 0 and E_sr > 0
+    torch.testing.assert_close(kl, E_ir + E_u + E_ur)
+    assert kl > 0 and E_u > 0 and E_ir > 0 and E_ur > 0
     ce = -(Y * log_P).sum(dim=1).mean()
     H = -torch.xlogy(Y, Y).sum(dim=1).mean()
     torch.testing.assert_close(kl, ce - H)
@@ -933,7 +934,7 @@ def test_kl_terms_match_their_definitions_and_decompose():
 
 def test_kl_terms_notebook_example():
     # MP-HCon-Intuition.ipynb: y = [1/2, 1/2, 0, 0], s = [0.9, 1, -0.9, -1] at alpha 3 reads
-    # (kl, E_s, E_ir, E_sr) = (0.0145, 0.0113, 0.0025, 0.0007) to the notebook's printed precision
+    # (kl, E_u, E_ir, E_ur) = (0.0145, 0.0113, 0.0025, 0.0007) to the notebook's printed precision
     L = import_loss_module()
     Y = torch.tensor([[0.5, 0.5, 0.0, 0.0]], dtype=torch.float64)
     log_P = torch.log_softmax(3.0 * torch.tensor([[0.9, 1.0, -0.9, -1.0]], dtype=torch.float64), dim=1)
@@ -944,7 +945,7 @@ def test_kl_terms_notebook_example():
 
 @pytest.mark.parametrize("alpha", [0.5, 3.0, 10.0])
 def test_kl_cross_term_is_nonnegative_on_reachable_p(alpha):
-    # E_sr >= 0 for every p a bounded-cosine softmax can realize (random geometries, the ideal
+    # E_ur >= 0 for every p a bounded-cosine softmax can realize (random geometries, the ideal
     # 2q - 1 one, and sign patterns at the band's edges), and the structural and cross terms vanish
     # at p = p*, leaving D_KL(y || p*) = E_ir
     L = import_loss_module()
@@ -959,8 +960,8 @@ def test_kl_cross_term_is_nonnegative_on_reachable_p(alpha):
     )
     for S in geometries:
         assert L.infonce_kl_terms(Y, torch.log_softmax(alpha * S, dim=1), P_opt, *_subtracted(Y, P_opt))[3] >= -1e-12
-    kl, E_s, E_ir, E_sr = L.infonce_kl_terms(Y, P_opt.log(), P_opt, *_subtracted(Y, P_opt))
-    torch.testing.assert_close(torch.stack([E_s, E_sr]), torch.zeros(2, dtype=torch.float64))
+    kl, E_u, E_ir, E_ur = L.infonce_kl_terms(Y, P_opt.log(), P_opt, *_subtracted(Y, P_opt))
+    torch.testing.assert_close(torch.stack([E_u, E_ur]), torch.zeros(2, dtype=torch.float64))
     torch.testing.assert_close(kl, E_ir)
 
 
@@ -976,9 +977,9 @@ def test_batch_stats_kl_keys_average_directions():
     i2t = L.infonce_kl_terms(Yf, torch.log_softmax(Z, dim=1), P_opt, *_subtracted(Yf, P_opt))
     t2i = L.infonce_kl_terms(Yf, torch.log_softmax(Z.T, dim=1), P_opt, *_subtracted(Yf, P_opt))
     expected = 0.5 * (i2t + t2i)
-    for k, key in enumerate(("kl", "kl_s", "kl_ir", "kl_sr")):
+    for k, key in enumerate(("kl", "kl_u", "kl_ir", "kl_ur")):
         assert stats[key] == pytest.approx(expected[k].item(), rel=1e-9, abs=1e-12)
-    assert stats["kl"] == pytest.approx(stats["kl_s"] + stats["kl_ir"] + stats["kl_sr"], rel=1e-9, abs=1e-12)
+    assert stats["kl"] == pytest.approx(stats["kl_u"] + stats["kl_ir"] + stats["kl_ur"], rel=1e-9, abs=1e-12)
     # the irreducible part depends on the targets and alpha alone, not on the anchor direction
     assert i2t[2] == t2i[2]
     # kl is the criterion's loss_raw (the two directions' per-anchor CE means, averaged) less the
@@ -986,3 +987,186 @@ def test_batch_stats_kl_keys_average_directions():
     ce = 0.5 * sum(-(Yf * torch.log_softmax(M, dim=1)).sum(dim=1).mean() for M in (Z, Z.T))
     H = -torch.xlogy(Yf, Yf).sum(dim=1).mean()
     assert stats["kl"] == pytest.approx((ce - H).item(), rel=1e-9, abs=1e-12)
+
+
+def _entropy_norm(A, dim):
+    # the normalized Shannon entropy of |A| along dim, 0 log 0 = 0, written out
+    A = A.abs()
+    G = A / A.sum(dim=dim, keepdim=True)
+    return -torch.xlogy(G, G).sum(dim=dim) / math.log(A.size(dim))
+
+
+def _same(a, b, rel=1e-9):
+    # equal, or both NaN (an entropy with no mass behind it)
+    return (math.isnan(a) and math.isnan(b)) or a == pytest.approx(b, rel=rel)
+
+
+def test_norm_entropy_reads_uniform_as_one_a_point_mass_as_zero_and_no_mass_as_nan():
+    L = import_loss_module()
+    assert L._norm_entropy(torch.full((4, 6), -0.3, dtype=torch.float64), 1).tolist() == pytest.approx([1.0] * 4)
+    assert L._norm_entropy(torch.full((24,), 2.0, dtype=torch.float64), 0).item() == pytest.approx(1.0)
+    A = torch.zeros(3, 5, dtype=torch.float64)
+    A[:, 2] = -1.0
+    assert L._norm_entropy(A, 1).tolist() == [0.0, 0.0, 0.0]  # 0 log 0 = 0, exactly
+    assert math.isnan(L._norm_entropy(torch.zeros(5, dtype=torch.float64), 0).item())
+    assert torch.isnan(L._norm_entropy(torch.zeros(2, 5, dtype=torch.float64), 1)).all()
+    # sign and scale are not concentration: the entropy is of the magnitudes' distribution
+    A = torch.randn(3, 7, generator=torch.Generator().manual_seed(0)).double()
+    torch.testing.assert_close(L._norm_entropy(-2.5 * A, 1), L._norm_entropy(A, 1))
+
+
+def test_batch_stats_sim_grad_entropies_match_their_definitions():
+    # the pair entropy is of the gradient the towers receive, dL/dS: the two directions' per-pair terms folded,
+    # (i2t + t2i.T) / 2, the scale alpha / B dropping out under the normalization; the anchor entropy is each
+    # direction's over its own ACTIVE anchors' rows (any gradient mass), the two averaged, with the active fraction
+    # beside it -- for each part of the decomposition: (p - y), (p - p*), (p* - y)
+    L = import_loss_module()
+    B, alpha = 12, 4.0
+    Q, Y = _targets(B, 4, seed=6)
+    S = _sims(B, seed=7)
+    logits = (alpha * S).float()
+    stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
+    Yf = _y_stats(Y.float())
+    P_opt = L.infonce_p_opt(Yf, alpha)
+    R = P_opt - Yf
+    P_i2t, P_t2i = torch.softmax(logits.double(), dim=1), torch.softmax(logits.double().T, dim=1)
+    parts = {
+        "full": (P_i2t - Yf, P_t2i - Yf),
+        "struct": (P_i2t - P_opt, P_t2i - P_opt),
+        "res": (R, R),
+    }
+    def anchor_stats(M):
+        active = M.abs().sum(dim=1) > 0
+        return _entropy_norm(M[active], 1).mean().item(), active.double().mean().item()
+
+    for comp, (M_i2t, M_t2i) in parts.items():
+        pair = _entropy_norm(0.5 * (M_i2t + M_t2i.T).flatten(), 0).item()
+        (h_i2t, f_i2t), (h_t2i, f_t2i) = anchor_stats(M_i2t), anchor_stats(M_t2i)
+        assert _same(stats[f"sim_grad_entropy_pair_{comp}"], pair)
+        assert _same(stats[f"sim_grad_entropy_anchor_{comp}"], 0.5 * (h_i2t + h_t2i))
+        assert stats[f"sim_grad_entropy_active_{comp}"] == pytest.approx(0.5 * (f_i2t + f_t2i), rel=1e-12)
+        for level in ("pair", "anchor", "active"):
+            val = stats[f"sim_grad_entropy_{level}_{comp}"]
+            assert math.isnan(val) or 0.0 <= val <= 1.0
+    # the full and structural gradients have mass on every anchor (a finite-logit softmax never equals a target
+    # holding a zero, nor p*), and on this non-symmetric geometry the two directions' anchor entropies differ, so
+    # the anchor entropy is a genuine average of the two rather than either; the residual's active anchors are
+    # exactly the rows off the feasible path, a feasible row being its own projection with a residual of exactly zero
+    for comp in ("full", "struct"):
+        assert stats[f"sim_grad_entropy_active_{comp}"] == 1.0
+        assert all(math.isfinite(stats[f"sim_grad_entropy_{level}_{comp}"]) for level in ("pair", "anchor"))
+    assert stats["sim_grad_entropy_active_res"] == pytest.approx(1.0 - stats["resid_paths"][1], rel=1e-12)
+    M_i2t, M_t2i = parts["full"]
+    assert abs(_entropy_norm(M_i2t, 1).mean() - _entropy_norm(M_t2i, 1).mean()) > 1e-6
+
+
+def test_sim_grad_entropies_on_a_hard_target_read_the_closed_forms():
+    # sp targets (Y = I): the residual is the closed form, the K = 1 positive of a row at -M lam and its M = B - 1
+    # negatives at lam, so its magnitude's row distribution is (1/2, 1/(2M), ...) -- H_anchor = log(4M) / (2 log B)
+    # -- and over the batch (1/(2B) on the diagonal, 1/(2BM) off it) -- H_pair = log(4 B^2 M) / (2 log B^2), the
+    # fold being the residual itself (R is symmetric here)
+    L = import_loss_module()
+    B, alpha = 10, 5.0
+    M = B - 1
+    Q = torch.eye(B, dtype=torch.float64)
+    S = _sims(B, seed=3)
+    stats = L.infonce_batch_stats(S, Q, Q, alpha * S, _log_scale(alpha), False)
+    assert stats["resid_paths"] == [1.0, 0.0, 0.0]
+    assert stats["sim_grad_entropy_anchor_res"] == pytest.approx(math.log(4 * M) / (2 * math.log(B)), rel=1e-12)
+    assert stats["sim_grad_entropy_pair_res"] == pytest.approx(math.log(4 * B * B * M) / (2 * math.log(B * B)), rel=1e-12)
+    for level in ("pair", "anchor"):
+        assert all(0.0 <= stats[f"sim_grad_entropy_{level}_{comp}"] <= 1.0 for comp in ("full", "struct", "res"))
+    assert all(stats[f"sim_grad_entropy_active_{comp}"] == 1.0 for comp in ("full", "struct", "res"))  # every row pushes
+
+
+def test_sim_grad_entropies_read_nan_where_the_residual_is_exactly_zero():
+    # a graded target inside the reachable band is its own projection (infonce_p_opt's feasibility branch), so the
+    # residual is exactly zero everywhere: no gradient, no concentration to report -- NaN, as the coherence ratios
+    # read under no pressure, with no anchor active -- while the full and structural entropies read as usual
+    L = import_loss_module()
+    B, alpha = 8, 6.0
+    Q, _ = _targets(B, 4, seed=6)
+    Y = torch.softmax(2 * Q, dim=1)  # the softmax tsm at sm_scale 1: a row's log range is at most 2 < 2 alpha
+    S = _sims(B, seed=5)
+    stats = L.infonce_batch_stats(S, Q, Y, alpha * S, _log_scale(alpha), False)
+    assert stats["resid_paths"] == [0.0, 1.0, 0.0]
+    for level in ("pair", "anchor"):
+        assert math.isnan(stats[f"sim_grad_entropy_{level}_res"])
+        assert all(0.0 <= stats[f"sim_grad_entropy_{level}_{comp}"] <= 1.0 for comp in ("full", "struct"))
+    assert stats["sim_grad_entropy_active_res"] == 0.0
+    assert stats["sim_grad_entropy_active_full"] == 1.0 and stats["sim_grad_entropy_active_struct"] == 1.0
+
+
+def test_anchor_entropy_is_the_mean_over_the_active_anchors_with_their_fraction_beside_it():
+    # one anchor with no residual at all -- a graded row inside the reachable band, its own projection exactly --
+    # beside B - 1 sp rows: the residual's anchor entropy is the mean over the B - 1 anchors that carry one, each
+    # an sp row's closed form log(4M) / (2 log B), rather than NaN over the one that does not (its normalization is
+    # 0 / 0, no distribution at all -- unlike a row concentrated on one pair, which reads 0), and the active
+    # fraction says how many anchors that mean stands on
+    L = import_loss_module()
+    B, alpha = 10, 5.0
+    M = B - 1
+    Y = torch.eye(B, dtype=torch.float64)
+    Y[0] = torch.softmax(torch.linspace(0.0, 1.0, B, dtype=torch.float64), dim=0)  # log range 1 < 2 alpha: feasible
+    S = _sims(B, seed=3)
+    stats = L.infonce_batch_stats(S, torch.eye(B, dtype=torch.float64), Y, alpha * S, _log_scale(alpha), False)
+    assert stats["resid_paths"] == pytest.approx([M / B, 1 / B, 0.0])
+    assert stats["sim_grad_entropy_active_res"] == pytest.approx(M / B, rel=1e-12)
+    assert stats["sim_grad_entropy_anchor_res"] == pytest.approx(math.log(4 * M) / (2 * math.log(B)), rel=1e-12)
+    assert stats["sim_grad_entropy_active_full"] == 1.0 and stats["sim_grad_entropy_active_struct"] == 1.0
+
+
+def test_actual_sim_grad_entropies_read_the_gradient_the_towers_received():
+    # the (actual) trio off the criterion's own dL/dS: on an unweighted lone hard target the pair entropy is the
+    # analytic full one exactly (the same folded gradient, the loss carrying no weight the stats leave out), and
+    # under block_residuals: full it is the analytic STRUCTURAL one -- the residual the towers never received is
+    # not in it -- while the anchor entropy reads the fold's rows and columns, its own construction (every row and
+    # column active here: each entry of the fold pushes)
+    L = import_loss_module()
+    B, log_alpha = 16, math.log(3.0)
+    class_encs, Q, Y = _hard_targs(B, 4, "sp")
+    S = _sims(B, seed=23)
+    stats = L.infonce_batch_stats(S, Q, Y, math.exp(log_alpha) * S, torch.tensor(log_alpha, dtype=torch.float64), False)
+    for block, comp in ((None, "full"), ("full", "struct")):
+        actual = L.sim_grad_entropies_actual(_run_crit(L, "sp", class_encs, S, log_alpha, block)[3])
+        assert set(actual) == {f"sim_grad_entropy_{level}_actual" for level in ("pair", "anchor", "active")}
+        assert actual["sim_grad_entropy_pair_actual"] == pytest.approx(stats[f"sim_grad_entropy_pair_{comp}"], rel=1e-9)
+        assert actual["sim_grad_entropy_active_actual"] == 1.0
+        assert 0.0 <= actual["sim_grad_entropy_anchor_actual"] <= 1.0
+    assert stats["sim_grad_entropy_pair_full"] != pytest.approx(stats["sim_grad_entropy_pair_struct"], rel=1e-3)
+    # the fold's rows and columns: a zero row leaves its column's mass to the other rows, so the row side reads
+    # B - 1 active anchors and the column side all B, and the anchor entropy averages the two sides' means
+    G = _sims(B, seed=5)
+    G[0] = 0.0
+    actual = L.sim_grad_entropies_actual(G)
+    rows, cols = _entropy_norm(G[1:], 1).mean(), _entropy_norm(G.T, 1).mean()
+    assert actual["sim_grad_entropy_anchor_actual"] == pytest.approx(0.5 * (rows + cols).item(), rel=1e-12)
+    assert actual["sim_grad_entropy_active_actual"] == pytest.approx(0.5 * ((B - 1) / B + 1.0), rel=1e-12)
+    assert actual["sim_grad_entropy_pair_actual"] == pytest.approx(_entropy_norm(G.flatten(), 0).item(), rel=1e-12)
+
+
+def test_anchor_entropy_averages_only_the_directions_with_an_active_anchor():
+    # a uniform target under logits whose I2T row softmax reproduces it exactly, so the image anchors carry no
+    # gradient at all, while the T2I one does not, so both text anchors do: the anchor entropy is the text side's
+    # reading (its two rows uniform in magnitude: 1) rather than NaN with the image side, and the active fraction
+    # still counts the empty side (0.5). With neither side active -- zero logits, both softmaxes the target -- the
+    # entropy is NaN and the fraction 0, as the pair entropy is NaN; the actual trio reads a zero gradient the same
+    L = import_loss_module()
+    Y = torch.full((2, 2), 0.5, dtype=torch.float64)
+    S = _sims(2, seed=1)
+    Z = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+    stats = L.infonce_batch_stats(S, (Y > 0).double(), Y, Z, _log_scale(1.0), False)
+    assert stats["resid_paths"] == [0.0, 1.0, 0.0]  # a uniform row is its own projection: no residual anywhere
+    for comp in ("full", "struct"):  # p* = y here, so the structural part is the whole gradient
+        assert stats[f"sim_grad_entropy_anchor_{comp}"] == pytest.approx(1.0)
+        assert stats[f"sim_grad_entropy_active_{comp}"] == 0.5
+        assert stats[f"sim_grad_entropy_pair_{comp}"] == pytest.approx(1.0)  # the fold's four entries equal in magnitude
+    assert math.isnan(stats["sim_grad_entropy_anchor_res"]) and stats["sim_grad_entropy_active_res"] == 0.0
+
+    stats = L.infonce_batch_stats(S, (Y > 0).double(), Y, torch.zeros(2, 2, dtype=torch.float64), _log_scale(1.0), False)
+    for comp in ("full", "struct", "res"):
+        assert math.isnan(stats[f"sim_grad_entropy_anchor_{comp}"]) and math.isnan(stats[f"sim_grad_entropy_pair_{comp}"])
+        assert stats[f"sim_grad_entropy_active_{comp}"] == 0.0
+    actual = L.sim_grad_entropies_actual(torch.zeros(2, 2, dtype=torch.float64))
+    assert math.isnan(actual["sim_grad_entropy_pair_actual"]) and math.isnan(actual["sim_grad_entropy_anchor_actual"])
+    assert actual["sim_grad_entropy_active_actual"] == 0.0

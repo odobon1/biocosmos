@@ -115,10 +115,10 @@ _BG_LINE_PANEL = "#FAF7F0"
 # (legible together, and under red-green color blindness)
 _DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
 # the dL/dalpha aggs in panel-block order (utils.loss.infonce_batch_stats): the signed sum, then each magnitude
-# -- per pair (sum_abs, A), per anchor row (row_abs, B) -- followed by its coherence ratio |sum| / magnitude
-_DALPHA_AGGS = ("sum", "sum_abs", "C", "row_abs", "C_row")
-_DALPHA_RATIO_AGGS = ("C", "C_row")
-# The residual family (the dalpha res / sres / ires strips, the KL figure's E_R / E_SR / E_IR) is
+# -- per pair (sum_abs, A), per anchor row (row_abs, C) -- followed by its coherence ratio |sum| / magnitude
+_DALPHA_AGGS = ("sum", "sum_abs", "ratio", "row_abs", "ratio_row")
+_DALPHA_RATIO_AGGS = ("ratio", "ratio_row")
+# The residual family (the dalpha res / ures / ires strips, the KL figure's E_R / E_UR / E_IR) is
 # exp(-2 alpha)-small against the order-one entries of p* and y it is built from, so what a batch's values are
 # worth is a matter of PROVENANCE (resid_paths: the row fractions [hard closed form, feasible exact zero, plain
 # p* - y subtraction]) and never of the value: an unvalidated residual can read as a noise floor, as an exact
@@ -129,7 +129,9 @@ _DALPHA_RATIO_AGGS = ("C", "C_row")
 # (small is not inaccurate; and A_full shrinks with the fit while the subtraction's error, set by p* and y
 # themselves, does not -- a fitted alpha-25 batch read kl_ir = 0 against a true 2.3e-22 and sailed under it).
 # The curve is always drawn -- the mark says how far to trust it, not that it is missing
-_DALPHA_RES_COMPS = ("res", "sres", "ires")
+_DALPHA_RES_COMPS = ("res", "ures", "ires")
+# each decomposition comp's caption superscript (the alpha / logalpha figures' dalpha panels, the sim_grad_entropy figure)
+_COMP_SUPERSCRIPTS = {"full": "", "struct": r"^{\text{U}}", "res": r"^{\text{R}}", "ures": r"^{\text{UR}}", "ires": r"^{\text{IR}}"}
 _RESID_UNVALIDATED = dict(facecolor="none", edgecolor="#C4B99F", hatch="////", linewidth=0, zorder=0)  # under the curves
 
 def _fold_hist_columns(cols, threshold):
@@ -1664,9 +1666,9 @@ def plot_metrics(
     # trial with no eval data -- the trainval phase -- gets none), and the rest, the same for every group,
     # to general.png (loss, gradients, batch stats, LR), alpha.png / logalpha.png (the logit scale, as
     # the alpha the logits carry / as the log alpha parameter the model learns, over its InfoNCE
-    # gradient decomposition), KL.png (the InfoNCE KL decomposition), bias.png (the learnable logit biases)
-    # and unitless_loss_blend.png (a unitless loss blend's effective lambda) -- the last three only for a
-    # trial recording their series. Within a figure every panel is
+    # gradient decomposition), KL.png (the InfoNCE KL decomposition), sim_grad_entropy.png (the InfoNCE
+    # similarity-gradient entropies), bias.png (the learnable logit biases) and unitless_loss_blend.png (a unitless
+    # loss blend's effective lambda) -- the last four only for a trial recording their series. Within a figure every panel is
     # the same height (in; height_panel_scores for the scores, height_panel_general for the rest), and
     # the figure is as tall as its panels plus the ~1.8 in its title and x label take -- so a panel is
     # the same size however many the figure holds.
@@ -1739,6 +1741,20 @@ def plot_metrics(
         height_panel_general,
         plot_title=title_prefix,
         output_filename="learning_curves/KL.png",
+    )
+    plot_sim_grad_entropy_curves(
+        data_epoch,
+        x_train,
+        dpath_trial,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        fig_width,
+        height_fixed,
+        height_panel_general,
+        plot_title=title_prefix,
+        output_filename="learning_curves/sim_grad_entropy.png",
     )
     for name, panels in (
         # each tracked logit bias (TrialData bias series; empty when untracked: a BCE-family loss with a learnable
@@ -2173,8 +2189,8 @@ def plot_alpha_curves(
     }
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
     # since only it records the series), twenty-five panels: the per-pair dL/dalpha terms summed, summed in
-    # magnitude (A) with the coherence ratio |sum| / A, then summed in magnitude per anchor row (B =
-    # sum_i |sum_j .|, each direction over its own anchors) with its ratio |sum| / B, each for the full
+    # magnitude (A) with the coherence ratio |sum| / A, then summed in magnitude per anchor row (C =
+    # sum_i |sum_j .|, each direction over its own anchors) with its ratio |sum| / C, each for the full
     # gradient, its structural / residual parts and the residual's own structural / irreducible split
     # (utils.loss.infonce_batch_stats), every panel drawing the all /
     # positive-mass / negative-mass attributions -- bar the logalpha figure's ten ratio panels, which
@@ -2185,22 +2201,21 @@ def plot_alpha_curves(
     # hatched over every batch with rows off the unvalidated subtraction.
 
     def dalpha_label(agg, comp):
-        sup = {"full": "", "struct": r"^{\text{S}}", "res": r"^{\text{R}}",
-               "sres": r"^{\text{SR}}", "ires": r"^{\text{IR}}"}[comp]
+        sup = _COMP_SUPERSCRIPTS[comp]
         nabla = rf"\nabla_{{{sym}}}{sup} \mathcal{{L}}"
         if agg == "sum":
             # the full term shares the measured (actual) panel's symbol, so it says what it is: the analytical term
             # off the blended target distribution (no blend coefficient, no loss.unitless 1 / L), not the
             # gradient the parameter received
             return rf"${nabla}$" + ("\n(analytic)" if comp == "full" else "")
-        mag = rf"\text{{{'A' if agg in ('sum_abs', 'C') else 'B'}}}_{{{sym}}}{sup}"
+        mag = rf"\text{{{'A' if agg in ('sum_abs', 'ratio') else 'C'}}}_{{{sym}}}{sup}"
         # a ratio is captioned as the quotient it is, over the magnitude panel's own symbol
         return rf"$\frac{{|{nabla}|}}{{{mag}}}$" if agg in _DALPHA_RATIO_AGGS else rf"${mag}$"
 
     dalpha_panels = [
         (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg, comp)
         for agg in _DALPHA_AGGS
-        for comp in ("full", "struct", "res", "sres", "ires")
+        for comp in ("full", "struct", "res", "ures", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
     # the residual terms' mark, on all five of a term's aggs -- where the magnitudes are unvalidated, so are the
@@ -2273,7 +2288,7 @@ def plot_alpha_curves(
     for key, label, agg, comp in dalpha_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         # the logalpha figure's ratio panels repeat the alpha figure's exactly -- alpha cancels in the
-        # ratios |sum| / A and |sum| / B -- so they are drawn blank: the panel and its caption hold the row, so
+        # ratios |sum| / A and |sum| / C -- so they are drawn blank: the panel and its caption hold the row, so
         # the two figures stay aligned panel for panel, with the redundant curves, grid, y ticks and
         # legend all left off
         if prefix == "dlogalpha" and agg in _DALPHA_RATIO_AGGS:
@@ -2284,7 +2299,7 @@ def plot_alpha_curves(
                 ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
             if agg in _DALPHA_RATIO_AGGS:
                 # a cancellation ratio, in [0, 1] -- with both ends readings in their own right (1: perfectly
-                # coherent, as a hard target's SR / IR terms are throughout; 0: total cancellation), so the
+                # coherent, as a hard target's UR / IR terms are throughout; 0: total cancellation), so the
                 # limits are padded past them: at exactly (0, 1) such a curve lies under the panel's border,
                 # which is drawn over it, and the panel reads as empty. Display padding only, the ticks
                 # staying on the ratio's own range
@@ -2333,22 +2348,22 @@ def plot_kl_curves(
     # the InfoNCE KL decomposition (sim_targ_stats on; an InfoNCE loss only, since only it records the
     # series -- any other trial gets no figure), five panels (utils.loss.infonce_kl_terms, both anchor
     # directions averaged, batch-meaned): D_KL(y || p) -- the raw loss less the targets' entropy -- then
-    # its three parts, the structural E_S = D_KL(p* || p) (what the model could still remove at this
+    # its three parts, the structural E_U = D_KL(p* || p) (what the model could still remove at this
     # alpha), the irreducible E_IR = D_KL(y || p*) (the target outside the reachable set) and the cross
-    # term E_SR, with the two representational parts also drawn summed as E_R = E_SR + E_IR. All are >= 0
-    # (E_SR because p is itself reachable; bf16 logit rounding can dip it a hair below), so each panel
+    # term E_UR, with the two representational parts also drawn summed as E_R = E_UR + E_IR. All are >= 0
+    # (E_UR because p is itself reachable; bf16 logit rounding can dip it a hair below), so each panel
     # draws a zero reference line and autoscales -- the line hugs the bottom while the series stays
     # positive, and any dip below it shows.
     # The three representational panels are the residual family's (E_IR differences -H(y) against a
-    # cross-entropy equal to it to within exp(-2 alpha), E_SR reads p* - y), so they carry the unvalidated
+    # cross-entropy equal to it to within exp(-2 alpha), E_UR reads p* - y), so they carry the unvalidated
     # mark (_RESID_UNVALIDATED) over every batch with rows off the plain subtraction.
     kl_panels = [
         (vals, label, resid)
         for vals, label, resid in (
             (data_epoch["kl"], r"$D_{\mathrm{KL}}(\text{y}\|\text{p})$", False),
-            (data_epoch["kl_s"], r"$\mathcal{E}^{\text{S}}$", False),
-            (np.array(data_epoch["kl_sr"]) + np.array(data_epoch["kl_ir"]), r"$\mathcal{E}^{\text{R}}$", True),
-            (data_epoch["kl_sr"], r"$\mathcal{E}^{\text{SR}}$", True),
+            (data_epoch["kl_u"], r"$\mathcal{E}^{\text{U}}$", False),
+            (np.array(data_epoch["kl_ur"]) + np.array(data_epoch["kl_ir"]), r"$\mathcal{E}^{\text{R}}$", True),
+            (data_epoch["kl_ur"], r"$\mathcal{E}^{\text{UR}}$", True),
             (data_epoch["kl_ir"], r"$\mathcal{E}^{\text{IR}}$", True),
         )
         if len(vals) == len(x_train)
@@ -2378,11 +2393,89 @@ def plot_kl_curves(
 
     _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
 
+def plot_sim_grad_entropy_curves(
+    data_epoch,
+    x_train,
+    dpath_trial,
+    fontsize_axes,
+    fontsize_ticks,
+    fontsize_legend,
+    subplot_border_width,
+    fig_width,
+    height_fixed,
+    height_panel,
+    plot_title,
+    output_filename,
+):
+    # the concentration of the InfoNCE similarity-level gradient's magnitude (sim_targ_stats on; an InfoNCE loss
+    # only, since only it records the series -- any other trial gets no figure), twelve panels
+    # (utils.loss.infonce_sim_grad_entropies): the normalized Shannon entropy of |dL/dS| over the batch's pairs,
+    # then per anchor row and averaged over both directions' active anchors (those with any gradient mass), then
+    # under both the active fraction -- how many anchors that mean was taken over (a residual's feasible rows sit
+    # at exactly zero and drop out), so a diffuse reading over every anchor is told from one over the few that
+    # push -- each opening on the (actual) reading, the same statistic off the gradient the towers actually
+    # received (the retained sims' .grad, utils.loss.sim_grad_entropies_actual: every weight the loss carries,
+    # recorded under sim_grad_sums), then the analytic full gradient (the unweighted loss_raw gradient off the
+    # blended target distribution) and its structural / residual parts (the alpha figures' dalpha split, short of
+    # the residual's own, which is the scale gradient's alone). The actual anchor entropy reads the folded
+    # gradient's rows and columns, the analytic ones each anchor's own CE term before the fold (see
+    # sim_grad_entropies_actual). Complementary to the dalpha panels' coherence ratios: they read the directional
+    # cancellation of the pressure on the scale, these where the signal the towers receive sits -- 1: spread
+    # uniformly over the pairs (a row's candidates), 0: concentrated on few. One line per panel (no positive /
+    # negative attribution: the entropy is of the magnitude's distribution as a whole). Each level's four panels
+    # are ruled off as a block (_finish_curves' axes_blocks), and the residual comp carries the unvalidated mark
+    # (_RESID_UNVALIDATED) like its dalpha panels.
+    def label(level, comp):
+        sup = "" if comp == "actual" else _COMP_SUPERSCRIPTS[comp]
+        sym = {"pair": rf"$\tilde{{H}}_{{S,\text{{pair}}}}{sup}$",
+               "anchor": rf"$\overline{{\widetilde{{H}}}}_{{S,\mathrm{{anchor}}}}{sup}$",
+               "active": rf"$f_{{\mathrm{{active}}}}{sup}$"}[level]
+        # the measured and the analytic full readings share a symbol, so each says which it is (as the alpha
+        # figures' scale-gradient panels do)
+        return sym + {"actual": "\n(actual)", "full": "\n(analytic)", "struct": "", "res": ""}[comp]
+
+    panels = [
+        (f"sim_grad_entropy_{level}_{comp}", label(level, comp), level, comp)
+        for level in ("pair", "anchor", "active")
+        for comp in ("actual", "full", "struct", "res")
+        if len(data_epoch[f"sim_grad_entropy_{level}_{comp}"]) == len(x_train)
+    ]
+    if not panels:
+        return
+    unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
+
+    fig = plt.figure(figsize=(fig_width, height_fixed + len(panels) * height_panel))
+    gs = gridspec.GridSpec(len(panels), 1, hspace=0)
+    legend_handles = {}  # panel -> its legend's handles, boxed outside the panel once the layout is settled
+    axes = []
+
+    for key, caption, level, comp in panels:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        ax.plot(x_train, data_epoch[key], color="black", linewidth=1.0)
+        # a normalized entropy or an anchor fraction, in [0, 1] with both ends readings in their own right, so the
+        # limits are padded past them as the alpha figures' ratio panels are: at exactly (0, 1) the curve lies
+        # under the panel's border
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_yticks([0.0, 0.5, 1.0])
+        if comp in _DALPHA_RES_COMPS and unvalidated is not None and unvalidated.any():
+            _mark_unvalidated(ax, x_train, unvalidated)
+            legend_handles[ax] = ax.get_legend_handles_labels()[0]
+        ax.set_ylabel(caption, fontsize=fontsize_axes)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+    axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    axes[-1].tick_params(labelbottom=True)
+
+    axes_blocks = [[ax for ax, panel in zip(axes, panels) if panel[2] == level] for level in ("pair", "anchor", "active")]
+    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
+                   subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
+
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
                    subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
     The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_scalar_curves /
-    plot_alpha_curves / plot_kl_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
+    plot_alpha_curves / plot_kl_curves / plot_sim_grad_entropy_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
     the heatmap strips, keep their own background), the title, the layout, the outside legends
     (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule
     off as blocks, `box_blocks` closing each block's sides too (see below). `alternate_sides` flips every

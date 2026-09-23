@@ -374,7 +374,7 @@ def test_stats_over_blended_targets():
     assert stats["targ_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
     expected = torch.histc(targs, bins=HIST_BINS, min=0.0, max=1.0) / targs.numel()
     assert stats["targ_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
-    assert "alpha_req_max" not in stats  # the target-implied scale bounds are InfoNCE-only
+    assert "scale_req_max" not in stats  # the target-implied scale bounds are InfoNCE-only
     # default kappas (0.0,): the bidirectional mean over the blended memberships
     margin = 0.5 * (L.hard_pair_similarity_margin(sim, targs, 0.0).mean() + L.hard_pair_similarity_margin(sim.T, targs.T, 0.0).mean())
     assert stats["sim_margin"] == pytest.approx([margin.item()], abs=1e-5)

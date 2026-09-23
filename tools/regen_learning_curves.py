@@ -1,7 +1,7 @@
 """
 python -m tools.regen_learning_curves <campaign>
 
-Re-render every trial's learning-curve plots (learning_curves/scores/<group>.png, one per eval group the campaign has in play + learning_curves/{general,alpha,logalpha,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores/), in
+Re-render every trial's learning-curve plots (learning_curves/scores/<group>.png, one per eval group the campaign has in play + learning_curves/{general,scale,logscale,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores/), in
 every phase of the campaign (_screen/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code -- no train/eval rerun -- so styling/layout edits take effect for an
 already-run campaign. Each trial's config is rebuilt exactly as on the campaign launch path (the phase's frozen

@@ -110,15 +110,15 @@ _S_CMAP = LinearSegmentedColormap.from_list("s_density", ["#FFFFFF", "#33B0B0", 
 _HIST_NORM = PowerNorm(gamma=0.5, vmin=0.0, vmax=1.0)
 # panel background for the learning curves' line plots (the heatmap strips paint over their own)
 _BG_LINE_PANEL = "#FAF7F0"
-# the dL/dalpha strips' attributions, in series order: the whole term (*), then its positive- (+) and
+# the dL/dscale strips' attributions, in series order: the whole term (*), then its positive- (+) and
 # negative- (-) target-mass shares -- black for the total, Okabe-Ito blue / vermillion for the pair
 # (legible together, and under red-green color blindness)
-_DALPHA_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
-# the dL/dalpha aggs in panel-block order (utils.loss.infonce_batch_stats): the signed sum, then each magnitude
+_DSCALE_ATTRIBUTIONS = (("(*)", "black"), ("(+)", "#0072B2"), ("(-)", "#D55E00"))
+# the dL/dscale aggs in panel-block order (utils.loss.infonce_batch_stats): the signed sum, then each magnitude
 # -- per pair (sum_abs, A), per anchor row (row_abs, C) -- followed by its coherence ratio |sum| / magnitude
-_DALPHA_AGGS = ("sum", "sum_abs", "ratio", "row_abs", "ratio_row")
-_DALPHA_RATIO_AGGS = ("ratio", "ratio_row")
-# The residual family (the dalpha res / ures / ires strips, the KL figure's E_R / E_UR / E_IR) is
+_DSCALE_AGGS = ("sum", "sum_abs", "ratio", "row_abs", "ratio_row")
+_DSCALE_RATIO_AGGS = ("ratio", "ratio_row")
+# The residual family (the dscale res / ures / ires strips, the KL figure's E_R / E_UR / E_IR) is
 # exp(-2 alpha)-small against the order-one entries of p* and y it is built from, so what a batch's values are
 # worth is a matter of PROVENANCE (resid_paths: the row fractions [hard closed form, feasible exact zero, plain
 # p* - y subtraction]) and never of the value: an unvalidated residual can read as a noise floor, as an exact
@@ -129,8 +129,8 @@ _DALPHA_RATIO_AGGS = ("ratio", "ratio_row")
 # (small is not inaccurate; and A_full shrinks with the fit while the subtraction's error, set by p* and y
 # themselves, does not -- a fitted alpha-25 batch read kl_ir = 0 against a true 2.3e-22 and sailed under it).
 # The curve is always drawn -- the mark says how far to trust it, not that it is missing
-_DALPHA_RES_COMPS = ("res", "ures", "ires")
-# each decomposition comp's caption superscript (the alpha / logalpha figures' dalpha panels, the sim_grad_entropy figure)
+_DSCALE_RES_COMPS = ("res", "ures", "ires")
+# each decomposition comp's caption superscript (the scale / logscale figures' dscale panels, the sim_grad_entropy figure)
 _COMP_SUPERSCRIPTS = {"full": "", "struct": r"^{\text{U}}", "res": r"^{\text{R}}", "ures": r"^{\text{UR}}", "ires": r"^{\text{IR}}"}
 _RESID_UNVALIDATED = dict(facecolor="none", edgecolor="#C4B99F", hatch="////", linewidth=0, zorder=0)  # under the curves
 
@@ -798,7 +798,7 @@ def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordere
 def update_best_coord_curves(dataset, arm):
     """Mirror the learning curves of `arm`'s best coord on `dataset` to
     _datasets/<dataset>/_arms/<arm>/best_coord/learning_curves/<seed>/ -- every trial of that coord,
-    its learning_curves/ dir copied whole ({general,alpha,logalpha,KL}.png + scores/<group>.png) -- so the
+    its learning_curves/ dir copied whole ({general,scale,logscale,KL}.png + scores/<group>.png) -- so the
     arm's answer reads off one dir without first working out which coord won.
 
     Best is the coord with the highest across-trial mean Native mAP composite All at its selected
@@ -827,8 +827,8 @@ def update_best_coord_curves(dataset, arm):
 
 # the learning-curve strip figures (update_coord_strips), one per parameterization of the logit scale:
 # (the series it plots, its target-implied bound trio, its symbol, the figure's name)
-_STRIP_FIGURES = (("scale", "alpha_req", r"\alpha", "alpha"),
-                  ("logit_scale", "log_alpha_req", r"\log \alpha", "logalpha"))
+_STRIP_FIGURES = (("scale", "scale_req", r"\alpha", "scale"),
+                  ("logit_scale", "log_scale_req", r"\log \alpha", "logscale"))
 
 def _req_labels(reqs, sym):
     """{stat: legend label} for a scale panel's target-implied bound trio (`reqs`: {stat: values}),
@@ -836,7 +836,7 @@ def _req_labels(reqs, sym):
     an entry for a line that is nowhere on the panel is one the reader cannot place. The min and max
     bracket the band in the same solid style, so one entry covers the pair, naming whichever of the two
     draws and riding on that line (the other goes unlabelled, and an unlabelled line is left out of the
-    legend); an empty map means the trio draws nothing at all. Shared by plot_alpha_curves' panels and
+    legend); an empty map means the trio draws nothing at all. Shared by plot_scale_curves' panels and
     the strip figures."""
     drawn = [stat for stat, vals in reqs.items() if np.isfinite(vals).any()]
     band = [stat for stat in ("min", "max") if stat in drawn]
@@ -853,11 +853,11 @@ def _pin_flat_yaxis(ax):
     had while leaving the one value that matters off every tick. So that value becomes the panel's only
     tick, labelled with it, the line centred on it. A panel with any spread at all -- a learnable scale, or a
     frozen one read against its target-implied bounds, which is the comparison the panel is kept for -- is
-    left to autoscale. Shared by plot_alpha_curves' panels and the strip figures.
+    left to autoscale. Shared by plot_scale_curves' panels and the strip figures.
     One number up to float noise, that is: a spread under 1e-6 of the values' magnitude is rounding, not
     signal. A scale frozen at 100 under a softmax target mapping pinned to it draws its bound trio ON it, but
     in log units the two are derived apart -- the float32 parameter holds log(100) rounded up by 6.4e-8, the
-    bounds the float64 log of an alpha_req that comes out exactly 100 -- and autoscale would zoom into that
+    bounds the float64 log of an scale_req that comes out exactly 100 -- and autoscale would zoom into that
     one rounding step until it filled the panel, the scale at the top and the trio at the bottom."""
     vals = np.concatenate([np.asarray(line.get_ydata(), dtype=float) for line in ax.get_lines()])
     vals = vals[np.isfinite(vals)]
@@ -891,7 +891,7 @@ def _strip_data(panels, scale_key, req_key, spread_type):
 def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_axes, fontsize_ticks,
                    fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel):
     """One figure of scale strips, `strips` [(coord, x, scale, reqs)] top to bottom (_strip_data): the
-    scale panel plot_alpha_curves gives each trial -- the scale in purple over its bound trio in red,
+    scale panel plot_scale_curves gives each trial -- the scale in purple over its bound trio in red,
     the min and max solid and the mean dashed -- one per coord of an arm, over one shared epoch axis. A
     (values, spread) pair with a spread shades it around its line, so on the agg figure every line carries
     its own across-trial band; one '± <spread_type>' entry names the convention for all of them.
@@ -983,10 +983,10 @@ def _strip_blocks(strips, axes):
 def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
                       subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
     """Render `arm`'s logit-scale strips for `dataset` --
-    _datasets/<dataset>/_arms/<arm>/arm_metrics/coord_strips/{seeds/<seed>,agg}/{alpha,logalpha}.png:
+    _datasets/<dataset>/_arms/<arm>/arm_metrics/coord_strips/{seeds/<seed>,agg}/{scale,logscale}.png:
     the scale panel of every planned coord of the arm (the phase's matrix) with a completed trial there,
-    stacked into one figure per parameterization (_STRIP_FIGURES: alpha, the scale the logits carry;
-    logalpha, the log-scale parameter the model learns), so an arm's coords read against each other on one
+    stacked into one figure per parameterization (_STRIP_FIGURES: scale, the alpha the logits carry;
+    logscale, the log-scale parameter the model learns), so an arm's coords read against each other on one
     epoch axis instead of one figure apiece. seeds/<seed>/ draws that seed's trial per coord, agg/ the mean
     over the coord's trials with a spread band on every line (_strip_data, _render_strips). The style
     defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
@@ -1664,7 +1664,7 @@ def plot_metrics(
 
     # under learning_curves/: the five eval-score panels go to scores/<group>.png, once per eval group (a
     # trial with no eval data -- the trainval phase -- gets none), and the rest, the same for every group,
-    # to general.png (loss, gradients, batch stats, LR), alpha.png / logalpha.png (the logit scale, as
+    # to general.png (loss, gradients, batch stats, LR), scale.png / logscale.png (the logit scale, as
     # the alpha the logits carry / as the log alpha parameter the model learns, over its InfoNCE
     # gradient decomposition), KL.png (the InfoNCE KL decomposition), sim_grad_entropy.png (the InfoNCE
     # similarity-gradient entropies), bias.png (the learnable logit biases) and unitless_loss_blend.png (a unitless
@@ -1709,9 +1709,9 @@ def plot_metrics(
         plot_title=title_prefix,
         output_filename="learning_curves/general.png",
     )
-    for scale_key, prefix, sym, name in (("scale", "dalpha", r"\alpha", "alpha"),
-                                         ("logit_scale", "dlogalpha", r"\log \alpha", "logalpha")):
-        plot_alpha_curves(
+    for scale_key, prefix, sym, name in (("scale", "dscale", r"\alpha", "scale"),
+                                         ("logit_scale", "dlogscale", r"\log \alpha", "logscale")):
+        plot_scale_curves(
             data_epoch,
             x_train,
             dpath_trial,
@@ -1759,7 +1759,7 @@ def plot_metrics(
     for name, panels in (
         # each tracked logit bias (TrialData bias series; empty when untracked: a BCE-family loss with a learnable
         # bias only) -- bias2 is loss2's term's own under separate logit scalars (loss.logits.shared false). The
-        # logit scales have their own figures (plot_alpha_curves)
+        # logit scales have their own figures (plot_scale_curves)
         ("bias", [("bias", r"$b$", dict(color="blue")), ("bias2", r"$b_2$", dict(color="blue"))]),
         # the effective lambda (sim_targ_stats on; loss.unitless over a live loss blend only): loss2's term's share
         # of the unitless blend coefficients, lambda L_1 / (lambda L_1 + (1 - lambda) L_2)
@@ -2135,7 +2135,7 @@ def _mark_unvalidated(ax, x_train, mask):
         ax.axvspan(x[s] - half, x[e] + half, label="unvalidated" if i == 0 else "_nolegend_", **_RESID_UNVALIDATED)
 
 
-def plot_alpha_curves(
+def plot_scale_curves(
     data_epoch,
     x_train,
     dpath_trial,
@@ -2153,8 +2153,8 @@ def plot_alpha_curves(
     output_filename,
 ):
     # one figure per parameterization of the logit scale (`scale_key` / `prefix` its series, `sym` its
-    # symbol): scale / dalpha*, the alpha the logits carry (pinned at 100 while logits.scale.clamp
-    # holds), and logit_scale / dlogalpha*, the log alpha parameter the model learns, as the model
+    # symbol): scale / dscale*, the alpha the logits carry (pinned at 100 while logits.scale.clamp
+    # holds), and logit_scale / dlogscale*, the log alpha parameter the model learns, as the model
     # holds it. A trial recording none of a figure's series gets no figure.
     # On top, each scale gets a panel -- the "2" series is loss2's term's own under separate logit scalars
     # (loss.logits.shared false), empty otherwise. A frozen scale (loss.logits.scale.freeze) keeps its panel:
@@ -2167,20 +2167,21 @@ def plot_alpha_curves(
         for suffix, sub in (("", ""), ("2", "_2"))
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     ]
-    req_key = {"scale": "alpha_req", "logit_scale": "log_alpha_req"}[scale_key]  # the bounds in this figure's units
-    # under each scale panel, the gradient the scale actually received. On the LOGALPHA figure -- log alpha being
+    req_key = {"scale": "scale_req", "logit_scale": "log_scale_req"}[scale_key]  # the bounds in this figure's units
+    # under each scale panel, the gradient the scale actually received. On the LOGSCALE figure -- log alpha being
     # the parameter the model learns -- the parameter's own signed .grad, as the optimizer consumed it
-    # (TrainPipeline._logit_scalar_values: read after the backward, before the step); on the alpha figure that
-    # same .grad carried into alpha's units, (1 / alpha) * .grad (alpha = exp(log alpha), so dL/dlogalpha =
-    # alpha * dL/dalpha) -- zero like the .grad it is derived from wherever logits.scale.clamp holds, the dalpha
+    # (TrainPipeline._logit_scalar_values: read after the backward, before the step); on the scale figure that
+    # same .grad carried into alpha's units, (1 / alpha) * .grad (alpha = exp(log alpha), so dL/dlogscale =
+    # alpha * dL/dscale) -- zero like the .grad it is derived from wherever logits.scale.clamp holds, the dscale
     # panels below still carrying the pressure on the effective scale. A frozen scale has no .grad series and
     # draws flat zero on both figures: the parameter received nothing.
-    # It is the measurement; the dalpha / dlogalpha panels further down are an analytical
+    # It is the measurement; the dscale / dlogscale panels further down are an analytical
     # decomposition off the blended target distribution, which carries neither a term's blend coefficient nor
-    # loss.unitless' 1 / L and so need not agree with it. The primary scale's panel also draws
-    # loss.infonce.block_residuals' correction where recorded (dlogalpha_correction: the delta it made, so the
-    # gradient without it is the black line minus the orange one), in the figure's units alike
-    # The caption says actual because the first dalpha panel below is captioned with the same nabla: that
+    # loss.unitless' 1 / L and so need not agree with it. Each scale panel also draws
+    # loss.infonce.block_residuals' correction where recorded (dlogscale_correction, dlogscale_correction2 for
+    # logit_scale2: the delta it made, so the gradient without it is the black line minus the orange one), in
+    # the figure's units alike
+    # The caption says actual because the first dscale panel below is captioned with the same nabla: that
     # one is the analytical full term, this one what the parameter got
     grad_panels = {
         f"{scale_key}{suffix}": (f"logit_scale{suffix}_grad", rf"$\nabla_{{{sym}{sub}}} \mathcal{{L}}$" + "\n(actual)")
@@ -2188,19 +2189,19 @@ def plot_alpha_curves(
         if len(data_epoch[f"{scale_key}{suffix}"]) == len(x_train)
     }
     # below, the InfoNCE logit-scale gradient decomposition (sim_targ_stats on; an InfoNCE loss only,
-    # since only it records the series), twenty-five panels: the per-pair dL/dalpha terms summed, summed in
+    # since only it records the series), twenty-five panels: the per-pair dL/dscale terms summed, summed in
     # magnitude (A) with the coherence ratio |sum| / A, then summed in magnitude per anchor row (C =
     # sum_i |sum_j .|, each direction over its own anchors) with its ratio |sum| / C, each for the full
     # gradient, its structural / residual parts and the residual's own structural / irreducible split
     # (utils.loss.infonce_batch_stats), every panel drawing the all /
-    # positive-mass / negative-mass attributions -- bar the logalpha figure's ten ratio panels, which
-    # repeat the alpha figure's and are left blank. dlogalpha* is flat zero wherever logits.scale.clamp
+    # positive-mass / negative-mass attributions -- bar the logscale figure's ten ratio panels, which
+    # repeat the scale figure's and are left blank. dlogscale* is flat zero wherever logits.scale.clamp
     # holds the parameter above its cap -- its sums zero and its ratios NaN, there being no pressure on the
-    # parameter to cancel -- dalpha* still carrying the pressure on the effective scale.
+    # parameter to cancel -- dscale* still carrying the pressure on the effective scale.
     # The three residual comps carry the provenance mark (_RESID_UNVALIDATED) on all five of their aggs:
     # hatched over every batch with rows off the unvalidated subtraction.
 
-    def dalpha_label(agg, comp):
+    def dscale_label(agg, comp):
         sup = _COMP_SUPERSCRIPTS[comp]
         nabla = rf"\nabla_{{{sym}}}{sup} \mathcal{{L}}"
         if agg == "sum":
@@ -2210,18 +2211,23 @@ def plot_alpha_curves(
             return rf"${nabla}$" + ("\n(analytic)" if comp == "full" else "")
         mag = rf"\text{{{'A' if agg in ('sum_abs', 'ratio') else 'C'}}}_{{{sym}}}{sup}"
         # a ratio is captioned as the quotient it is, over the magnitude panel's own symbol
-        return rf"$\frac{{|{nabla}|}}{{{mag}}}$" if agg in _DALPHA_RATIO_AGGS else rf"${mag}$"
+        return rf"$\frac{{|{nabla}|}}{{{mag}}}$" if agg in _DSCALE_RATIO_AGGS else rf"${mag}$"
 
-    dalpha_panels = [
-        (f"{prefix}_{agg}_{comp}", dalpha_label(agg, comp), agg, comp)
-        for agg in _DALPHA_AGGS
+    dscale_panels = [
+        (f"{prefix}_{agg}_{comp}", dscale_label(agg, comp), agg, comp)
+        for agg in _DSCALE_AGGS
         for comp in ("full", "struct", "res", "ures", "ires")
         if len(data_epoch[f"{prefix}_{agg}_{comp}"]) == len(x_train)
     ]
     # the residual terms' mark, on all five of a term's aggs -- where the magnitudes are unvalidated, so are the
     # signed sum and the coherence ratios taken over them
     unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
-    n_panels = len(scale_panels) + len(grad_panels) + len(dalpha_panels)
+    # loss.infonce.block_residuals' coverage, one panel per loss term beside the correction the scale panels draw:
+    # the anchor-row fractions the correction was applied to / found feasible / skipped, so a zero correction
+    # reads as no residual or as an intervention that did not happen (utils.loss.infonce_train_resid)
+    coverage_panels = (list(range(len(data_epoch["block_coverage"][0])))
+                       if data_epoch["block_coverage"] and len(data_epoch["block_coverage"]) == len(x_train) else [])
+    n_panels = len(scale_panels) + len(grad_panels) + len(coverage_panels) + len(dscale_panels)
     if n_panels == 0:
         return
 
@@ -2238,9 +2244,9 @@ def plot_alpha_curves(
         ax.plot(x_train, data_epoch[key], color="tab:purple", label=rf"${sym}$", zorder=3)
         if key == scale_key and len(data_epoch[f"{req_key}_max"]) == len(x_train):
             # per batch, the row-wise target-implied scale bound (utils.loss.infonce_batch_stats'
-            # alpha_req; an InfoNCE loss only, so a BCE-family loss's panel gets no lines), read
-            # against the scale this figure plots -- alpha_req on the alpha panel (the series sits at
-            # 100 while logits.scale.clamp holds), log(alpha_req) on the logalpha one, each reduced
+            # scale_req; an InfoNCE loss only, so a BCE-family loss's panel gets no lines), read
+            # against the scale this figure plots -- scale_req on the scale panel (the series sits at
+            # 100 while logits.scale.clamp holds), log(scale_req) on the logscale one, each reduced
             # over rows in its own units: for row i, the smallest alpha whose logit range alpha * S
             # over S in [-1, 1] spans the blended
             # target distribution Y_i as optimal logits log(Y_i) (up to a constant), 0.5 * log(max_j Y_ij
@@ -2268,15 +2274,16 @@ def plot_alpha_curves(
         axes.append(ax)
 
         key_grad, label_grad = grad_panels[key]
-        # the recorded series are log alpha's; the alpha figure's panel (whose `key` series is alpha itself)
+        # the recorded series are log alpha's; the scale figure's panel (whose `key` series is alpha itself)
         # carries them into its own units
         unit = 1.0 / np.asarray(data_epoch[key], dtype=float) if scale_key == "scale" else 1.0
         grad = data_epoch[key_grad] if len(data_epoch[key_grad]) == len(x_train) else np.zeros(len(x_train))  # frozen
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0])
         ax.axhline(0.0, color="grey", linewidth=0.8, zorder=1)  # a signed series: which way it pushes
         ax.plot(x_train, unit * np.asarray(grad, dtype=float), color="black", linewidth=1.0, label="actual", zorder=3)
-        if key == scale_key and len(data_epoch["dlogalpha_correction"]) == len(x_train):
-            ax.plot(x_train, unit * np.asarray(data_epoch["dlogalpha_correction"], dtype=float), color="#E69F00",
+        key_corr = f"dlogscale_correction{key[len(scale_key):]}"  # the primary parameter's, or logit_scale2's
+        if len(data_epoch[key_corr]) == len(x_train):
+            ax.plot(x_train, unit * np.asarray(data_epoch[key_corr], dtype=float), color="#E69F00",
                     linewidth=1.0, label="correction", zorder=2)
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
         _pin_flat_yaxis(ax)  # a frozen scale's flat zero: one tick, at 0
@@ -2285,19 +2292,31 @@ def plot_alpha_curves(
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
 
-    for key, label, agg, comp in dalpha_panels:
+    for k in coverage_panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        # the logalpha figure's ratio panels repeat the alpha figure's exactly -- alpha cancels in the
+        cov = np.asarray([batch[k] for batch in data_epoch["block_coverage"]], dtype=float)  # [batch, (applied, feasible, skipped)]
+        for idx, (attr_label, color) in enumerate((("applied", "#009E73"), ("feasible", "#0072B2"), ("skipped", "#D55E00"))):
+            ax.plot(x_train, cov[:, idx], color=color, linewidth=1.0, label=attr_label, zorder=3 - idx)
+        legend_handles[ax] = ax.get_legend_handles_labels()[0]
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_ylabel("blocking\ncoverage" + (f"\n(term {k + 1})" if len(coverage_panels) > 1 else ""), fontsize=fontsize_axes + 4)
+        ax.grid(True)
+        ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
+        axes.append(ax)
+
+    for key, label, agg, comp in dscale_panels:
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        # the logscale figure's ratio panels repeat the scale figure's exactly -- alpha cancels in the
         # ratios |sum| / A and |sum| / C -- so they are drawn blank: the panel and its caption hold the row, so
         # the two figures stay aligned panel for panel, with the redundant curves, grid, y ticks and
         # legend all left off
-        if prefix == "dlogalpha" and agg in _DALPHA_RATIO_AGGS:
+        if prefix == "dlogscale" and agg in _DSCALE_RATIO_AGGS:
             ax.set_yticks([])
         else:
             vals = np.array(data_epoch[key])  # [batch, (all, pos, neg)]
-            for idx_attr, (attr_label, color) in enumerate(_DALPHA_ATTRIBUTIONS):
+            for idx_attr, (attr_label, color) in enumerate(_DSCALE_ATTRIBUTIONS):
                 ax.plot(x_train, vals[:, idx_attr], color=color, linewidth=1.0, label=attr_label)
-            if agg in _DALPHA_RATIO_AGGS:
+            if agg in _DSCALE_RATIO_AGGS:
                 # a cancellation ratio, in [0, 1] -- with both ends readings in their own right (1: perfectly
                 # coherent, as a hard target's UR / IR terms are throughout; 0: total cancellation), so the
                 # limits are padded past them: at exactly (0, 1) such a curve lies under the panel's border,
@@ -2307,7 +2326,7 @@ def plot_alpha_curves(
                 ax.set_yticks([0.0, 0.5, 1.0])
             else:
                 ax.axhline(0.0, color="gray", linewidth=0.5)
-            if comp in _DALPHA_RES_COMPS and unvalidated is not None:
+            if comp in _DSCALE_RES_COMPS and unvalidated is not None:
                 _mark_unvalidated(ax, x_train, unvalidated)
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
             ax.grid(True)
@@ -2317,16 +2336,16 @@ def plot_alpha_curves(
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
-    # the dalpha panels come agg-major, so each agg's five comps are a consecutive block: the gradient
+    # the dscale panels come agg-major, so each agg's five comps are a consecutive block: the gradient
     # sums, their per-pair magnitudes and coherence ratios, their per-anchor magnitudes and coherence
     # ratios. Each block is ruled off top and bottom in a
     # double-width line (_finish_curves' axes_blocks) -- the five read as one quantity apiece across the
-    # five decompositions, which the shared y scale of a block does not say on its own. The logalpha
+    # five decompositions, which the shared y scale of a block does not say on its own. The logscale
     # figure's blank ratio blocks are ruled like the others, the two figures staying aligned block for block.
-    axes_dalpha = axes[len(scale_panels) + len(grad_panels):]  # in dalpha_panels order
+    axes_dscale = axes[len(scale_panels) + len(grad_panels) + len(coverage_panels):]  # in dscale_panels order
     axes_blocks = [
-        [ax for ax, panel in zip(axes_dalpha, dalpha_panels) if panel[2] == agg]
-        for agg in _DALPHA_AGGS
+        [ax for ax, panel in zip(axes_dscale, dscale_panels) if panel[2] == agg]
+        for agg in _DSCALE_AGGS
     ]
     _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
                    subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
@@ -2416,21 +2435,21 @@ def plot_sim_grad_entropy_curves(
     # push -- each opening on the (actual) reading, the same statistic off the gradient the towers actually
     # received (the retained sims' .grad, utils.loss.sim_grad_entropies_actual: every weight the loss carries,
     # recorded under sim_grad_sums), then the analytic full gradient (the unweighted loss_raw gradient off the
-    # blended target distribution) and its structural / residual parts (the alpha figures' dalpha split, short of
+    # blended target distribution) and its structural / residual parts (the scale figures' dscale split, short of
     # the residual's own, which is the scale gradient's alone). The actual anchor entropy reads the folded
     # gradient's rows and columns, the analytic ones each anchor's own CE term before the fold (see
-    # sim_grad_entropies_actual). Complementary to the dalpha panels' coherence ratios: they read the directional
+    # sim_grad_entropies_actual). Complementary to the dscale panels' coherence ratios: they read the directional
     # cancellation of the pressure on the scale, these where the signal the towers receive sits -- 1: spread
     # uniformly over the pairs (a row's candidates), 0: concentrated on few. One line per panel (no positive /
     # negative attribution: the entropy is of the magnitude's distribution as a whole). Each level's four panels
     # are ruled off as a block (_finish_curves' axes_blocks), and the residual comp carries the unvalidated mark
-    # (_RESID_UNVALIDATED) like its dalpha panels.
+    # (_RESID_UNVALIDATED) like its dscale panels.
     def label(level, comp):
         sup = "" if comp == "actual" else _COMP_SUPERSCRIPTS[comp]
         sym = {"pair": rf"$\tilde{{H}}_{{S,\text{{pair}}}}{sup}$",
                "anchor": rf"$\overline{{\widetilde{{H}}}}_{{S,\mathrm{{anchor}}}}{sup}$",
                "active": rf"$f_{{\mathrm{{active}}}}{sup}$"}[level]
-        # the measured and the analytic full readings share a symbol, so each says which it is (as the alpha
+        # the measured and the analytic full readings share a symbol, so each says which it is (as the scale
         # figures' scale-gradient panels do)
         return sym + {"actual": "\n(actual)", "full": "\n(analytic)", "struct": "", "res": ""}[comp]
 
@@ -2453,11 +2472,11 @@ def plot_sim_grad_entropy_curves(
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         ax.plot(x_train, data_epoch[key], color="black", linewidth=1.0)
         # a normalized entropy or an anchor fraction, in [0, 1] with both ends readings in their own right, so the
-        # limits are padded past them as the alpha figures' ratio panels are: at exactly (0, 1) the curve lies
+        # limits are padded past them as the scale figures' ratio panels are: at exactly (0, 1) the curve lies
         # under the panel's border
         ax.set_ylim(-0.05, 1.05)
         ax.set_yticks([0.0, 0.5, 1.0])
-        if comp in _DALPHA_RES_COMPS and unvalidated is not None and unvalidated.any():
+        if comp in _DSCALE_RES_COMPS and unvalidated is not None and unvalidated.any():
             _mark_unvalidated(ax, x_train, unvalidated)
             legend_handles[ax] = ax.get_legend_handles_labels()[0]
         ax.set_ylabel(caption, fontsize=fontsize_axes)
@@ -2475,7 +2494,7 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
                    subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
     The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_scalar_curves /
-    plot_alpha_curves / plot_kl_curves / plot_sim_grad_entropy_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
+    plot_scale_curves / plot_kl_curves / plot_sim_grad_entropy_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
     the heatmap strips, keep their own background), the title, the layout, the outside legends
     (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule
     off as blocks, `box_blocks` closing each block's sides too (see below). `alternate_sides` flips every
@@ -2497,8 +2516,8 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
 
-    # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_alpha_curves' five
-    # dL/dalpha aggs, the strip figures' top-level coord groups) is ruled off as one block: the horizontal
+    # each `axes_blocks` group (a run of consecutive panels, top to bottom -- plot_scale_curves' five
+    # dL/dscale aggs, the strip figures' top-level coord groups) is ruled off as one block: the horizontal
     # spines bounding it -- the top of its first panel and the bottom of its last -- go to twice the panel
     # border's width, the edges shared between panels inside it staying at the panel width. The sides stay
     # too unless `box_blocks` closes them, which carries the same double width down every panel of the

@@ -229,7 +229,7 @@ def test_target_blend_through_global_batch_loss(crit_name):
     expected_s = torch.histc(s, bins=HIST_BINS, min=-1.0, max=1.0) / s.numel()
     assert batch_stats["sim_hist"] == pytest.approx(expected_s.tolist(), abs=1e-5)
     assert sum(batch_stats["sim_hist"]) == pytest.approx(1.0, abs=1e-5)
-    assert "alpha_req_max" not in batch_stats  # the target-implied scale bounds are InfoNCE-only
+    assert "scale_req_max" not in batch_stats  # the target-implied scale bounds are InfoNCE-only
     # the target stats read the blended target matrix Q = (1 - lambda) MP + lambda I: its histogram, and one
     # margin per configured kappa per direction plus their mean, all over the blended memberships
     Q = (1.0 - lambda_) * (class_encs_b.unsqueeze(0) == class_encs_b.unsqueeze(1)).float() + lambda_ * torch.eye(B)
@@ -287,8 +287,8 @@ def test_bce_centering_is_not_read_under_infonce(center, focal_gamma):
 
 def test_infonce_stats():
     # p_hist is the sigmoid-BCE pair probability; an InfoNCE loss gets none (its row-softmax mean is a
-    # fixed 1/B). It gets the row-wise target-implied scale bounds (alpha_req_*) and the logit-scale
-    # gradient decomposition (dalpha_* / dlogalpha_*), whose full / all sums are d(loss_raw)/d(alpha)
+    # fixed 1/B). It gets the row-wise target-implied scale bounds (scale_req_*) and the logit-scale
+    # gradient decomposition (dscale_* / dlogscale_*), whose full / all sums are d(loss_raw)/d(alpha)
     # and d(loss_raw)/d(log alpha) of the raw bidirectional InfoNCE over the blended target -- the
     # latter its logit_scale grad outright, since the parameter is log(alpha)
     B, K, D = 16, 5, 8
@@ -301,15 +301,15 @@ def test_infonce_stats():
 
     assert "p_hist" not in batch_stats
     assert "sim_min" in batch_stats and "targ_min" in batch_stats  # sim/targ still reported
-    prefixes, aggs, comps = ("dalpha", "dlogalpha"), ("sum", "sum_abs", "ratio", "row_abs", "ratio_row"), ("full", "struct", "res", "ures", "ires")
-    assert {key for key in batch_stats if "alpha" in key} == {
+    prefixes, aggs, comps = ("dscale", "dlogscale"), ("sum", "sum_abs", "ratio", "row_abs", "ratio_row"), ("full", "struct", "res", "ures", "ires")
+    assert {key for key in batch_stats if key.startswith(("dscale_", "dlogscale_", "scale_req_", "log_scale_req_"))} == {
         f"{prefix}_{agg}_{comp}" for prefix in prefixes for agg in aggs for comp in comps
-    } | {f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")}
+    } | {f"{p}scale_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")}
     for prefix in prefixes:
         for agg in aggs:
             for comp in comps:
                 assert len(batch_stats[f"{prefix}_{agg}_{comp}"]) == 3  # [all, pos, neg]
     (g_log_scale,) = torch.autograd.grad(loss_raw, toy.logit_scale)
     alpha = toy.logit_scale.detach().exp()
-    assert batch_stats["dalpha_sum_full"][0] == pytest.approx((g_log_scale / alpha).item(), rel=1e-4)
-    assert batch_stats["dlogalpha_sum_full"][0] == pytest.approx(g_log_scale.item(), rel=1e-4)
+    assert batch_stats["dscale_sum_full"][0] == pytest.approx((g_log_scale / alpha).item(), rel=1e-4)
+    assert batch_stats["dlogscale_sum_full"][0] == pytest.approx(g_log_scale.item(), rel=1e-4)

@@ -444,7 +444,7 @@ def test_logit_scalar_values_read_the_scale_parameters_own_signed_grad() -> None
     # the *_grad series is model.logit_scale.grad itself -- signed, untouched by the clamp / exp the value
     # series go through, and per parameter under separate logit scalars. It is THE measurement of what the
     # scale received: the train loop reads it after the batch's backward and before the optimizer step, and
-    # the dlogalpha_* strips (an analytical decomposition off the blended target distribution) cannot stand
+    # the dlogscale_* strips (an analytical decomposition off the blended target distribution) cannot stand
     # in for it -- they carry neither a term's blend coefficient nor loss.unitless' 1 / L
     scale, scale2 = torch.nn.Parameter(torch.tensor(140.0).log()), torch.nn.Parameter(torch.tensor(2.0))
     (-3.0 * scale + 0.25 * scale2).backward()  # a loss pulling the two scales opposite ways
@@ -481,11 +481,42 @@ def test_record_train_batch_curves_the_targ_hist_and_drops_the_targ_point_stats(
     # a lone sp / mp one's 0/1 indicator included; the point stats are sim_targ.log's alone. The sim stats
     # and histogram (the S Stats / S Hist. panels) pass through untouched
     recorded = {}
-    pipe = SimpleNamespace(n_samps_seen=64, data=SimpleNamespace(
-        update_train_batch=lambda n_samps_seen, **series: recorded.update(series)))
+    pipe = _record_pipe(recorded, block_stats=None)
     batch_stats = {"sim_min": -0.2, "sim_hist": [0.5, 0.5], "targ_min": 0.0, "targ_mean": 0.1, "targ_hist": [0.9, 0.1]}
     TrainPipeline._record_train_batch(pipe, 1e-4, 0.5, 0.6, None, None, batch_stats, None, {})
     assert recorded["batch_stats"] == {"sim_min": -0.2, "sim_hist": [0.5, 0.5], "targ_hist": [0.9, 0.1]}
+    assert pipe._block_tally == {"batches": 0, "batches_skipped": 0, "coverage": {}}  # no blocking: nothing tallied
+
+
+def _record_pipe(recorded, block_stats):
+    # a pipeline stub for _record_train_batch: the criterion's block_residuals record and the tally it feeds
+    return SimpleNamespace(
+        n_samps_seen=64, data=SimpleNamespace(update_train_batch=lambda n_samps_seen, **series: recorded.update(series)),
+        modelw=SimpleNamespace(crit=SimpleNamespace(block_stats=block_stats)),
+        _block_tally={"batches": 0, "batches_skipped": 0, "coverage": {}},
+    )
+
+
+def test_record_train_batch_records_the_block_residuals_record_without_the_diagnostics(capsys) -> None:
+    # loss.infonce.block_residuals' per-batch record (utils.loss.InfoNCECriterion.block_stats) reaches the curve
+    # series whether or not sim_targ_stats put a batch_stats dict on the batch, and its coverage is tallied for
+    # the checkpoint line (_print_block_coverage), which resets the tally
+    recorded = {}
+    block = {"dlogscale_correction": 0.25, "block_coverage": [[0.5, 0.25, 0.25], [1.0, 0.0, 0.0]]}
+    pipe = _record_pipe(recorded, block_stats=block)
+    TrainPipeline._record_train_batch(pipe, 1e-4, 0.5, 0.6, None, None, None, None, {})
+    assert recorded["batch_stats"] == block  # no diagnostics dict: the record alone
+    TrainPipeline._record_train_batch(pipe, 1e-4, 0.5, 0.6, None, None, {"sim_min": -0.2, "targ_min": 0.0}, None, {})
+    assert recorded["batch_stats"] == {"sim_min": -0.2, **block}  # merged into the diagnostics' dict
+    assert pipe._block_tally == {"batches": 2, "batches_skipped": 2, "coverage": {0: [1.0, 0.5, 0.5], 1: [2.0, 0.0, 0.0]}}
+
+    TrainPipeline._print_block_coverage(pipe, "3/10")
+    line = capsys.readouterr().out
+    assert line.startswith("[3/10] block_residuals coverage over 2 batches, 2 with skipped rows -- ")
+    assert "term 0: applied 50.0%, feasible 25.0%, skipped 25.0%; term 1: applied 100.0%, feasible 0.0%, skipped 0.0%" in line
+    assert pipe._block_tally == {"batches": 0, "batches_skipped": 0, "coverage": {}}
+    TrainPipeline._print_block_coverage(pipe, "4/10")
+    assert capsys.readouterr().out == ""  # nothing tallied, nothing printed
 
 
 def test_samps_stop_is_the_selected_checkpoint_threshold() -> None:

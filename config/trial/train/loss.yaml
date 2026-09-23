@@ -31,16 +31,26 @@ unitless: false  # {true, false}; (true) Rescale each loss term by its detached 
 infonce:  # Inert iff (loss.crit != infonce)
   block_residuals: null  # {null, alpha, full}; Block the residual component of the gradient -- both its
   # structural-residual and its irreducible-residual part (utils.loss.infonce_block_resid; the res / ures / ires
-  # terms of the dalpha strips): the pressure a target puts on the model by being unreachable is dropped, the
+  # terms of the dscale strips): the pressure a target puts on the model by being unreachable is dropped, the
   # pressure the model's own geometry puts on it is kept. (alpha) From the logit scale's gradient alone, so alpha
   # learns from its structural gradient while every other gradient (the towers' included) is untouched; (full)
   # From the whole model's -- the logit scale's and, through the similarities, the towers' -- so the towers and
   # logit scale receive the gradient they would receive against the current reachable optimum p* in place of
   # the target; (null) The full gradient. Applied as a zero-valued correction term, so the loss reading is
-  # untouched. Only applies to hard binary targets e.g. SP, MP (FLYP, SupCon), the residual being closed-form
-  # there: requires (loss.crit: infonce) with every live target in {sp, mp} under (lossk.infonce.tsm.type: linear),
-  # two live ones under (loss.blend.type: loss) -- a target blend of two hard binary targets is not itself hard
-  # binary -- and no class-imbalance or focal weighting
+  # untouched. RELIABILITY-GATED, per anchor row of each term's target distribution (utils.loss.infonce_train_resid):
+  # a two-level row of binary memberships (SP, MP: hard under the linear tsm -- FLYP, SupCon -- or soft under a
+  # softmax tsm past the band, pinned3 or a fixed sm_scale above alpha) is blocked exactly, in closed form; a row
+  # inside the band has nothing to block -- under sm_scale pinned / pinned1 that is every row of every target, by
+  # construction, so blocking is inert there and reads as 100% feasible (a control); any other row -- a graded
+  # target's (tax / phylo) outside the band, under the linear tsm or pinned3 -- is blocked from the projection's
+  # active-set closed form, numerically checked rather than certified (utils.loss.infonce_active_set_resid: its
+  # sets pass their optimality conditions and its residual the sign and magnitude checks; relative precision well
+  # past the band, rounding at it), and a row left unresolved there is SKIPPED, keeping its ordinary, unblocked
+  # gradient; past alpha 340, a conservative cutoff, corrections are skipped as unsupported. What was applied is recorded per batch (dlogscale_correction;
+  # block_coverage: the [applied, feasible, skipped] row fractions per term, a panel of the scale figures;
+  # block_bound: a magnitude bound on any residual and on the correction) and summarized per checkpoint on rank 0.
+  # Requires (loss.crit: infonce) and no class-imbalance or focal weighting. Compatible with loss.unitless: each
+  # term's coefficient scales its correction, in float64
 bce:  # Inert iff (loss.crit != bif_bce)
   targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its (blended) target
   # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1: inert iff every
@@ -68,7 +78,7 @@ logits:
   # each target's loss is scored on its own logits off the one sim matrix -- the pairs share every setting below
   # (the second starts as a copy of the first as initialized: same init, freeze, clamp, center, LR factor) and part
   # ways in training; the scale2 / bias2 curves track the second pair, while the logit-dependent batch diagnostics
-  # (P histogram, InfoNCE dalpha / KL / alpha_req, logit grad-norm) read loss1's; Inert iff (loss.blend.type: targ)
+  # (P histogram, InfoNCE dscale / KL / scale_req, logit grad-norm) read loss1's; Inert iff (loss.blend.type: targ)
   # or (loss.blend.lambda: 0.0 | 1.0) -- a target blend or a lone target is one loss on one set of logits
   scalar_lr_factor: 100.0  # (0.0, inf); LR multiplier for the logit scalars (scale/bias) relative to
   # lr.init (e.g. 10.0 -> x10 backbone LR); ratio held through warmup + cosine decay; scalars are
@@ -80,7 +90,7 @@ logits:
     freeze: false  # {true, false}; (true) Non-learnable log-scale
     clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
     # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup) -- a held cap passes no gradient to
-    # the log-scale (the alpha curve then sits at 100, the dlogalpha strips at zero); (false) Unbounded
+    # the log-scale (the scale curve then sits at 100, the dlogscale strips at zero); (false) Unbounded
   bce:  # Sigmoid/BCE-path logit params; Inert iff (loss.crit: infonce)
     center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum; (null) Disabled; (sim) Center
     # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);

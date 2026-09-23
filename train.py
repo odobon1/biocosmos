@@ -155,6 +155,7 @@ class TrainPipeline:
         self.lr_warmup = round(self.cfg.lr["warmup"] * self.cfg.sample_volume)  # warmup fraction -> samples
         self.init_opt_and_lr_sched()
         self.n_batches_seen = 0
+        self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}  # block_residuals coverage since the last checkpoint (_print_block_coverage)
         self.chkpt_thresh = self.cfg.chkpt_interval
         self.samps_stop = samps_stop(self.cfg)
         self._kill_chkpt = kill_chkpt(self.cfg)
@@ -270,7 +271,7 @@ class TrainPipeline:
         (utils.loss.sep_logit_scalars) loss2's term's pair is tracked alike, as scale2 / logit_scale2 /
         bias2. A learnable scale gets a third series, logit_scale_grad: the parameter's own signed .grad
         (_logit_scalar_values) -- a frozen one has none, which is also how the figures tell it is frozen
-        (utils.report.plot_alpha_curves), drawing its (actual) gradient panels flat zero."""
+        (utils.report.plot_scale_curves), drawing its (actual) gradient panels flat zero."""
         model = self.modelw._unwrapped_model
         tracked = {}
         for suffix in ("", "2") if sep_logit_scalars(self.cfg.loss) else ("",):
@@ -289,13 +290,13 @@ class TrainPipeline:
         # the series pinned at the cap (the raw parameter above it, its gradient zero); the logit_scale series
         # is that raw parameter as the model holds it (log alpha: no exp, no clamp) and the bias series the raw
         # bias. Read by the train loop BEFORE the batch's optimizer step, so a point carries the value the
-        # batch's logits -- and its batch_stats (dalpha*, kl*, alpha_req*) -- were computed under, not the
+        # batch's logits -- and its batch_stats (dscale*, kl*, scale_req*) -- were computed under, not the
         # post-update one.
         # The *_grad series is the parameter's own signed .grad at that same point: after the batch's backward
         # (DDP-synced on either loss path; the chunked one backpropagates and syncs inside batch_step_chunked),
         # before the optimizer step, and this batch's alone (zero_grad(set_to_none) opens every iteration) --
         # with no grad scaler (bf16), accumulation or clipping between, exactly what the optimizer consumes.
-        # It is the measurement; the dalpha / dlogalpha strips are an analytical decomposition built from the
+        # It is the measurement; the dscale / dlogscale strips are an analytical decomposition built from the
         # blended target distribution, which carries neither a term's blend coefficient (the primary term's
         # 1 - lambda under separate scalars) nor loss.unitless' 1 / L, and so cannot stand in for it
         model = self.modelw._unwrapped_model
@@ -323,6 +324,18 @@ class TrainPipeline:
                 key: val for key, val in batch_stats.items()
                 if not key.startswith("targ") or key == "targ_hist"
             }
+        # loss.infonce.block_residuals' record of the batch (utils.loss.InfoNCECriterion.block_stats: the
+        # correction(s) applied and each term's [applied, feasible, skipped] anchor-row coverage), recorded
+        # whether or not the sim_targ_stats diagnostics are on, and tallied for the checkpoint summary
+        block_stats = self.modelw.crit.block_stats
+        if block_stats is not None:
+            batch_stats = {**(batch_stats or {}), **block_stats}
+            self._block_tally["batches"] += 1
+            self._block_tally["batches_skipped"] += any(cov[2] > 0.0 for cov in block_stats["block_coverage"])
+            for k, cov in enumerate(block_stats["block_coverage"]):
+                tally = self._block_tally["coverage"].setdefault(k, [0.0, 0.0, 0.0])
+                for i in range(3):
+                    tally[i] += cov[i]
         self.data.update_train_batch(
             self.n_samps_seen,
             lr=lr,
@@ -429,6 +442,7 @@ class TrainPipeline:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
             self._save_eval_data(ArtifactManager.dpath_model_checkpoint, self.chkpt_thresh // self.cfg.chkpt_interval - 1)
+        self._print_block_coverage(header)
         ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
@@ -439,6 +453,23 @@ class TrainPipeline:
         if final or self.cfg.reporting["plot_every"] == "chkpt":
             plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch,
                          self.cfg.reporting["learning_curves"]["hpsm"], eval_groups(self.cfg.reporting))
+
+    def _print_block_coverage(self, header):
+        """One line per checkpoint (rank 0, from _checkpoint_writes) on loss.infonce.block_residuals' coverage since
+        the last: per loss term, the mean anchor-row fractions the correction was applied to / found feasible /
+        SKIPPED (utils.loss.infonce_train_resid), and how many batches had a skipped row. A run that skips is a
+        PARTIALLY blocked ablation, and this is where that shows -- without a line per batch."""
+        tally = self._block_tally
+        if tally["batches"] == 0:
+            return
+        per_term = "; ".join(
+            f"term {k}: applied {cov[0] / tally['batches']:.1%}, feasible {cov[1] / tally['batches']:.1%}, "
+            f"skipped {cov[2] / tally['batches']:.1%}"
+            for k, cov in sorted(tally["coverage"].items())
+        )
+        print(f"[{header}] block_residuals coverage over {tally['batches']} batches, {tally['batches_skipped']} with "
+              f"skipped rows -- {per_term}", flush=True)
+        self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
         if self.cfg.hw.loss_chunk_size is not None:
@@ -636,7 +667,7 @@ class TrainPipeline:
                             grad_norm_model = model_grad_l2_norm(self.modelw.model)
                     # the logit scalars are read before the step: batch_stats came out of the forward pass
                     # under this alpha, so the scale / bias series (and scale_bias.log's line) line up with
-                    # the dalpha / KL / alpha_req points (and the grad_norm / sim_targ lines) of the same
+                    # the dscale / KL / scale_req points (and the grad_norm / sim_targ lines) of the same
                     # batch rather than sitting one update ahead of them
                     logit_scalars = self._logit_scalar_values()
                     logit_scalars_log = PrintLog.batch_logit_scalars(self.modelw.model)

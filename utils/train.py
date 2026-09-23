@@ -86,11 +86,11 @@ class TrialData:
             "logit_scale": [],
             # logit_scale_grad: per batch, model.logit_scale's own signed .grad -- read after the backward and
             # before the optimizer step, so exactly what the optimizer consumes (TrainPipeline._logit_scalar_values).
-            # THE measurement of what the scale receives; the dlogalpha_* family below is an analytical
+            # THE measurement of what the scale receives; the dlogscale_* family below is an analytical
             # decomposition and need not match it (blend coefficients, loss.unitless). logit_scale2_grad: the same
             # for loss2's term's own scale under separate logit scalars. Recorded for a learnable scale only (a
             # frozen parameter has no .grad), so an empty series beside a recorded logit_scale is how the
-            # figures read a scale as frozen (utils.report.plot_alpha_curves), drawing its (actual) panels flat zero.
+            # figures read a scale as frozen (utils.report.plot_scale_curves), drawing its (actual) panels flat zero.
             "logit_scale_grad": [],
             "logit_scale2_grad": [],
             "bias": [],
@@ -116,21 +116,21 @@ class TrialData:
             "sim_hist": [],
             "targ_hist": [],
             "p_hist": [],
-            # alpha_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
+            # scale_req_{min,mean,max}: per batch, the min / mean / max over rows of the row-wise
             # target-implied scale bound 0.5 * log(max_j Y_ij / min_j Y_ij) on the blended target
-            # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the alpha
-            # panel's bound lines; log_alpha_req_* the same trio in the logalpha panel's units, the log
+            # distribution Y (Criterion.targ_dist, the row-normalized / softmaxed targets) -- the scale
+            # panel's bound lines; log_scale_req_* the same trio in the logscale panel's units, the log
             # of each, so a batch crosses its bound in both figures or in neither.
             # Recorded only for an InfoNCE loss (utils.loss.infonce_batch_stats),
-            # so a BCE-family loss's series stay empty and its alpha panel gets no lines.
-            "alpha_req_min": [],
-            "alpha_req_mean": [],
-            "alpha_req_max": [],
-            "log_alpha_req_min": [],
-            "log_alpha_req_mean": [],
-            "log_alpha_req_max": [],
-            # dalpha_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: per batch, the InfoNCE logit-scale
-            # gradient decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dalpha terms,
+            # so a BCE-family loss's series stay empty and its scale panel gets no lines.
+            "scale_req_min": [],
+            "scale_req_mean": [],
+            "scale_req_max": [],
+            "log_scale_req_min": [],
+            "log_scale_req_mean": [],
+            "log_scale_req_max": [],
+            # dscale_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: per batch, the InfoNCE logit-scale
+            # gradient decomposition (utils.loss.infonce_batch_stats): the per-pair dL/dscale terms,
             # split into the structural part (p vs the reachable optimum p*) and the residual (p* vs
             # the target), the residual splitting again along s* = infonce_s_opt, the geometry that
             # realizes p*, into ures (the model's geometry standing off s*) and ires (what s* itself
@@ -138,16 +138,16 @@ class TrialData:
             # |sum| / A, then summed in magnitude per anchor row (C = sum_i |sum_j .|, over each direction's
             # own anchors) and its ratio_row = |sum| / C -- every
             # value an [all, positive-mass, negative-mass] triple (a list, not a scalar), one curve
-            # strip per key with a line per entry; dlogalpha_*: the same for the log-scale parameter
-            # the model learns (alpha times the dalpha sums, the same ratios -- the sums zero and the ratios NaN while
+            # strip per key with a line per entry; dlogscale_*: the same for the log-scale parameter
+            # the model learns (alpha times the dscale sums, the same ratios -- the sums zero and the ratios NaN while
             # logits.scale.clamp holds the parameter above its cap, the clamp passing no gradient, so
             # there is no pressure on it whose cancellation could be reported;
-            # dalpha_* is the pressure on the effective, post-clamp scale either way). Recorded only for
+            # dscale_* is the pressure on the effective, post-clamp scale either way). Recorded only for
             # an InfoNCE loss (VLMWrapper._batch_stats), so a BCE-family loss's series stay empty and
             # get no panels.
             **{
                 f"{prefix}_{agg}_{comp}": []
-                for prefix in ("dalpha", "dlogalpha")
+                for prefix in ("dscale", "dlogscale")
                 for agg in ("sum", "sum_abs", "ratio", "row_abs", "ratio_row")
                 for comp in ("full", "struct", "res", "ures", "ires")
             },
@@ -156,7 +156,7 @@ class TrialData:
             # Shannon entropy of |dL/dS| over the batch's pairs (against log B^2) and per anchor row over its
             # candidates (against log B, each direction over its own anchors that carry any gradient mass, the two
             # averaged) -- 1 where the magnitude is spread uniformly, 0 where it sits on few pairs -- for the
-            # gradient and its structural / residual parts (the dalpha_* split; the residual goes no further, the
+            # gradient and its structural / residual parts (the dscale_* split; the residual goes no further, the
             # sim-level residual having no s factor to split along s*), and active, the fraction of anchors the
             # anchor entropy is the mean over (a residual's feasible rows sit at exactly zero and drop out; NaN
             # only with none active). Those three are analytic, off the unweighted loss_raw gradient on the blended
@@ -164,7 +164,7 @@ class TrialData:
             # retained sims' .grad after the backward (utils.loss.sim_grad_entropies_actual, TrainPipeline._step_train;
             # so under batch_diagnostics.sim_grad_sums too) -- every weight the loss carries -- its anchor entropy
             # over the folded gradient's rows and columns where the analytic reads each anchor's own CE term before
-            # the fold. Scalars, one curve strip each (sim_grad_entropy.png). InfoNCE only, like dalpha_*.
+            # the fold. Scalars, one curve strip each (sim_grad_entropy.png). InfoNCE only, like dscale_*.
             **{
                 f"sim_grad_entropy_{level}_{comp}": []
                 for level in ("pair", "anchor", "active")
@@ -174,29 +174,44 @@ class TrialData:
             # directions averaged): kl = D_KL(y || p), the raw loss less the targets' entropy, and its
             # parts kl_u = E_u = D_KL(p* || p) (structural: the model's p vs the reachable optimum),
             # kl_ir = E_ir = D_KL(y || p*) (irreducible: the target outside the reachable set) and
-            # kl_ur = E_ur, the cross term -- scalars, one curve strip each. InfoNCE only, like dalpha_*.
+            # kl_ur = E_ur, the cross term -- scalars, one curve strip each. InfoNCE only, like dscale_*.
             **{f"kl{suffix}": [] for suffix in ("", "_u", "_ir", "_ur")},
             # resid_paths: per batch, the fractions of anchor rows whose residual family (res / ures / ires,
             # kl_ir / kl_ur) came off each calculation -- [hard-target closed form, feasible row's exact zero,
             # plain p* - y subtraction] (utils.loss.infonce_batch_stats). The first two are exact at any alpha;
             # the third is numerically unvalidated -- no error estimate stands behind it -- and the curves mark
             # every batch where it is non-zero, whatever its values read (utils.report._RESID_UNVALIDATED).
-            # InfoNCE only, like dalpha_*.
+            # InfoNCE only, like dscale_*.
             "resid_paths": [],
             # lambda_eff: per batch, loss2's term's share of a unitless loss blend's coefficients, lambda L_1 /
             # (lambda L_1 + (1 - lambda) L_2) (utils.loss.Criterion.term_coeffs) -- where loss.unitless moves the
             # blend off the nominal loss.blend.lambda; a scalar, its own figure (unitless_loss_blend.png). Recorded only under
             # loss.unitless over a live loss blend (loss.blend.type loss), so the series stays empty otherwise.
             "lambda_eff": [],
-            # dlogalpha_correction: per batch, the delta loss.infonce.block_residuals made to model.logit_scale's
-            # gradient, signed so that grad_after = grad_before + dlogalpha_correction -- i.e. MINUS the blocked
-            # residual, sum_k c_k * d(alpha)/d(log alpha_raw) * (the term's residual scale gradient)
-            # (utils.loss.infonce_block_resid). The correction the parameter actually received: zero while
-            # logits.scale.clamp holds or the scale is frozen. The exact reading of the intervention: the
-            # dlogalpha_* family is built from the blended target distribution, which on a loss blend is not what
-            # the correction is applied per term against (see utils.loss.infonce_batch_stats). A scalar; recorded
-            # only under loss.infonce.block_residuals, so the series stays empty otherwise.
-            "dlogalpha_correction": [],
+            # dlogscale_correction: per batch, the delta loss.infonce.block_residuals made to model.logit_scale's
+            # gradient, signed so that grad_after = grad_before + dlogscale_correction -- i.e. MINUS the blocked
+            # residual, sum_k c_k * d(alpha)/d(log alpha_raw) * (the term's residual scale gradient over the rows
+            # the correction was APPLIED to; a skipped row adds zero) (utils.loss.infonce_block_resid). The
+            # correction the parameter actually received: zero while logits.scale.clamp holds or the scale is
+            # frozen. The exact reading of the intervention: the dlogscale_* family is built from the blended
+            # target distribution, which on a loss blend is not what the correction is applied per term against
+            # (see utils.loss.infonce_batch_stats). A scalar; recorded only under loss.infonce.block_residuals
+            # (utils.loss.InfoNCECriterion.block_stats, whether or not sim_targ_stats is on), so the series stays
+            # empty otherwise. dlogscale_correction2 is the same for logit_scale2 under separate logit scalars
+            # (loss.logits.shared: false), the second term's correction; empty otherwise.
+            "dlogscale_correction": [],
+            "dlogscale_correction2": [],
+            # block_coverage: per batch, one [applied, feasible, skipped] triple of anchor-row fractions per loss
+            # term (utils.loss.infonce_train_resid: a residual resolved and applied / the row inside the band, nothing
+            # to apply / unresolved, so the row kept its ordinary gradient) -- how much of the batch the
+            # blocking actually covered, summarized per checkpoint (TrainPipeline._print_block_coverage); recorded
+            # with dlogscale_correction, empty otherwise.
+            "block_coverage": [],
+            # block_bound: per batch, one [U, bound] pair per loss term (utils.loss.infonce_block_resid): U the L1
+            # bound 2 (B - 1) r / (1 + (B - 1) r) on any infeasible row's residual at that term's alpha, and the
+            # bound it puts on that term's correction after its coefficient and reduction. A magnitude bound only,
+            # recorded beside the correction; recorded with dlogscale_correction, empty otherwise.
+            "block_bound": [],
         }
         self.data_eval = {
             "n_samps_seen": [],

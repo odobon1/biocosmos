@@ -415,7 +415,7 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
     # strip tests (_write_strip_trial) write their own trials with the series under test
     save_pickle({"epoch": {
         "n_samps_seen": [100, 200], "scale": [10.0, 10.0], "logit_scale": [2.3, 2.3],
-        **{f"{p}alpha_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")},
+        **{f"{p}scale_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")},
     }}, dpath_trial / "data_trial.pkl")
     fpath_meta_coord = dpath_coord / "coord_metadata.json"
     if not fpath_meta_coord.exists():
@@ -647,7 +647,7 @@ def _write_strip_trial(dpath_phase, dataset, arm, coord, seed, scale, n_epochs=2
                        reqs=True) -> None:
     """A completed trial carrying what the strip figures read: its evals (so it reads as complete), the
     pair the epoch axis is rebuilt from (coord_metadata.json's sample volume over trial_metadata.json's
-    n_epochs), and a data_trial.pkl whose `scale` series is given, its logalpha counterpart the same
+    n_epochs), and a data_trial.pkl whose `scale` series is given, its logscale counterpart the same
     values negated so the two figures are told apart. reqs=False leaves the target-implied bound trio
     empty, as a BCE-family loss does."""
     dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
@@ -663,14 +663,14 @@ def _write_strip_trial(dpath_phase, dataset, arm, coord, seed, scale, n_epochs=2
         "n_samps_seen": [(i + 1) * n_epochs * samps_per_epoch / n for i in range(n)],
         "scale": list(scale),
         "logit_scale": [-v for v in scale],
-        **{f"alpha_req_{stat}": vals for stat, vals in req.items()},
-        **{f"log_alpha_req_{stat}": vals for stat, vals in req.items()},
+        **{f"scale_req_{stat}": vals for stat, vals in req.items()},
+        **{f"log_scale_req_{stat}": vals for stat, vals in req.items()},
     }}, dpath_trial / "data_trial.pkl")
 
 
 def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypatch) -> None:
     # the arm's logit-scale strips: one figure per seed plus the agg one, each in both parameterizations
-    # (alpha, logalpha), under arm_metrics/coord_strips/
+    # (scale, logscale), under arm_metrics/coord_strips/
     dpath_phase = tmp_path / "_screen"
     for coord in ("a", "b"):
         for seed in (42, 43):
@@ -682,7 +682,7 @@ def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypat
     report.update_coord_strips("cub", "hp", "std")
 
     dpath_strips = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "coord_strips"
-    for name in ("alpha", "logalpha"):
+    for name in ("scale", "logscale"):
         assert (dpath_strips / "agg" / f"{name}.png").exists()
         assert (dpath_strips / "seeds" / "42" / f"{name}.png").exists()
         assert (dpath_strips / "seeds" / "43" / f"{name}.png").exists()
@@ -706,18 +706,18 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
     report.update_coord_strips("cub", "hp", "std")
 
     figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips in calls}
-    assert [coord for coord, *_ in figures[("42", "alpha")]] == ["a", "b"]
-    assert [coord for coord, *_ in figures[("43", "alpha")]] == ["a"]
-    _, x, (vals, spread), reqs = figures[("42", "alpha")][0]
+    assert [coord for coord, *_ in figures[("42", "scale")]] == ["a", "b"]
+    assert [coord for coord, *_ in figures[("43", "scale")]] == ["a"]
+    _, x, (vals, spread), reqs = figures[("42", "scale")][0]
     assert x == pytest.approx([0.0, 1.0])  # epochs: n_samps_seen / samps_per_epoch, anchored at 0
     assert vals == pytest.approx([10.0, 20.0]) and spread is None
     assert [s for _, s in reqs.values()] == [None, None, None]  # the bound lines are unbanded too
-    _, _, (vals, spread), reqs = figures[("agg", "alpha")][0]
+    _, _, (vals, spread), reqs = figures[("agg", "scale")][0]
     assert vals == pytest.approx([20.0, 30.0])  # a's two trials, meaned
     assert spread == pytest.approx([np.std([10.0, 30.0], ddof=1)] * 2)
     assert all(s == pytest.approx([0.0, 0.0]) for _, s in reqs.values())  # identical across a's trials
-    # the logalpha figure reads the log-scale series (negated here), not the alpha one
-    _, _, (vals, _), _ = figures[("agg", "logalpha")][0]
+    # the logscale figure reads the log-scale series (negated here), not the scale one
+    _, _, (vals, _), _ = figures[("agg", "logscale")][0]
     assert vals == pytest.approx([-20.0, -30.0])
 
 
@@ -799,7 +799,7 @@ def test_finish_curves_boxes_blocks_when_asked(tmp_path) -> None:
 
 
 def test_finish_curves_rules_off_panel_blocks(tmp_path) -> None:
-    # a block (plot_alpha_curves' dL/dalpha aggs) is ruled at twice the panel border's width on the two
+    # a block (plot_scale_curves' dL/dscale aggs) is ruled at twice the panel border's width on the two
     # horizontals bounding it -- the top of its first panel, the bottom of its last -- and nowhere else:
     # its sides, the edges shared between its panels, and every panel outside it keep the panel width
     fig, axs = plt.subplots(5, 1)
@@ -2277,8 +2277,8 @@ def test_residual_mark_keys_off_provenance_not_magnitude() -> None:
     # closed form, feasible exact zero) carries none, being as trustworthy at 1e-40 as at 1e-2
     tiny, fine = 1e-30, 1e-3
     data_epoch = {
-        "dalpha_sum_abs_full": [[1.0, 0.5, 0.5]] * 5,
-        "dalpha_sum_abs_res": [[v, v, v] for v in (tiny, tiny, 0.0, tiny, fine)],
+        "dscale_sum_abs_full": [[1.0, 0.5, 0.5]] * 5,
+        "dscale_sum_abs_res": [[v, v, v] for v in (tiny, tiny, 0.0, tiny, fine)],
         "resid_paths": [
             [1.0, 0.0, 0.0],  # hard closed form, tiny: exact -- not marked
             [0.0, 0.0, 1.0],  # subtracted, tiny
@@ -2315,23 +2315,40 @@ def test_a_wrong_residual_on_a_well_fitted_batch_is_marked_whatever_it_reads() -
     assert abs(stats["kl_ir"] - true_kl_ir) > 0.5 * true_kl_ir  # the reported value is simply wrong
     data_epoch = {key: [val] for key, val in stats.items()}
     assert stats["resid_paths"] == [0.0, 0.0, 1.0]
-    floor = 100 * np.finfo(np.float64).eps * stats["dalpha_sum_abs_full"][0]
-    assert stats["dalpha_sum_abs_res"][0] > floor  # the magnitude test this mark replaced would have passed it
+    floor = 100 * np.finfo(np.float64).eps * stats["dscale_sum_abs_full"][0]
+    assert stats["dscale_sum_abs_res"][0] > floor  # the magnitude test this mark replaced would have passed it
     assert report._resid_unvalidated(data_epoch).tolist() == [True]
 
 
-def _alpha_data_epoch(n, **series):
-    """A data_epoch carrying every series plot_alpha_curves indexes, empty unless given."""
+def _scale_data_epoch(n, **series):
+    """A data_epoch carrying every series plot_scale_curves indexes, empty unless given."""
     keys = ["scale", "scale2", "logit_scale", "logit_scale2", "logit_scale_grad", "logit_scale2_grad",
-            "dlogalpha_correction", "resid_paths",
-            *(f"{p}alpha_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")),
-            *(f"{p}_{agg}_{comp}" for p in ("dalpha", "dlogalpha") for agg in report._DALPHA_AGGS
+            "dlogscale_correction", "dlogscale_correction2", "block_coverage", "resid_paths",
+            *(f"{p}scale_req_{stat}" for p in ("", "log_") for stat in ("min", "mean", "max")),
+            *(f"{p}_{agg}_{comp}" for p in ("dscale", "dlogscale") for agg in report._DSCALE_AGGS
               for comp in ("full", "struct", "res", "ures", "ires"))]
     return {**{key: [] for key in keys}, **series}
 
 
-def _plot_alpha(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
-    """plot_alpha_curves with the save intercepted: the panels' y labels, top to bottom, and the lines drawn
+def test_scale_figure_draws_a_coverage_panel_per_term_beside_the_correction(tmp_path, monkeypatch):
+    # loss.infonce.block_residuals' coverage (block_coverage: per batch, one [applied, feasible, skipped] triple per
+    # loss term) gets a panel per term right under the gradient panels, so a zero correction reads as no residual
+    # or as an intervention skipped; a trial without the series gets no such panel
+    n = 4
+    series = {"scale": [3.0] * n, "logit_scale_grad": [0.1] * n, "dlogscale_correction": [0.0, 0.0, 0.05, 0.05],
+              "block_coverage": [[[1.0, 0.0, 0.0], [0.0, 0.5, 0.5]]] * n}
+    panels = _plot_scale(_scale_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
+    labels = [label for label, _ in panels]
+    assert labels[:4] == [r"$\alpha$", r"$\nabla_{\alpha} \mathcal{L}$" + "\n(actual)", "blocking\ncoverage\n(term 1)", "blocking\ncoverage\n(term 2)"]
+    assert dict(panels)["blocking\ncoverage\n(term 2)"] == {"applied": [0.0] * n, "feasible": [0.5] * n, "skipped": [0.5] * n}
+    assert "correction" in dict(panels)[r"$\nabla_{\alpha} \mathcal{L}$" + "\n(actual)"]
+    del series["block_coverage"]
+    panels = _plot_scale(_scale_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
+    assert [label for label, _ in panels][:2] == labels[:2] and not any(label.startswith("blocking") for label, _ in panels)
+
+
+def _plot_scale(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
+    """plot_scale_curves with the save intercepted: the panels' y labels, top to bottom, and the lines drawn
     on each (label -> y data)."""
     seen = {}
 
@@ -2348,41 +2365,41 @@ def _plot_alpha(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
         plt.close(fig)
 
     monkeypatch.setattr(report, "_finish_curves", finish)
-    report.plot_alpha_curves(data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+    report.plot_scale_curves(data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
                              scale_key, prefix, sym, plot_title="t", output_filename="x.png")
-    _plot_alpha.seen = seen
+    _plot_scale.seen = seen
     return seen["panels"]
 
 
-def test_logalpha_figure_draws_the_scale_parameters_grad_with_the_correction(tmp_path, monkeypatch) -> None:
+def test_logscale_figure_draws_the_scale_parameters_grad_with_the_correction(tmp_path, monkeypatch) -> None:
     # what the scale actually received, measured: model.logit_scale.grad (read post-backward, pre-step) gets
     # its own panel directly under the log alpha it belongs to, with loss.infonce.block_residuals' correction
     # drawn on it -- so the gradient without the intervention is the one line minus the other. Captioned
-    # (actual) because the analytical dlogalpha full-term panel further down carries the same nabla, and the
+    # (actual) because the analytical dlogscale full-term panel further down carries the same nabla, and the
     # two need not agree (blend coefficients, loss.unitless)
     n = 4
     alpha = [2.0, 2.2, 2.5, 2.7]
     grad, corr = [-0.25, -0.20, -0.10, -0.05], [0.17, 0.12, 0.05, 0.01]
-    data_epoch = _alpha_data_epoch(n, scale=alpha, logit_scale=[0.7, 0.8, 0.9, 1.0],
-                                   logit_scale_grad=grad, dlogalpha_correction=corr)
+    data_epoch = _scale_data_epoch(n, scale=alpha, logit_scale=[0.7, 0.8, 0.9, 1.0],
+                                   logit_scale_grad=grad, dlogscale_correction=corr)
 
-    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    panels = _plot_scale(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
     assert [label for label, _ in panels] == [r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)"]
     lines = panels[1][1]
     assert lines["actual"] == grad and lines["correction"] == corr
 
-    # the parameter is log alpha, so the alpha figure's panel is that .grad carried into alpha's units by the
+    # the parameter is log alpha, so the scale figure's panel is that .grad carried into alpha's units by the
     # chain rule -- (1 / alpha) * .grad, alpha being exp(log alpha) -- and the correction with it
-    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    panels = _plot_scale(data_epoch, n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
     assert [label for label, _ in panels] == [r"$\alpha$", r"$\nabla_{\alpha} \mathcal{L}$" + "\n(actual)"]
     lines = panels[1][1]
     assert lines["actual"] == pytest.approx([g / a for g, a in zip(grad, alpha)])
     assert lines["correction"] == pytest.approx([c / a for c, a in zip(corr, alpha)])
 
     # separate logit scalars: each scale's own grad under its own panel; the correction is the primary's
-    data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale2=[0.4] * n, logit_scale_grad=grad,
-                                   logit_scale2_grad=[0.3] * n, dlogalpha_correction=corr)
-    panels = _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    data_epoch = _scale_data_epoch(n, logit_scale=[0.7] * n, logit_scale2=[0.4] * n, logit_scale_grad=grad,
+                                   logit_scale2_grad=[0.3] * n, dlogscale_correction=corr)
+    panels = _plot_scale(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
     assert [label for label, _ in panels] == [
         r"$\log \alpha$", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)",
         r"$\log \alpha_2$", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(actual)"]
@@ -2391,8 +2408,8 @@ def test_logalpha_figure_draws_the_scale_parameters_grad_with_the_correction(tmp
 
 
 def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -> None:
-    # a frozen scale (loss.logits.scale.freeze) is recorded all the same: a flat line on the alpha figure and
-    # on the logalpha one, captioned as frozen, its (actual) gradient panel under it flat zero (a frozen
+    # a frozen scale (loss.logits.scale.freeze) is recorded all the same: a flat line on the scale figure and
+    # on the logscale one, captioned as frozen, its (actual) gradient panel under it flat zero (a frozen
     # parameter has no .grad: it received nothing -- the empty .grad series is how the figure reads it as
     # frozen). The y axis of a panel drawing the one value and nothing else has no range to autoscale: it gets
     # that value as its only tick, the line centred
@@ -2400,69 +2417,69 @@ def test_a_frozen_scale_keeps_its_panel_on_both_figures(tmp_path, monkeypatch) -
     alpha = 1.0 / 0.07
     frozen = dict(scale=[alpha] * n, logit_scale=[np.log(alpha)] * n)
 
-    for scale_key, prefix, sym, val, tick in (("scale", "dalpha", r"\alpha", alpha, "14.29"),
-                                              ("logit_scale", "dlogalpha", r"\log \alpha", np.log(alpha), "2.659")):
-        panels = _plot_alpha(_alpha_data_epoch(n, **frozen), n, tmp_path, monkeypatch, scale_key, prefix, sym)
+    for scale_key, prefix, sym, val, tick in (("scale", "dscale", r"\alpha", alpha, "14.29"),
+                                              ("logit_scale", "dlogscale", r"\log \alpha", np.log(alpha), "2.659")):
+        panels = _plot_scale(_scale_data_epoch(n, **frozen), n, tmp_path, monkeypatch, scale_key, prefix, sym)
         label, label_grad = rf"${sym}$" + "\n(frozen)", rf"$\nabla_{{{sym}}} \mathcal{{L}}$" + "\n(actual)"
         assert [caption for caption, _ in panels] == [label, label_grad]
         assert panels[0][1] == {rf"${sym}$": [val] * n}  # the recorded value, drawn as is
-        assert _plot_alpha.seen["yticklabels"][label] == [tick]
-        lo, hi = _plot_alpha.seen["ylims"][label]
+        assert _plot_scale.seen["yticklabels"][label] == [tick]
+        lo, hi = _plot_scale.seen["ylims"][label]
         assert lo < val < hi and (lo + hi) / 2 == pytest.approx(val)
-        assert panels[1][1]["actual"] == [0.0] * n and _plot_alpha.seen["yticklabels"][label_grad] == ["0"]
+        assert panels[1][1]["actual"] == [0.0] * n and _plot_scale.seen["yticklabels"][label_grad] == ["0"]
 
     # read against its target-implied bounds the panel has a range, and autoscales over the pair -- that
     # comparison is what a frozen scale's panel is kept for
-    reqs = {f"alpha_req_{stat}": [v, v + 1.0, v + 2.0, v + 3.0] for stat, v in (("min", 2.0), ("mean", 5.0), ("max", 20.0))}
-    _plot_alpha(_alpha_data_epoch(n, **frozen, **reqs), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    reqs = {f"scale_req_{stat}": [v, v + 1.0, v + 2.0, v + 3.0] for stat, v in (("min", 2.0), ("mean", 5.0), ("max", 20.0))}
+    _plot_scale(_scale_data_epoch(n, **frozen, **reqs), n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
     label = r"$\alpha$" + "\n(frozen)"
-    lo, hi = _plot_alpha.seen["ylims"][label]
-    assert lo <= 2.0 and hi >= 23.0 and len(_plot_alpha.seen["yticklabels"][label]) > 1
+    lo, hi = _plot_scale.seen["ylims"][label]
+    assert lo <= 2.0 and hi >= 23.0 and len(_plot_scale.seen["yticklabels"][label]) > 1
 
     # bounds all at infinity (hard binary targets under the linear tsm) draw nothing: the one value again
-    inf = {f"alpha_req_{stat}": [float("inf")] * n for stat in ("min", "mean", "max")}
-    _plot_alpha(_alpha_data_epoch(n, **frozen, **inf), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
-    assert _plot_alpha.seen["yticklabels"][label] == ["14.29"]
+    inf = {f"scale_req_{stat}": [float("inf")] * n for stat in ("min", "mean", "max")}
+    _plot_scale(_scale_data_epoch(n, **frozen, **inf), n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
+    assert _plot_scale.seen["yticklabels"][label] == ["14.29"]
 
     # a scale frozen at 100 under a softmax target mapping pinned to it draws its bound trio ON it: bit for bit
     # in alpha units, but one float32 rounding step apart in log units -- the parameter holds float32(log 100),
-    # the bounds are the float64 log of an alpha_req of exactly 100. That step is float noise, not a spread to
+    # the bounds are the float64 log of an scale_req of exactly 100. That step is float noise, not a spread to
     # autoscale into (it would fill the panel, the scale at the top and the trio at the bottom): one tick, as
-    # on the alpha figure
+    # on the scale figure
     log_param, log_req = float(np.float32(np.log(100.0))), float(np.log(100.0))
     assert 0.0 < log_param - log_req < 1e-7
     pinned = dict(scale=[100.0] * n, logit_scale=[log_param] * n,
-                  **{f"alpha_req_{stat}": [100.0] * n for stat in ("min", "mean", "max")},
-                  **{f"log_alpha_req_{stat}": [log_req] * n for stat in ("min", "mean", "max")})
-    for scale_key, prefix, sym, tick in (("scale", "dalpha", r"\alpha", "100"),
-                                         ("logit_scale", "dlogalpha", r"\log \alpha", "4.605")):
-        _plot_alpha(_alpha_data_epoch(n, **pinned), n, tmp_path, monkeypatch, scale_key, prefix, sym)
-        assert _plot_alpha.seen["yticklabels"][rf"${sym}$" + "\n(frozen)"] == [tick]
+                  **{f"scale_req_{stat}": [100.0] * n for stat in ("min", "mean", "max")},
+                  **{f"log_scale_req_{stat}": [log_req] * n for stat in ("min", "mean", "max")})
+    for scale_key, prefix, sym, tick in (("scale", "dscale", r"\alpha", "100"),
+                                         ("logit_scale", "dlogscale", r"\log \alpha", "4.605")):
+        _plot_scale(_scale_data_epoch(n, **pinned), n, tmp_path, monkeypatch, scale_key, prefix, sym)
+        assert _plot_scale.seen["yticklabels"][rf"${sym}$" + "\n(frozen)"] == [tick]
     # a spread that small but real -- 1e-4 of the value -- is still a range, and autoscales
     drift = dict(pinned, logit_scale=[log_param * (1.0 + 1e-4 * i / n) for i in range(n)])
-    _plot_alpha(_alpha_data_epoch(n, **drift), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$" + "\n(frozen)"]) > 1
+    _plot_scale(_scale_data_epoch(n, **drift), n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
+    assert len(_plot_scale.seen["yticklabels"][r"$\log \alpha$" + "\n(frozen)"]) > 1
 
     # a learnable scale is untouched: no frozen caption, its recorded .grad under it, autoscaled axes
     learnable = dict(scale=[2.0, 2.2, 2.5, 2.7], logit_scale=[0.7, 0.8, 0.9, 1.0], logit_scale_grad=[-0.2] * n)
-    panels = _plot_alpha(_alpha_data_epoch(n, **learnable), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    panels = _plot_scale(_scale_data_epoch(n, **learnable), n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
     label_grad = r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)"
     assert [caption for caption, _ in panels] == [r"$\log \alpha$", label_grad]
     assert panels[1][1]["actual"] == [-0.2] * n
-    assert len(_plot_alpha.seen["yticklabels"][r"$\log \alpha$"]) > 1 and len(_plot_alpha.seen["yticklabels"][label_grad]) > 1
+    assert len(_plot_scale.seen["yticklabels"][r"$\log \alpha$"]) > 1 and len(_plot_scale.seen["yticklabels"][label_grad]) > 1
 
     # separate logit scalars share loss.logits.scale.freeze, so the second scale is frozen alongside
     both = dict(logit_scale=[0.7] * n, logit_scale2=[0.7] * n)
-    panels = _plot_alpha(_alpha_data_epoch(n, **both), n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
+    panels = _plot_scale(_scale_data_epoch(n, **both), n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
     assert [caption for caption, _ in panels] == [
         r"$\log \alpha$" + "\n(frozen)", r"$\nabla_{\log \alpha} \mathcal{L}$" + "\n(actual)",
         r"$\log \alpha_2$" + "\n(frozen)", r"$\nabla_{\log \alpha_2} \mathcal{L}$" + "\n(actual)"]
 
 
-def _dalpha_series(n, prefix, res_abs):
-    """The twenty-five dalpha-family series of one figure, the residual comps' magnitudes at `res_abs`."""
+def _dscale_series(n, prefix, res_abs):
+    """The twenty-five dscale-family series of one figure, the residual comps' magnitudes at `res_abs`."""
     series = {}
-    for agg in report._DALPHA_AGGS:
+    for agg in report._DSCALE_AGGS:
         for comp in ("full", "struct", "res", "ures", "ires"):
             val = res_abs if (agg in ("sum_abs", "row_abs") and comp in ("res", "ures", "ires")) else 0.5
             series[f"{prefix}_{agg}_{comp}"] = [[val, val, val]] * n
@@ -2472,14 +2489,14 @@ def _dalpha_series(n, prefix, res_abs):
 def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(tmp_path, monkeypatch) -> None:
     # the residual comps are hatched "unvalidated" over every batch with rows off the subtraction, whatever
     # their magnitude; full / struct never are. The analytical full term says so in its caption, sharing its
-    # symbol with the measured (actual) panel. And the agg blocks are ruled around the dalpha panels -- NOT shifted
+    # symbol with the measured (actual) panel. And the agg blocks are ruled around the dscale panels -- NOT shifted
     # up by the (actual) panel that sits among the scale ones
     n = 4
     paths = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
-    data_epoch = _alpha_data_epoch(n, logit_scale=[0.7] * n, logit_scale_grad=[-0.1] * n, resid_paths=paths,
-                                   **_dalpha_series(n, "dalpha", 1e-30), **_dalpha_series(n, "dlogalpha", 1e-30))
-    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    marks, blocks = _plot_alpha.seen["marks"], _plot_alpha.seen["blocks"]
+    data_epoch = _scale_data_epoch(n, logit_scale=[0.7] * n, logit_scale_grad=[-0.1] * n, resid_paths=paths,
+                                   **_dscale_series(n, "dscale", 1e-30), **_dscale_series(n, "dlogscale", 1e-30))
+    _plot_scale(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
+    marks, blocks = _plot_scale.seen["marks"], _plot_scale.seen["blocks"]
 
     nabla = lambda sup: rf"$\nabla_{{\log \alpha}}{sup} \mathcal{{L}}$"
     for sup in (r"^{\text{R}}", r"^{\text{UR}}", r"^{\text{IR}}"):
@@ -2497,20 +2514,20 @@ def test_residual_panels_carry_the_provenance_marks_and_the_blocks_stay_aligned(
         mags = [rf"\text{{{mag}}}_{{\log \alpha}}{sup}" for sup in sups]
         assert blocks[idx_block] == [f"${m}$" for m in mags]
         assert blocks[idx_block + 1] == [rf"$\frac{{|{nabla(sup)[1:-1]}|}}{{{m}}}$" for sup, m in zip(sups, mags)]
-    # the logalpha figure's ratio panels repeat the alpha figure's, so both ratio blocks are left blank there
-    # -- and drawn on the alpha figure, the per-anchor one included
-    drawn = lambda: {label: bool(lines) for label, lines in _plot_alpha.seen["panels"]}
+    # the logscale figure's ratio panels repeat the scale figure's, so both ratio blocks are left blank there
+    # -- and drawn on the scale figure, the per-anchor one included
+    drawn = lambda: {label: bool(lines) for label, lines in _plot_scale.seen["panels"]}
     assert not any(drawn()[label] for idx_block in (2, 4) for label in blocks[idx_block])
     assert all(drawn()[label] for idx_block in (0, 1, 3) for label in blocks[idx_block])
-    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha")
+    _plot_scale(data_epoch, n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha")
     assert all(drawn().values()) and len(drawn()) == 25
-    assert _plot_alpha.seen["blocks"][4][1] == r"$\frac{|\nabla_{\alpha}^{\text{U}} \mathcal{L}|}{\text{C}_{\alpha}^{\text{U}}}$"
+    assert _plot_scale.seen["blocks"][4][1] == r"$\frac{|\nabla_{\alpha}^{\text{U}} \mathcal{L}|}{\text{C}_{\alpha}^{\text{U}}}$"
 
     # the mark does not move with the magnitude: a plausible-looking residual is hatched just the same
-    data_epoch.update(_dalpha_series(n, "dalpha", 1e-3))
-    data_epoch.update(_dalpha_series(n, "dlogalpha", 1e-3))
-    _plot_alpha(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogalpha", r"\log \alpha")
-    assert _plot_alpha.seen["marks"][nabla(r"^{\text{R}}")] == ["unvalidated"]
+    data_epoch.update(_dscale_series(n, "dscale", 1e-3))
+    data_epoch.update(_dscale_series(n, "dlogscale", 1e-3))
+    _plot_scale(data_epoch, n, tmp_path, monkeypatch, "logit_scale", "dlogscale", r"\log \alpha")
+    assert _plot_scale.seen["marks"][nabla(r"^{\text{R}}")] == ["unvalidated"]
 
 
 def test_ratio_panels_keep_their_end_values_inside_the_limits(tmp_path, monkeypatch) -> None:
@@ -2519,12 +2536,12 @@ def test_ratio_panels_keep_their_end_values_inside_the_limits(tmp_path, monkeypa
     # panel's border, which is drawn over the curves, and the panel reads as empty. So both ends sit strictly
     # inside the displayed limits, on both ratio blocks, the ticks staying on the ratio's own range
     n = 4
-    series = _dalpha_series(n, "dalpha", 1e-3)
-    for agg in report._DALPHA_RATIO_AGGS:
-        series[f"dalpha_{agg}_ures"] = [[1.0, 1.0, 1.0]] * n
-        series[f"dalpha_{agg}_ires"] = [[0.0, 0.0, 0.0]] * n
-    panels = dict(_plot_alpha(_alpha_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dalpha", r"\alpha"))
-    ylims, yticks, blocks = (_plot_alpha.seen[key] for key in ("ylims", "yticks", "blocks"))
+    series = _dscale_series(n, "dscale", 1e-3)
+    for agg in report._DSCALE_RATIO_AGGS:
+        series[f"dscale_{agg}_ures"] = [[1.0, 1.0, 1.0]] * n
+        series[f"dscale_{agg}_ires"] = [[0.0, 0.0, 0.0]] * n
+    panels = dict(_plot_scale(_scale_data_epoch(n, **series), n, tmp_path, monkeypatch, "scale", "dscale", r"\alpha"))
+    ylims, yticks, blocks = (_plot_scale.seen[key] for key in ("ylims", "yticks", "blocks"))
 
     ratio_labels = blocks[2] + blocks[4]  # |sum| / A, |sum| / C
     assert len(ratio_labels) == 10

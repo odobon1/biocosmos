@@ -810,34 +810,36 @@ def _linear_targ(targ):
     return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
-def test_train_config_block_residuals_requires_hard_binary_targets(monkeypatch: pytest.MonkeyPatch) -> None:
-    # the residual utils.loss.infonce_block_resid removes is the closed-form one of a hard binary target
-    # (sp / mp row-normalized): a graded target, a softmax tsm, or the target blend of two live specs --
-    # which is not hard binary however hard its parts are -- would all be mis-cancelled silently
+def _softmax_targ(targ, sm_scale):
+    return {"targ": targ, "infonce": {"tsm": {"type": "softmax", "sm_scale": sm_scale}}}
+
+
+def test_train_config_block_residuals_takes_any_infonce_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the residual utils.loss.infonce_block_resid removes is each term's own target's (utils.loss.infonce_train_resid):
+    # a hard binary one's in closed form; a graded one -- the linear tsm on tax / phylo, a softmax tsm, the target
+    # blend of two live specs -- is accepted, its rows outside the band skipped at run time and its rows inside it
+    # (every row under sm_scale pinned / pinned1) reported feasible: no target shape is refused
     patch_hw(monkeypatch)
     targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
 
     for block in ("alpha", "full"):
         assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs)).loss["infonce"]["block_residuals"] == block
-    # two live targets, each hard binary, under a loss blend: one term per spec, both in closed form
-    TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
-
-    with pytest.raises(ValueError, match="requires loss.blend.type: loss"):
-        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="targ"), **targs))
-    with pytest.raises(ValueError, match="hard binary targets only"):
-        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("phylo"), loss2=_linear_targ("mp")))
-    with pytest.raises(ValueError, match="hard binary targets only"):
-        TrainConfig(**make_train_config_dummy(
-            loss=_block_resid_cfg(), loss1={"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}},
-            loss2=_linear_targ("sp"),
-        ))
-    # the inert spec of a lone target is never read, so its shape is beside the point
-    TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("sp"), loss2=_linear_targ("phylo")))
+    for blend_type in ("loss", "targ"):  # two live targets: one term per spec, or the one term on their blend
+        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type=blend_type), **targs))
+    TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("phylo"), loss2=_linear_targ("mp")))
+    for sm_scale in ("pinned", "pinned1", "pinned3", 10.0):
+        TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_softmax_targ("phylo", sm_scale), loss2=_linear_targ("sp")))
+    TrainConfig(**make_train_config_dummy(
+        loss=_block_resid_cfg(lambda_=0.3, blend_type="targ"), loss1=_softmax_targ("phylo", "pinned"), loss2=_softmax_targ("mp", "pinned1"),
+    ))
+    TrainConfig(**make_train_config_dummy(
+        loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), loss1=_softmax_targ("phylo", "pinned"), loss2=_linear_targ("mp"),
+    ))
 
 
 def test_inert_params_block_residuals_makes_blend_type_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    # block_residuals blocks each term's OWN target's residual, in closed form off that target's
-    # memberships (utils.loss.infonce_block_resid) -- a target-dependent loss factor, so it sets the two
+    # block_residuals blocks each term's OWN target's residual (utils.loss.infonce_block_resid), and p* is
+    # not linear in the target -- a target-dependent loss factor, so it sets the two
     # blend types apart. Left out of targ_dependent_loss, the sp + mp loss blend the feature supports is
     # unreachable from a campaign: loss.yaml's blend.type is targ, so getting to it needs an override, and
     # that override would be refused as inert

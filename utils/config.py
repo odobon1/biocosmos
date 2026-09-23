@@ -308,26 +308,14 @@ class TrainConfig:
         if block_resid not in (None, "alpha", "full"):
             raise ValueError(f"loss.infonce.block_residuals must be one of {{null, alpha, full}}, got {block_resid!r}")
         if block_resid is not None:
-            # utils.loss.infonce_block_resid removes the closed-form residual of a hard binary target from
-            # the plain cross-entropy's gradient (the scale's alone, or the whole model's): every loss term
-            # must train against such a target, and carry no weight the residual's derivation doesn't
-            # account for
+            # utils.loss.infonce_block_resid removes each loss term's residual from the plain cross-entropy's
+            # gradient (the scale's alone, or the whole model's) where it is reliably known -- a two-level row's
+            # closed form, a graded row's from the projection's verified active sets; a row left unresolved keeps
+            # its ordinary gradient (utils.loss.infonce_train_resid): the terms must carry no weight the residual's derivation
+            # doesn't account for. A target that never leaves the band (softmax-mapped under sm_scale pinned /
+            # pinned1) is accepted: every row then reports feasible and nothing is applied, a control
             if self.loss["crit"] != "infonce":
                 raise ValueError(f"loss.infonce.block_residuals requires loss.crit: infonce, got '{self.loss['crit']}'")
-            live_specs = [(name, cfg_targ) for w, name, cfg_targ in
-                          ((1.0 - lambda_, "loss.loss1", self.loss["loss1"]), (lambda_, "loss.loss2", self.loss["loss2"])) if w != 0.0]
-            for name, cfg_targ in live_specs:
-                if cfg_targ["targ"] not in ("sp", "mp") or cfg_targ["infonce"]["tsm"]["type"] != "linear":
-                    raise ValueError(
-                        f"loss.infonce.block_residuals applies to hard binary targets only: {name}.targ must be one of "
-                        f"{{sp, mp}} under {name}.infonce.tsm.type: linear, got targ '{cfg_targ['targ']}' under tsm.type "
-                        f"'{cfg_targ['infonce']['tsm']['type']}'"
-                    )
-            if len(live_specs) > 1 and self.loss["blend"]["type"] == "targ":
-                raise ValueError(
-                    "loss.infonce.block_residuals under two live targets requires loss.blend.type: loss -- a target "
-                    "blend's (1 - lambda) * Y1 + lambda * Y2 is not a hard binary distribution"
-                )
             if self.loss["wting"]["cls_imb"]["type"] is not None or self.loss["wting"]["focal"]["gamma"] != 0.0:
                 raise ValueError(
                     "loss.infonce.block_residuals is not implemented alongside class-imbalance weighting "
@@ -418,8 +406,8 @@ def targ_dependent_loss(loss: dict) -> bool:
         loss["unitless"] or "focal" in loss["wting"] or not loss["logits"]["shared"]
         or (crit != "infonce" and loss["wting"]["bce"]["dsmr"])
         or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
-        # the residual blocked per term is its own target's, in closed form off that target's memberships
-        # (utils.loss.infonce_block_resid) -- a factor no target blend has
+        # the residual blocked per term is its own target's (utils.loss.infonce_block_resid), and p* is not
+        # linear in the target: a loss blend blocks two residuals where its target blend blocks one
         or (crit == "infonce" and loss["infonce"]["block_residuals"] is not None)
     )
 

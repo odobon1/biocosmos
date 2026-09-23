@@ -111,7 +111,8 @@ class Criterion(abc.ABC):
     wting_dim: int
     bifurcated = False  # True -> consumes the (i2t, t2i) branch logits pair (see BifurcatedBCECriterion)
     lambda_eff = None  # the last training batch's effective lambda (term_coeffs), or None
-    dlogalpha_correction = None  # this forward's block_residuals correction to logit_scale's gradient, or None
+    dlogscale_correction = None  # this forward's block_residuals correction to logit_scale's gradient, or None
+    block_stats = None  # this forward's block_residuals batch record (the correction(s) applied, per-term coverage), or None
 
     def __init__(self, cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         self.cfg = cfg_loss
@@ -243,6 +244,15 @@ class Criterion(abc.ABC):
         """
         raise NotImplementedError
 
+# The scale through which residuals are supported: a conservative cutoff, NOT the underflow point --
+# tests.unit.infonce_reference states the same bound, and a test holds the two equal. It keeps the floor r c >= r / B
+# a normal float64 up to B = 2^20; r = exp(-2 alpha) itself only denormalizes at alpha ~354 and underflows at ~372
+# (at 345 it is 2e-300, still normal), and a residual computed past the cutoff may be a fine number or may carry
+# few significant bits. Past it corrections are SKIPPED as unsupported, closed forms and active sets alike
+# (infonce_train_resid): a policy, so the coverage never counts as applied a residual the arithmetic is not
+# trusted to have resolved.
+ALPHA_SUPPORTED_MAX = 340.0
+
 def infonce_hard_resid(Q, alpha):
     """
     The residual p* - y of a HARD BINARY target row, in closed form: pt[B, B] from the 0/1 memberships
@@ -264,8 +274,8 @@ def infonce_hard_resid(Q, alpha):
     is what pushes alpha up while positives outrank negatives -- so a subtracted residual is not merely
     a coarser one; its sign is not even reliable.
 
-    Shared by the loss-path correction (infonce_block_resid) and the batch stats' residual strips
-    (infonce_batch_stats), which must report the quantity the correction removes.
+    Shared by the loss-path correction (infonce_train_resid) and the batch stats' residual strips
+    (infonce_resid), which must report the quantity the correction removes where it is applied.
     """
     Q = Q.double()
     K = Q.sum(dim=1, keepdim=True)  # positives per anchor row; pt[B, 1]
@@ -291,11 +301,116 @@ def infonce_hard_kl_ir(Q, alpha):
     r = torch.exp(-2.0 * torch.as_tensor(alpha, dtype=torch.float64, device=Q.device))
     return torch.log1p(M * r / K)
 
-def infonce_block_resid(Q, sim, logit_scale, clamp, full):
+def tsm_target_scale(cfg_tsm, alpha):
     """
-    The zero-valued loss term that blocks the residual part of one hard-binary-target InfoNCE term's
-    gradient (loss.infonce.block_residuals) -- the logit scale's alone (alpha), or the whole model's: the
-    scale's and, through the similarities, the towers' (full) -- leaving its structural part to flow alone.
+    The scale the target simplex mapping puts on the memberships Q before its row softmax
+    (InfoNCECriterion._tsm's constants): 2 alpha under sm_scale pinned, alpha under pinned1, 3 alpha under
+    pinned3, 2 c under a fixed c -- and inf under the linear tsm, whose zeros sit at minus infinity in the
+    log. For a two-level row of binary memberships it is the log ratio of the positive level to the negative
+    one, and for any Q in [0, 1] (every target type's) a row's log range is at most this, so a mapping at or
+    under the band 2 alpha keeps every row of every target inside it (infonce_train_resid). `alpha` post-clamp,
+    as _tsm and the logits take it.
+    """
+    if cfg_tsm["type"] == "linear":
+        return math.inf
+    scale_Q = cfg_tsm["sm_scale"]
+    if scale_Q in ("pinned", "pinned1", "pinned3"):
+        return {"pinned": 2.0, "pinned1": 1.0, "pinned3": 3.0}[scale_Q] * alpha
+    return 2.0 * scale_Q
+
+def infonce_train_resid(Y, alpha, s, binary, inside):
+    """
+    The residual p* - y the training correction (infonce_block_resid) may use, per row of one term's target
+    distribution Y at logit scale `alpha` -- RELIABILITY-GATED: a row's residual is used only where it is
+    resolved (a closed form, or the projection's checked active sets), and a row whose residual is not is
+    SKIPPED, its correction zero and its ordinary, unblocked gradient untouched. Read off Y, the
+    distribution the term scores against, never off
+    the memberships Q (infonce_resid on why) -- plus what the term's spec says about how Y was made: `s` the
+    tsm's target scale (tsm_target_scale: the log ratio of a two-level row's levels, inf under the linear tsm;
+    None where the term is a blend of two specs and says nothing), `binary` whether the spec's memberships are
+    binary (targ sp / mp), and `inside` whether the mapping keeps every row inside the band by construction
+    (a softmax tsm at s <= 2 alpha: sm_scale pinned, pinned1, a fixed c <= alpha; Q in [0, 1] for every target).
+
+    Per row, in this order:
+    - inside: every row is feasible, exactly -- the boundary included (pinned: s = 2 alpha), where the stored
+      floats' rounding would otherwise leave it ambiguous. Nothing is computed.
+    - a TWO-LEVEL row -- every entry EXACTLY the row's max or EXACTLY its min (a uniform row is not one) -- with
+      K entries at the top level and M = B - K at the bottom has its projection in closed form: with r =
+      exp(-2 alpha) and t the bottom-to-top ratio exp(-s), p* puts the top level at the band's cap and the
+      bottom at its floor (1 / (K + M r) and r / (K + M r)), so
+
+          R_top = -M (r - t) / D,   R_bottom = K (r - t) / D,   D = (K + M r) (K + M t),
+
+      r - t taken as -r expm1(2 alpha - s) so that a t close to r loses nothing to cancellation. t = 0 is the
+      hard binary row (infonce_hard_resid, kept for those rows so the hard-target path reads exactly as
+      before), and no spec is needed to know a stored zero is a zero. A soft bottom level (t > 0) takes the
+      spec's t only where the spec makes the row two-level BY CONSTRUCTION, binary memberships under a softmax
+      tsm: a graded target's row that happens to hold two levels has a ratio of its own, and goes below.
+    - a row whose log range max_j log y_j - min_j log y_j is within the band, by that direct criterion on its
+      stored floats (on the boundary included: its residual is zero to rounding): feasible, nothing to apply.
+    - every other row -- a graded row outside the band (the linear tsm on tax / phylo, pinned3 on them, a
+      target blend's rows): the projection's active-set closed form (infonce_active_set_resid), resolved
+      where its sets pass their optimality conditions and its residual its sign and magnitude checks --
+      numerically checked, not certified: to relative precision where the row is well past the band, and to
+      about an ulp of its entries where it is barely past it, there the residual being itself ulp-sized. A
+      row it does not resolve is SKIPPED.
+
+    Past ALPHA_SUPPORTED_MAX, a conservative cutoff and not the underflow point (its comment), corrections are
+    skipped as unsupported: rows past the band read skipped there, closed forms included. The batch's
+    coverage (infonce_block_resid) reports the three outcomes.
+
+    - Y ------- [B, B] the term's target distribution, float64 with rows summing to 1 (Criterion.targ_dists)
+    - alpha --- the logit scale alpha = exp(logit_scale) the logits carry (post-clamp)
+    - s ------- the term's tsm target scale at that alpha (tsm_target_scale), or None
+    - binary -- whether the term's memberships are binary by spec (loss1 / loss2 targ in {sp, mp})
+    - inside -- whether the term's tsm keeps every row inside the band (bool)
+
+    Returns (R, applied, feasible, skipped): R float64 in Y's shape, exactly zero on every row not applied
+    (selected by torch.where, never by a multiply, so a non-finite value cannot leak through a zero mask), and
+    the three per-row masks, exactly one of them true per row.
+    """
+    Y = Y.detach().double()
+    alpha = torch.as_tensor(alpha, dtype=torch.float64, device=Y.device)
+    B = Y.size(1)
+    y_max, y_min = Y.amax(dim=1), Y.amin(dim=1)
+    top = Y == y_max[:, None]
+    two_level = (top | (Y == y_min[:, None])).all(dim=1) & (y_max > y_min)
+    hard = two_level & (y_min == 0)
+    band = 2 * alpha
+    R = infonce_hard_resid(Y > 0, alpha)  # exact on the hard rows; the other rows are never read from it
+    closed = hard
+    if s is not None and not inside:
+        s = torch.as_tensor(s, dtype=torch.float64, device=Y.device)
+        soft = two_level & (y_min > 0) & binary
+        K = top.sum(dim=1).double()
+        M = B - K
+        r, t = torch.exp(-band), torch.exp(-s)
+        d = -r * torch.expm1(band - s)  # r - t
+        D = (K + M * r) * (K + M * t)
+        R = torch.where(soft[:, None], torch.where(top, (-M * d / D)[:, None], (K * d / D)[:, None]), R)
+        closed = closed | soft
+    if inside:
+        feasible = torch.ones_like(hard)
+    else:
+        log_Y = Y.log()
+        feasible = (log_Y.amax(dim=1) - log_Y.amin(dim=1)) <= band  # inf where the row holds a zero
+    feasible = feasible & ~closed
+    if not binary and not inside:  # the rows the spec leaves to the active sets exist only here
+        R_set, resolved = infonce_active_set_resid(Y, alpha)
+        take = ~(closed | feasible) & resolved
+        R = torch.where(take[:, None], R_set, R)
+        closed = closed | take
+    applied = closed & torch.isfinite(R).all(dim=1) & (alpha <= ALPHA_SUPPORTED_MAX)  # past it, nothing resolves
+    R = torch.where(applied[:, None], R, torch.zeros_like(R))
+    feasible = feasible & ~applied
+    return R, applied, feasible, ~(applied | feasible)
+
+def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
+    """
+    The zero-valued loss term that blocks the residual part of one InfoNCE term's gradient
+    (loss.infonce.block_residuals) -- the logit scale's alone (alpha), or the whole model's: the
+    scale's and, through the similarities, the towers' (full) -- leaving its structural part to flow alone,
+    on the anchor rows whose residual is reliably known (infonce_train_resid) and nowhere else.
 
     Per pair and anchor direction the term's gradient at the logits z = alpha * s splits as
 
@@ -306,19 +421,28 @@ def infonce_block_resid(Q, sim, logit_scale, clamp, full):
     ures + ires halves alike) what no similarity geometry can. Everything downstream of the logits reads
     that split through its own Jacobian -- the scale's gradient (infonce_scale_grad_sums) as
 
-        dL/dalpha = (p - y) s = (p - p*) s + (p* - y) s,
+        dL/dscale = (p - y) s = (p - p*) s + (p* - y) s,
 
     the similarities' as dL/ds = alpha (p - y) / B. Blocked, a target the logits cannot reach stops
     pushing on the scale by being unreachable (alpha), or on the model at all (full): its towers then
     receive the gradient the loss would send them against p* in place of y, the reachable optimum,
-    while the loss reading keeps scoring y. The residual is taken in closed form (infonce_hard_resid),
-    which is what makes this safe at scales where the solve is not.
+    while the loss reading keeps scoring y. The residual is infonce_train_resid's: resolved on every row it
+    is applied to (a two-level row's closed form, exact; the projection's checked active sets', to relative
+    precision well past the band and to rounding at it), zero on feasible
+    rows, and zero on SKIPPED rows -- those left unresolved -- which keep their ordinary, unblocked gradient. Rows are selected per anchor
+    BEFORE the two directions fold, so a skipped anchor i drops only its own contributions (R_i. against
+    sim_i. and sim_.i, and its half of every cell (i, j)) and never the correction anchor j contributes to
+    the same cell.
 
-    Both anchor directions score Y's rows (as InfoNCECriterion does) and Q is symmetric, so their
+    The term carries the term's loss coefficient `coeff` itself (under loss.unitless up to 1e12): residual,
+    contraction and coefficient are multiplied in float64 and cast once, to the parameter's dtype, at the
+    end -- a tiny residual is never cast down before it meets a large coefficient.
+
+    Both anchor directions score Y's rows (as InfoNCECriterion does) with the one residual R, so their
     per-anchor residual sums fold into one contraction against sim + sim.T for the scale, and into
     R + R.T against sim for the similarities.
 
-    - Q ------------ [B, B] the term's binary target memberships (compute_targets), unit diagonal
+    - Y ------------ [B, B] the term's target distribution (Criterion.targ_dists), float64 with rows summing to 1
     - sim ---------- [B, B] the batch's similarity matrix, the quantity the log-scale parameter's own
                      gradient contracts against (compute_logits scales the logits from it, so its local
                      derivative there IS sim). Taken directly rather than recovered from the logits as
@@ -336,43 +460,79 @@ def infonce_block_resid(Q, sim, logit_scale, clamp, full):
                      held at zero with the parameter once the cap holds
     - full --------- block the residual from the similarities' gradient too (block_residuals: full),
                      not the scale's alone (alpha)
+    - coeff -------- the term's detached loss coefficient c_k (Criterion.term_coeffs): its blend weight, or
+                     under loss.unitless that weight over its detached loss; applied here, once, and not by
+                     the caller
+    - spec --------- the term's target spec (loss1 / loss2: targ + infonce.tsm), from which
+                     infonce_train_resid takes the tsm's target scale, whether the memberships are binary
+                     and whether the mapping keeps every row inside the band (a fixed sm_scale c decides
+                     that against alpha's value: one device sync, that configuration alone); None for a
+                     term that blends two specs (loss.blend.type targ), which says nothing about its rows
 
-    Returns (term, correction):
+    Returns (term, correction, coverage, bound):
     - term -------- a scalar of value exactly 0 whose gradient is minus the residual part of the term's
-                    d(loss)/d(log logit scale) -- and, under full, of its d(loss)/d(sim); added to the
-                    term's loss it leaves the loss reading untouched
+                    d(loss)/d(log logit scale) -- and, under full, of its d(loss)/d(sim) -- over the applied
+                    rows, times coeff; added to the loss it leaves the loss reading untouched
     - correction -- the gradient `term` ADDS to the raw log-scale parameter, detached: signed as a delta,
                     so grad_after = grad_before + correction, and it is MINUS the blocked residual (a
-                    residual pushing alpha up is negative, its correction positive). It is the correction
-                    the parameter actually receives, not the analytic one it would: taken through the
-                    same clamp-then-exp Jacobian d(alpha)/d(log alpha_raw) the term itself backpropagates
-                    through (by autograd off a detached copy, as infonce_batch_stats takes it, so exactly
-                    at the cap it follows the running torch's clamp backward) -- zero once the clamp
-                    holds -- and zero outright where the parameter takes no gradient (logits.scale.freeze).
-                    Reported as the dlogalpha_correction strip, the one exact reading of the intervention:
-                    under a loss blend the dalpha family's struct entry is the BLENDED target's structural
-                    part, and p* is not linear in the target (see infonce_batch_stats)
+                    residual pushing alpha up is negative, its correction positive); skipped rows add zero.
+                    It is the correction the parameter actually receives, not the analytic one it would:
+                    taken through the same clamp-then-exp Jacobian d(alpha)/d(log alpha_raw) the term itself
+                    backpropagates through (by autograd off a detached copy, as infonce_batch_stats takes
+                    it, so exactly at the cap it follows the running torch's clamp backward) -- zero once
+                    the clamp holds -- and zero outright where the parameter takes no gradient
+                    (logits.scale.freeze). Reported as the dlogscale_correction strip, the one exact reading
+                    of the intervention: under a loss blend the dscale family's struct entry is the BLENDED
+                    target's structural part, and p* is not linear in the target (see infonce_batch_stats)
+    - coverage ---- [3] float64, the batch's anchor-row fractions [applied, feasible, skipped]
+                    (infonce_train_resid): a batch with a non-zero third entry was only partly blocked
+    - bound ------- [2] float64, magnitude bounds, recorded beside the correction and nothing more (not
+                    an accuracy certificate, not a skip threshold): U = 2 (B - 1) r / (1 + (B - 1) r),
+                    r = exp(-2 alpha), which bounds every infeasible row's |p* - y|_1 (the one-hot row
+                    attains it: with F floor and C >= 1 cap entries, mass balance gives
+                    lam <= 1 / (|F| + e^{2 alpha}) and |R|_1 = 2 sum_F R_j <= 2 |F| lam), and the
+                    correction's bound after the coefficient and the reduction, |coeff| d(alpha)/d(log
+                    alpha_raw) U, since |0.5 mean_i sum_j R_ij T_ij| <= U with |T_ij| <= 2
     """
     alpha = (logit_scale.clamp(max=math.log(100)) if clamp else logit_scale).exp()
-    R = infonce_hard_resid(Q, alpha.detach().double())
+    alpha64 = alpha.detach().double()
+    if spec is None:
+        s, binary, inside = None, False, False
+    else:
+        tsm = spec["infonce"]["tsm"]
+        s, binary = tsm_target_scale(tsm, alpha64), spec["targ"] in ("sp", "mp")
+        if tsm["type"] == "linear" or tsm["sm_scale"] == "pinned3":
+            inside = False
+        elif tsm["sm_scale"] in ("pinned", "pinned1"):
+            inside = True  # s = 2 alpha / alpha: inside by construction, whatever alpha is
+        else:
+            inside = bool(s <= 2 * alpha64)  # a fixed c: inside iff c <= alpha
+    R, applied, feasible, skipped = infonce_train_resid(Y, alpha64, s, binary, inside)
+    coeff = torch.as_tensor(coeff, dtype=torch.float64, device=R.device).detach()
     T = sim.detach().double()
     T = T + T.T  # both anchor directions contracted at once
-    resid = 0.5 * (R * T).sum(dim=1).mean()
-    resid = resid.to(alpha.dtype)
+    resid = coeff * 0.5 * (R * T).sum(dim=1).mean()  # float64 through the coefficient
+    resid = resid.to(alpha.dtype)  # the one cast, of the finished product
     if logit_scale.requires_grad:
         log_alpha = logit_scale.detach().requires_grad_(True)
-        (dalpha_dlog,) = torch.autograd.grad((log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp(), log_alpha)
-        correction = -dalpha_dlog * resid
+        (dscale_dlog,) = torch.autograd.grad((log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp(), log_alpha)
+        correction = -dscale_dlog * resid
     else:
+        dscale_dlog = torch.zeros_like(alpha)
         correction = torch.zeros_like(resid)
     term = -(alpha - alpha.detach()) * resid
     if full:
         # the residual's part of dL/dsim: per pair alpha (p* - y) / B, the two anchor directions folded
-        # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij). Off the live sim, so the
-        # gradient reaches the towers; alpha detached, the scale's own part being the term above
-        G = 0.5 * alpha.detach().double() * (R + R.T) / Q.size(0)
+        # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij) AFTER the per-anchor selection,
+        # so cell (i, j) keeps anchor j's half where anchor i is skipped. Off the live sim, so the gradient
+        # reaches the towers; alpha detached, the scale's own part being the term above
+        G = coeff * 0.5 * alpha.detach().double() * (R + R.T) / Y.size(0)
         term = term - ((sim - sim.detach()) * G).sum().to(term.dtype)
-    return term, correction
+    coverage = torch.stack([applied, feasible, skipped]).double().mean(dim=1)
+    n_minus = Y.size(1) - 1
+    U = 2 * n_minus * torch.exp(-2 * alpha64) / (1 + n_minus * torch.exp(-2 * alpha64))
+    bound = torch.stack([U, coeff.abs() * dscale_dlog.detach().double().abs() * U])
+    return term, correction, coverage, bound
 
 class InfoNCECriterion(Criterion):
     """
@@ -393,7 +553,7 @@ class InfoNCECriterion(Criterion):
         exact zero in float32 from alpha ~ 50.6 -- past the base-model scales the run starts from
         (clip_vitb16 ~100, siglip_vitb16 ~117) under sm_scale pinned. That costs the loss nothing (a
         flushed entry contributes ~1e-86 to its CE) but it destroys the row-wise target-implied scale
-        bound the batch stats read off Y: alpha_req = 0.5 * log(max Y / min Y) goes to infinity where
+        bound the batch stats read off Y: scale_req = 0.5 * log(max Y / min Y) goes to infinity where
         the true bound is alpha * (max_j Q_ij - min_j Q_ij), at most alpha itself -- pinned means the
         target is always exactly reachable at the current scale, which is the line worth seeing. The
         row sums land on 1 to ~1e-16 here rather than the ~1e-8 float32 manages, which is what
@@ -427,7 +587,8 @@ class InfoNCECriterion(Criterion):
 
     def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale, sim):
         B = class_encs_b.size(0)
-        self.dlogalpha_correction = None  # per forward: an eval call must not report the last training batch's
+        self.dlogscale_correction = None  # per forward: an eval call must not report the last training batch's
+        self.block_stats = None
 
         Qs = self._targets(B, class_encs_b, targ_data_b)
         Q = self.targ_memb(Qs)  # pt[B, B]
@@ -475,19 +636,36 @@ class InfoNCECriterion(Criterion):
 
         block = self.cfg["infonce"]["block_residuals"]
         if block is not None:
-            # every term's target is hard binary here (config gates it), so each pairs with its own
-            # spec's memberships: a lone spec under blend.type targ, spec k under blend.type loss. The
-            # one sim matrix serves every term -- it is the terms' logit scalars that differ, not it
+            # each term's residual is its own target's, the float64 distribution it scores against: the
+            # blend's under blend.type targ, spec k's under blend.type loss. The one sim matrix serves
+            # every term -- it is the terms' logit scalars that differ, not it. Each term carries its own
+            # coefficient (a unitless one included), applied inside the term in float64
             clamp = self.cfg["logits"]["scale"]["clamp"]
             log_scales = self._per_term(lambda t: t, logit_scale, len(terms))
-            blocks = [infonce_block_resid(Q_k, sim, log_scale, clamp, block == "full")
-                      for Q_k, log_scale in zip(Qs, log_scales)]
-            loss = loss + sum(c * term for c, (term, _) in zip(coeffs, blocks))
-            # the delta this made to model.logit_scale's gradient (grad_after = grad_before + it), for
-            # the batch stats: under separate logit scalars only the primary term runs on that
-            # parameter (the rest on logit_scale2), and the stats describe the primary term throughout
-            on_primary = blocks[:1] if self.sep_scalars else blocks
-            self.dlogalpha_correction = sum(c * g for c, (_, g) in zip(coeffs, on_primary))
+            # each term's spec: its own under blend.type loss or a lone target; none for the one term of a
+            # target blend, whose rows no spec describes
+            term_specs = [cfg_targ for _, cfg_targ in self.targ_specs] if len(terms) == len(self.targ_specs) else [None]
+            blocks = [infonce_block_resid(Y_k, sim, log_scale, clamp, block == "full", c, spec)
+                      for (_, Y_k), log_scale, c, spec in zip(terms64, log_scales, coeffs, term_specs)]
+            loss = loss + sum(term for term, *_ in blocks)
+            # the batch's record of the intervention (block_stats; TrainPipeline._record_train_batch reads it
+            # whether or not the sim_targ_stats diagnostics are on): the delta it made to each logit-scale
+            # parameter's gradient (grad_after = grad_before + it) -- every term's on logit_scale under shared
+            # scalars, the primary term's on logit_scale and the second's on logit_scale2 under separate ones --
+            # and each term's coverage, the anchor-row fractions [applied, feasible, skipped], and its
+            # magnitude bounds [U, the correction's] (infonce_block_resid)
+            corrections = [g.double() for _, g, _, _ in blocks]
+            self.dlogscale_correction = corrections[0] if self.sep_scalars else sum(corrections)
+            scalars = [self.dlogscale_correction] + (corrections[1:] if self.sep_scalars else [])
+            packed = torch.cat([torch.stack(scalars), *(cov for _, _, cov, _ in blocks), *(bound for *_, bound in blocks)]).tolist()  # one device sync
+            n_s, n_b = len(scalars), len(blocks)
+            self.block_stats = {
+                "dlogscale_correction": packed[0],
+                "block_coverage": [packed[n_s + 3 * k:n_s + 3 * k + 3] for k in range(n_b)],
+                "block_bound": [packed[n_s + 3 * n_b + 2 * k:n_s + 3 * n_b + 2 * k + 2] for k in range(n_b)],
+            }
+            if self.sep_scalars:
+                self.block_stats["dlogscale_correction2"] = packed[1]
 
         if self.cfg["unitless"] and not self.sep_scalars:
             # the distribution the blended gradient follows: the terms' targets under their normalized blend
@@ -889,6 +1067,21 @@ def hard_pair_similarity_margin(S, Q, kappa):
     return (w_pos * S).sum(dim=1) - (w_neg * S).sum(dim=1)
 
 
+def _infonce_floor_eta(log_Y, alpha, n_iter=60):
+    """
+    infonce_p_opt's solve: each row's log floor eta = log(lam) of its reachable-set projection, by bisection over
+    [-log(B) - 2 alpha, -log(B)] (the clamped row mass is <= 1 and >= 1 there, monotone between) -- `log_Y` the
+    rows' logs, float64; `alpha` float64. Shared with infonce_active_set_resid, whose sets start from it.
+    """
+    hi = torch.full((log_Y.size(0), 1), -math.log(log_Y.size(1)), dtype=torch.float64, device=log_Y.device)  # row mass >= 1
+    lo = hi - 2 * alpha  # row mass <= 1
+    for _ in range(n_iter):
+        eta = 0.5 * (lo + hi)
+        under = log_Y.clamp(min=eta, max=eta + 2 * alpha).exp().sum(dim=1, keepdim=True) < 1.0
+        lo = torch.where(under, eta, lo)
+        hi = torch.where(under, hi, eta)
+    return 0.5 * (lo + hi)
+
 def infonce_p_opt(Y, alpha, n_iter=60):
     """
     Row-wise reachable-set projection of the InfoNCE target distribution Y: the closest distribution
@@ -912,8 +1105,8 @@ def infonce_p_opt(Y, alpha, n_iter=60):
 
     A row already inside the band is its own projection, EXACTLY, and is taken so rather than solved:
     the clamp is inactive for any lam in [max(y) / exp(2 alpha), min(y)], an interval that is non-empty
-    iff the row's log range fits in 2 alpha -- iff alpha_req = 0.5 * log(max y / min y) <= alpha, the
-    same feasibility the alpha panels' red lines plot -- and p* = y then sums to 1 by construction. Left
+    iff the row's log range fits in 2 alpha -- iff scale_req = 0.5 * log(max y / min y) <= alpha, the
+    same feasibility the scale panels' red lines plot -- and p* = y then sums to 1 by construction. Left
     to the solve, such a row comes back off y by the ~1e-16 the log/exp roundtrip leaves, which is
     nothing against y but is everything against a residual that is mathematically zero: the kl_ir /
     kl_ur and res / ures / ires strips would read that roundtrip (~1e-15) instead of 0. The branch is
@@ -930,16 +1123,149 @@ def infonce_p_opt(Y, alpha, n_iter=60):
     alpha = torch.as_tensor(alpha, dtype=torch.float64, device=Y.device).detach()
     log_Y = Y.log()  # log(0) = -inf: a zero target sits at the floor after the clamp
     feasible = (log_Y.amax(dim=1, keepdim=True) - log_Y.amin(dim=1, keepdim=True)) <= 2 * alpha
-    hi = torch.full((Y.size(0), 1), -math.log(Y.size(1)), dtype=torch.float64, device=Y.device)  # row mass >= 1
-    lo = hi - 2 * alpha  # row mass <= 1
-    for _ in range(n_iter):
-        eta = 0.5 * (lo + hi)
-        under = log_Y.clamp(min=eta, max=eta + 2 * alpha).exp().sum(dim=1, keepdim=True) < 1.0
-        lo = torch.where(under, eta, lo)
-        hi = torch.where(under, hi, eta)
-    eta = 0.5 * (lo + hi)
+    eta = _infonce_floor_eta(log_Y, alpha, n_iter)
     return torch.where(feasible, Y, log_Y.clamp(min=eta, max=eta + 2 * alpha).exp())
 
+
+def infonce_active_set_resid(Y, alpha, n_iter=10):
+    """
+    The residual p* - y of each row of Y at logit scale `alpha`, in closed form from the projection's ACTIVE
+    SETS -- for the rows no simpler closed form covers (a graded row outside the band: tax / phylo under the
+    linear tsm or a softmax one past the band; a target blend's rows). p* = clamp(y, r c, c) with r = exp(-2
+    alpha): floor entries F (y_j under r c) lifted to r c, cap entries C (y_j over c) shaved to c, interior I
+    kept, c set by mass balance |F| r c + m_I + |C| c = 1. With the sets in hand everything is algebra, with
+    no cancellation where it would matter:
+
+        c        = (m_F + m_C) / (|F| r + |C|)                        (the non-interior mass, relative precision)
+        R_j (F)  = r c - y_j
+        R_j (C)  = [m_F - y_j |F| r + sum_C (y_k - y_j)] / (|F| r + |C|),
+                   sum_C (y_k - y_j) taken as sum_C (y_k - y_max) + |C| (y_max - y_j)
+
+    -- the cap residual is not c - y_j, a difference of order-one numbers that is exp(-2 alpha)-small on a
+    well-fitted row and would come back as their rounding (which is what the subtraction the diagnostics'
+    strips still read does, marked unvalidated there): each of its terms is small when it is small (m_F the
+    floor mass, y_j |F| r, and the cap entries' spread, which mass balance holds under |F| r c), so it comes
+    out to relative precision. The two-level closed form (infonce_train_resid) is its special case. What the
+    bisection (_infonce_floor_eta) cannot supply exactly is the SETS: its floor is known to ~2 alpha ulps,
+    too coarse to place an entry near a boundary. So its sets are only the start; each refinement recomputes
+    c from the current sets and reclassifies every entry against it (F: y_j <= r c, C: y_j >= c, ties kept
+    where they are since either side gives the same c and residual), and a fixed point of that map IS the
+    projection: the solution is unique, and a self-consistent assignment meets its optimality conditions. A
+    row is RESOLVED only when, after the refinements, its sets pass those conditions EXACTLY on the c they
+    imply -- F: y_j <= r c, C: y_j >= c, I: r c <= y_j <= c, F and C both non-empty (an infeasible row has an
+    entry under the floor and one over the cap) -- AND its residual passes what those conditions cannot
+    see: a self-consistent assignment of ROUNDED sets can still be the wrong one. Two entries one float
+    apart at the top of a row have their true cap strictly between them, which float64 cannot hold; the cap
+    rounds onto the lower one, taking it into C consistently, and its residual then reads the gap between
+    the floats (~1e-17) in place of the true ~1e-49. No correct projection lifts a capped entry or shaves a
+    floored one, so a capped entry's residual must be <= 0 and a floored one's >= 0, exactly; and no
+    infeasible row's |R|_1 exceeds U = 2 (B - 1) r / (1 + (B - 1) r), the one-hot row's (infonce_block_resid
+    derives it), taken with a relative slack of 1e-9 for the rounding of a row that attains it. That example
+    fails both. What slips past both is a misassigned near-tie at a scale where U is above a float gap
+    (alpha under ~23 at B 2048), an error of about one ulp of the entry on a row whose residuals are then far
+    larger.
+
+    What RESOLVED means, then: sets that pass their optimality conditions, legal signs, a magnitude within the
+    bound, a finite value, a scale within ALPHA_SUPPORTED_MAX -- a residual numerically checked, not one
+    certified to an error bound. The accuracy
+    behind them is the algebra's: relative precision where the row is well past the band, its residual small
+    because the floor mass is (the regime the subtraction failed in, and the one that matters), and about an
+    ulp of the entries where the row is barely past it -- there the residual is itself ulp-sized, set by the
+    rounding of the stored floats and of r (a row one float outside the band reads -+7.4e-17 for a true
+    -+7.9e-17), which no float64 arithmetic on those floats improves and which the float32 cast of the
+    correction (infonce_block_resid) erases beside any ordinary gradient. Mass conservation is not checked:
+    computing the floor residuals from it would make the check a tautology, and without that it would skip
+    exactly those ulp-sized rows, to no effect. Past ALPHA_SUPPORTED_MAX -- a conservative cutoff, not the
+    underflow point (its comment) -- no row is resolved, as a policy. A row that fails
+    any of it (sets cycling around an entry within rounding of a boundary; a reclassification the refinements
+    did not settle; a residual of the wrong sign or size; a non-finite one; the scale) is not resolved, and
+    the caller skips it. Runs over every row of Y; the caller reads the rows it needs.
+
+    - Y ------ [R, B] target distributions, float64, rows summing to 1
+    - alpha -- the logit scale alpha = exp(logit_scale) the logits carry (post-clamp)
+
+    Returns (R, resolved): R float64 in Y's shape, exactly zero on every unresolved row; resolved per row.
+    """
+    Y = Y.detach().double()
+    alpha = torch.as_tensor(alpha, dtype=torch.float64, device=Y.device)
+    r = torch.exp(-2 * alpha)
+    eta = _infonce_floor_eta(Y.log(), alpha)  # [R, 1]
+    y_max, y_min = Y.amax(dim=1, keepdim=True), Y.amin(dim=1, keepdim=True)
+    # the bisection's floor and cap are known to ~2 alpha ulps, so rounding can put a threshold just past the entry
+    # it should catch; an infeasible row's largest entry is always capped and its smallest always floored, so the
+    # start takes them in whichever side the thresholds fell -- a start within rounding of the sets, not one
+    # missing the cap outright, which the refinements would take many steps to grow back
+    floor = Y <= torch.maximum(eta.exp(), y_min)
+    cap = Y >= torch.minimum((eta + 2 * alpha).exp(), y_max)
+
+    def cap_value(floor, cap):
+        n_f, n_c = floor.sum(dim=1, keepdim=True).double(), cap.sum(dim=1, keepdim=True).double()
+        return (Y * (floor | cap)).sum(dim=1, keepdim=True) / (n_f * r + n_c), n_f, n_c
+
+    for _ in range(n_iter):
+        c, _, _ = cap_value(floor, cap)
+        floor, cap = Y <= r * c, Y >= c
+    c, n_f, n_c = cap_value(floor, cap)
+    interior = ~(floor | cap)
+    floor_lvl = r * c
+    consistent = ((~floor | (Y <= floor_lvl)) & (~cap | (Y >= c)) & (~interior | ((Y >= floor_lvl) & (Y <= c)))).all(dim=1)
+    resolved = consistent & (n_f.squeeze(1) > 0) & (n_c.squeeze(1) > 0)
+    m_f = (Y * floor).sum(dim=1, keepdim=True)
+    spread = ((Y - y_max) * cap).sum(dim=1, keepdim=True)  # sum over C of (y_k - y_max), <= 0
+    R_cap = (m_f - Y * n_f * r + spread + n_c * (y_max - Y)) / (n_f * r + n_c)
+    R = torch.where(cap, R_cap, torch.where(floor, floor_lvl - Y, torch.zeros_like(Y)))
+    # what no correct projection produces, and a consistent assignment of rounded sets can (docstring): a capped
+    # entry lifted or a floored one shaved, and a row's |R|_1 over the one-hot bound U
+    signs = ((~cap | (R <= 0)) & (~floor | (R >= 0))).all(dim=1)
+    n_minus = Y.size(1) - 1
+    U = 2 * n_minus * r / (1 + n_minus * r)
+    resolved = (resolved & signs & (R.abs().sum(dim=1) <= U * (1 + 1e-9)) & torch.isfinite(R).all(dim=1)
+                & (alpha <= ALPHA_SUPPORTED_MAX))
+    R = torch.where(resolved[:, None], R, torch.zeros_like(R))
+    return R, resolved
+
+def infonce_resid(Y, alpha):
+    """
+    The residual p* - y of each row of the InfoNCE target distribution Y at logit scale `alpha`, with the
+    reachable optimum p* it is taken against -- per ROW by what that row's own target is, read off Y and
+    never off the memberships Q: Q is the blend's attribution matrix (the pos / neg masks), and under
+    separate logit scalars it is the BLENDED memberships while Y is the primary term's alone, so a hard
+    Y = I can sit beside a fractional Q. The diagnostics' residual (infonce_batch_stats' strips): the training
+    correction takes its own, reliability-gated one from infonce_train_resid, which applies the same closed
+    form on the same hard rows and nothing on the rows this one reads off the subtraction.
+
+    A row is hard binary iff every entry is EXACTLY zero or exactly the row's max (the linear tsm's Q / K
+    puts its positives on one float), taken exactly on purpose: a zero target and a nearly-zero one are
+    different regimes, not neighbours -- softmax(19 Q) bottoms out at 5.6e-9 > 0, is feasible from alpha
+    9.5 and so has a residual of exactly zero, where the hard form would report one of order
+    exp(-2 alpha). A tolerance there converts full support into boundary support, which is the
+    distinction this whole decomposition turns on. Hard rows read the closed forms off their support
+    (infonce_hard_resid, and p* = y + that residual: 1 / (K + M r) and r / (K + M r), so the structural
+    terms difference p against an exact p* rather than the solve's, ~|log lam| ulps off, which near
+    p = p* is all that (p - p*) and D_KL(p* || p) would be reading). A feasible row is exactly its own
+    projection (infonce_p_opt), so the subtraction is an exact zero there; an infeasible graded row is
+    the one case left on it, and past the alpha where its residual falls under a float64 ulp of Y the
+    subtraction reads the solve's own noise (infonce_batch_stats' docstring). Which of the three
+    computed each row is returned with it, so a reader -- and the curve shading (resid_paths) -- can
+    tell an exact zero, a small but exactly computed value and an unvalidated difference apart instead
+    of guessing from the magnitude.
+
+    - Y ------ [R, B] target distributions, float64 with rows summing to 1 (Criterion.targ_dists under
+               InfoNCE; a float32 row's ~1e-8 deficit would be made up by lifting the floor lam and read
+               as residual -- infonce_batch_stats renormalizes for that)
+    - alpha -- the logit scale alpha = exp(logit_scale) the logits carry (post-clamp)
+
+    Returns (R, P_opt, hard, feasible): the residual and p*, float64 in Y's shape, and the per-row masks
+    of the closed-form and the exact-zero paths (a row on neither is the subtracted one).
+    """
+    Y = Y.detach().double()
+    P_opt = infonce_p_opt(Y, alpha)
+    feasible = (P_opt == Y).all(dim=1)  # infonce_p_opt hands a feasible row back as Y itself; pt[R]
+    hard = ((Y == 0) | (Y == Y.amax(dim=1, keepdim=True))).all(dim=1) & ~feasible  # (a uniform row is both)
+    R_hard = infonce_hard_resid(Y > 0, alpha)
+    P_opt = torch.where(hard[:, None], Y + R_hard, P_opt)
+    R = torch.where(hard[:, None], R_hard, P_opt - Y)
+    return R, P_opt, hard, feasible
 
 def infonce_s_opt(P_opt, alpha):
     """
@@ -968,7 +1294,7 @@ def infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R):
     """
     One anchor direction's per-pair InfoNCE logit-scale gradient terms, decomposed and aggregated:
 
-        dL/dalpha_ij = (p_ij - y_ij) s_ij                                    (full)
+        dL/dscale_ij = (p_ij - y_ij) s_ij                                    (full)
                      = (p_ij - p*_ij) s_ij  +  (p*_ij - y_ij) s_ij            (struct + res)
 
     with p the row softmax of the logits and p* = infonce_p_opt(Y, alpha). 'struct' is the part the
@@ -1049,7 +1375,7 @@ def infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R):
     Where the InfoNCE similarity-level gradient's magnitude sits across the batch: the normalized Shannon entropy
     (_norm_entropy) of |dL/dS| per pair -- over the whole B x B matrix, against log B^2 -- and per anchor -- each
     row over its B candidates, against log B, averaged over the anchors -- for the gradient and the two parts of
-    its decomposition through p* = infonce_p_opt (the dalpha family's, infonce_scale_grad_sums):
+    its decomposition through p* = infonce_p_opt (the dscale family's, infonce_scale_grad_sums):
 
         dL/ds_ij = alpha (p_ij - y_ij) / B = alpha (p_ij - p*_ij) / B + alpha (p*_ij - y_ij) / B    (full = struct + res)
 
@@ -1098,8 +1424,8 @@ def sim_grad_entropies_actual(grad_sim):
     received: the retained sims' .grad after the backward (batch_diagnostics.sim_grad_sums; bf16 under mixed
     precision, read as it is), which carries every weight the loss does -- class-imbalance, focal, the blend
     coefficients, loss.unitless, block_residuals' correction -- where the analytic family reads the unweighted
-    loss_raw gradient off the blended target distribution. The measurement beside the decomposition, as the alpha
-    figures' (actual) panel is beside their dalpha ones.
+    loss_raw gradient off the blended target distribution. The measurement beside the decomposition, as the scale
+    figures' (actual) panel is beside their dscale ones.
 
     The pair entropy is the same construction as the analytic one, over the folded dL/dS. The anchor entropy
     is not quite: the analytic reads each anchor's own CE term's gradient row, per direction, before the two
@@ -1159,7 +1485,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     The InfoNCE loss's per-batch reachable-optimum (p* = infonce_p_opt) diagnostics, each taken over
     both anchor directions and averaged -- the loss is the mean of the two directions' CE:
 
-    - the logit-scale gradient decomposition (the dalpha_* and dlogalpha_* learning-curve strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
+    - the logit-scale gradient decomposition (the dscale_* and dlogscale_* learning-curve strips): infonce_scale_grad_sums, so the averaged full / all sum is d(loss_raw)/d(alpha), with
       the coherence ratio = |sum| / sum|.| taken on the averaged sums (the bidirectional gradient's own
       cancellation ratio, so ratio = |sum| / sum_abs holds across the reported series). The ratio is
       divided exactly, with sum_abs = 0 reading NaN rather than 0: a term whose every pair is zero has
@@ -1178,16 +1504,16 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       the reported series. ratio reads all cancellation, ratio_row only that BETWEEN anchors; row_abs = 0
       under a sum_abs > 0 (every anchor's own pairs cancelling exactly) leaves nothing between them
       to report, hence NaN there too. alpha is the
-      scale the logits carry, post-clamp, so the dalpha family is the loss's pressure on that
-      effective scale whether or not the parameter can follow it. The dlogalpha family is the
+      scale the logits carry, post-clamp, so the dscale family is the loss's pressure on that
+      effective scale whether or not the parameter can follow it. The dlogscale family is the
       gradient of the log-scale parameter the model actually learns (logits.scale: the param is
       log(alpha_raw), and z = exp(min(log alpha_raw, ln 100)) * s under logits.scale.clamp, exp(log
-      alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dalpha per pair while the clamp is off
-      or slack, so its sums are alpha times the dalpha ones and its ratio / ratio_row, alpha cancelling in the
-      ratio, equal the dalpha ones; once the clamp holds (the raw parameter above ln 100, where clamp's
+      alpha_raw) * s without): d/d(log alpha_raw) = alpha * d/dscale per pair while the clamp is off
+      or slack, so its sums are alpha times the dscale ones and its ratio / ratio_row, alpha cancelling in the
+      ratio, equal the dscale ones; once the clamp holds (the raw parameter above ln 100, where clamp's
       backward blocks the gradient) the parameter's gradient is exactly zero however hard the loss
       pushes on the effective scale, so its sums all read zero and its ratios read NaN -- the parameter
-      is under no pressure to cancel -- while dalpha keeps reporting the pressure. The factor
+      is under no pressure to cancel -- while dscale keeps reporting the pressure. The factor
       d(alpha)/d(log alpha_raw) is taken by autograd through the same clamp-then-exp path
       compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
       backward breaks the tie (the gradient passes in 2.5 / 2.7, is blocked in 2.14).
@@ -1201,8 +1527,8 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       alpha 1. (The full entry stays exact there, the loss being affine in the target; under
       loss.unitless neither is, the coefficients then not summing to 1 while Y is renormalized -- a
       scale this family has never carried, block_residuals or not.) The exact reading of the
-      intervention is dlogalpha_correction, logged separately: the delta the parameter's gradient
-      actually received (grad_after = grad_before + dlogalpha_correction; zero under a held clamp or a
+      intervention is dlogscale_correction, logged separately: the delta the parameter's gradient
+      actually received (grad_after = grad_before + dlogscale_correction; zero under a held clamp or a
       frozen scale, as the parameter's own gradient is).
 
       The residual family (res, ures, ires, and the kl_ir / kl_ur strips below) is exp(-2 alpha)-small
@@ -1240,20 +1566,20 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       anchors that carry any gradient mass, the two averaged, with the fraction of anchors that did beside it), for
       the full gradient and its structural / residual parts. Its residual entries read the same R as the residual
       family above, so they carry the same provenance (resid_paths).
-    - the row-wise target-implied scale bounds (the alpha panels' red lines): for row i, the smallest
+    - the row-wise target-implied scale bounds (the scale panels' red lines): for row i, the smallest
       alpha whose logit range alpha * S over S in [-1, 1] spans Y_i as optimal logits log(Y_i) (up to
       a constant), 0.5 * log(max_j Y_ij / min_j Y_ij), reported as its min / mean / max over rows.
       Softmax feasibility is row-wise, so the batch's requirement is the max (a global max(Y) / min(Y)
       would pair extremes from different rows and overstate it); a row holding a zero sits at
       infinity. One statistic for both directions, which train against Y's rows alike. The
-      log_alpha_req_* trio is that same trio in the units the logalpha panel plots: the log of each,
-      not the reductions retaken over log(alpha_req). The two figures show one quantity under a
+      log_scale_req_* trio is that same trio in the units the logscale panel plots: the log of each,
+      not the reductions retaken over log(scale_req). The two figures show one quantity under a
       monotone change of variable, so a line either figure draws must be the other's under the same
       map, or the same batch crosses its bound in one panel and not the other -- min and max commute
-      with log and would agree either way, but the mean does not: mean(log(alpha_req)) is the log of
-      the rows' geometric mean, which Jensen puts strictly below log(mean(alpha_req)) wherever the
+      with log and would agree either way, but the mean does not: mean(log(scale_req)) is the log of
+      the rows' geometric mean, which Jensen puts strictly below log(mean(scale_req)) wherever the
       rows differ, so alpha sitting between the two means would read as clearing the requirement on
-      the logalpha panel while the alpha panel still showed it short.
+      the logscale panel while the scale panel still showed it short.
 
     Y's rows are renormalized before any of it, the reachable-set solve needing sum(p*) = 1 to be the
     constraint it says it is. InfoNCECriterion._tsm already hands this path a float64 Y whose rows sum to
@@ -1268,8 +1594,8 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     - logit_scale ---------- the log logit-scale parameter, raw (pre-clamp) and detached
     - clamp ---------------- logits.scale.clamp: whether compute_logits caps the parameter at ln(100)
 
-    Returns {{dalpha,dlogalpha}_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: [all, pos, neg]} plus
-    {kl, kl_u, kl_ir, kl_ur: scalar}, {{alpha_req,log_alpha_req}_{min,mean,max}: scalar} and
+    Returns {{dscale,dlogscale}_{sum,sum_abs,ratio,row_abs,ratio_row}_{full,struct,res,ures,ires}: [all, pos, neg]} plus
+    {kl, kl_u, kl_ir, kl_ur: scalar}, {{scale_req,log_scale_req}_{min,mean,max}: scalar} and
     {resid_paths: [hard, feasible, subtracted]} (row fractions, summing to 1) and
     {sim_grad_entropy_{pair,anchor,active}_{full,struct,res}: scalar}; the reductions are stacked
     so the device->host transfer is a single .cpu() sync.
@@ -1283,37 +1609,16 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
             # slack, zero once it holds (its backward blocks the gradient above the cap)
             log_alpha = torch.as_tensor(logit_scale, device=S.device).detach().requires_grad_(True)
             alpha = (log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp()
-            (dalpha_dlog,) = torch.autograd.grad(alpha, log_alpha)
-        alpha, dalpha_dlog = alpha.detach().double(), dalpha_dlog.double()
-        P_opt = infonce_p_opt(Y, alpha)
-        # the residual and the irreducible divergence, per ROW by what that row's own target is -- read
-        # off Y, never off the memberships Q: Q is the blend's attribution matrix (the pos / neg masks),
-        # and under separate logit scalars it is the BLENDED memberships while Y is the primary term's
-        # alone, so a hard Y = I can sit beside a fractional Q. A row is hard binary iff every entry is
-        # EXACTLY zero or exactly the row's max (the linear tsm's Q / K puts its positives on one float,
-        # and the renormalization above keeps them there), taken exactly on purpose: a zero target and
-        # a nearly-zero one are different regimes, not neighbours -- softmax(19 Q) bottoms out at
-        # 5.6e-9 > 0, is feasible from alpha 9.5 and so has a residual of exactly zero, where the hard
-        # form would report one of order exp(-2 alpha). A tolerance there converts full support into
-        # boundary support, which is the distinction this whole decomposition turns on.
-        # Hard rows read the closed forms (infonce_hard_resid / infonce_hard_kl_ir) off their support.
-        # A feasible row is exactly its own projection (infonce_p_opt), so the subtraction is an exact
-        # zero there; an infeasible graded row is the one case left on it, and past the alpha where
-        # its residual falls under a float64 ulp of Y the residual strips read noise (docstring above).
-        # Which of the three computed each row is reported (resid_paths), so a reader -- and the curve
-        # shading -- can tell an exact zero, a small but exactly computed value and an unvalidated
-        # difference apart instead of guessing from the magnitude
-        feasible = (P_opt == Y).all(dim=1)  # infonce_p_opt hands a feasible row back as Y itself; pt[B]
-        hard = ((Y == 0) | (Y == Y.amax(dim=1, keepdim=True))).all(dim=1) & ~feasible  # (a uniform row is both)
-        support = Y > 0
-        R_hard = infonce_hard_resid(support, alpha)
-        # a hard row's p* in closed form too (y + its residual: 1 / (K + M r) and r / (K + M r)), so the
-        # structural terms difference p against an exact p* rather than the solve's (~|log lam| ulps
-        # off, which near p = p* is all that (p - p*) and D_KL(p* || p) would be reading)
-        P_opt = torch.where(hard[:, None], Y + R_hard, P_opt)
+            (dscale_dlog,) = torch.autograd.grad(alpha, log_alpha)
+        alpha, dscale_dlog = alpha.detach().double(), dscale_dlog.double()
+        # the residual and the irreducible divergence per ROW by what that row's own target is
+        # (infonce_resid: a hard binary row's closed forms, a feasible row's exact zero, the subtraction
+        # for the rest), and which of the three computed each row, reported (resid_paths) so a reader --
+        # and the curve shading -- can tell an exact zero, a small but exactly computed value and an
+        # unvalidated difference apart instead of guessing from the magnitude
+        R, P_opt, hard, feasible = infonce_resid(Y, alpha)
         S_opt = infonce_s_opt(P_opt, alpha)  # one geometry for both directions, as p* is
-        R = torch.where(hard[:, None], R_hard, P_opt - Y)
-        E_ir = torch.where(hard, infonce_hard_kl_ir(support, alpha),
+        E_ir = torch.where(hard, infonce_hard_kl_ir(Y > 0, alpha),
                            torch.xlogy(Y, Y).sum(dim=1) - (Y * P_opt.log()).sum(dim=1))
         paths = torch.stack([hard, feasible, ~(hard | feasible)]).double().mean(dim=1)  # row fractions
         log_P_i2t, log_P_t2i = torch.log_softmax(Z, dim=1), torch.log_softmax(Z.T, dim=1)
@@ -1323,11 +1628,11 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
         kl = 0.5 * (infonce_kl_terms(Y, log_P_i2t, P_opt, R, E_ir)
                     + infonce_kl_terms(Y, log_P_t2i, P_opt, R, E_ir))
         entropies = infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R)  # [3, 3]
-        alpha_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
-        reqs = torch.stack([alpha_req.min(), alpha_req.mean(), alpha_req.max()])
-        bounds = torch.cat([reqs, reqs.log()])  # the logalpha panel's lines are the alpha ones' logs
+        scale_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
+        reqs = torch.stack([scale_req.min(), scale_req.mean(), scale_req.max()])
+        bounds = torch.cat([reqs, reqs.log()])  # the logscale panel's lines are the scale ones' logs
         families = []
-        for G, A, C in (sums, dalpha_dlog * sums):  # d/dalpha, then d/d(log alpha_raw)
+        for G, A, C in (sums, dscale_dlog * sums):  # d/dscale, then d/d(log alpha_raw)
             ratio, ratio_row = (torch.where(D > 0, G.abs() / D, torch.nan) for D in (A, C))  # NaN: no pressure, no ratio
             families.append(torch.stack([G, A, ratio, C, ratio_row]))
         grad = torch.stack(families)  # [2, 5, 5, 3]
@@ -1340,13 +1645,13 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     return {
         **{
             f"{prefix}_{agg}_{comp}": vals[f][a][c]
-            for f, prefix in enumerate(("dalpha", "dlogalpha"))
+            for f, prefix in enumerate(("dscale", "dlogscale"))
             for a, agg in enumerate(("sum", "sum_abs", "ratio", "row_abs", "ratio_row"))
             for c, comp in enumerate(("full", "struct", "res", "ures", "ires"))
         },
         **dict(zip(("kl", "kl_u", "kl_ir", "kl_ur"), kl_vals)),
-        **dict(zip(("alpha_req_min", "alpha_req_mean", "alpha_req_max",
-                    "log_alpha_req_min", "log_alpha_req_mean", "log_alpha_req_max"), bound_vals)),
+        **dict(zip(("scale_req_min", "scale_req_mean", "scale_req_max",
+                    "log_scale_req_min", "log_scale_req_mean", "log_scale_req_max"), bound_vals)),
         "resid_paths": path_vals,
         **{
             f"sim_grad_entropy_{level}_{comp}": entropy_vals[l][c]

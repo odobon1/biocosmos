@@ -880,7 +880,13 @@ def _strip_data(panels, scale_key, req_key, spread_type):
         vals = np.array([np.asarray(data[key], dtype=float)[:n] for _, data in panels])
         if spread_type is None:
             return vals[0], None
-        spread = np.zeros(n) if len(vals) == 1 else np.array([_spread(col, spread_type) for col in vals.T])
+        # a bound column is all-infinite wherever the target carries an exact zero (a linear tsm's does:
+        # scale_req = 0.5 log(max Y / 0)), and its across-trial variance is then inf - inf, which numpy
+        # warns about ('invalid value encountered in subtract'). The NaN spread that comes out is the
+        # right answer -- there is no band to draw around a line that isn't drawn either -- so the
+        # warning is noise
+        with np.errstate(invalid="ignore"):
+            spread = np.zeros(n) if len(vals) == 1 else np.array([_spread(col, spread_type) for col in vals.T])
         return vals.mean(axis=0), spread
 
     reqs = {}

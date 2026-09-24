@@ -1,4 +1,6 @@
 import json
+import math
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -719,6 +721,33 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
     # the logscale figure reads the log-scale series (negated here), not the scale one
     _, _, (vals, _), _ = figures[("agg", "logscale")][0]
     assert vals == pytest.approx([-20.0, -30.0])
+
+
+def test_update_coord_strips_infinite_bounds_are_unbanded(tmp_path, monkeypatch) -> None:
+    # a linear tsm's target carries exact zeros, so every recorded bound is +inf (scale_req = 0.5 log(max Y / 0)):
+    # the agg figure's across-trial spread there is inf - inf, which is NaN -- no band around a line matplotlib
+    # never draws -- and numpy is not left warning about it
+    dpath_phase = tmp_path / "_screen"
+    for seed in (42, 43):
+        _write_strip_trial(dpath_phase, "cub", "hp", "a", seed, [10.0, 20.0])
+        fpath_data = _dpath_coord(dpath_phase, "cub", "hp", "a") / "_seeds" / str(seed) / "data_trial.pkl"
+        data = load_pickle(fpath_data)
+        data["epoch"].update({f"{key}_{stat}": [math.inf, math.inf]
+                              for key in ("scale_req", "log_scale_req") for stat in ("min", "mean", "max")})
+        save_pickle(data, fpath_data)
+    _write_meta(dpath_phase, ["hp"], ["a"], ["cub"], seeds=[42, 43])
+
+    calls = []
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
+    monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, *args: calls.append((fpath, strips)))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        report.update_coord_strips("cub", "hp", "std")
+
+    figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips in calls}
+    _, _, _, reqs = figures[("agg", "scale")][0]
+    assert all(np.isinf(vals).all() and np.isnan(spread).all() for vals, spread in reqs.values())
 
 
 def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypatch) -> None:

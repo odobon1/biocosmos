@@ -10,6 +10,7 @@ from typing import List, Any, Dict, Optional
 import math
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from utils.text import get_text_template as get_dataset_text_template
 from utils.ddp import rank0
@@ -131,6 +132,10 @@ def seed_libs(seed, seed_torch=True):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True  # (True) trades speed for reproducibility (default is False)
+
+def utc_now():
+    """The UTC stamp the metadata files carry as datetime_start / datetime_last_seen."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def save_json(data, fpath):
     with open(fpath, "w") as f:

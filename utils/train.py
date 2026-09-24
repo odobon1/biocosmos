@@ -1,5 +1,4 @@
 from dataclasses import asdict
-from datetime import datetime, timezone
 import math
 import os
 import time
@@ -14,6 +13,7 @@ from utils.utils import (
     load_pickle,
     save_json,
     load_json,
+    utc_now,
     TimeTracker,
     Timer,
 )
@@ -364,9 +364,18 @@ class ArtifactManager:
         time_data["elapsed"] = time_elapsed
         save_pickle(time_data, fpath_pkl)
         
+        now = utc_now()
         metadata_camp = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
         metadata_camp["duration"] = format_duration(time_elapsed)
+        metadata_camp["datetime_last_seen"] = now
         save_json(metadata_camp, fpath_json)
+
+        # the campaign-level file (campaign_runner._campaign_metadata): its last_seen tracks the
+        # campaign's latest trial progress, whichever phase that trial is in
+        fpath_campaign = ArtifactManager.dpath_phase.parent / "campaign_metadata.json"
+        metadata_campaign = load_json(fpath_campaign)
+        metadata_campaign["datetime_last_seen"] = now
+        save_json(metadata_campaign, fpath_campaign)
 
     @staticmethod
     @rank0
@@ -567,7 +576,7 @@ class ArtifactManager:
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
         progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = utc_now()
         if init_flag:
             metadata_trial = {
                 "dataset": ArtifactManager.dataset,

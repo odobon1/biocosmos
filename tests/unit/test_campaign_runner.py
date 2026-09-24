@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 import json
 import os
 import pytest
@@ -1428,9 +1429,42 @@ def test_run_campaign_records_commit_hash_on_first_launch(tmp_path, monkeypatch)
     assert meta["dirty"] is True
 
 
+def test_run_campaign_records_campaign_and_phase_datetimes(tmp_path, monkeypatch) -> None:
+    # the campaign gets its own metadata file at the top of its artifacts dir, and every phase's metadata
+    # leads with the same pair: datetime_start frozen at first launch, datetime_last_seen refreshed from
+    # there on by each trial's checkpoint write (utils.train.ArtifactManager.update_campaign_time)
+    _setup_completing_campaign(tmp_path, monkeypatch)
+
+    _set_camp(
+        monkeypatch,
+        n_trials_screen=1, n_trials_qual=None, trainval=False,
+        datasets=("cub",),
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
+    )
+    cr.run_campaign("cmp_dt", "camp")
+
+    fpath_camp = tmp_path / "cmp_dt" / "campaign_metadata.json"
+    fpath_phase = tmp_path / "cmp_dt" / "_screen" / "phase_metadata.json"
+    meta_camp = json.loads(fpath_camp.read_text())
+    assert list(meta_camp) == ["datetime_start", "datetime_last_seen"]
+    assert meta_camp["datetime_start"] == meta_camp["datetime_last_seen"]
+    datetime.strptime(meta_camp["datetime_start"], "%Y-%m-%dT%H:%M:%SZ")  # the trial metadata's UTC stamp format
+    assert list(json.loads(fpath_phase.read_text()))[:2] == ["datetime_start", "datetime_last_seen"]
+
+    # a relaunch keeps both recorded starts -- they mark the first launch, not the latest one
+    for fpath in (fpath_camp, fpath_phase):
+        meta = json.loads(fpath.read_text())
+        meta["datetime_start"] = "2020-01-01T00:00:00Z"
+        fpath.write_text(json.dumps(meta))
+    cr.run_campaign("cmp_dt", "camp")
+    for fpath in (fpath_camp, fpath_phase):
+        assert json.loads(fpath.read_text())["datetime_start"] == "2020-01-01T00:00:00Z"
+
+
 def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, monkeypatch) -> None:
     # the dup-name check is hoisted to the top of run_campaign, so it must fire before any filesystem
-    # side effect -- no campaign dir / time.pkl / phase_metadata.json is created
+    # side effect -- no campaign dir / campaign_metadata.json / time.pkl / phase_metadata.json is created
     monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
 
     with pytest.raises(ValueError, match="Duplicate ablation_arms name"):
@@ -1451,8 +1485,8 @@ def test_run_campaign_raises_on_duplicate_name_before_side_effects(tmp_path, mon
 
 def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path, monkeypatch) -> None:
     # mirrors production: between launches a trial (utils/train.py update_campaign_time) rewrites
-    # phase_metadata.json with only 'duration' changed; the matrix keys must survive for the
-    # relaunch's reconcile to read them, and the trial-written duration must survive the relaunch
+    # phase_metadata.json with only 'duration' / 'datetime_last_seen' changed; the matrix keys must survive
+    # for the relaunch's reconcile to read them, and the trial-written duration must survive the relaunch
     _setup_completing_campaign(tmp_path, monkeypatch)
 
     _set_camp(
@@ -1466,7 +1500,7 @@ def test_run_campaign_relaunch_survives_duration_only_metadata_rewrite(tmp_path,
 
     fpath_meta = tmp_path / "cmp_roundtrip" / "_screen" / "phase_metadata.json"
     meta = json.loads(fpath_meta.read_text())
-    meta["duration"] = "0-01:23:45"  # whole-dict rewrite, duration only (what update_campaign_time does)
+    meta["duration"] = "0-01:23:45"  # the whole-dict rewrite update_campaign_time does
     fpath_meta.write_text(json.dumps(meta))
 
     # additive relaunch must not error and must preserve the trial-written duration

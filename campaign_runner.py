@@ -65,7 +65,7 @@ from utils.report import (
     pick_best_coords,
 )
 from utils.train import ArtifactManager
-from utils.utils import paths, save_pickle, save_json, load_json, PrintLog
+from utils.utils import paths, save_pickle, save_json, load_json, utc_now, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
 # hand the training step's reserved-but-unallocated pool to the large O(N^2) t-SNE buffers at eval time,
@@ -717,6 +717,18 @@ def _del_base_eval_cache() -> None:
         shutil.rmtree(dpath)
         print("deleted base_eval_cache/ (del_base_eval_cache)", flush=True)
 
+def _campaign_metadata(campaign: str) -> None:
+    """Create artifacts/<campaign>/campaign_metadata.json on the campaign's first launch, stamping its
+    datetime_start. datetime_last_seen is refreshed from there on by every trial's checkpoint write
+    (utils.train.ArtifactManager.update_campaign_time), so on a campaign that is over it reads as the
+    campaign's completion time. A relaunch keeps the recorded start."""
+    dpath_campaign = _dpath_campaign(campaign)
+    dpath_campaign.mkdir(parents=True, exist_ok=True)
+    fpath = dpath_campaign / "campaign_metadata.json"
+    if not fpath.exists():
+        now = utc_now()
+        save_json({"datetime_start": now, "datetime_last_seen": now}, fpath)
+
 def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, groups: dict) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
@@ -745,7 +757,10 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
                 print(f"Campaign: '{campaign}' {phase}: {kind} added: {added}", flush=True)
         pruned = _prune_removed(campaign, phase, metadata["matrix"], matrix)
     else:
+        now = utc_now()
         metadata = {
+            "datetime_start": now,  # the phase's first launch; kept by every relaunch
+            "datetime_last_seen": now,  # refreshed by every trial's checkpoint write (utils.train.ArtifactManager.update_campaign_time)
             "duration": "0-00:00:00",
             "commit": _get_commit_hash(),  # repo HEAD at first launch; not updated by relaunches
             "dirty": _is_dirty(name),  # (true) tracked files differed from that commit at first launch, or the camp yaml is untracked: the code run was not exactly the commit's
@@ -1199,6 +1214,7 @@ def run_campaign(campaign: str, name: str) -> bool:
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
     first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
+    _campaign_metadata(campaign)
     cfg_snapshot = _load_or_create_campaign_config(campaign)
     if first_launch and cfg_snapshot["train"]["operational"]["del_base_eval_cache"] == "campaign":
         _del_base_eval_cache()

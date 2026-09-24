@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -234,6 +235,26 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     config = json.loads((tmp_path / "s8" / "config.json").read_text())
     assert config["loss"]["blend"]["type"] == "loss"
     assert config["loss"]["infonce"] == {"block_residuals": "alpha"}
+
+
+def test_update_campaign_time_stamps_phase_and_campaign_last_seen(tmp_path, monkeypatch) -> None:
+    # every checkpoint write moves the phase's accumulated duration on and re-stamps datetime_last_seen
+    # on both the phase's metadata and the campaign's, leaving the recorded starts alone
+    dpath_phase = tmp_path / "cmp" / "_screen"
+    dpath_phase.mkdir(parents=True)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
+    save_pickle({"last_updated": time.time() - 3661.0, "elapsed": 0.0}, dpath_phase / "time.pkl")
+    stale = {"datetime_start": "2020-01-01T00:00:00Z", "datetime_last_seen": "2020-01-01T00:00:00Z"}
+    (dpath_phase / "phase_metadata.json").write_text(json.dumps({**stale, "duration": "0-00:00:00"}))
+    (tmp_path / "cmp" / "campaign_metadata.json").write_text(json.dumps(stale))
+
+    ArtifactManager.update_campaign_time()
+
+    meta_phase = json.loads((dpath_phase / "phase_metadata.json").read_text())
+    meta_camp = json.loads((tmp_path / "cmp" / "campaign_metadata.json").read_text())
+    assert meta_phase["duration"].startswith("0-01:01:")
+    assert meta_phase["datetime_start"] == meta_camp["datetime_start"] == "2020-01-01T00:00:00Z"
+    assert meta_phase["datetime_last_seen"] == meta_camp["datetime_last_seen"] != "2020-01-01T00:00:00Z"
 
 
 def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:

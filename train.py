@@ -79,11 +79,23 @@ def pass_epoch_span(cfg, idx_pass):
     samps_end = min(idx_pass * cfg.samps_per_pass, cfg.sample_volume)
     return samps_start // cfg.samps_per_epoch + 1, math.ceil(samps_end / cfg.samps_per_epoch)
 
+def snapshot_memory(device):
+    # COLLECTIVE -- every rank contributes its GPU's reading and the trial VRAM value is the max
+    # across GPUs. Peak reserved catches transient highs between snapshots (eval sim matrices,
+    # t-SNE buffers); total - free (device-wide, right now) additionally counts the CUDA context.
+    free, total = torch.cuda.mem_get_info(device)
+    used = max(torch.cuda.max_memory_reserved(device), total - free)
+    vram = torch.tensor([used, total], device=device, dtype=torch.int64)
+    dist.all_reduce(vram, op=dist.ReduceOp.MAX)
+    return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
+
 def samps_stop(cfg):
     """The sample count training runs to: sample_volume, or -- under cfg.chkpt_stop (the trainval phase) -- that
     checkpoint index's threshold, chkpt_stop * chkpt_interval. The last index runs to sample_volume itself, which
     covers the skipped last mid-train threshold the way the final eval does. The LR schedule is untouched (built
-    over sample_volume), so a stopped run sees the same LR at every checkpoint as a full one."""
+    over sample_volume), so a stopped run sees the same LR at every checkpoint as a full one. chkpt_stop 0 (the
+    base eval won selection) never reaches here -- run_training delivers the base weights and returns before the
+    pipeline is built."""
     if cfg.chkpt_stop is None or cfg.chkpt_stop == cfg.n_chkpts:
         return cfg.sample_volume
     return cfg.chkpt_stop * cfg.chkpt_interval
@@ -421,19 +433,9 @@ class TrainPipeline:
             time_eval_avg=self.time_tracker.mean("eval"),
         )
 
-    def _snapshot_memory(self):
-        # COLLECTIVE -- every rank contributes its GPU's reading and the trial VRAM value is the max
-        # across GPUs. Peak reserved catches transient highs between snapshots (eval sim matrices,
-        # t-SNE buffers); total - free (device-wide, right now) additionally counts the CUDA context.
-        free, total = torch.cuda.mem_get_info(self.cfg.device)
-        used = max(torch.cuda.max_memory_reserved(self.cfg.device), total - free)
-        vram = torch.tensor([used, total], device=self.cfg.device, dtype=torch.int64)
-        dist.all_reduce(vram, op=dist.ReduceOp.MAX)
-        return {"ram": read_cgroup_ram(), "vram": tuple(vram.tolist())}
-
     def _checkpoint(self, header, idx_batch, final=False):
         # the memory snapshot all-reduces across ranks, so every rank must enter; the writes are @rank0
-        mem = self._snapshot_memory()
+        mem = snapshot_memory(self.cfg.device)
         self._checkpoint_writes(header, idx_batch, mem, final)
 
     @rank0
@@ -535,7 +537,7 @@ class TrainPipeline:
         try:
 
             if self._resume_state is None:
-                mem = self._snapshot_memory()  # COLLECTIVE -- every rank must enter
+                mem = snapshot_memory(self.cfg.device)  # COLLECTIVE -- every rank must enter
                 ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
@@ -788,6 +790,24 @@ class TrainPipeline:
         finally:
             PrintLog.close_logs()
 
+@rank0
+def _deliver_base_model(cfg, modelw, mem):
+    """chkpt_stop 0 -- the pick's BASE eval won its qual checkpoint selection (checkpoint 0 is the pretrained
+    model, a selection candidate like any other: report.update_chkpt_selection), so the trainval phase's
+    deliverable is that pretrained model itself. It is saved untrained as model.pt and the trial trains not at
+    all. The trial dir is still filled out like a completed trainval trial's, its training telemetry empty --
+    there is no run behind it: a TrialData that recorded no batch, hence a data_trial.pkl of empty series and
+    blank learning curves (the figures whose series went unrecorded get none, as for any trial not recording
+    them). The coord-level files are already written, and the runner's normal success path (rmtree chkpts/ +
+    mark-complete) closes the trial out."""
+    data = TrialData(ArtifactManager.dpath_trial)
+    ArtifactManager.save_model(modelw)
+    data.save()
+    ArtifactManager.save_metadata_trial(data, 0, TimeTracker(), 0, cfg.n_epochs, 0, mem, None, init_flag=True,
+                                        base_selected=True)
+    plot_metrics(data, ArtifactManager.dpath_trial, [], cfg.samps_per_epoch,
+                 cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting))
+
 def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
     start_ram_peak_tracker(cfg.hw.ram_poll_interval)
@@ -806,6 +826,12 @@ def run_training(cfg):
     PrintLog.init_train(cfg)
 
     modelw = VLMWrapper.build(cfg, verbose=(dist.get_rank() == 0))
+
+    if cfg.chkpt_stop == 0:
+        _deliver_base_model(cfg, modelw, snapshot_memory(device))  # COLLECTIVE snapshot -- every rank must enter
+        cleanup_ddp()
+        return
+
     modelw.crit = Criterion.build(cfg.loss, cfg.loss["loss1"], cfg.loss["loss2"], cfg.dataset, cfg.split["split"], cfg.split["train_pt"], device, cfg.batch_size)
 
     resume_state = None

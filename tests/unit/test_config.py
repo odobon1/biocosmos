@@ -1228,11 +1228,13 @@ def test_campaign_config_canonicalizes_override_keys() -> None:
 
 
 def test_train_config_rejects_chkpt_stop_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
-    # chkpt_stop is a checkpoint index, 1..n_chkpts (the dummy's n_chkpts is 10); null runs to sample_volume
+    # chkpt_stop is a checkpoint index, 0..n_chkpts (the dummy's n_chkpts is 10); null runs to sample_volume
     patch_hw(monkeypatch)
 
-    for chkpt_stop in (0, 11):
+    for chkpt_stop in (-1, 11):
         with pytest.raises(ValueError, match="chkpt_stop"):
             TrainConfig(**make_train_config_dummy(chkpt_stop=chkpt_stop))
     assert TrainConfig(**make_train_config_dummy(chkpt_stop=10)).chkpt_stop == 10
+    # 0 is the base eval: the trial trains not at all and delivers the pretrained weights (train.py)
+    assert TrainConfig(**make_train_config_dummy(chkpt_stop=0)).chkpt_stop == 0
     assert TrainConfig(**make_train_config_dummy()).chkpt_stop is None

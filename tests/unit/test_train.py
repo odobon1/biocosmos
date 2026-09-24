@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from train import TrainPipeline, kill_chkpt, pass_epoch_span, samps_stop
+from train import TrainPipeline, _deliver_base_model, kill_chkpt, pass_epoch_span, samps_stop
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
 from utils.utils import save_pickle, load_pickle
 
@@ -564,6 +564,39 @@ def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
     assert kill_chkpt(cfg) == 3
     cfg.operational["kill_thresh"] = 0.7  # 0.7 * 10 is 7.000000000000001 in floats: still eval 7, not 8
     assert kill_chkpt(cfg) == 7
+
+
+def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path, monkeypatch) -> None:
+    # chkpt_stop 0: the pick's base eval won qual selection, so the trainval trial saves the pretrained
+    # model untrained and runs no training -- the trial dir is still filled out like a completed one, its
+    # training telemetry empty (no batch recorded), which the runner then marks complete
+    dpath_trial = tmp_path / "_seeds" / "42"
+    dpath_trial.mkdir(parents=True)
+    monkeypatch.setattr(ArtifactManager, "dpath_trial", dpath_trial)
+    monkeypatch.setattr(ArtifactManager, "fpath_metadata_trial", dpath_trial / "trial_metadata.json")
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "_arms" / "sp" / "_coords" / "base")
+    monkeypatch.setattr(ArtifactManager, "dataset", "cub")
+    monkeypatch.setattr(ArtifactManager, "split", "D10")
+    model = torch.nn.Linear(2, 1)
+    cfg = SimpleNamespace(
+        n_epochs=5,
+        samps_per_epoch=1_000,
+        reporting={"eval": {"native_macro": False, "joint": False, "joint_macro": False},
+                   "learning_curves": {"hpsm": {"kappas": [0.0], "multimodal": False}}},
+    )
+
+    _deliver_base_model(cfg, SimpleNamespace(_unwrapped_model=model), {"ram": (1, 2), "vram": (3, 4)})
+
+    state = torch.load(dpath_trial / "model.pt", weights_only=True)
+    assert torch.equal(state["weight"], model.weight.detach())  # the untrained weights, as built
+    metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert metadata["base_selected"] is True and metadata["killed"] is None
+    assert metadata["complete"] is False  # the runner flips it once the subprocess exits cleanly
+    assert metadata["progress"] == {"epoch": 0, "n_epochs": 5, "n_samps_seen": 0}
+    assert all(not series for series in load_pickle(dpath_trial / "data_trial.pkl")["epoch"].values())
+    # the train-side figure is rendered blank off that empty data; the rest record no series, so -- as
+    # for any trial not recording them -- they get no figure
+    assert [p.name for p in (dpath_trial / "learning_curves").iterdir()] == ["general.png"]
 
 
 def test_save_model_writes_unwrapped_state_dict(tmp_path, monkeypatch) -> None:

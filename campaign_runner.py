@@ -833,7 +833,9 @@ def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], i
     """{(dataset, arm, coord): checkpoint index} over the qual phase's matrix: the checkpoint each pick is trained
     up to in the trainval phase -- its qual-selected one, the argmax of the pick's across-trial mean Native mAP
     composite All curve over its qual trials (report.update_chkpt_selection's best_chkpt.map.native, read from the
-    qual coord's coord_metadata.json; final once every qual trial of the pick is in)."""
+    qual coord's coord_metadata.json; final once every qual trial of the pick is in). Index 0 is the base eval,
+    a selection candidate like any other: a pick whose pretrained model beat its own trained checkpoints trains
+    not at all in the trainval phase and delivers those base weights (train.py's _deliver_base_model)."""
     return {
         (dataset, arm, coord): load_json(
             _dpath_coord(_dpath_phase(campaign, "qual"), dataset, arm, coord) / "coord_metadata.json"

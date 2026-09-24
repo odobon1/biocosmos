@@ -139,8 +139,10 @@ class TrainConfig:
     idx_seed: int = 0  # index of this trial's seed within the campaign seed sweep
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
-    chkpt_stop: int | None = None  # trainval phase: stop training once this checkpoint index (1..n_chkpts, the pick's
-    # qual-selected one) is reached instead of running to sample_volume; the LR schedule keeps its full horizon
+    chkpt_stop: int | None = None  # trainval phase: stop training once this checkpoint index (0..n_chkpts, the pick's
+    # qual-selected one) is reached instead of running to sample_volume; the LR schedule keeps its full horizon.
+    # Index 0 is the base eval (the pretrained model, a selection candidate like any other): the trial trains not at
+    # all and delivers the base weights (train.py's _deliver_base_model)
 
     hw: dict = field(default_factory=dict)  # hardware.yaml contents; campaign trials freeze it into the baseline, otherwise loaded live (converted to HardwareConfig in __post_init__)
 
@@ -194,8 +196,8 @@ class TrainConfig:
 
         if self.n_chkpts <= 0:
             raise ValueError(f"n_chkpts must be greater than 0, got {self.n_chkpts}")
-        if self.chkpt_stop is not None and not 1 <= self.chkpt_stop <= self.n_chkpts:
-            raise ValueError(f"chkpt_stop must be a checkpoint index in 1..n_chkpts ({self.n_chkpts}), got {self.chkpt_stop}")
+        if self.chkpt_stop is not None and not 0 <= self.chkpt_stop <= self.n_chkpts:
+            raise ValueError(f"chkpt_stop must be a checkpoint index in 0..n_chkpts ({self.n_chkpts}), got {self.chkpt_stop}")
         # sample interval between checkpoint/eval thresholds; sample_volume is data-derived so it need
         # not divide evenly -- the trainer skips the last mid-train threshold and the final eval covers
         # it at sample_volume

@@ -571,7 +571,7 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, killed, init_flag=False):
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, killed, init_flag=False, base_selected=False):
         # killed: the train-time eval index the trial was killed at (kill_thresh), None otherwise
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
@@ -588,6 +588,7 @@ class ArtifactManager:
                 "datetime_last_seen": now,
                 "complete": False,
                 "killed": killed,
+                "base_selected": base_selected,  # a trainval trial at chkpt_stop 0: model.pt is the pretrained model, saved untrained, with no training behind the telemetry (train.py's _deliver_base_model)
                 "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # crashes this trial has recovered from, bucketed by cause; bumped by campaign_runner._bump_crash_counts
             }
         else:
@@ -714,8 +715,8 @@ class ArtifactManager:
     @rank0
     def save_model(modelw):
         """The trial's product weights: the full state of the unwrapped model (encoders + logit scalars) as
-        <trial>/model.pt -- the trainval phase's deliverable, taken at its chkpt_stop; loads back into
-        VLMWrapper.build(cfg)'s model via load_state_dict."""
+        <trial>/model.pt -- the trainval phase's deliverable, taken at its chkpt_stop (at chkpt_stop 0, the
+        untrained pretrained model itself); loads back into VLMWrapper.build(cfg)'s model via load_state_dict."""
         torch.save(modelw._unwrapped_model.state_dict(), ArtifactManager.dpath_trial / "model.pt")
 
     @staticmethod

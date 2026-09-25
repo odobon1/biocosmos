@@ -58,6 +58,8 @@ from utils.config import (
 from utils.data import stage_img_cache
 from utils.hardware import get_slurm_alloc
 from utils.report import (
+    update_chkpt_selection,
+    update_metric_stats,
     update_arm_metrics,
     update_best_coord_curves,
     update_dataset_metrics,
@@ -469,17 +471,22 @@ def _matrix_items(matrix: dict) -> dict[str, list]:
         "coords": list(dict.fromkeys(coord for arms in matrix.values() for coords in arms.values() for coord in coords)),
     }
 
-def _prune_removed(campaign: str, phase: str, prev: dict, matrix: dict) -> bool:
-    """Delete the artifacts of every dataset / arm / coord the phase's recorded matrix (`prev`, the plan last applied)
-    has that the current plan's `matrix` drops -- an item removed from the camp yaml, or a refine pick replaced by a new
-    screening best:
+def _prune_removed(campaign: str, phase: str, prev_seeds: list, seeds: list, prev: dict, matrix: dict, groups: dict) -> bool:
+    """Delete the artifacts of every dataset / arm / coord / seed the phase's recorded plan (`prev_seeds`, `prev`: the
+    plan last applied) has that the current plan (`seeds`, `matrix`) drops -- an item removed from the camp yaml, a
+    seed count lowered, or a refine pick replaced by a new screening best:
     its dir under _datasets/ (the dataset), _datasets/<dataset>/_arms/ (the arm) or .../_coords/ (the coord), trials
-    and stats included, so the tree mirrors the plan (a dir that never came to exist -- the item's trials never
-    launched -- needs nothing). What the trainval phase drops goes from the campaign's test tree as well
-    (artifacts/<campaign>/_phase/test/, test.py's scores of the trainval models, laid out the same way). Returns whether
-    anything was dropped."""
-    roots = [_dpath_phase(campaign, phase)] + ([_dpath_phase(campaign, "test")] if phase == "trainval" else [])
+    and stats included, or, for a seed, its trial dir (.../_seeds/<seed>) under every coord the plan keeps, so the
+    tree mirrors the plan (a dir that never came to exist -- the item's trials never launched -- needs nothing). What
+    the trainval phase drops goes from the campaign's test tree as well (artifacts/<campaign>/_phase/test/, test.py's
+    scores of the trainval models, laid out the same way). A coord a trial went from has its checkpoint selection and
+    coord_stats redone over the trials it has left (update_chkpt_selection / update_metric_stats, as at a trial
+    completion: both aggregate over the coord's completed trials, and a shrink brings no completion of its own to
+    redo them at) -- not in the trainval phase, which runs no evals. Returns whether anything was dropped."""
+    dpath_phase = _dpath_phase(campaign, phase)
+    roots = [dpath_phase] + ([_dpath_phase(campaign, "test")] if phase == "trainval" else [])
     removed = []  # (label, dir relative to a phase root)
+    kept = []  # the coords `prev` has that `matrix` keeps, (dataset, arm, coord)
     for dataset, arms in prev.items():
         if dataset not in matrix:
             removed.append((f"dataset {dataset}", Path("_datasets") / dataset))
@@ -488,14 +495,36 @@ def _prune_removed(campaign: str, phase: str, prev: dict, matrix: dict) -> bool:
             if arm not in matrix[dataset]:
                 removed.append((f"arm {dataset}/{arm}", Path("_datasets") / dataset / "_arms" / arm))
                 continue
-            removed.extend((f"coord {dataset}/{arm}/{coord}", _dpath_coord(Path(), dataset, arm, coord))
-                           for coord in coords if coord not in matrix[dataset][arm])
+            for coord in coords:
+                if coord in matrix[dataset][arm]:
+                    kept.append((dataset, arm, coord))
+                else:
+                    removed.append((f"coord {dataset}/{arm}/{coord}", _dpath_coord(Path(), dataset, arm, coord)))
     for label, rel in removed:
         for root in roots:
             if (root / rel).exists():
                 shutil.rmtree(root / rel)
         print(f"Campaign: '{campaign}' {phase}: removed {label}", flush=True)
-    return bool(removed)
+    seeds_removed = [seed for seed in prev_seeds if seed not in seeds]
+    shrunk = set()  # the kept coords a trial actually went from
+    for seed in seeds_removed:
+        for root in roots:
+            for combo in kept:
+                dpath_trial = _dpath_trial(root, *combo, seed)
+                if dpath_trial.exists():
+                    shutil.rmtree(dpath_trial)
+                    shrunk.add(combo)
+        print(f"Campaign: '{campaign}' {phase}: removed seed {seed}", flush=True)
+    if shrunk and phase != "trainval":
+        cfg_stats = get_config_stats()
+        ArtifactManager.dpath_phase = dpath_phase
+        for combo in kept:
+            if combo in shrunk:
+                ArtifactManager.dataset = combo[0]
+                ArtifactManager.dpath_coord = _dpath_coord(dpath_phase, *combo)
+                update_chkpt_selection(groups, cfg_stats.spread_type)
+                update_metric_stats(groups, cfg_stats.spread_type)
+    return bool(removed or seeds_removed)
 
 def _enable_child_subreaper() -> None:
     """Become the reaper for orphaned descendants. torch elastic starts each
@@ -737,9 +766,8 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
     coord under every arm for the screening phase, each arm's picked coord for the refine and trainval phases -- the
     shape the stats code keys its sweep gates and table rows off). A plan that differs from the recorded one (a
     relaunch, or a live edit of the camp yaml) is reconciled with the tree: its additions are announced, and whatever
-    the recorded matrix has that it drops is deleted (_prune_removed) and the phase's cross-coord tables re-rendered
-    without it. The GPU count must match the phase's first launch; the seed count may only grow (_Camp.read).
-    Returns (metadata, its path)."""
+    the recorded plan has that it drops is deleted (_prune_removed) and the phase's cross-coord tables re-rendered
+    without it. The GPU count must match the phase's first launch. Returns (metadata, its path)."""
     n_gpus = torch.cuda.device_count()
     slurm_alloc = get_slurm_alloc()
     fpath_meta = _dpath_phase(campaign, phase) / "phase_metadata.json"
@@ -757,7 +785,7 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
             added = [v for v in items[kind] if v not in prev_items[kind]]
             if added:
                 print(f"Campaign: '{campaign}' {phase}: {kind} added: {added}", flush=True)
-        pruned = _prune_removed(campaign, phase, metadata["matrix"], matrix)
+        pruned = _prune_removed(campaign, phase, metadata["seeds"], seeds, metadata["matrix"], matrix, groups)
     else:
         now = utc_now()
         metadata = {
@@ -786,8 +814,8 @@ def _refine_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> d
     score at its selected checkpoint (report.pick_best_coords; every arm has one, the screening phase having
     completed in full). Every coord decision is made here, on the screening results alone: the refine phase only adds
     trials to the pick (a steadier curve for the trainval checkpoint selection), never re-ranks. A relaunch or live
-    edit whose screening results have moved (added coords/seeds) replaces the pick with the new best, the old pick's
-    refine artifacts (and, downstream, its trainval models and test scores) deleted (_prune_removed)."""
+    edit whose screening results have moved (coords or seeds added or removed) replaces the pick with the new best,
+    the old pick's refine artifacts (and, downstream, its trainval models and test scores) deleted (_prune_removed)."""
     ArtifactManager.dpath_phase = _dpath_phase(campaign, "screen")
     best = pick_best_coords()  # {(arm, dataset): coord}
     return {dataset: {arm: [best[(arm, dataset)]] for arm in arm_names} for dataset in datasets}
@@ -894,9 +922,7 @@ class _Camp:
     file's CampaignConfig and the arms / coords it expands to (_expand_matrix). A read that differs from the last is
     checked before it is handed out: every arm x coord's effective TrainConfig is constructed for every dataset, so a
     misconfigured combination (a bad override key, a batch_size that doesn't band-shard over world_size x
-    loss_chunk_size) fails here rather than at its trial's launch; and no phase's recorded seeds may have been
-    dropped (n_trials_screen / n_trials_refine lowered) -- a removed seed would orphan its trial in every coord,
-    whereas arms, coords and datasets may be removed (_prune_removed). A read that fails is printed and the last good
+    loss_chunk_size) fails here rather than at its trial's launch. A read that fails is printed and the last good
     read returned -- a file mid-edit (unparseable, an invalid field, a duplicate name, a bad override) never takes
     the running campaign down -- except the run's first, which raises. The queue reads a campaign already run the
     same way, to tell whether an edit has changed its plan (_plan_changed)."""
@@ -923,17 +949,6 @@ class _Camp:
         return self.last
 
     def _check(self, cfg: CampaignConfig, arms: list, coords: list) -> None:
-        for phase, n_trials in (("screen", cfg.n_trials_screen), ("refine", cfg.n_trials_refine)):
-            fpath_meta = _dpath_phase(self.campaign, phase) / "phase_metadata.json"
-            if n_trials is None or not fpath_meta.exists():
-                continue
-            removed = load_json(fpath_meta)["seeds"][n_trials:]
-            if removed:
-                raise ValueError(
-                    f"Campaign '{self.campaign}' config drops seeds a prior run recorded for its {phase} phase "
-                    f"(seeds removed: {removed}); arms, coords and datasets may be removed but seeds only added -- "
-                    f"restore n_trials_screen / n_trials_refine."
-                )
         # Seed only needs to be representative -- config validation is seed-independent beyond requiring a non-null
         # seed -- and the phase-level injection (the trainval phase's chkpt_stop) is internal, so the
         # screening-phase config stands for every phase's.
@@ -1262,8 +1277,8 @@ def _plan_changed(run: _Run) -> bool:
     phase_metadata.json records -- an arm, coord, dataset or seed added or removed since the campaign last ran, or a
     phase switched on (no record yet) -- over the phases the campaign can reach: a phase switched off, or an earlier
     phase left incomplete (a trial failed for good), ends the walk (_plan_phases), so a campaign stuck at a failure
-    isn't relaunched for a phase it can't reach. The yaml is read as at a launch (_Camp.read: expanded, validated, no
-    seeds dropped); one that doesn't read -- mid-edit -- is reported and counts as unchanged."""
+    isn't relaunched for a phase it can't reach. The yaml is read as at a launch (_Camp.read: expanded, validated);
+    one that doesn't read -- mid-edit -- is reported and counts as unchanged."""
     try:
         cfg, arms, coords = _Camp(run.campaign, run.name, _load_or_create_campaign_config(run.campaign)).read()
     except (SystemExit, yaml.YAMLError, TypeError, ValueError) as e:

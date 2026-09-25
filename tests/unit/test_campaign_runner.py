@@ -1581,21 +1581,34 @@ def test_run_campaign_prunes_removed_dataset(tmp_path, monkeypatch) -> None:
     assert meta["matrix"] == {"cub": {"sp": ["base"]}}
 
 
-def test_run_campaign_raises_on_removed_seed(tmp_path, monkeypatch) -> None:
-    # seeds may only be added: a lowered n_trials_screen is refused before anything runs or is deleted -- dropping a
-    # seed would orphan its trial in every coord (arms / coords / datasets, whole dirs, are pruned instead)
+def test_run_campaign_prunes_removed_seed(tmp_path, monkeypatch) -> None:
+    # a relaunch whose config lowers n_trials_screen deletes the dropped seed's trial dir from every coord, records
+    # the shrunk seed list, reselects each coord that lost a trial (its checkpoint selection and coord_stats aggregate
+    # over its completed trials, and nothing new runs to redo them at) and drops the seed from the manifest
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
-    _set_camp(monkeypatch, n_trials_screen=2, n_trials_refine=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+    camp = dict(n_trials_refine=None, trainval=False, datasets=("cub",),
+                ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
+    _set_camp(monkeypatch, n_trials_screen=2, **camp)
+    cr.run_campaign("cmp_rm_seed", "camp")
+    dpath_arms = tmp_path / "cmp_rm_seed" / "_phase" / "screen" / "_datasets" / "cub" / "_arms"
+    assert (dpath_arms / "hp" / "_coords" / "base" / "_seeds" / "43" / "trial_metadata.json").exists()
+
+    reselected = []
+    monkeypatch.setattr(cr, "update_chkpt_selection", lambda groups, spread_type: reselected.append(("select", cr.ArtifactManager.dpath_coord)))
+    monkeypatch.setattr(cr, "update_metric_stats", lambda groups, spread_type: reselected.append(("stats", cr.ArtifactManager.dpath_coord)))
+    del scheduled[:]
+    _set_camp(monkeypatch, n_trials_screen=1, **camp)
     cr.run_campaign("cmp_rm_seed", "camp")
 
-    del scheduled[:]
-    _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
-    with pytest.raises(ValueError, match=r"seeds removed: \[43\]"):
-        cr.run_campaign("cmp_rm_seed", "camp")
     assert scheduled == []
-    assert (tmp_path / "cmp_rm_seed" / "_phase" / "screen" / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "base" / "_seeds" / "43" / "trial_metadata.json").exists()
+    for arm in ("sp", "hp"):
+        assert not (dpath_arms / arm / "_coords" / "base" / "_seeds" / "43").exists()
+        assert (dpath_arms / arm / "_coords" / "base" / "_seeds" / "42" / "trial_metadata.json").exists()
+    assert reselected == [(step, dpath_arms / arm / "_coords" / "base") for arm in ("sp", "hp") for step in ("select", "stats")]
+    meta = json.loads((tmp_path / "cmp_rm_seed" / "_phase" / "screen" / "phase_metadata.json").read_text())
+    assert meta["seeds"] == [42] and meta["matrix"] == {"cub": {"sp": ["base"], "hp": ["base"]}}
+    text = (tmp_path / "cmp_rm_seed" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8")
+    assert "cub/sp/base/42 ---" in text and "cub/hp/base/42 ---" in text and "/43" not in text
 
 
 def test_run_campaign_drops_a_best_coord_mirror_when_a_coord_is_added(tmp_path, monkeypatch) -> None:
@@ -1871,8 +1884,8 @@ _PLAN_SPEC = dict(
     ({"n_trials_refine": 1}, True),
 ], ids=["unchanged", "coord_added", "seed_added", "dataset_added", "arm_removed", "refine_switched_on"])
 def test_plan_changed_compares_the_yaml_to_the_recorded_plans(tmp_path, monkeypatch, edit, expected) -> None:
-    """Once a campaign has run, an edit of its yaml that changes a reachable phase's plan -- an item added or removed,
-    a seed added, a phase switched on (no record yet) -- reads as changed; the unedited yaml doesn't."""
+    """Once a campaign has run, an edit of its yaml that changes a reachable phase's plan -- an item or a seed added or
+    removed, a phase switched on (no record yet) -- reads as changed; the unedited yaml doesn't."""
     _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, **_PLAN_SPEC)
     cr.run_campaign("cmp_plan", "camp")
@@ -1883,13 +1896,24 @@ def test_plan_changed_compares_the_yaml_to_the_recorded_plans(tmp_path, monkeypa
     assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan", "camp")) is expected
 
 
-def test_plan_changed_tolerates_an_invalid_yaml(tmp_path, monkeypatch, capsys) -> None:
+def test_plan_changed_on_a_removed_seed(tmp_path, monkeypatch) -> None:
+    # a lowered seed count reads as a changed plan like any removal: the queue relaunches the campaign to prune it
     _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 2})
+    cr.run_campaign("cmp_plan_rm_seed", "camp")
+
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 1})
+    assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan_rm_seed", "camp")) is True
+
+
+def test_plan_changed_tolerates_an_invalid_yaml(tmp_path, monkeypatch, capsys) -> None:
+    _setup_completing_campaign(tmp_path, monkeypatch)
+    _set_camp(monkeypatch, **_PLAN_SPEC)
     cr.run_campaign("cmp_plan_bad", "camp")
 
-    # a lowered seed count is refused as at a launch: reported, and the campaign not relaunched
-    _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_screen": 1})
+    # an invalid yaml (here an arm added under a duplicate name) is refused as at a launch: reported, and the
+    # campaign not relaunched
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "ablation_arms": [[*_PLAN_SPEC["ablation_arms"][0], {"loss.loss1.targ": "phylo", "name": "hp"}]]})
     capsys.readouterr()
     assert cr._plan_changed(cr._Run("camp.camp", "cmp_plan_bad", "camp")) is False
     assert "campaign_queue: 'camp.camp' config invalid -- not relaunched until it is fixed" in capsys.readouterr().out
@@ -2075,6 +2099,38 @@ def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatc
     assert (dpath_screen / "loss.sim-cos" / "_seeds" / "42").exists() and (dpath_screen / "loss.sim-geo1" / "_seeds" / "42").exists()
     assert not (dpath_screen / "loss.sim-geo1" / "_seeds" / "43").exists()
     assert json.loads((tmp_path / "cmp_refine" / "_phase" / "screen" / "phase_metadata.json").read_text())["seeds"] == [42]
+
+
+def test_run_campaign_refine_prunes_removed_seed(tmp_path, monkeypatch) -> None:
+    # a relaunch that lowers n_trials_refine (3 -> 2) deletes the dropped seed's trial from each refine pick, records
+    # the shrunk seed list there and reselects the picks over the trials they have left; nothing new runs, and the
+    # screening tree, whose seeds are unchanged, is untouched
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1", ("hp", "cub"): "loss.sim-cos"})
+    camp = dict(n_trials_screen=1, trainval=False, datasets=("cub",), ablation_arms=_ARMS_SP_HP, hpo_coords=_COORDS_SIM)
+    _set_camp(monkeypatch, n_trials_refine=3, **camp)
+    assert cr.run_campaign("cmp_refine_rm_seed", "camp")
+
+    reselected = []
+    monkeypatch.setattr(cr, "update_chkpt_selection",
+                        lambda groups, spread_type: reselected.append((cr.ArtifactManager.dpath_phase.name, cr.ArtifactManager.dpath_coord.name)))
+    monkeypatch.setattr(cr, "update_metric_stats", lambda groups, spread_type: None)
+    del scheduled[:]
+    _set_camp(monkeypatch, n_trials_refine=2, **camp)
+    assert cr.run_campaign("cmp_refine_rm_seed", "camp")
+
+    assert scheduled == []
+    dpath_refine = tmp_path / "cmp_refine_rm_seed" / "_phase" / "refine"
+    for arm, coord in (("sp", "loss.sim-geo1"), ("hp", "loss.sim-cos")):
+        dpath_pick = dpath_refine / "_datasets" / "cub" / "_arms" / arm / "_coords" / coord
+        assert not (dpath_pick / "_seeds" / "44").exists()
+        assert json.loads((dpath_pick / "_seeds" / "43" / "trial_metadata.json").read_text())["complete"] is True
+    assert reselected == [("refine", "loss.sim-geo1"), ("refine", "loss.sim-cos")]
+    assert json.loads((dpath_refine / "phase_metadata.json").read_text())["seeds"] == [42, 43]
+    text = (dpath_refine / "manifest.log").read_text(encoding="utf-8")
+    assert "cub/sp/loss.sim-geo1/43 ---" in text and "/44" not in text
+    dpath_screen = tmp_path / "cmp_refine_rm_seed" / "_phase" / "screen"
+    assert json.loads((dpath_screen / "phase_metadata.json").read_text())["seeds"] == [42]
+    assert (dpath_screen / "_datasets" / "cub" / "_arms" / "sp" / "_coords" / "loss.sim-geo1" / "_seeds" / "42" / "trial_metadata.json").exists()
 
 
 def test_run_campaign_refine_null_skips_refine(tmp_path, monkeypatch) -> None:
@@ -2308,9 +2364,9 @@ def test_run_campaign_live_edit_switches_refine_off(tmp_path, monkeypatch) -> No
 
 
 def test_run_campaign_live_edit_invalid_yaml_keeps_last_plan(tmp_path, monkeypatch, capsys) -> None:
-    # a yaml caught mid-edit between trials -- unparseable, or invalid (here n_trials_screen lowered below the
-    # recorded seeds) -- is reported and ignored wholesale: the campaign carries on with its last good plan, and picks
-    # the file up again once it is valid
+    # a yaml caught mid-edit between trials -- unparseable, or invalid (here an arm added under a duplicate name) --
+    # is reported and ignored wholesale: the campaign carries on with its last good plan, and picks the file up again
+    # once it is valid
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=3, n_trials_refine=None, trainval=False, datasets=("cub",),
               ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
@@ -2324,9 +2380,9 @@ def test_run_campaign_live_edit_invalid_yaml_keeps_last_plan(tmp_path, monkeypat
         fake_ok(cfg_dict, spare_render_pid)
         if len(scheduled) == 1:
             monkeypatch.setattr(cr, "_load_campaign_config", _unparseable)
-        elif len(scheduled) == 2:  # hp added, but with a seed dropped: the read is invalid, so neither takes
-            _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=None, trainval=False, datasets=("cub",),
-                      ablation_arms=arms_sp_hp, hpo_coords=_BASE_COORD)
+        elif len(scheduled) == 2:  # hp added, but twice over: the read is invalid, so the addition doesn't take
+            _set_camp(monkeypatch, n_trials_screen=3, n_trials_refine=None, trainval=False, datasets=("cub",),
+                      ablation_arms=[[*arms_sp_hp[0], {"loss.loss1.targ": "phylo", "name": "hp"}]], hpo_coords=_BASE_COORD)
         elif len(scheduled) == 3:  # valid again: hp is planned over every seed
             _set_camp(monkeypatch, n_trials_screen=3, n_trials_refine=None, trainval=False, datasets=("cub",),
                       ablation_arms=arms_sp_hp, hpo_coords=_BASE_COORD)
@@ -2338,7 +2394,7 @@ def test_run_campaign_live_edit_invalid_yaml_keeps_last_plan(tmp_path, monkeypat
                          ("hp", "base", "cub", 42), ("hp", "base", "cub", 43), ("hp", "base", "cub", 44)]
     out = capsys.readouterr().out
     assert "camp.camp: config invalid -- keeping the last good read until it is fixed: mapping values" in out
-    assert "seeds removed: [43, 44]" in out
+    assert "Duplicate ablation_arms name: hp" in out
     meta = json.loads((tmp_path / "cmp_live_bad" / "_phase" / "screen" / "phase_metadata.json").read_text())
     assert meta["seeds"] == [42, 43, 44] and meta["matrix"] == {"cub": {"sp": ["base"], "hp": ["base"]}}
 

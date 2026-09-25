@@ -1744,7 +1744,8 @@ def test_update_phase_metrics_overrides_bands(tmp_path, monkeypatch) -> None:
     # (inert under that config: mp has loss.blend.lambda 0.0, so clean_metadata dropped its loss2 subtree).
     # loss.loss1.targ resolves to "mp" for EVERY row, so its column is omitted (uniform columns
     # differentiate nothing). Config cells get no winner-bold/heatmap styling despite
-    # bold_high/heatmap on. The arms workbooks get both bands too, each row's coord values its best coord's.
+    # bold_high/heatmap on. The arms workbooks get both bands too, each row's coord values its best coord's
+    # (one dataset here, so every pick is single).
     arms = {
         "hp": ({"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}, {"loss": {"blend": {"lambda": 0.3}, "loss1": {"targ": "mp"}, "loss2": {"targ": "phylo"}}}),
         "mp": ({"loss.loss1.targ": "mp"}, {"loss": {"loss1": {"targ": "mp"}}}),
@@ -1823,32 +1824,44 @@ def test_update_phase_metrics_overrides_bands(tmp_path, monkeypatch) -> None:
     assert grid[0][14] == "seed 42"
 
 
-def test_update_phase_metrics_arms_coord_band_joins_per_dataset_picks(tmp_path, monkeypatch) -> None:
-    # an arms/ row's best coord is picked per dataset: where the picks differ on a param (hp: lo on cub, hi on
-    # bryo) its Coord band cell joins their values ' / ', dataset order; where they agree (mp: lo on both) the
-    # cell is the one value
+def test_update_phase_metrics_arms_coord_band_dropped_when_picks_differ_per_dataset(tmp_path, monkeypatch) -> None:
+    # an arms/ row's best coord is picked per dataset: while every arm's picks agree across its datasets (hp
+    # lo and mp hi, on cub and bryo alike) the arms workbook carries the Coord Overrides band off that coord's
+    # config; once some arm's picks differ (bryo's hp/hi trial rescored so hi wins there) the workbook has a
+    # row with no single coord config to show, and the band is dropped -- the Arm Overrides band stays
     coords = {"lo": 1.0e-5, "hi": 1.0e-4}
-    bases = {("hp", "cub"): {"lo": 0.50, "hi": 0.40}, ("hp", "bryo"): {"lo": 0.40, "hi": 0.50},
-             ("mp", "cub"): {"lo": 0.50, "hi": 0.40}, ("mp", "bryo"): {"lo": 0.50, "hi": 0.40}}
-    for (arm, dataset), by_coord in bases.items():
-        for coord, base in by_coord.items():
-            dpath_coord = _dpath_coord(tmp_path, dataset, arm, coord)
-            dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
-            dpath_selected.mkdir(parents=True)
-            _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
-            (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": arm}, "coord": {"lr.init": coords[coord]}}))
-            (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": arm}}, "lr": {"init": coords[coord]}}))
+    for arm, bases in (("hp", (("lo", 0.50), ("hi", 0.40))), ("mp", (("lo", 0.40), ("hi", 0.50)))):
+        for dataset in ("cub", "bryo"):
+            for coord, base in bases:
+                dpath_coord = _dpath_coord(tmp_path, dataset, arm, coord)
+                dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
+                dpath_selected.mkdir(parents=True)
+                _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
+                (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": arm}, "coord": {"lr.init": coords[coord]}}))
+                (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": arm}}, "lr": {"init": coords[coord]}}))
     _write_meta(tmp_path, ["hp", "mp"], ["lo", "hi"], ["cub", "bryo"])
-
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+    fpath_arms = tmp_path / "phase_metrics" / "arms" / "metrics.xlsx"
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
-
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active.iter_rows()]
-    i = next(r for r, row in enumerate(grid) if row[2] == "Coord Overrides")
+    grid = [[c.value for c in r] for r in load_workbook(fpath_arms).active.iter_rows()]
+    i = next(r for r, row in enumerate(grid) if row[0] == "Arm Overrides")
+    assert grid[i][2] == "Coord Overrides" and grid[i][4] == "Mean"
     assert grid[i + 1][:3] == ["loss.loss1.targ", None, "lr.init"]
-    assert grid[i + 2][:3] == ["hp", None, "1e-05 / 0.0001"] and grid[i + 2][4:6] == ["hp", "-"]
-    assert grid[i + 3][:3] == ["mp", None, "1e-05"] and grid[i + 3][4:6] == ["mp", "-"]
+    assert grid[i + 2][:3] == ["hp", None, "1e-05"] and grid[i + 2][4:6] == ["hp", "-"]
+    assert grid[i + 3][:3] == ["mp", None, "0.0001"] and grid[i + 3][4:6] == ["mp", "-"]
+
+    _write_group_metrics(_dpath_coord(tmp_path, "bryo", "hp", "hi") / "_seeds" / "42" / "evals" / "_selected", _scores_grp(_comp(0.60)))
+    report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
+    grid = [[c.value for c in r] for r in load_workbook(fpath_arms).active.iter_rows()]
+    assert not any(v == "Coord Overrides" for r in grid for v in r)
+    i = next(r for r, row in enumerate(grid) if row[0] == "Arm Overrides")
+    assert grid[i][2] == "Mean"
+    assert grid[i + 1][:3] == ["loss.loss1.targ", None, "Arm"]
+    assert grid[i + 2][:4] == ["hp", None, "hp", "-"]
+    assert grid[i + 3][:4] == ["mp", None, "mp", "-"]
+    # its per-dataset tables still name each pick: hp at hi on bryo, lo on cub
+    assert ["hp", "hi (1)"] in [r[2:4] for r in grid] and ["hp", "lo (1)"] in [r[2:4] for r in grid]
 
 
 def test_update_phase_metrics_overrides_all_uniform_omits_bands(tmp_path, monkeypatch) -> None:

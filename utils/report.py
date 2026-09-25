@@ -1079,29 +1079,23 @@ def _override_value(config, key):
         node = node[part]
     return str(node)
 
-def _band_value(configs, key):
-    """A band cell: the row's effective value of `key` over its config.json dicts (`configs`: one for an
-    (arm, coord) row; an arms/ row's per-dataset best coords', dataset order), its distinct values
-    (_override_value) joined by ' / ' in first-seen order -- a single value when they agree."""
-    return " / ".join(dict.fromkeys(_override_value(config, key) for config in configs))
-
 def _band_keys(side, rows, declared, config_by):
     """The params declared on `side` ('arm' / 'coord') across `rows`' overrides.json dicts
-    (declared[row]), first-seen order (campaign order); a param whose band value
-    (config_by[row], _band_value) is identical across every row differentiates nothing -- drop
+    (declared[row]), first-seen order (campaign order); a param whose effective value
+    (config_by[row], _override_value) is identical across every row differentiates nothing -- drop
     the column (and with it the whole band when no column survives)."""
     keys = []
     for row in rows:
         for key in declared[row][side]:
             if key not in keys:
                 keys.append(key)
-    return [key for key in keys if len({_band_value(config_by[row], key) for row in rows}) > 1]
+    return [key for key in keys if len({_override_value(config_by[row], key) for row in rows}) > 1]
 
 def _band_grids(band_specs, rows, config_by):
     """[(title, grid)] for the bands ([(title, keys)]) with surviving params: a header of param
     names only -- no key columns; the rows align with (and are labeled by) the aggregate Mean
     table's rows."""
-    return [(title, [list(keys)] + [[_band_value(config_by[row], key) for key in keys] for row in rows])
+    return [(title, [list(keys)] + [[_override_value(config_by[row], key) for key in keys] for row in rows])
             for title, keys in band_specs if keys]
 
 def _map_groups(supp_scores, nshot_names):
@@ -1283,8 +1277,9 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     columns label their rows: one column per param declared on that side of the campaign matrix
     (ablation_arms for the arm band, hpo_coords for the coord band: the union of the rows' overrides.json
     'arm' / 'coord' keys, first-seen order), each cell the row's effective value resolved from its
-    config.json (an arms/ row reads its best coords' across datasets, their distinct values joined by
-    ' / ' where the per-dataset picks differ on the param -- _band_value) -- '-' when the param is
+    config.json (an arms/ row reads its best coord's; the arms/ workbooks carry the coord band only
+    while every row's best coord is the same in each dataset it has trials in -- a row whose pick differs
+    between datasets has no single coord config to show, and the band is dropped) -- '-' when the param is
     absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.blend.lambda
     0.0). Params whose effective value is identical across every row of the workbook are omitted
     (they differentiate nothing); a band all of whose params are uniform is omitted entirely. These
@@ -1330,7 +1325,7 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
         # from the first dataset it has completed trials in
         dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows_ac}
         declared_ac = {row: load_json(dpaths[row] / "overrides.json") for row in rows_ac}  # {'arm': {...}, 'coord': {...}}
-        config_ac = {row: [load_json(dpaths[row] / "config.json")] for row in rows_ac}
+        config_ac = {row: load_json(dpaths[row] / "config.json") for row in rows_ac}
 
     def build_blocks(headers, rows, key_cells, comps_by, score_key, labels):
         """A score sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
@@ -1486,16 +1481,16 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
         }
         band_specs_arms, config_arms = [], {}
         if overrides:
-            # an arms/ row's configs are its per-dataset best coords' (dataset order, each once), its declared
-            # params their union
+            # an arms/ row reads its first best coord's overrides.json / config.json: the arm's params are the same
+            # in every coord of it, and the coord band is written only while every row's picks agree on one coord
+            # across its datasets -- a row picked differently per dataset has no single coord config to show
             picks = {(arm,): list(dict.fromkeys((arm, best[(arm, dataset)]) for dataset in datasets if (arm, dataset) in best))
                      for (arm,) in rows}
-            declared_arms = {row: {side: dict.fromkeys(key for pick in picks[row] for key in declared_ac[pick][side])
-                                   for side in ("arm", "coord")}
-                             for row in rows}
-            config_arms = {row: [config for pick in picks[row] for config in config_ac[pick]] for row in rows}
-            band_specs_arms = [("Arm Overrides", _band_keys("arm", rows, declared_arms, config_arms)),
-                               ("Coord Overrides", _band_keys("coord", rows, declared_arms, config_arms))]
+            declared_arms = {row: declared_ac[picks[row][0]] for row in rows}
+            config_arms = {row: config_ac[picks[row][0]] for row in rows}
+            band_specs_arms = [("Arm Overrides", _band_keys("arm", rows, declared_arms, config_arms))]
+            if all(len(picks[row]) == 1 for row in rows):
+                band_specs_arms.append(("Coord Overrides", _band_keys("coord", rows, declared_arms, config_arms)))
         write_workbook(group_path(dpath_stats / "arms", group_key, "metrics", ".xlsx"),
                        ("Arm", "Coord"), rows, key_cells_arms,
                        comps_arms, hw_arms, crash_totals_arms, band_specs_arms, config_arms, group_name)
@@ -1605,7 +1600,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
         # each row reads its from the first dataset it has scored trials in
         dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows}
         declared = {row: load_json(dpaths[row] / "overrides.json") for row in rows}  # {'arm': {...}, 'coord': {...}}
-        config_by = {row: [load_json(dpaths[row] / "config.json")] for row in rows}
+        config_by = {row: load_json(dpaths[row] / "config.json") for row in rows}
         band_specs = [("Arm Overrides", _band_keys("arm", rows, declared, config_by)),
                       ("Coord Overrides", _band_keys("coord", rows, declared, config_by))]
 

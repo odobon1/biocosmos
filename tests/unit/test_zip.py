@@ -8,30 +8,34 @@ import yaml
 from tools import zip as zip_tool
 
 
-TRIAL = "artifacts/camp/_screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/_seeds/42"
+TRIAL = "artifacts/camp/_phase/screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/_seeds/42"
 CORE = {  # always included, whatever the toggles
-    "artifacts/camp/_screen/phase_metadata.json",
-    "artifacts/camp/_screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/config.json",
+    "artifacts/camp/_phase/screen/phase_metadata.json",
+    "artifacts/camp/_phase/screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/config.json",
     f"{TRIAL}/trial_metadata.json",
     f"{TRIAL}/data_trial.pkl",
-    f"{TRIAL}/evals/eval1/native.json",
-    f"{TRIAL}/evals/_selected/map/native.json",
-    f"{TRIAL}/learning_curves/scores/native.png",
+    f"{TRIAL}/evals/evals/1/metrics/metrics.json",
+    f"{TRIAL}/evals/_selected/metrics/metrics.json",
+    f"{TRIAL}/learning_curves/scores.png",
     f"{TRIAL}/logs/epoch.log",
 }
 BULKY = {  # toggle -> the files it governs
     "weights": {f"{TRIAL}/model.pt", f"{TRIAL}/chkpts/in_progress/train_state.pt"},
     "manifold_viz": {
-        f"{TRIAL}/evals/eval1/viz/8panel/joint.png",
-        f"{TRIAL}/evals/eval1/viz_pooled/8panel/joint.png",
-        f"{TRIAL}/viz/8panel/joint.gif",
-        f"{TRIAL}/viz_pooled/8panel/joint.gif",
+        f"{TRIAL}/evals/evals/1/viz/vanilla/8panel/joint.png",
+        f"{TRIAL}/evals/evals/1/viz/pooled/8panel/joint.png",
+        f"{TRIAL}/evals/_selected/viz/vanilla/8panel/joint.png",
+        f"{TRIAL}/evals/_best/viz/pooled/8panel/joint.png",
+        f"{TRIAL}/viz/vanilla/8panel/joint.gif",
+        f"{TRIAL}/viz/pooled/8panel/joint.gif",
     },
     "manifold_viz_cache": {
-        f"{TRIAL}/evals/eval1/embs.npz",
-        f"{TRIAL}/evals/eval1/projections.npz",
-        f"{TRIAL}/evals/eval1/projections_pooled.npz",
-        f"{TRIAL}/evals/eval1/orient_ref.pkl",
+        f"{TRIAL}/evals/evals/1/viz/cache/embs.npz",
+        f"{TRIAL}/evals/evals/1/viz/cache/projections.npz",
+        f"{TRIAL}/evals/evals/1/viz/cache/projections_pooled.npz",
+        f"{TRIAL}/evals/evals/1/viz/cache/orient_ref.pkl",
+        f"{TRIAL}/evals/_selected/viz/cache/projections.npz",
+        f"{TRIAL}/evals/_best/viz/cache/embs.npz",
     },
     "batch_logs": {f"{TRIAL}/logs/batch/grad_norm.log", f"{TRIAL}/logs/batch/sim_targ.log"},
 }
@@ -124,8 +128,8 @@ def test_multiple_campaigns(root: Path) -> None:
     names = _names(fpath_zip)
 
     assert fpath_zip.name.endswith("_camp_camp2.zip")
-    assert "biocosmos/artifacts/camp/_screen/phase_metadata.json" in names
-    assert "biocosmos/artifacts/camp2/_screen/phase_metadata.json" in names
+    assert "biocosmos/artifacts/camp/_phase/screen/phase_metadata.json" in names
+    assert "biocosmos/artifacts/camp2/_phase/screen/phase_metadata.json" in names
 
 
 def test_unknown_campaign_exits(root: Path) -> None:

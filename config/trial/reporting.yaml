@@ -1,4 +1,4 @@
-# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# FROZEN at campaign launch, into artifacts/<campaign>/_phase/screen/cfg_baseline.json --
 # edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
 
 batch_diagnostics:  # Per-batch train diagnostics, toggled per component; (false) Skip that component's
@@ -24,7 +24,7 @@ logging: true
 plot_every: trial  # {chkpt, trial}; (chkpt) Render learning-curve plots at every checkpoint (incl. base);
 # (trial) Only at the final checkpoint
 eval:  # Eval groups in play, toggled per group; native is always in and so is not listed. (false)
-# The group is never scored -- no evals/<chkpt>/<group>.json, no checkpoint selection, no
+# The group is never scored -- no evals/<chkpt>/secondary/metrics-<group>.json, no checkpoint selection, no
 # coord/arm/dataset/phase/test stats, no learning-curve figure, no eval-printout block. Each group is
 # labelled by its aliases.yaml `eval_groups` alias in all of them
   native_macro: false  # {true, false}

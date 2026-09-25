@@ -1,4 +1,4 @@
-# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# FROZEN at campaign launch, into artifacts/<campaign>/_phase/screen/cfg_baseline.json --
 # edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
 
 # Manifold-viz settings that decide what gets COMPUTED and CACHED during/after a trial: whether it runs at all
@@ -6,7 +6,7 @@
 # these invalidates those caches, so they are frozen with the campaign; the purely visual settings that re-render
 # from the same caches live in config/render/manifold_viz.yaml.
 
-# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# FROZEN at campaign launch, into artifacts/<campaign>/_phase/screen/cfg_baseline.json --
 # edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
 
 # Manifold-viz subsystem settings -- whether it runs at all (n_seeds) and how it behaves.
@@ -18,12 +18,12 @@
 n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whole subsystem -- nothing computed,
 # cached, or rendered, and the eval embeddings aren't even gathered for viz
 
-n_seeds_offset: 1  # [int] >= 0; Where the window starts; (0) The first seed of every arm/coord/dataset group;
+n_seeds_offset: 0  # [int] >= 0; Where the window starts; (0) The first seed of every arm/coord/dataset group;
 # (1) Skip the first, viz the second; etc.
 
 pooled:  # Shared-frame manifold viz: one fit per method on all eval thresholds' embeddings pooled, then each
 # threshold plotted as a masked subset of the shared layout (the plot_* flags select the same groups, rendered
-# under viz_pooled/); Note: (all 3 plot_* flags: false) --> projections still computed + saved
+# under viz/pooled/); Note: (all 3 plot_* flags: false) --> projections still computed + saved
   enabled: true  # {true, false}; (true) Compute the pooled PCA/t-SNE at end-of-trial + the pooled UMAP post-trial,
   # and render the pooled plots; per-eval embeddings are cached either way (the per-eval UMAP fits read them too)
   budget: 100_000  # Pooled point budget as a total sample volume across all thresholds;

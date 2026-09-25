@@ -8,8 +8,8 @@
 weights: false  # {true, false}; (true) include model weights: each trainval trial's model.pt (the full model
 # state), and the chkpts/ resume state (train_state.pt: model + optimizer) of any trial still in progress or failed
 manifold_viz: false  # {true, false}; (true) include the rendered manifold viz: every per-eval plot dir
-# (evals/<eval>/viz/, viz_pooled/) and the evolving GIFs (<trial>/viz/, viz_pooled/)
-manifold_viz_cache: false  # {true, false}; (true) include the per-eval caches the renders are built from -- embs.npz
+# (evals/evals/<k>/viz/{vanilla,pooled}/) and the evolving GIFs (<trial>/viz/{vanilla,pooled}/)
+manifold_viz_cache: false  # {true, false}; (true) include the per-eval caches the renders are built from (evals/evals/<k>/viz/cache/) -- embs.npz
 # (raw eval embeddings, ~N x D x 2 bytes per eval), projections.npz, projections_pooled.npz, orient_ref.pkl;
 # needed to re-render (tools/regen_manifold_viz.py) from the unpacked zip
 batch_logs: true  # {true, false}; (true) include each trial's per-batch logs (logs/batch/: general, grad_norm,

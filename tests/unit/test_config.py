@@ -23,7 +23,7 @@ def _loss_cfg(lambda_=0.0, **overrides):
 def make_train_config_dummy(**overrides):
     config = {
         "campaign": "campaign",
-        "phase": "_screen",
+        "phase": "screen",
         "arm": "exp",
         "coord": "base",
         "seed": 7,
@@ -236,6 +236,13 @@ def test_eval_groups_is_native_plus_the_toggles_on(monkeypatch: pytest.MonkeyPat
 
     cfg.reporting["eval"] = {"joint_macro": False, "joint": True, "native_macro": True}
     assert config.eval_groups(cfg.reporting) == {"native": "Standard", "native_macro": "native_macro", "joint": "joint"}
+
+
+def test_group_path_puts_native_plain_and_the_rest_under_secondary(tmp_path) -> None:
+    assert config.group_path(tmp_path, "native", "metrics", ".json") == tmp_path / "metrics.json"
+    assert config.group_path(tmp_path, "joint_macro", "metrics", ".json") == tmp_path / "secondary" / "metrics-joint_macro.json"
+    assert config.group_path(tmp_path, "native", "stats") == tmp_path / "stats"
+    assert config.group_path(tmp_path, "joint", "stats") == tmp_path / "secondary" / "stats-joint"
 
 
 def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1171,7 +1178,7 @@ def test_stats_config_rejects_unknown_supp_scores_keys() -> None:
 def _make_campaign_config_dummy(**overrides):
     config = {
         "n_trials_screen": 1,
-        "n_trials_qual": 5,
+        "n_trials_refine": 5,
         "trainval": False,
         "datasets": ["cub"],
         "baseline_overrides": {},
@@ -1183,22 +1190,22 @@ def _make_campaign_config_dummy(**overrides):
     return config
 
 
-def test_campaign_config_rejects_screen_exceeding_qual() -> None:
-    # the qual phase tops each pick up FROM its screening trials TO n_trials_qual, so it can't be fewer
+def test_campaign_config_rejects_screen_exceeding_refine() -> None:
+    # the refine phase tops each pick up FROM its screening trials TO n_trials_refine, so it can't be fewer
     with pytest.raises(ValueError, match="n_trials_screen"):
-        CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=2))
+        CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_refine=2))
 
 
-def test_campaign_config_accepts_equal_or_null_qual() -> None:
-    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=3)).n_trials_qual == 3
-    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_qual=None)).n_trials_qual is None
+def test_campaign_config_accepts_equal_or_null_refine() -> None:
+    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_refine=3)).n_trials_refine == 3
+    assert CampaignConfig(**_make_campaign_config_dummy(n_trials_screen=3, n_trials_refine=None)).n_trials_refine is None
 
 
-def test_campaign_config_trainval_requires_qual() -> None:
-    # the trainval phase trains the qual picks up to their qual-selected checkpoints: nothing to train without qual
+def test_campaign_config_trainval_requires_refine() -> None:
+    # the trainval phase trains the refine picks up to their refine-selected checkpoints: nothing to train without refine
     with pytest.raises(ValueError, match="trainval"):
-        CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=None))
-    assert CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_qual=5)).trainval is True
+        CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_refine=None))
+    assert CampaignConfig(**_make_campaign_config_dummy(trainval=True, n_trials_refine=5)).trainval is True
 
 
 def test_campaign_config_baseline_overrides_take_scalars_only() -> None:

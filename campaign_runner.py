@@ -64,7 +64,7 @@ from utils.report import (
     update_phase_metrics,
     pick_best_coords,
 )
-from utils.train import ArtifactManager
+from utils.train import ArtifactManager, dpath_eval_seq, dpath_viz_cache
 from utils.utils import paths, save_pickle, save_json, load_json, utc_now, PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
@@ -186,14 +186,15 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
             save_json(metadata, fpath)
 
 def _dpath_campaign(campaign: str) -> Path:
-    """The campaign's root dir, artifacts/<campaign>/ -- holds the phase dirs (_screen/, qual/)."""
+    """The campaign's root dir, artifacts/<campaign>/ -- holds campaign_metadata.json and, under _phase/, the phase dirs
+    (screen/, refine/, trainval/, test/)."""
     return paths["artifacts"] / campaign
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
-    """A phase's dir, artifacts/<campaign>/<phase>/ ('_screen' | 'qual' | 'trainval'): the root of every artifact the runner and
+    """A phase's dir, artifacts/<campaign>/_phase/<phase>/ ('screen' | 'refine' | 'trainval' | 'test'): the root of every artifact the runner and
     that phase's trials write (_datasets/, phase_metrics/, phase_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
-    return _dpath_campaign(campaign) / phase
+    return _dpath_campaign(campaign) / "_phase" / phase
 
 def _dpath_coord(dpath_phase: Path, dataset: str, arm: str, coord: str) -> Path:
     """The coord dir holding (arm, coord)'s trials on `dataset` under a phase dir:
@@ -249,7 +250,7 @@ def _thaw_aliases(aliases: dict) -> dict:
 def _load_or_create_campaign_config(campaign: str) -> dict:
     """Load the campaign's frozen config snapshot, creating it on first launch.
 
-    On first launch nine config sources are bundled into a single `artifacts/<campaign>/_screen/cfg_baseline.json` (the qual phase carries a copy, _copy_qual_picks)
+    On first launch nine config sources are bundled into a single `artifacts/<campaign>/_phase/screen/cfg_baseline.json` (the refine phase carries a copy, _copy_refine_picks)
     under the keys `train`, `hardware`, `manifold_viz`, `model_specific`, `dataset_specific`, `augmentation`,
     `reporting`, `dev`, `htargs`. The `train` snapshot is derived from `config/trial/train/train.yaml` (with `config/trial/train/dev.yaml`'s
     overrides folded in when `dev` is on); the other eight are `config/trial/hardware.yaml`, `config/{trial,render}/manifold_viz.yaml`,
@@ -269,7 +270,7 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     never alter that campaign -- all of its trials, original or added later, train against the same
     frozen config. The alias tables ride as [value, alias] pairs on disk and are rebuilt on load
     (_freeze_aliases / _thaw_aliases), so their non-string keys survive the json round trip."""
-    fpath = _dpath_phase(campaign, "_screen") / "cfg_baseline.json"
+    fpath = _dpath_phase(campaign, "screen") / "cfg_baseline.json"
     if fpath.exists():
         cfg_snapshot = load_json(fpath)
         cfg_snapshot["aliases"] = _thaw_aliases(cfg_snapshot["aliases"])
@@ -470,13 +471,14 @@ def _matrix_items(matrix: dict) -> dict[str, list]:
 
 def _prune_removed(campaign: str, phase: str, prev: dict, matrix: dict) -> bool:
     """Delete the artifacts of every dataset / arm / coord the phase's recorded matrix (`prev`, the plan last applied)
-    has that the current plan's `matrix` drops -- an item removed from the camp yaml, or a qual pick whose coord was:
+    has that the current plan's `matrix` drops -- an item removed from the camp yaml, or a refine pick replaced by a new
+    screening best:
     its dir under _datasets/ (the dataset), _datasets/<dataset>/_arms/ (the arm) or .../_coords/ (the coord), trials
     and stats included, so the tree mirrors the plan (a dir that never came to exist -- the item's trials never
     launched -- needs nothing). What the trainval phase drops goes from the campaign's test tree as well
-    (artifacts/<campaign>/test/, test.py's scores of the trainval models, laid out the same way). Returns whether
+    (artifacts/<campaign>/_phase/test/, test.py's scores of the trainval models, laid out the same way). Returns whether
     anything was dropped."""
-    roots = [_dpath_phase(campaign, phase)] + ([_dpath_campaign(campaign) / "test"] if phase == "trainval" else [])
+    roots = [_dpath_phase(campaign, phase)] + ([_dpath_phase(campaign, "test")] if phase == "trainval" else [])
     removed = []  # (label, dir relative to a phase root)
     for dataset, arms in prev.items():
         if dataset not in matrix:
@@ -700,11 +702,11 @@ def _trial_has_manif_cache(dpath_trial: Path) -> bool:
     Most trials may sit outside the manifold_viz seed window; those write no projections/embeddings, so
     spawning the detached render worker would just start Python to discover there is nothing to do.
     """
-    dpath_evals = dpath_trial / "evals"
+    dpath_evals = dpath_eval_seq(dpath_trial)
     if not dpath_evals.exists():
         return False
     for d in dpath_evals.iterdir():
-        if any((d / name).exists() for name in ("projections.npz", "projections_pooled.npz", "embs.npz")):
+        if any((dpath_viz_cache(d) / name).exists() for name in ("projections.npz", "projections_pooled.npz", "embs.npz")):
             return True
     return False
 
@@ -732,7 +734,7 @@ def _campaign_metadata(campaign: str) -> None:
 def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, groups: dict) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
     `matrix` ({dataset: {arm: [coords]}} -- the phase's planned (dataset, arm, coord) combos in campaign order: every
-    coord under every arm for the screening phase, each arm's picked coord(s) for the qual and trainval phases -- the
+    coord under every arm for the screening phase, each arm's picked coord for the refine and trainval phases -- the
     shape the stats code keys its sweep gates and table rows off). A plan that differs from the recorded one (a
     relaunch, or a live edit of the camp yaml) is reconciled with the tree: its additions are announced, and whatever
     the recorded matrix has that it drops is deleted (_prune_removed) and the phase's cross-coord tables re-rendered
@@ -778,32 +780,17 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
         _render_phase_tables(campaign, phase, groups)
     return metadata, fpath_meta
 
-def _qual_picks(campaign: str, datasets: list[str], arm_names: list[str], coord_names: list[str]) -> dict:
-    """The qual matrix, {dataset: {arm: [coords]}}: the coords each arm goes into the qual phase with, per dataset --
-    the picks recorded in the qual phase's phase_metadata.json matrix (earlier plans' picks, kept while their coord
-    is still in the campaign: `coord_names`) plus, when not already among them, the current screening best: the coord
-    with the highest across-trial mean Native mAP composite All score at its selected checkpoint
-    (report.pick_best_coords; every arm has one, the screening phase having completed in full). Pick lists grow with
-    the screening results: a relaunch or live edit whose results have moved (added coords/seeds) adds the new best
-    alongside the recorded picks, whose qual trials are kept, and a (dataset, arm) without a record (the first qual
-    launch, or an arm/dataset added later) starts from just the screening best. They shrink only with the campaign:
-    a pick whose coord was removed from the camp yaml is dropped, and its qual artifacts with it (_prune_removed)."""
-    fpath_meta = _dpath_phase(campaign, "qual") / "phase_metadata.json"
-    recorded = load_json(fpath_meta)["matrix"] if fpath_meta.exists() else {}
-    ArtifactManager.dpath_phase = _dpath_phase(campaign, "_screen")
-    fresh = pick_best_coords()  # {(arm, dataset): coord}
-    matrix = {}
-    for dataset in datasets:
-        matrix[dataset] = {}
-        for arm in arm_names:
-            if dataset in recorded and arm in recorded[dataset]:
-                coords = [coord for coord in recorded[dataset][arm] if coord in coord_names]
-            else:
-                coords = []
-            if fresh[(arm, dataset)] not in coords:
-                coords.append(fresh[(arm, dataset)])
-            matrix[dataset][arm] = coords
-    return matrix
+def _refine_picks(campaign: str, datasets: list[str], arm_names: list[str]) -> dict:
+    """The refine matrix, {dataset: {arm: [coord]}}: the single coord each arm goes into the refine phase with, per
+    dataset -- its current screening best, the coord with the highest across-trial mean Native mAP composite All
+    score at its selected checkpoint (report.pick_best_coords; every arm has one, the screening phase having
+    completed in full). Every coord decision is made here, on the screening results alone: the refine phase only adds
+    trials to the pick (a steadier curve for the trainval checkpoint selection), never re-ranks. A relaunch or live
+    edit whose screening results have moved (added coords/seeds) replaces the pick with the new best, the old pick's
+    refine artifacts (and, downstream, its trainval models and test scores) deleted (_prune_removed)."""
+    ArtifactManager.dpath_phase = _dpath_phase(campaign, "screen")
+    best = pick_best_coords()  # {(arm, dataset): coord}
+    return {dataset: {arm: [best[(arm, dataset)]] for arm in arm_names} for dataset in datasets}
 
 def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
     """Give a later phase its own copy of the campaign's frozen config snapshot (the screening phase's
@@ -813,39 +800,39 @@ def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
     if not fpath.exists():
         save_json({**cfg_snapshot, "aliases": _freeze_aliases(cfg_snapshot["aliases"])}, fpath)
 
-def _copy_qual_picks(campaign: str, matrix: dict, cfg_snapshot: dict) -> None:
-    """Seed the qual tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),
-    then for each pick of the qual `matrix` ({dataset: {arm: [coords]}}) its coord dir wholesale -- every screening
-    seed's trial, config/overrides/coord_metadata and coord_stats -- so the qual tree reads as if the coord had run
-    there from the start; the qual phase then tops it up to n_trials_qual seeds. Copy-once per coord: an existing
-    qual coord dir (a relaunch, or an earlier plan of this run) is left as is, so only a newly added pick's dir
-    comes over."""
-    dpath_qual = _dpath_phase(campaign, "qual")
-    _write_phase_snapshot(dpath_qual, cfg_snapshot)
+def _copy_refine_picks(campaign: str, matrix: dict, cfg_snapshot: dict) -> None:
+    """Seed the refine tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),
+    then for each pick of the refine `matrix` ({dataset: {arm: [coord]}}) its coord dir wholesale -- every screening
+    seed's trial, config/overrides/coord_metadata and coord_stats -- so the refine tree reads as if the coord had run
+    there from the start; the refine phase then tops it up to n_trials_refine seeds. Copy-once per coord: an existing
+    refine coord dir (a relaunch, or an earlier plan of this run) is left as is, so only a new pick's dir (a first
+    pick, or one replacing a superseded pick) comes over."""
+    dpath_refine = _dpath_phase(campaign, "refine")
+    _write_phase_snapshot(dpath_refine, cfg_snapshot)
     for dataset, arms in matrix.items():
         for arm, coords in arms.items():
             for coord in coords:
                 rel = Path("_datasets") / dataset / "_arms" / arm / "_coords" / coord
-                if not (dpath_qual / rel).exists():
-                    shutil.copytree(_dpath_phase(campaign, "_screen") / rel, dpath_qual / rel)
+                if not (dpath_refine / rel).exists():
+                    shutil.copytree(_dpath_phase(campaign, "screen") / rel, dpath_refine / rel)
 
 def _trainval_stops(campaign: str, matrix: dict) -> dict[tuple[str, str, str], int]:
-    """{(dataset, arm, coord): checkpoint index} over the qual phase's matrix: the checkpoint each pick is trained
-    up to in the trainval phase -- its qual-selected one, the argmax of the pick's across-trial mean Native mAP
-    composite All curve over its qual trials (report.update_chkpt_selection's best_chkpt.map.native, read from the
-    qual coord's coord_metadata.json; final once every qual trial of the pick is in). Index 0 is the base eval,
+    """{(dataset, arm, coord): checkpoint index} over the refine phase's matrix: the checkpoint each pick is trained
+    up to in the trainval phase -- its refine-selected one, the argmax of the pick's across-trial mean Native mAP
+    composite All curve over its refine trials (report.update_chkpt_selection's best_chkpt, read from the
+    refine coord's coord_metadata.json; final once every refine trial of the pick is in). Index 0 is the base eval,
     a selection candidate like any other: a pick whose pretrained model beat its own trained checkpoints trains
     not at all in the trainval phase and delivers those base weights (train.py's _deliver_base_model)."""
     return {
         (dataset, arm, coord): load_json(
-            _dpath_coord(_dpath_phase(campaign, "qual"), dataset, arm, coord) / "coord_metadata.json"
-        )["best_chkpt"]["map"]["native"]["idx"]
+            _dpath_coord(_dpath_phase(campaign, "refine"), dataset, arm, coord) / "coord_metadata.json"
+        )["best_chkpt"]["idx"]
         for dataset, arms in matrix.items()
         for arm, coords in arms.items()
         for coord in coords
     }
 
-_PHASES = ("_screen", "qual", "trainval")  # campaign order: each phase plans over the earlier ones' results
+_PHASES = ("screen", "refine", "trainval")  # campaign order: each phase plans over the earlier ones' results
 
 class _Plan(NamedTuple):
     """One phase's plan under one read of the camp yaml (_plan_phase): `arms` / `coords` the (name, overrides)
@@ -868,28 +855,28 @@ class _Plan(NamedTuple):
 
 def _plan_phase(campaign: str, phase: str, cfg: CampaignConfig, arms: list, coords: list) -> _Plan:
     """`phase`'s plan under one read of the camp yaml (`cfg`, with its `arms` / `coords` expanded): the screening
-    phase plans every coord under every arm on every dataset over n_trials_screen seeds; the qual phase each arm's
-    picks per dataset (_qual_picks -- from the screening results, so the screening phase must be complete) over
-    n_trials_qual seeds; the trainval phase the qual matrix again, each pick stopped at its qual-selected checkpoint
-    (_trainval_stops -- from the qual results, so the qual phase must be complete)."""
+    phase plans every coord under every arm on every dataset over n_trials_screen seeds; the refine phase each arm's
+    pick per dataset (_refine_picks -- from the screening results, so the screening phase must be complete) over
+    n_trials_refine seeds; the trainval phase the refine matrix again, each pick stopped at its refine-selected checkpoint
+    (_trainval_stops -- from the refine results, so the refine phase must be complete)."""
     datasets = list(cfg.datasets)
     arm_names = [name for name, _ in arms]
-    if phase == "_screen":
+    if phase == "screen":
         matrix = {dataset: {arm: [name for name, _ in coords] for arm in arm_names} for dataset in datasets}
         return _Plan(arms, coords, datasets, _iter_seeds(cfg.n_trials_screen), matrix, None)
-    matrix = _qual_picks(campaign, datasets, arm_names, [name for name, _ in coords])
+    matrix = _refine_picks(campaign, datasets, arm_names)
     picked = {coord for arms_ in matrix.values() for coords_ in arms_.values() for coord in coords_}
-    coords_qual = [(name, payload) for name, payload in coords if name in picked]
+    coords_refine = [(name, payload) for name, payload in coords if name in picked]
     chkpt_stops = _trainval_stops(campaign, matrix) if phase == "trainval" else None
-    return _Plan(arms, coords_qual, datasets, _iter_seeds(cfg.n_trials_qual), matrix, chkpt_stops)
+    return _Plan(arms, coords_refine, datasets, _iter_seeds(cfg.n_trials_refine), matrix, chkpt_stops)
 
 def _plan_phases(campaign: str, phase: str, cfg: CampaignConfig, arms: list, coords: list) -> list[_Plan] | None:
-    """The plans of every phase up to and including `phase` -- [screening], [screening, qual] or [screening, qual,
+    """The plans of every phase up to and including `phase` -- [screening], [screening, refine] or [screening, refine,
     trainval], each derived from the earlier ones' results (_plan_phase) -- or None when `phase` can't run under
-    this read of the camp yaml: the read switched it off (n_trials_qual: null / trainval: false), or an earlier
+    this read of the camp yaml: the read switched it off (n_trials_refine: null / trainval: false), or an earlier
     phase has a planned trial that isn't complete -- an arm, coord, dataset or seed added while a later phase ran
-    needs its screening (and qual) trials before that phase can plan over it."""
-    if (phase == "qual" and cfg.n_trials_qual is None) or (phase == "trainval" and not cfg.trainval):
+    needs its screening (and refine) trials before that phase can plan over it."""
+    if (phase == "refine" and cfg.n_trials_refine is None) or (phase == "trainval" and not cfg.trainval):
         return None
     plans = []
     for earlier in _PHASES[:_PHASES.index(phase)]:
@@ -908,7 +895,7 @@ class _Camp:
     checked before it is handed out: every arm x coord's effective TrainConfig is constructed for every dataset, so a
     misconfigured combination (a bad override key, a batch_size that doesn't band-shard over world_size x
     loss_chunk_size) fails here rather than at its trial's launch; and no phase's recorded seeds may have been
-    dropped (n_trials_screen / n_trials_qual lowered) -- a removed seed would orphan its trial in every coord,
+    dropped (n_trials_screen / n_trials_refine lowered) -- a removed seed would orphan its trial in every coord,
     whereas arms, coords and datasets may be removed (_prune_removed). A read that fails is printed and the last good
     read returned -- a file mid-edit (unparseable, an invalid field, a duplicate name, a bad override) never takes
     the running campaign down -- except the run's first, which raises. The queue reads a campaign already run the
@@ -936,7 +923,7 @@ class _Camp:
         return self.last
 
     def _check(self, cfg: CampaignConfig, arms: list, coords: list) -> None:
-        for phase, n_trials in (("_screen", cfg.n_trials_screen), ("qual", cfg.n_trials_qual)):
+        for phase, n_trials in (("screen", cfg.n_trials_screen), ("refine", cfg.n_trials_refine)):
             fpath_meta = _dpath_phase(self.campaign, phase) / "phase_metadata.json"
             if n_trials is None or not fpath_meta.exists():
                 continue
@@ -945,7 +932,7 @@ class _Camp:
                 raise ValueError(
                     f"Campaign '{self.campaign}' config drops seeds a prior run recorded for its {phase} phase "
                     f"(seeds removed: {removed}); arms, coords and datasets may be removed but seeds only added -- "
-                    f"restore n_trials_screen / n_trials_qual."
+                    f"restore n_trials_screen / n_trials_refine."
                 )
         # Seed only needs to be representative -- config validation is seed-independent beyond requiring a non-null
         # seed -- and the phase-level injection (the trainval phase's chkpt_stop) is internal, so the
@@ -953,7 +940,7 @@ class _Camp:
         for dataset in cfg.datasets:
             for arm, arm_payload in arms:
                 for coord, coord_payload in coords:
-                    cfg_dict = _build_trial_cfg_dict(self.cfg_snapshot, self.campaign, "_screen", arm, coord,
+                    cfg_dict = _build_trial_cfg_dict(self.cfg_snapshot, self.campaign, "screen", arm, coord,
                                                      {**cfg.baseline_overrides, **arm_payload, **coord_payload},
                                                      SEED0, dataset, 0)
                     try:
@@ -963,19 +950,19 @@ class _Camp:
 
 def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: _Plan) -> None:
     """Bring the phase's tree in line with `plan` -- at its first application (phase entry) and again whenever a
-    re-read of the camp yaml changed it: the qual tree's new picks copied over from screening (_copy_qual_picks), the
+    re-read of the camp yaml changed it: the refine tree's new picks copied over from screening (_copy_refine_picks), the
     trainval tree's config snapshot (_write_phase_snapshot), phase_metadata.json reconciled (_phase_metadata: the
-    seeds and matrix recorded, what the previous plan had and this one drops pruned), each arm's best_coord/ mirror
+    seeds and matrix recorded, what the previous plan had and this one drops pruned), each arm's arm_metrics/best_coords/ mirror
     reconciled (update_best_coord_curves), the image-cache staging, and the manifest, rewritten over the planned
     trials."""
     dpath_phase = _dpath_phase(campaign, phase)
-    if phase == "qual":
-        _copy_qual_picks(campaign, plan.matrix, cfg_snapshot)
+    if phase == "refine":
+        _copy_refine_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
     metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix, eval_groups(cfg_snapshot["reporting"]))
 
-    # a plan that grows an arm (a coord or a seed added) leaves it short of its trials again: its best_coord/ mirror
+    # a plan that grows an arm (a coord or a seed added) leaves it short of its trials again: its arm_metrics/best_coords/ mirror
     # goes here, the moment the edit is applied, rather than surviving until the arm's next completed trial -- the
     # dir never outlives the completion it stands for. Rebuilt once the arm is whole again (update_arm_metrics).
     ArtifactManager.dpath_phase = dpath_phase
@@ -1009,7 +996,7 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
     PrintLog.manifest(dpath_phase, trials, in_progress=None)
 
 def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done: set) -> str:
-    """Run one phase's trials under artifacts/<campaign>/<phase>/, re-planning from the camp yaml between trials: each
+    """Run one phase's trials under artifacts/<campaign>/_phase/<phase>/, re-planning from the camp yaml between trials: each
     round re-reads it (camp.read), re-derives the phase's plan from it and the earlier phases' results (_plan_phases)
     and, when that differs from the plan applied, applies it (_apply_plan: the tree pruned of what was removed,
     additions recorded and staged, the manifest rewritten -- the earlier phases' trees reconciled the same way), then
@@ -1068,13 +1055,13 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
         dpath_trial = dpath_coord / "_seeds" / str(seed)
         trial_id = f"{dataset}/{arm}/{coord}/{seed}"
-        # the trainval phase trains every combo on the trainval partition and stops it at its qual-selected checkpoint
+        # the trainval phase trains every combo on the trainval partition and stops it at its refine-selected checkpoint
         # (TrainConfig.chkpt_stop) instead of running to sample_volume
         chkpt_stop = plan.chkpt_stops[(dataset, arm, coord)] if plan.chkpt_stops is not None else None
 
         # the coord dir (and with it the arm dir) is created here, at trial launch, not when the plan is
         # applied -- a planned arm/coord whose trials never start leaves no
-        # artifacts/<campaign>/<phase>/_datasets/<dataset>/_arms/ entry
+        # artifacts/<campaign>/_phase/<phase>/_datasets/<dataset>/_arms/ entry
         _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord], cfg.baseline_overrides)
 
         cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord,
@@ -1162,7 +1149,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         if _trial_has_manif_cache(dpath_trial):
             if render_proc is not None and render_proc.poll() is None:
                 render_proc.wait()
-            render_proc = _spawn_render(f"{campaign}/{phase}/_datasets/{dataset}/_arms/{arm}/_coords/{coord}/_seeds/{seed}")
+            render_proc = _spawn_render(f"{campaign}/_phase/{phase}/_datasets/{dataset}/_arms/{arm}/_coords/{coord}/_seeds/{seed}")
 
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
         return outcome
@@ -1188,17 +1175,17 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
 
 def run_campaign(campaign: str, name: str) -> bool:
     """Run, under artifacts/<campaign>/, the campaign config/campaigns/<name>.yaml defines: the screening phase -- every arm x
-    coord on every dataset for n_trials_screen seeds, under _screen/ -- then, unless n_trials_qual is null, the qual
-    phase under qual/: each arm's qual picks per dataset -- its recorded picks plus the current screening best when
-    that's new (_qual_picks) -- each pick's screening trials copied over (_copy_qual_picks) and topped up to
-    n_trials_qual seeds, so the qual tree reads as if n_trials_qual trials had run for each pick -- then, with
-    `trainval`, the trainval phase under trainval/: every pick again over the qual seeds, each run on the trainval
-    partition and stopped at the pick's qual-selected checkpoint (_trainval_stops) with its weights saved there
+    coord on every dataset for n_trials_screen seeds, under _phase/screen/ -- then, unless n_trials_refine is null, the refine
+    phase under _phase/refine/: each arm's refine pick per dataset -- its current screening best, replacing any earlier pick
+    (_refine_picks) -- each pick's screening trials copied over (_copy_refine_picks) and topped up to
+    n_trials_refine seeds, so the refine tree reads as if n_trials_refine trials had run for each pick -- then, with
+    `trainval`, the trainval phase under _phase/trainval/: every pick again over the refine seeds, each run on the trainval
+    partition and stopped at the pick's refine-selected checkpoint (_trainval_stops) with its weights saved there
     (train.py); no evals.
     The yaml is re-read before every trial and at every phase transition (_Camp), so it may be edited while the
     campaign runs, as between launches: arms, coords and datasets added or removed, seeds added (n_trials_screen /
-    n_trials_qual raised), the qual and trainval phases switched on or off -- each phase re-plans between its trials
-    (_run_phase). An addition that needs screening (or qual) trials while a later phase runs hands the campaign back
+    n_trials_refine raised), the refine and trainval phases switched on or off -- each phase re-plans between its trials
+    (_run_phase). An addition that needs screening (or refine) trials while a later phase runs hands the campaign back
     to the screening phase, which runs them (completed trials are skipped) before the later phases resume. A phase
     whose trials don't all complete (a trial failed for good) ends the campaign there: the next phase is not started
     until a relaunch has resumed the failed trials. Returns False when the run was interrupted (Ctrl-C / SIGTERM) --
@@ -1215,7 +1202,7 @@ def run_campaign(campaign: str, name: str) -> bool:
 
     # campaign-level fires once, when the campaign is first created -- a relaunch (resume/extension)
     # is not a new beginning, so the cache the campaign's own trials built survives it
-    first_launch = not (_dpath_phase(campaign, "_screen") / "phase_metadata.json").exists()
+    first_launch = not (_dpath_phase(campaign, "screen") / "phase_metadata.json").exists()
     _campaign_metadata(campaign)
     cfg_snapshot = _load_or_create_campaign_config(campaign)
     if first_launch and cfg_snapshot["train"]["operational"]["del_base_eval_cache"] == "campaign":
@@ -1224,13 +1211,13 @@ def run_campaign(campaign: str, name: str) -> bool:
     camp = _Camp(campaign, name, cfg_snapshot)
     done: set[tuple] = set()  # the (phase, dataset, arm, coord, seed) trials this run has dealt with (_run_phase)
     while True:  # a later phase hands back ('replan') when a live edit gave an earlier phase trials to run, or switched it off
-        outcome = _run_phase(campaign, "_screen", cfg_snapshot, camp, done)
+        outcome = _run_phase(campaign, "screen", cfg_snapshot, camp, done)
         if outcome != "complete":
             return outcome != "interrupted"
         cfg, _, _ = camp.read()
-        if cfg.n_trials_qual is None:
+        if cfg.n_trials_refine is None:
             return True
-        outcome = _run_phase(campaign, "qual", cfg_snapshot, camp, done)
+        outcome = _run_phase(campaign, "refine", cfg_snapshot, camp, done)
         if outcome == "replan":
             continue
         if outcome != "complete":
@@ -1238,8 +1225,8 @@ def run_campaign(campaign: str, name: str) -> bool:
         cfg, _, _ = camp.read()
         if not cfg.trainval:
             return True
-        # trainval: the qual matrix once more, on the trainval partition -- one run per qual seed, each stopped at the
-        # pick's qual-selected checkpoint. The LR schedule keeps its full n_epochs horizon (warmup a fraction of it,
+        # trainval: the refine matrix once more, on the trainval partition -- one run per refine seed, each stopped at the
+        # pick's refine-selected checkpoint. The LR schedule keeps its full n_epochs horizon (warmup a fraction of it,
         # cosine over all of it), so checkpoint k sees the LR it saw in train; only the epochs are longer.
         outcome = _run_phase(campaign, "trainval", cfg_snapshot, camp, done)
         if outcome == "replan":

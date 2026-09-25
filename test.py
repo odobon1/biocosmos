@@ -2,15 +2,17 @@
 torchrun --standalone --nproc-per-node=auto -m test <campaign>
 
 Test-partition evaluation of a campaign's trainval models -- the campaign's final scores. Requires the
-campaign to have a trainval phase on disk (artifacts/<campaign>/trainval/); errors otherwise. Every model
+campaign to have a trainval phase on disk (artifacts/<campaign>/_phase/trainval/); errors otherwise. Every model
 saved there (the phase's matrix x seeds, each trial's model.pt) is rebuilt from the campaign's frozen
 config snapshot + its coord's recorded overrides, its weights loaded, and evaluated once on the split's
 TEST partitions (test_id/test_ood, EvaluationPipeline with eval_pt="test"; n-shot buckets from the
 split's "trainval/test" view -- test_id classes by their trainval shot counts). Per-trial scores land as
-artifacts/<campaign>/test/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>/<group>.json
+artifacts/<campaign>/_phase/test/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>/<group>.json
 ({'chkpt': the saved checkpoint index, 'scores': the group's scores}); trials whose score files are all
 present are skipped, so a relaunch resumes (and a fully-scored campaign just re-renders the tables).
-The run ends with the test workbooks, one per eval group at artifacts/<campaign>/test/map/test_<group>.xlsx
+The run ends with the test workbooks, one per eval group at artifacts/<campaign>/_phase/test/
+phase_metrics/arms/{metrics,secondary/metrics-<group>}.xlsx, plus per-dataset score tables at
+_datasets/<dataset>/dataset_metrics/arms/performance/{scores,secondary/scores-<group>}.png
 (report.update_test_stats), styled per the live config/render/stats.yaml.
 """
 
@@ -21,7 +23,7 @@ import torch
 import torch.distributed as dist
 
 from campaign_runner import _build_trial_cfg_dict
-from utils.config import eval_groups, get_config_stats, get_config_train
+from utils.config import eval_groups, get_config_stats, get_config_train, group_path
 from utils.data import stage_img_cache
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 from utils.eval import EvaluationPipeline
@@ -40,7 +42,7 @@ def _plan(campaign):
     """(cfg_snapshot, metadata, combos): the trainval phase's frozen config snapshot, its
     phase_metadata.json, and its planned (dataset, arm, coord) combos in campaign order. Raises
     when the campaign has no trainval phase on disk -- there are then no models to test."""
-    dpath_trainval = paths["artifacts"] / campaign / "trainval"
+    dpath_trainval = paths["artifacts"] / campaign / "_phase" / "trainval"
     if not dpath_trainval.exists():
         raise FileNotFoundError(
             f"{dpath_trainval} does not exist -- test evaluates the trainval phase's saved models; run the "
@@ -56,14 +58,14 @@ def _plan(campaign):
 
 def _pending(dpath_test, combos, seeds, groups):
     """{(dataset, arm, coord): [seeds]} of the trials still to score: those whose test score files
-    (_seeds/<seed>/<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
+    (_seeds/<seed>/ metrics.json + secondary/metrics-<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
     once up front, before anything is written, so every rank derives the identical eval sequence
     (evaluate() is collective)."""
     pending = {}
     for dataset, arm, coord in combos:
         for seed in seeds:
             dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed)
-            if not all((dpath_scores / f"{group_key}.json").exists() for group_key in groups):
+            if not all(group_path(dpath_scores, group_key, "metrics", ".json").exists() for group_key in groups):
                 pending.setdefault((dataset, arm, coord), []).append(seed)
     return pending
 
@@ -84,13 +86,15 @@ def _seed_test_tree(dpath_test, dpath_trainval, metadata, combos):
 
 @rank0
 def _save_test_scores(dpath_scores, eval_metrics, chkpt):
-    """The trial's test score files, one per eval group: {'chkpt': the checkpoint index the trainval
+    """The trial's test score files, one per eval group (metrics.json for native, secondary/metrics-<group>.json
+    for the rest): {'chkpt': the checkpoint index the trainval
     model was saved at, 'scores': the group's scores} -- the shape report._collect_test_scores reads.
     All groups are written together, so any one file's presence marks the trial scored."""
-    dpath_scores.mkdir(parents=True, exist_ok=True)
     formatted = format_scores(eval_metrics["scores"])
     for group_key, scores_grp in formatted.items():
-        save_json({"chkpt": chkpt, "scores": scores_grp}, dpath_scores / f"{group_key}.json")
+        fpath = group_path(dpath_scores, group_key, "metrics", ".json")
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        save_json({"chkpt": chkpt, "scores": scores_grp}, fpath)
 
 def main():
     from models import VLMWrapper  # local: models pulls open_clip/transformers, too heavy for module import
@@ -99,8 +103,8 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: torchrun --standalone --nproc-per-node=auto -m test <campaign>")
     campaign = sys.argv[1]
-    dpath_trainval = paths["artifacts"] / campaign / "trainval"
-    dpath_test = paths["artifacts"] / campaign / "test"
+    dpath_trainval = paths["artifacts"] / campaign / "_phase" / "trainval"
+    dpath_test = paths["artifacts"] / campaign / "_phase" / "test"
 
     cfg_snapshot, metadata, combos = _plan(campaign)
     seeds = metadata["seeds"]

@@ -3,6 +3,7 @@ import json
 import pytest
 
 import test as test_script
+from utils.config import group_path
 
 
 def _write_trainval(dpath_trainval, metadata) -> None:
@@ -26,7 +27,7 @@ def test_plan_combos_follow_the_matrix_in_campaign_order(tmp_path, monkeypatch) 
         "seeds": [42, 43],
         "matrix": {"cub": {"a1": ["c1"], "a2": ["c2"]}, "bryo": {"a1": ["c1", "c3"], "a2": ["c2"]}},
     }
-    _write_trainval(tmp_path / "camp" / "trainval", metadata)
+    _write_trainval(tmp_path / "camp" / "_phase" / "trainval", metadata)
 
     cfg_snapshot, metadata_out, combos = test_script._plan("camp")
 
@@ -44,10 +45,11 @@ def test_pending_skips_fully_scored_trials(tmp_path) -> None:
     groups = {"native": "Standard", "joint_macro": "GZSL"}
     dpath_seeds = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_seeds"
     for group_key in groups:  # seed 42: fully scored
-        (dpath_seeds / "42").mkdir(parents=True, exist_ok=True)
-        (dpath_seeds / "42" / f"{group_key}.json").write_text("{}")
+        fpath = group_path(dpath_seeds / "42", group_key, "metrics", ".json")
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text("{}")
     (dpath_seeds / "43").mkdir(parents=True)  # seed 43: partially scored
-    (dpath_seeds / "43" / "native.json").write_text("{}")
+    (dpath_seeds / "43" / "metrics.json").write_text("{}")
 
     pending = test_script._pending(dpath_test, combos, [42, 43, 44], groups)
 

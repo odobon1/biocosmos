@@ -47,7 +47,7 @@ def _targ_cfg(targ):
 @dataclass
 class _FakeCoordCfg:
     campaign: str = "c"
-    phase: str = "_screen"
+    phase: str = "screen"
     arm: str = "sp"
     coord: str = "base"
     seed: int = 42
@@ -103,7 +103,7 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
             "n_samps": {"total": 102_500, "warmup": 4_100},
             "n_steps": {"total": 101, "warmup": 5},
         },
-        "best_chkpt": {"map": {"native": {"idx": 3}}},
+        "best_chkpt": {"idx": 3, "n_trials": 2, "mean": "0.5000"},
     }
     (tmp_path / "coord_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
     ArtifactManager.save_metadata_coord(cfg)  # a later trial re-saves: must not raise, must not reset the state
@@ -240,7 +240,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
 def test_update_campaign_time_stamps_phase_and_campaign_last_seen(tmp_path, monkeypatch) -> None:
     # every checkpoint write moves the phase's accumulated duration on and re-stamps datetime_last_seen
     # on both the phase's metadata and the campaign's, leaving the recorded starts alone
-    dpath_phase = tmp_path / "cmp" / "_screen"
+    dpath_phase = tmp_path / "cmp" / "_phase" / "screen"
     dpath_phase.mkdir(parents=True)
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
     save_pickle({"last_updated": time.time() - 3661.0, "elapsed": 0.0}, dpath_phase / "time.pkl")
@@ -332,13 +332,13 @@ def test_load_base_eval_cache_misses_when_entry_lacks_an_eval_group_in_play(tmp_
 
 
 def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> None:
-    # each save ingests the npz files compute_projections wrote into this trial's evals/base/
+    # each save ingests the npz files compute_projections wrote into this trial's evals/evals/0/viz/cache/
     # (absent for non-viz trials -> None) and writes its combo's entry to that combo's own file,
     # leaving other combos' files untouched
     dpath_cache = tmp_path / "base_eval_cache"
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo.pkl")
     monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial")
-    dpath_base = tmp_path / "trial" / "evals" / "base"
+    dpath_base = tmp_path / "trial" / "evals" / "evals" / "0" / "viz" / "cache"
     dpath_base.mkdir(parents=True)
     np.savez(dpath_base / "projections.npz", pca_id=np.arange(3))
     eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None}}
@@ -567,7 +567,7 @@ def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
 
 
 def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path, monkeypatch) -> None:
-    # chkpt_stop 0: the pick's base eval won qual selection, so the trainval trial saves the pretrained
+    # chkpt_stop 0: the pick's base eval won refine selection, so the trainval trial saves the pretrained
     # model untrained and runs no training -- the trial dir is still filled out like a completed one, its
     # training telemetry empty (no batch recorded), which the runner then marks complete
     dpath_trial = tmp_path / "_seeds" / "42"

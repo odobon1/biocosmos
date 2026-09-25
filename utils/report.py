@@ -2,16 +2,18 @@
 Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint selection
 (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/coord_stats/), the per-eval-group composite-score summary
 tables + convergence plots at every cross-coord level -- per arm (_arms/<arm>/arm_metrics/performance/), per dataset
-(_datasets/<dataset>/dataset_metrics/{arm_coords,arms}/performance/) -- each {map,acc}/<group>/{scores,convergence}.png,
-the phase workbooks (phase_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/metrics.xlsx), the test workbooks
-(artifacts/<campaign>/test/map/test_<group>.xlsx, from the score files test.py writes), per-trial
+(_datasets/<dataset>/dataset_metrics/{armcoords,arms}/performance/; arms/ only in the refine phase) -- each
+{scores,convergence}.png + secondary/{scores,convergence}-<group>.png, the phase workbooks (phase_metrics/{armcoords,arms}/
+{metrics,secondary/metrics-<group>}.xlsx; arms/ only in the refine phase), the test workbooks (artifacts/<campaign>/_phase/test/
+phase_metrics/arms/{metrics,secondary/metrics-<group>}.xlsx + per-dataset score tables
+_datasets/<dataset>/dataset_metrics/arms/performance/{scores,secondary/scores-<group>}.png, from the score files test.py writes), per-trial
 learning-curve plots, each arm's coords' logit-scale panels stacked into strip figures
 (_arms/<arm>/arm_metrics/coord_strips/) and each finished arm's best coord's copy of its
-learning curves (_arms/<arm>/best_coord/) -- all
-under one phase dir of the campaign (artifacts/<campaign>/<phase>/,
+learning curves (_arms/<arm>/arm_metrics/best_coords/) -- all
+under one phase dir of the campaign (artifacts/<campaign>/_phase/<phase>/,
 ArtifactManager.dpath_phase). The phase's phase_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
 planned (dataset, arm, coord) set every sweep gate and table row here keys off: every arm x coord in the
-screening phase, each arm's picked coord(s) in the qual phase. Everything here renders from artifacts already
+screening phase, each arm's picked coord in the refine phase. Everything here renders from artifacts already
 on disk and reads its paths from ArtifactManager; trial/checkpoint state I/O lives in utils/train.py.
 """
 
@@ -40,8 +42,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from utils.config import group_path
 from utils.ddp import rank0
-from utils.train import ArtifactManager, BEST_CRITERIA
+from utils.train import ArtifactManager, copy_viz, dpath_eval_seq, fpath_eval_metrics
 from utils.utils import (
     paths,
     save_json,
@@ -57,17 +60,12 @@ import pdb
 
 # Every entry point here takes `eval_groups` -- {group key: reported name} for the groups the campaign
 # has in play (utils.config.eval_groups, off reporting.yaml's frozen `eval` block). The key is the scores
-# group key and the stats artifact's file/dir name, the value the name titles and banners carry; every
-# stats table/xlsx/plot artifact is rendered once per group. `native` is always in the map, so anything
-# that just needs SOME group's file on disk reads native's by name.
+# group key and places the group's artifacts (utils.config.group_path: native's at the plain name, every
+# other group's under secondary/), the value the name titles and banners carry; every stats
+# table/xlsx/plot artifact is rendered once per group. `native` is always in the map, so anything that
+# just needs SOME group's file on disk reads native's plain-named one.
 
-# checkpoint-selection criterion (BEST_CRITERIA / evals/_selected/ subdir) -> banner display name
-_SELECTION_NAMES = {"map": "mAP-selection", "acc": "Acc-selection"}
-
-# criterion -> display name of the comp score it tracks (chkpt-mean curves)
-_CRITERION_SCORE_NAMES = {"map": "Composite mAP", "acc": "Composite I2T Accuracy"}
-
-# "Hardware Performance" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
+# "HW" table columns; _HW_LABELS key the per-trial dicts built by _collect_hw,
 # _HW_CRASH_LABELS the per-row crash totals summed from the coord_metadata.json n_crashes it reads
 # (one counter per _CRASH_KINDS cause, in _HW_CRASH_LABELS order)
 _HW_LABELS = ("Time Trial", "Mean Time Train", "Mean Time Eval", "Peak RAM", "Peak VRAM")
@@ -175,36 +173,35 @@ def _listview_metric_stats(values):
 def update_metric_stats(eval_groups, spread_type):
     dpath_coord = ArtifactManager.dpath_coord
     dpath_stats = dpath_coord / "coord_stats"
-    for criterion in BEST_CRITERIA:
-        for group_key in eval_groups:
-            metric_dicts = []
-            for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
-                # update_chkpt_selection runs first and (re)writes evals/_selected/<criterion>/ for
-                # exactly the completed trials, so their presence still marks the set to aggregate
-                fpath_metrics = dpath_trial / f"evals/_selected/{criterion}/{group_key}.json"
-                if not fpath_metrics.exists():
-                    continue
-                metrics = load_json(fpath_metrics)
-                for key in ("chkpt", "loss_raw", "sim", "targ", "killed"):  # non-score fields aren't aggregated
-                    metrics.pop(key)
-                metric_dicts.append(metrics)
+    for group_key in eval_groups:
+        metric_dicts = []
+        for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
+            # update_chkpt_selection runs first and (re)writes evals/_selected/ for
+            # exactly the completed trials, so their presence still marks the set to aggregate
+            fpath_metrics = fpath_eval_metrics(dpath_trial / "evals" / "_selected", group_key)
+            if not fpath_metrics.exists():
+                continue
+            metrics = load_json(fpath_metrics)
+            for key in ("chkpt", "loss_raw", "sim", "targ", "killed"):  # non-score fields aren't aggregated
+                metrics.pop(key)
+            metric_dicts.append(metrics)
 
-            if not metric_dicts:
-                return
+        if not metric_dicts:
+            return
 
-            n_trials = len(metric_dicts)
-            stats = {
-                "n_trials": n_trials,
-                **_aggregate_metric_stats(metric_dicts, spread_type),
-            }
-            listview = {
-                "n_trials": n_trials,
-                **_listview_metric_stats(metric_dicts),
-            }
-            dpath_group = dpath_stats / criterion / group_key
-            dpath_group.mkdir(parents=True, exist_ok=True)
-            save_json(stats, dpath_group / "metrics.json")
-            save_json_listview(listview, dpath_group / "metrics_listview.json")
+        n_trials = len(metric_dicts)
+        stats = {
+            "n_trials": n_trials,
+            **_aggregate_metric_stats(metric_dicts, spread_type),
+        }
+        listview = {
+            "n_trials": n_trials,
+            **_listview_metric_stats(metric_dicts),
+        }
+        dpath_group = group_path(dpath_stats, group_key, "stats")
+        dpath_group.mkdir(parents=True, exist_ok=True)
+        save_json(stats, dpath_group / "metrics.json")
+        save_json_listview(listview, dpath_group / "metrics_listview.json")
 
 def _dpath_coord(dataset, arm, coord):
     """The coord dir holding (arm, coord)'s trials on `dataset`: _datasets/<dataset>/_arms/<arm>/_coords/<coord>."""
@@ -215,22 +212,21 @@ def _coord_label(dpath_coord):
     return f"{dpath_coord.parent.parent.name}/{dpath_coord.name}"
 
 def _chkpt_dpaths(dpath_trial):
-    """[evals/base, evals/eval1, .., evals/eval<n_chkpts>] once the trial's FINAL eval is on disk,
+    """[evals/evals/0 (the base eval), evals/evals/1, .., evals/evals/<n_chkpts>] once the trial's FINAL eval is on disk,
     else None -- the trial-completion signal for every coord-level aggregation here. Each eval
     file's chkpt field carries 'k/n_chkpts', so the highest-numbered eval dir says whether k has
     reached n_chkpts without n_chkpts being threaded in from config. A killed trial (kill_thresh;
     trial_metadata.json's killed = the eval index it stopped at) is complete at that eval instead, its
-    list ending at evals/eval<killed>. (The old signal, a written evals/_selected/, can't serve any
+    list ending at evals/evals/<killed>. (The old signal, a written evals/_selected/, can't serve any
     more: _selected/ is now derived from the completed trials rather than written by each trial for
     itself.)"""
-    dpath_evals = dpath_trial / "evals"
-    dpaths_eval = sorted(dpath_evals.glob("eval*"), key=lambda dpath: int(dpath.name[len("eval"):]))
+    dpaths_eval = sorted(dpath_eval_seq(dpath_trial).glob("*"), key=lambda dpath: int(dpath.name))
     if not dpaths_eval:
         return None
-    chkpt = load_json(dpaths_eval[-1] / "native.json")["chkpt"]  # native is always in play
+    chkpt = load_json(fpath_eval_metrics(dpaths_eval[-1], "native"))["chkpt"]  # native is always in play
     idx_eval, n_chkpts = chkpt.split()[0].split("/")
     complete = idx_eval == n_chkpts or int(idx_eval) == load_json(dpath_trial / "trial_metadata.json")["killed"]
-    return [dpath_evals / "base", *dpaths_eval] if complete else None
+    return dpaths_eval if complete else None
 
 def _trial_complete(dataset, arm, coord, seed):
     return _chkpt_dpaths(_dpath_coord(dataset, arm, coord) / "_seeds" / str(seed)) is not None
@@ -238,7 +234,7 @@ def _trial_complete(dataset, arm, coord, seed):
 def _matrix():
     """The phase's planned matrix, phase_metadata.json's 'matrix' ({dataset: {arm: [coords]}}, datasets and arms in
     campaign order): the (dataset, arm, coord) combos every sweep gate and table row here keys off (every arm x
-    coord in the screening phase, each arm's picked coord(s) in the qual phase)."""
+    coord in the screening phase, each arm's picked coord in the refine phase)."""
     return load_json(ArtifactManager.dpath_phase / "phase_metadata.json")["matrix"]
 
 def _matrix_arms(matrix, datasets):
@@ -261,7 +257,7 @@ def arm_sweep_complete(seed, dataset, arm):
 def arm_complete(dataset, arm):
     """True once EVERY planned trial of `arm` on `dataset` is complete -- all its coords (the phase's
     matrix) across all the phase's seeds (phase_metadata.json's 'seeds'), i.e. the whole arm rather than
-    one seed's cycle of it (arm_sweep_complete). Gates the arm's best_coord/ mirror
+    one seed's cycle of it (arm_sweep_complete). Gates the arm's arm_metrics/best_coords/ mirror
     (update_best_coord_curves)."""
     metadata = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
     return all(
@@ -309,95 +305,96 @@ def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_nam
 
 @rank0
 def update_chkpt_selection(eval_groups, spread_type):
-    """Checkpoint selection, per criterion x eval group, for this coord/dataset: the ONE checkpoint
-    index every one of its trials is scored at, argmaxed over the across-trial MEAN curve rather than
-    per trial -- argmax(mean(...)), not mean(argmax(...)). Each criterion curves the comp score it
-    selects on (BEST_CRITERIA: map -> comp.map.all, acc -> comp.acc.i2t) at every checkpoint of every
-    completed trial (_chkpt_dpaths); index 0 is the base eval, plotted and a candidate only under
-    the base eval (checkpoint 0) competes like any other, so the winner is argmax over 0..n_chkpts
-    with it and over 1..n_chkpts without, the earliest taking ties either way. Killed trials
-    (kill_thresh: stopped at an earlier eval, so their curves are shorter) shape the mean curve
-    only when every trial of the coord/dataset was killed; either way each is scored at its OWN
-    argmax, since it may have no eval at the coord's index.
+    """Checkpoint selection for this coord/dataset: the ONE checkpoint index every one of its trials is
+    scored at, argmaxed over the across-trial MEAN Native curve rather than per trial --
+    argmax(mean(...)), not mean(argmax(...)). The curve is native's comp mAP All score
+    (scores.comp.map.all) at every checkpoint of every completed trial (_chkpt_dpaths); the base eval
+    (checkpoint 0) competes like any other, the earliest taking ties. Native alone selects: every eval
+    group is scored at native's pick, so all of a trial's selected files (and its viz/) are one
+    eval. Killed trials (kill_thresh: stopped at an earlier eval, so their curves are shorter) shape
+    the mean curve only when every trial of the coord/dataset was killed; either way each is scored at
+    its OWN native argmax, since it may have no eval at the coord's index.
 
     The selection MOVES as trials land, so all of this is rewritten from scratch at each trial
     completion, for every completed trial of the coord/dataset -- not just the one that finished:
-      - evals/_selected/<criterion>/<group>.json in each trial: a copy of ITS eval<idx_best> file
-        (a killed trial's eval at its own argmax) plus a 'killed' flag, which the tables shade by
-      - evals/_best/<criterion>/<group>.json in each trial: a copy of its eval at the trial's OWN
-        argmax (same base and tie rules) -- per-trial reference; nothing aggregates it
-      - coord_stats/<criterion>/<group>/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads',
-        'idx_best'}) + chkpt_means.png (mean curve, mean +- spread band, selection marked)
-      - coord_metadata.json's best_chkpt[<criterion>][<group>]
+      - evals/_selected/ in each trial: every group's metrics file of ITS evals/evals/<idx_best>/ (a killed
+        trial's eval at its own argmax), laid out as an eval dir's (metrics/metrics.json,
+        metrics/secondary/metrics-<group>.json: fpath_eval_metrics) plus a 'killed' flag, which the
+        tables shade by; and that eval's manifold-viz dir under viz/ (copy_viz: cache/ + stills)
+      - evals/_best/ in each trial: the same, at the trial's OWN native argmax (same base and tie
+        rules), without the flag -- per-trial reference; nothing aggregates it
+      - coord_stats/<stats dir>/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads',
+        'idx_best'}) + chkpt_means.png, per group: that group's mean curve, mean +- spread band, and
+        that group's own pick marked -- the argmax of its own mean curve (native's is the selection; a
+        secondary group's is for reference only, scoring nothing) (<stats dir> via utils.config.group_path:
+        stats/ for native, secondary/stats-<group>/ for the rest)
+      - coord_metadata.json's best_chkpt ({'idx', 'n_trials', 'mean'}: native's pick and its mean)
     """
     dpath_coord = ArtifactManager.dpath_coord
-    best_chkpt = {criterion: {} for criterion in BEST_CRITERIA}
-    for criterion, (score_key, metric) in BEST_CRITERIA.items():
-        for group_key, group_name in eval_groups.items():
-            trials = []  # (trial dir, its eval dirs, its comp score at each checkpoint, killed), completed trials only
-            for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
-                dpaths_chkpt = _chkpt_dpaths(dpath_trial)
-                if dpaths_chkpt is None:
-                    continue
-                trials.append((dpath_trial, dpaths_chkpt, [
-                    float(load_json(dpath / f"{group_key}.json")["scores"]["comp"][score_key][metric])
-                    for dpath in dpaths_chkpt
-                ], load_json(dpath_trial / "trial_metadata.json")["killed"] is not None))
+    trials = []  # (trial dir, its eval dirs, {group: its comp score at each checkpoint}, killed), completed trials only
+    for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
+        dpaths_chkpt = _chkpt_dpaths(dpath_trial)
+        if dpaths_chkpt is None:
+            continue
+        trials.append((dpath_trial, dpaths_chkpt, {
+            group_key: [float(load_json(fpath_eval_metrics(dpath, group_key))["scores"]["comp"]["map"]["all"])
+                        for dpath in dpaths_chkpt]
+            for group_key in eval_groups
+        }, load_json(dpath_trial / "trial_metadata.json")["killed"] is not None))
 
-            if not trials:
-                return
+    if not trials:
+        return
 
-            # killed trials stopped short, so their curves are shorter than a full run's: they shape the
-            # coord's selection only when every trial was killed (then all are equally short)
-            live = [trial for trial in trials if not trial[3]] or trials
-            curves = np.array([curve for _, _, curve, _ in live])
-            n_trials = len(curves)
-            # a lone trial has no ddof=1 spread -> flat (invisible) band
-            spreads = np.zeros(curves.shape[1]) if n_trials == 1 else np.array([_spread(col, spread_type) for col in curves.T])
-            means = curves.mean(axis=0)
-            idx_best = int(np.argmax(means))  # the base eval (index 0) competes like any checkpoint; argmax keeps the earliest tie
+    # killed trials stopped short, so their curves are shorter than a full run's: they shape the
+    # coord's selection only when every trial was killed (then all are equally short)
+    live = [trial for trial in trials if not trial[3]] or trials
+    n_trials = len(live)
+    means_native = np.array([curves["native"] for _, _, curves, _ in live]).mean(axis=0)
+    idx_best = int(np.argmax(means_native))  # the base eval (index 0) competes like any checkpoint; argmax keeps the earliest tie
 
-            for dpath_trial, dpaths_chkpt, curve, killed in trials:
-                # _selected: the trial's eval at the coord's selected checkpoint (what the stats read)
-                # -- a killed trial, which may have no eval there, at its own best instead -- with the
-                # killed flag added for the tables; _best: at the trial's OWN argmax, for reading a
-                # single trial on its own
-                idx_trial_best = int(np.argmax(curve))  # the base eval competes here too
-                for name, idx in (("_selected", idx_trial_best if killed else idx_best), ("_best", idx_trial_best)):
-                    dpath_dest = dpath_trial / "evals" / name / criterion
-                    dpath_dest.mkdir(parents=True, exist_ok=True)
-                    metrics = load_json(dpaths_chkpt[idx] / f"{group_key}.json")
-                    save_json({**metrics, "killed": killed} if name == "_selected" else metrics, dpath_dest / f"{group_key}.json")
+    for dpath_trial, dpaths_chkpt, curves, killed in trials:
+        # _selected: the trial's eval at the coord's selected checkpoint (what the stats read)
+        # -- a killed trial, which may have no eval there, at its own best instead -- with the
+        # killed flag added for the tables; _best: at the trial's OWN argmax, for reading a
+        # single trial on its own
+        idx_trial_best = int(np.argmax(curves["native"]))  # the base eval competes here too
+        for name, idx in (("_selected", idx_trial_best if killed else idx_best), ("_best", idx_trial_best)):
+            dpath_dest = dpath_trial / "evals" / name
+            for group_key in eval_groups:
+                fpath_dest = fpath_eval_metrics(dpath_dest, group_key)
+                fpath_dest.parent.mkdir(parents=True, exist_ok=True)
+                metrics = load_json(fpath_eval_metrics(dpaths_chkpt[idx], group_key))
+                save_json({"chkpt": metrics["chkpt"], "killed": killed, **metrics} if name == "_selected" else metrics, fpath_dest)
+            copy_viz(dpaths_chkpt[idx], dpath_dest)
 
-            best_chkpt[criterion][group_key] = {
-                "idx": idx_best,
+    for group_key, group_name in eval_groups.items():
+        curves = np.array([trial_curves[group_key] for _, _, trial_curves, _ in live])
+        # a lone trial has no ddof=1 spread -> flat (invisible) band
+        spreads = np.zeros(curves.shape[1]) if n_trials == 1 else np.array([_spread(col, spread_type) for col in curves.T])
+        means = curves.mean(axis=0)
+        idx_group = int(np.argmax(means))  # native's is idx_best itself
+        dpath_group = group_path(dpath_coord / "coord_stats", group_key, "stats")
+        dpath_group.mkdir(parents=True, exist_ok=True)
+        save_pickle(
+            {
                 "n_trials": n_trials,
-                "mean": f"{means[idx_best]:.4f}",
-            }
-
-            dpath_group = dpath_coord / "coord_stats" / criterion / group_key
-            dpath_group.mkdir(parents=True, exist_ok=True)
-            save_pickle(
-                {
-                    "n_trials": n_trials,
-                    "chkpts": np.arange(curves.shape[1]),
-                    "means": means,
-                    "spreads": spreads,
-                    "idx_best": idx_best,
-                },
-                dpath_group / "chkpt_means.pkl",
-            )
-            score_name = _CRITERION_SCORE_NAMES[criterion]
-            title = (
-                f"{score_name} per Checkpoint -- {_coord_label(dpath_coord)}, "
-                f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
-            )
-            _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title,
-                              dpath_group / "chkpt_means.png")
+                "chkpts": np.arange(curves.shape[1]),
+                "means": means,
+                "spreads": spreads,
+                "idx_best": idx_group,
+            },
+            dpath_group / "chkpt_means.pkl",
+        )
+        title = (
+            f"Composite mAP per Checkpoint -- {_coord_label(dpath_coord)}, "
+            f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
+        )
+        _plot_chkpt_means(means, spreads, idx_group, n_trials, spread_type, "Composite mAP", title,
+                          dpath_group / "chkpt_means.png")
 
     fpath_meta = dpath_coord / "coord_metadata.json"
     metadata = load_json(fpath_meta)
-    metadata["best_chkpt"] = best_chkpt
+    metadata["best_chkpt"] = {"idx": idx_best, "n_trials": n_trials, "mean": f"{means_native[idx_best]:.4f}"}
     save_json(metadata, fpath_meta)
 
 def _score_cells(score_maps, labels, spread_type):
@@ -456,13 +453,12 @@ def _comp_entry(scores_grp):
         "nshot": [b.lower() for b in {**nshot_map, **nshot_acc}],
     }
 
-def _collect_comps(group_keys, arm_coords, datasets, criterion):
+def _collect_comps(group_keys, arm_coords, datasets):
     """Per eval group in `group_keys`, each (arm, coord) x dataset's completed-trial score maps, keyed
     by trial seed (the trial dir name; empty dict -> no trials yet):
     comps_all[group_key][((arm, coord), dataset)][seed] is a _comp_entry plus 'killed' (the file's flag:
-    the trial was killed, kill_thresh). Each group reads its own best-checkpoint metrics file for the
-    given selection criterion (evals/_selected/<criterion>/), whose presence is also the completion
-    signal, same as update_metric_stats."""
+    the trial was killed, kill_thresh). Each group reads its own selected-checkpoint metrics file
+    (evals/_selected/), whose presence is also the completion signal, same as update_metric_stats."""
     comps_all = {group_key: {} for group_key in group_keys}
     for arm, coord in arm_coords:
         for dataset in datasets:
@@ -471,7 +467,7 @@ def _collect_comps(group_keys, arm_coords, datasets, criterion):
             if (dpath_coord / "_seeds").exists():
                 for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
                     for group_key in group_keys:
-                        fpath_metrics = dpath_trial / f"evals/_selected/{criterion}/{group_key}.json"
+                        fpath_metrics = fpath_eval_metrics(dpath_trial / "evals" / "_selected", group_key)
                         if fpath_metrics.exists():
                             metrics = load_json(fpath_metrics)
                             comps[group_key][dpath_trial.name] = {**_comp_entry(metrics["scores"]), "killed": metrics["killed"]}
@@ -481,17 +477,16 @@ def _collect_comps(group_keys, arm_coords, datasets, criterion):
 
 def _nshot_names(comps_all):
     """The n-shot bucket names (_collect_comps' 'nshot' lists) seen across every collected trial of
-    comps_all ({criterion: {group_key: comps_by}}), in the files' bucket order. A dataset's files
+    comps_all ({group_key: comps_by}), in the files' bucket order. A dataset's files
     may lack a bucket (no classes there), so the per-trial lists are merged: each unseen name is
     inserted right after its predecessor in that trial's list."""
     names = []
-    for comps_all_crit in comps_all.values():
-        for comps_by in comps_all_crit.values():
-            for comps in comps_by.values():
-                for comp in comps.values():
-                    for i, name in enumerate(comp["nshot"]):
-                        if name not in names:
-                            names.insert(names.index(comp["nshot"][i - 1]) + 1 if i else 0, name)
+    for comps_by in comps_all.values():
+        for comps in comps_by.values():
+            for comp in comps.values():
+                for i, name in enumerate(comp["nshot"]):
+                    if name not in names:
+                        names.insert(names.index(comp["nshot"][i - 1]) + 1 if i else 0, name)
     return names
 
 def _collect_hw(arm_coords, datasets):
@@ -500,8 +495,8 @@ def _collect_hw(arm_coords, datasets):
     {_HW_LABELS label -> float} dict per trial -- runtime.trial / runtime.train.mean /
     runtime.eval.mean are float-seconds strings, memory.ram / memory.vram are 'used/total GB'
     strings (numerator taken) -- plus 'killed', whether the trial was killed (kill_thresh; the
-    file's killed field is the eval index it stopped at, else null). A written best-checkpoint
-    (evals/_selected/map/) metrics file is the completion signal, same as _collect_comps (native.json
+    file's killed field is the eval index it stopped at, else null). A written selected-checkpoint
+    (evals/_selected/) metrics file is the completion signal, same as _collect_comps (native's metrics.json
     stands in for the set -- all per-group files are materialized together at trial end). Also each
     (arm, coord) x dataset's n_crashes ({'ram'/'vram'/'other' -> int}, summed across its seeds, completed
     or not) from its coord_metadata.json (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/; zeros for a
@@ -514,7 +509,7 @@ def _collect_hw(arm_coords, datasets):
             trials = {}
             if (dpath_coord / "_seeds").exists():
                 for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
-                    if (dpath_trial / "evals/_selected/map/native.json").exists():
+                    if (dpath_trial / "evals/_selected/metrics/metrics.json").exists():
                         meta = load_json(dpath_trial / "trial_metadata.json")
                         trials[dpath_trial.name] = {
                             "Time Trial": float(meta["runtime"]["trial"]),
@@ -574,29 +569,27 @@ def _order_rows(rows, xmeans, label):
     # filter out rows with no completed trials before ordering, so every mean is numeric
     return sorted(rows, key=lambda row: xmeans[(row, label)], reverse=True)
 
-def _best_coords(arm_coords, datasets, comps_by, criterion):
-    """best[(arm, dataset)]: the arm's best coord on that dataset for one criterion x eval group -- the
-    coord with the highest across-trial mean of the criterion's comp score (BEST_CRITERIA: map ->
-    comp.map.all, acc -> comp.acc.i2t; the same figure the convergence plots pick their winner by)
-    among the arm's planned coords (arm_coords: (arm, coord) pairs in campaign order) with completed
-    trials there (comps_by[((arm, coord), dataset)] non-empty), ties to the first; no entry when none
-    has any."""
-    score_key, metric = BEST_CRITERIA[criterion]
+def _best_coords(arm_coords, datasets, comps_by):
+    """best[(arm, dataset)]: the arm's best coord on that dataset for one eval group -- the
+    coord with the highest across-trial mean comp mAP All (the same figure the convergence plots
+    pick their winner by) among the arm's planned coords (arm_coords: (arm, coord) pairs in campaign
+    order) with completed trials there (comps_by[((arm, coord), dataset)] non-empty), ties to the
+    first; no entry when none has any."""
     means = {}  # (arm, dataset) -> [(coord, mean)], campaign order
     for arm, coord in arm_coords:
         for dataset in datasets:
             comps = comps_by[((arm, coord), dataset)]
             if comps:
-                mean = np.mean([float(comp[score_key][metric]) for comp in comps.values()])
+                mean = np.mean([float(comp["map"]["all"]) for comp in comps.values()])
                 means.setdefault((arm, dataset), []).append((coord, mean))
     return {key: max(cms, key=lambda cm: cm[1])[0] for key, cms in means.items()}  # max keeps the first of equals
 
-def _arm_rows(arms, arm_coords, datasets, comps_by, criterion):
-    """The best-coord-per-arm row set for one criterion x eval group: (rows, comps_arms, best) -- rows
+def _arm_rows(arms, arm_coords, datasets, comps_by):
+    """The best-coord-per-arm row set for one eval group: (rows, comps_arms, best) -- rows
     the (arm,) keys of the arms with a best coord (_best_coords over arm_coords) in some dataset, campaign
     order; comps_arms[((arm,), dataset)] the best coord's score maps there ({} where the arm has none); and
     best itself."""
-    best = _best_coords(arm_coords, datasets, comps_by, criterion)
+    best = _best_coords(arm_coords, datasets, comps_by)
     rows = [(arm,) for arm in arms if any((arm, dataset) in best for dataset in datasets)]
     comps_arms = {
         ((arm,), dataset): comps_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
@@ -607,20 +600,21 @@ def _arm_rows(arms, arm_coords, datasets, comps_by, criterion):
 
 def pick_best_coords():
     """{(arm, dataset): coord} over the current phase tree: each arm's best planned coord per dataset by Native
-    mAP composite All -- criterion 'map', eval group 'native' (_best_coords: the highest across-trial mean at
+    mAP composite All -- eval group 'native' (_best_coords: the highest across-trial mean at
     the selected checkpoint among the arm's coords with completed trials there, ties to the first in campaign
-    order); no entry where none has any. The qual phase's selection (campaign_runner._qual_picks)."""
+    order); no entry where none has any. The refine phase's selection (campaign_runner._refine_picks)."""
     matrix = _matrix()
     datasets = list(matrix)
     arm_coords = _matrix_arm_coords(matrix, datasets)
-    comps_by = _collect_comps(("native",), arm_coords, datasets, "map")["native"]
-    return _best_coords(arm_coords, datasets, comps_by, "map")
+    comps_by = _collect_comps(("native",), arm_coords, datasets)["native"]
+    return _best_coords(arm_coords, datasets, comps_by)
 
-def _curve(dataset, arm, coord, criterion, group_key):
-    """(means, idx_best) of the coord's across-trial mean curve on `dataset` for one criterion x eval
-    group -- update_chkpt_selection's coord_stats/<criterion>/<group>/chkpt_means.pkl, written for
+def _curve(dataset, arm, coord, group_key):
+    """(means, idx_best) of the coord's across-trial mean curve on `dataset` for one eval
+    group -- update_chkpt_selection's coord_stats/{stats,secondary/stats-<group>}/chkpt_means.pkl, written for
     exactly the coords with completed trials there."""
-    chkpt_means = load_pickle(_dpath_coord(dataset, arm, coord) / "coord_stats" / criterion / group_key / "chkpt_means.pkl")
+    chkpt_means = load_pickle(group_path(_dpath_coord(dataset, arm, coord) / "coord_stats", group_key, "stats")
+                              / "chkpt_means.pkl")
     return chkpt_means["means"], chkpt_means["idx_best"]
 
 def _col_styles(grid, bold_high, n_keys):
@@ -713,115 +707,109 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
 
 def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, spread_type, bold_high,
                        ordered, heatmap):
-    """Render one score table + one convergence plot per selection criterion x eval group for ONE
-    dataset: dpath_stats/{map,acc}/<group>/scores.png -- map/ the comp mAP table (All/ID/OOD/I2T/I2I/T2I
-    score columns), acc/ the comp I2T accuracy table (single I2T column), each plus the enabled
-    supplemental columns (labels = (mAP labels, acc labels) per _score_labels) and each sourcing its
-    own criterion's best checkpoints (map/ from evals/_selected/map/, acc/ from evals/_selected/acc/) -- and
-    convergence.png. rowset_of(criterion, group_key) -> (rows, comps_by, curves): the table's row keys
+    """Render one score table + one convergence plot per eval group for ONE
+    dataset: dpath_stats/scores.png for native, dpath_stats/secondary/scores-<group>.png for
+    the rest -- the comp mAP table (All/ID/OOD/I2T/I2I/T2I score columns, plus the enabled
+    supplemental columns: labels, the mAP labels per _score_labels) at the selected checkpoints
+    (evals/_selected/) -- and convergence.png (likewise secondary/convergence-<group>.png). rowset_of(group_key) -> (rows, comps_by, curves): the table's row keys
     (tuples of len(headers) cells, e.g. (arm, coord) under headers ('Arm', 'Coord')), comps_by[(row,
     dataset)] their completed-trial score maps by seed (_collect_comps entries), and curves [(row,
     means, idx_best)] their across-trial mean curves (_curve) for the convergence plot.
 
     Tables: one '<key cells> (n_trials)' row per row key, stats aggregated across its completed
     trials, titled '<score name> -- <subject> (<group name>)'. bold_high bolds each score column's
-    highest-mean cell (ties included; '-' cells ignored), ordered orders the rows by the table's own
-    metric's mean over THIS dataset's completed trials (map tables by the mAP 'All' column, acc tables
-    by the acc 'I2T' column) -- localized per dataset and per group, independent of the cross-dataset
+    highest-mean cell (ties included; '-' cells ignored), ordered orders the rows by their mean mAP
+    'All' over THIS dataset's completed trials -- localized per dataset and per group, independent of the cross-dataset
     order used in the workbooks -- heatmap shades score cells white->#4caf50 over a fixed
     0.00->100.00 (as in update_phase_metrics), rows holding a killed trial (kill_thresh) in the
     killed yellow instead. Convergence plots overlay every row's curve on one
     log-scaled checkpoint axis, all grey, with the winner -- the highest mean at its OWN selected
     checkpoint, ties to the first row -- black on top, its selection marked (_plot_convergence, from
     checkpoint 0, the base eval); no plot when there are no curves."""
-    map_labels, acc_labels = labels
-    for criterion in BEST_CRITERIA:
-        score_labels = {"map": map_labels, "acc": acc_labels}[criterion]
-        score_name = _CRITERION_SCORE_NAMES[criterion]
-        for group_key, group_name in eval_groups.items():
-            rows, comps_by, curves = rowset_of(criterion, group_key)
-            if ordered:
-                # localized order: this dataset's per-row trial means (single-dataset degenerate
-                # case of _cross_dataset_means), not the cross-dataset means backing the workbook order
-                means = _cross_dataset_means(rows, (dataset,), comps_by, criterion, (score_labels[0],))
-                rows = _order_rows(rows, means, score_labels[0])
-            dpath_group = dpath_stats / criterion / group_key
-            dpath_group.mkdir(parents=True, exist_ok=True)
-            title_suffix = f" -- {subject} ({group_name})"
-            grid, killed_rows = _stats_table_grid(
-                headers,
-                score_labels,
-                [(row, list(comps_by[(row, dataset)].values())) for row in rows],
-                criterion,
-                spread_type,
-            )
-            _render_stats_table(grid, len(headers), f"{score_name}{title_suffix}", dpath_group / "scores.png", bold_high, heatmap,
-                                killed_rows)
-            if curves:
-                idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
-                _plot_convergence(curves, idx_win, score_name, f"{score_name} Convergence{title_suffix}",
-                                  dpath_group / "convergence.png")
+    for group_key, group_name in eval_groups.items():
+        rows, comps_by, curves = rowset_of(group_key)
+        if ordered:
+            # localized order: this dataset's per-row trial means (single-dataset degenerate
+            # case of _cross_dataset_means), not the cross-dataset means backing the workbook order
+            means = _cross_dataset_means(rows, (dataset,), comps_by, "map", (labels[0],))
+            rows = _order_rows(rows, means, labels[0])
+        fpath_scores = group_path(dpath_stats, group_key, "scores", ".png")
+        fpath_scores.parent.mkdir(parents=True, exist_ok=True)
+        title_suffix = f" -- {subject} ({group_name})"
+        grid, killed_rows = _stats_table_grid(
+            headers,
+            labels,
+            [(row, list(comps_by[(row, dataset)].values())) for row in rows],
+            "map",
+            spread_type,
+        )
+        _render_stats_table(grid, len(headers), f"Composite mAP{title_suffix}", fpath_scores, bold_high, heatmap,
+                            killed_rows)
+        if curves:
+            idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
+            _plot_convergence(curves, idx_win, "Composite mAP", f"Composite mAP Convergence{title_suffix}",
+                              group_path(dpath_stats, group_key, "convergence", ".png"))
 
 @rank0
 def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
-    _datasets/<dataset>/_arms/<arm>/arm_metrics/performance/{map,acc}/<group>/{scores,convergence}.png (see
+    _datasets/<dataset>/_arms/<arm>/arm_metrics/performance/{scores,convergence}.png (+ secondary/, see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
     completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
     '<score name> -- <arm>, <dataset> (<group>)'. An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at the end of the arm's seed cycle (train.py,
     arm_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats. The arm's
-    best_coord/ mirror rides along on the same calls (update_best_coord_curves)."""
+    arm_metrics/best_coords/ mirror rides along on the same calls (update_best_coord_curves)."""
     dpath_arm = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
     if not dpath_arm.exists():
         return
     coords = _matrix()[dataset][arm]
     arm_coords = [(arm, coord) for coord in coords]
-    comps_all = {criterion: _collect_comps(eval_groups, arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
-    # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
-    # together, so row presence is criterion- and group-independent
-    comps_ref = next(iter(comps_all["map"].values()))
+    comps_all = _collect_comps(eval_groups, arm_coords, (dataset,))
+    # update_chkpt_selection materializes every completed trial's _selected files, all groups
+    # together, so row presence is group-independent
+    comps_ref = next(iter(comps_all.values()))
     rows = [(coord,) for coord in coords if comps_ref[((arm, coord), dataset)]]
 
-    def rowset(criterion, group_key):
-        comps_by = {((coord,), dataset): comps_all[criterion][group_key][((arm, coord), dataset)] for (coord,) in rows}
-        curves = [((coord,), *_curve(dataset, arm, coord, criterion, group_key)) for (coord,) in rows]
+    def rowset(group_key):
+        comps_by = {((coord,), dataset): comps_all[group_key][((arm, coord), dataset)] for (coord,) in rows}
+        curves = [((coord,), *_curve(dataset, arm, coord, group_key)) for (coord,) in rows]
         return rows, comps_by, curves
 
     _render_stats_pngs(dpath_arm / "arm_metrics" / "performance", ("Coord",), rowset, dataset,
                        f"{arm}, {DATASET_ALIAS2NAME[dataset]}", eval_groups,
-                       _score_labels(supp_scores, _nshot_names(comps_all)), spread_type, bold_high, ordered, heatmap)
+                       _score_labels(supp_scores, _nshot_names(comps_all))[0], spread_type, bold_high, ordered, heatmap)
     update_best_coord_curves(dataset, arm)
     update_coord_strips(dataset, arm, spread_type)
 
 @rank0
 def update_best_coord_curves(dataset, arm):
     """Mirror the learning curves of `arm`'s best coord on `dataset` to
-    _datasets/<dataset>/_arms/<arm>/best_coord/learning_curves/<seed>/ -- every trial of that coord,
-    its learning_curves/ dir copied whole ({general,scale,logscale,KL}.png + scores/<group>.png) -- so the
+    _datasets/<dataset>/_arms/<arm>/arm_metrics/best_coords/learning_curves/<seed>/ -- every trial of that coord,
+    its learning_curves/ dir copied whole ({general,scale,logscale,KL,scores}.png + secondary/scores-<group>.png) -- so the
     arm's answer reads off one dir without first working out which coord won.
 
     Best is the coord with the highest across-trial mean Native mAP composite All at its selected
-    checkpoint (_best_coords on criterion 'map' x eval group 'native' -- the figure the qual phase picks
+    checkpoint (_best_coords on eval group 'native' -- the figure the refine phase picks
     its arms' coords by, pick_best_coords), ties to the first in campaign order.
 
     The dir stands for a FINISHED arm, so it exists only while every planned trial of the arm is in
     (arm_complete: all its coords x all the phase's seeds). It is rebuilt from scratch on each call and
     dropped whenever the arm is short of its plan again -- a coord or a seed added to it -- to be written
     once more when the arm completes over the new plan; the runner drops it at the moment such an edit is
-    applied (campaign_runner._apply_plan) rather than at the arm's next completed trial. Screening phase
-    only: the qual matrix reduces each arm to its pick(s), so there this would just duplicate the pick's
-    own coord dir, and the trainval phase runs no evals to rank coords by."""
-    if ArtifactManager.dpath_phase.name != "_screen":
+    applied (campaign_runner._apply_plan) rather than at the arm's next completed trial. In the refine phase
+    the arm has just its screening-picked coord, so that one is mirrored. Not in
+    the trainval phase, which runs no evals to rank coords by."""
+    if ArtifactManager.dpath_phase.name == "trainval":
         return
-    dpath_best = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm / "best_coord"
+    dpath_best = ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm / "arm_metrics" / "best_coords"
     if dpath_best.exists():
         shutil.rmtree(dpath_best)
     if not arm_complete(dataset, arm):
         return
     arm_coords = [(arm, coord) for coord in _matrix()[dataset][arm]]
-    comps_by = _collect_comps(("native",), arm_coords, (dataset,), "map")["native"]
-    coord = _best_coords(arm_coords, (dataset,), comps_by, "map")[(arm, dataset)]
+    comps_by = _collect_comps(("native",), arm_coords, (dataset,))["native"]
+    coord = _best_coords(arm_coords, (dataset,), comps_by)[(arm, dataset)]
     for dpath_trial in sorted((_dpath_coord(dataset, arm, coord) / "_seeds").iterdir()):
         shutil.copytree(dpath_trial / "learning_curves", dpath_best / "learning_curves" / dpath_trial.name)
 
@@ -1039,14 +1027,15 @@ def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ti
 @rank0
 def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
     """Render `dataset`'s cross-arm tables/plots:
-    _datasets/<dataset>/dataset_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/{scores,convergence}.png (see
-    _render_stats_pngs). arm_coords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
-    matrix) with >= 1 completed trial in this dataset. arms/ has one 'Arm' row per arm, each at its BEST coord for this
-    dataset -- per criterion x group, the coord with the highest across-trial mean of the criterion's
-    comp score among the arm's coords with completed trials here, ties to the first in campaign order
+    _datasets/<dataset>/dataset_metrics/{armcoords,arms}/performance/{scores,convergence}.png (+ secondary/, see
+    _render_stats_pngs). armcoords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
+    matrix) with >= 1 completed trial in this dataset. arms/ has one ('Arm', 'Coord') row per arm, each at its BEST coord for
+    this dataset, named in the row's Coord cell -- per group, the coord with the highest across-trial mean comp mAP All
+    among the arm's coords with completed trials here, ties to the first in campaign order
     (_best_coords) -- so both its table row and its convergence curve are that coord's; arms with no
-    completed trial here are omitted. arms/ is skipped in the qual phase, whose matrix reduces each
-    arm to its pick(s) -- there it would just duplicate arm_coords/. A dataset with no dir (no trial launched on it) is skipped.
+    completed trial here are omitted. The refine phase renders arms/ only: each arm there has the single coord
+    screening picked for it, so an armcoords/ view would repeat arms/ row for row. A dataset
+    with no dir (no trial launched on it) is skipped.
     Rendered at the end of the dataset's seed cycle (train.py, dataset_sweep_complete) and
     unconditionally by the runner on exit / tools.regen_stats."""
     dpath_dataset = ArtifactManager.dpath_phase / "_datasets" / dataset
@@ -1055,29 +1044,30 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
     matrix = _matrix()
     arms = list(matrix[dataset])
     arm_coords = _matrix_arm_coords(matrix, (dataset,))
-    comps_all = {criterion: _collect_comps(eval_groups, arm_coords, (dataset,), criterion) for criterion in BEST_CRITERIA}
-    # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
-    # together, so row presence is criterion- and group-independent
-    comps_ref = next(iter(comps_all["map"].values()))
+    comps_all = _collect_comps(eval_groups, arm_coords, (dataset,))
+    # update_chkpt_selection materializes every completed trial's _selected files, all groups
+    # together, so row presence is group-independent
+    comps_ref = next(iter(comps_all.values()))
     rows_ac = [row for row in arm_coords if comps_ref[(row, dataset)]]
-    labels = _score_labels(supp_scores, _nshot_names(comps_all))
+    labels = _score_labels(supp_scores, _nshot_names(comps_all))[0]
     subject = DATASET_ALIAS2NAME[dataset]
     dpath_stats = dpath_dataset / "dataset_metrics"
 
-    def rowset_arm_coords(criterion, group_key):
-        curves = [(row, *_curve(dataset, *row, criterion, group_key)) for row in rows_ac]
-        return rows_ac, comps_all[criterion][group_key], curves
+    def rowset_arm_coords(group_key):
+        curves = [(row, *_curve(dataset, *row, group_key)) for row in rows_ac]
+        return rows_ac, comps_all[group_key], curves
 
-    def rowset_arms(criterion, group_key):
-        rows, comps_arms, best = _arm_rows(arms, arm_coords, (dataset,), comps_all[criterion][group_key], criterion)
-        curves = [((arm,), *_curve(dataset, arm, best[(arm, dataset)], criterion, group_key)) for (arm,) in rows]
-        return rows, comps_arms, curves
+    def rowset_arms(group_key):
+        best = _best_coords(arm_coords, (dataset,), comps_all[group_key])
+        rows = [(arm, best[(arm, dataset)]) for arm in arms if (arm, dataset) in best]
+        curves = [(row, *_curve(dataset, *row, group_key)) for row in rows]
+        return rows, comps_all[group_key], curves
 
-    _render_stats_pngs(dpath_stats / "arm_coords" / "performance", ("Arm", "Coord"), rowset_arm_coords, dataset,
-                       subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap)
-    if ArtifactManager.dpath_phase.name != "qual":  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
-        _render_stats_pngs(dpath_stats / "arms" / "performance", ("Arm",), rowset_arms, dataset, subject, eval_groups,
-                           labels, spread_type, bold_high, ordered, heatmap)
+    if ArtifactManager.dpath_phase.name != "refine":
+        _render_stats_pngs(dpath_stats / "armcoords" / "performance", ("Arm", "Coord"), rowset_arm_coords, dataset,
+                           subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap)
+    _render_stats_pngs(dpath_stats / "arms" / "performance", ("Arm", "Coord"), rowset_arms, dataset, subject, eval_groups,
+                       labels, spread_type, bold_high, ordered, heatmap)
 
 def _override_value(config, key):
     """Effective value of dot-path `key` in a row's config.json dict; '-' when a segment is absent --
@@ -1089,23 +1079,29 @@ def _override_value(config, key):
         node = node[part]
     return str(node)
 
+def _band_value(configs, key):
+    """A band cell: the row's effective value of `key` over its config.json dicts (`configs`: one for an
+    (arm, coord) row; an arms/ row's per-dataset best coords', dataset order), its distinct values
+    (_override_value) joined by ' / ' in first-seen order -- a single value when they agree."""
+    return " / ".join(dict.fromkeys(_override_value(config, key) for config in configs))
+
 def _band_keys(side, rows, declared, config_by):
     """The params declared on `side` ('arm' / 'coord') across `rows`' overrides.json dicts
-    (declared[row]), first-seen order (campaign order); a param whose effective value
-    (config_by[row], _override_value) is identical across every row differentiates nothing -- drop
+    (declared[row]), first-seen order (campaign order); a param whose band value
+    (config_by[row], _band_value) is identical across every row differentiates nothing -- drop
     the column (and with it the whole band when no column survives)."""
     keys = []
     for row in rows:
         for key in declared[row][side]:
             if key not in keys:
                 keys.append(key)
-    return [key for key in keys if len({_override_value(config_by[row], key) for row in rows}) > 1]
+    return [key for key in keys if len({_band_value(config_by[row], key) for row in rows}) > 1]
 
 def _band_grids(band_specs, rows, config_by):
     """[(title, grid)] for the bands ([(title, keys)]) with surviving params: a header of param
     names only -- no key columns; the rows align with (and are labeled by) the aggregate Mean
     table's rows."""
-    return [(title, [list(keys)] + [[_override_value(config_by[row], key) for key in keys] for row in rows])
+    return [(title, [list(keys)] + [[_band_value(config_by[row], key) for key in keys] for row in rows])
             for title, keys in band_specs if keys]
 
 def _map_groups(supp_scores, nshot_names):
@@ -1145,7 +1141,7 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
 
     widths = {}  # col idx -> longest header/data cell text (banner/label cells overflow instead)
 
-    campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_phase.parent.name} ({banner})")  # <campaign>/<phase>/
+    campaign = ws.cell(row=1, column=1, value=f"{paths['root'].parent.name} - {ArtifactManager.dpath_phase.parent.parent.name} ({banner})")  # <campaign>/_phase/<phase>/
     campaign.font = bold
     campaign.alignment = left
 
@@ -1234,31 +1230,31 @@ def _write_sheet(ws, blocks, groups, bands, banner, n_keys, bold_high, heatmap, 
 
 @rank0
 def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
-    """Write the phase's workbooks, one per selection criterion x eval group under
-    artifacts/<campaign>/<phase>/phase_metrics/{arm_coords,arms}/performance/{map,acc}/<group>/metrics.xlsx. The arm_coords/
+    """Write the phase's workbooks, one per eval group under
+    artifacts/<campaign>/_phase/<phase>/phase_metrics/{armcoords,arms}/: metrics.xlsx for native,
+    secondary/metrics-<group>.xlsx for the rest. The armcoords/
     workbooks have one row per planned (arm, coord) (the phase's matrix), keyed by two columns 'Arm' + 'Coord'; the arms/ workbooks
     one row per arm, each arm shown at its BEST coord per dataset -- the coord with the highest
-    across-trial mean of the workbook's criterion's comp score among the arm's coords with completed
-    trials in that dataset, ties to the first in campaign order (_best_coords; a per-(criterion, group)
+    across-trial mean comp mAP All among the arm's coords with completed
+    trials in that dataset, ties to the first in campaign order (_best_coords; a per-group
     pick, so the workbook's mAP and accuracy sheets show the same coord) -- keyed by 'Arm' + 'Coord'
     too, the Coord cell naming that pick: a per-(arm, dataset) value, so every dataset table (aggregate
     and seed blocks alike, all three sheets) carries it ('-' where the arm has no completed trial in
-    that dataset) and the cross-dataset Mean table shows '-'. The arms/ workbooks are skipped in the
-    qual phase, whose matrix reduces each arm to its pick(s) -- there they would just duplicate
-    arm_coords/. Every table below is laid out identically in both, over its own rows.
+    that dataset) and the cross-dataset Mean table shows '-'. The refine phase writes arms/ only: each arm
+    there has the single coord per dataset screening picked for it, so an armcoords/ workbook would repeat
+    arms/ row for row. Every table below is laid out identically in both, over its own rows.
 
-    Each workbook has three sheets: 'Composite mAP' (comp map scores, All/ID/OOD/I2T/I2I/T2I score
-    columns), 'Composite I2T Accuracy' (comp acc, single I2T column) and 'Hardware Performance' (see
-    below) -- the score sheets source the workbook's own criterion's best checkpoints
-    (evals/_selected/<criterion>/), so e.g. the map/ workbooks' accuracy sheet holds the acc scores at
-    the best-mAP checkpoint and vice versa. supp_scores ({'primitive', 'n_shot'} -> bool) appends the
+    Each workbook has three sheets: 'mAP' (comp map scores, All/ID/OOD/I2T/I2I/T2I score
+    columns), 'Acc' (comp acc, single I2T column) and 'HW' (see
+    below) -- both score sheets source the selected checkpoints (evals/_selected/), so the accuracy
+    sheet holds the acc scores at the best-mAP checkpoint. supp_scores ({'primitive', 'n_shot'} -> bool) appends the
     enabled supplemental score columns (_score_labels: the per-partition primitive scores, then the
     ID-partition n-shot bucket scores -- one column per bucket, '-' where a dataset's files lack the
     bucket) to the right of both sheets' tables, and splits each mAP-sheet table banner into the
     title (over the key columns) plus grey merged 'Composite Scores' / 'Primitive Scores' / 'N-Shot
     Scores' group headers over their column groups (the accuracy sheet keeps full-width merged title
-    banners). Each sheet opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>;
-    <selection name>)' title cell (e.g. 'bc_dev - dev (Standard; mAP-selection)') and a blank row, then
+    banners). Each sheet opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>)' title
+    cell (e.g. 'bc_dev - dev (Standard)') and a blank row, then
     stacks one table per campaign dataset vertically -- a bold left-aligned title banner, then a
     table of header row (key columns + one column per score label) and one '<key cells> (n_trials)'
     row per row key, then a blank spacer row before the next dataset -- with the always-shown 'Mean'
@@ -1281,18 +1277,18 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     counts), single-trial 'XX.XX' cells, '-' where that seed's trial hasn't completed -- sharing the
     aggregate block's rows/order.
 
-    overrides adds the config bands -- 'Arm Overrides' and, in the arm_coords/ workbooks only, 'Coord
-    Overrides' (an arms/ row's coord differs per dataset, so it has no single coord config) -- to each
+    overrides adds the config bands -- 'Arm Overrides' and 'Coord Overrides' -- to each
     sheet, in a left column band that the score blocks shift right past (one blank separator column
     between each), vertically aligned with the aggregate block's bottom Mean table so the Mean's key
     columns label their rows: one column per param declared on that side of the campaign matrix
     (ablation_arms for the arm band, hpo_coords for the coord band: the union of the rows' overrides.json
     'arm' / 'coord' keys, first-seen order), each cell the row's effective value resolved from its
-    config.json (an arms/ row reads its arm's first (arm, coord) row's) -- '-' when the param is
+    config.json (an arms/ row reads its best coords' across datasets, their distinct values joined by
+    ' / ' where the per-dataset picks differ on the param -- _band_value) -- '-' when the param is
     absent there, the signal that it is inert under that configuration (e.g. loss2.* with loss.blend.lambda
     0.0). Params whose effective value is identical across every row of the workbook are omitted
     (they differentiate nothing); a band all of whose params are uniform is omitted entirely. These
-    tables get no winner-bold/heatmap styling. The third sheet, 'Hardware Performance', mirrors the
+    tables get no winner-bold/heatmap styling. The third sheet, 'HW', mirrors the
     score sheets' layout (same campaign banner, aggregate block of per-dataset tables + bottom Mean
     table, per-seed blocks, overrides bands, and the mAP sheet's row order) with hardware readings in
     place of scores: Time Trial / Mean Time Train / Mean Time Eval (whole seconds) and Peak RAM /
@@ -1317,31 +1313,24 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     arms = _matrix_arms(matrix, datasets)
     arm_coords = _matrix_arm_coords(matrix, datasets)
 
-    comps_all = {criterion: _collect_comps(eval_groups, arm_coords, datasets, criterion) for criterion in BEST_CRITERIA}
-    # update_chkpt_selection materializes every completed trial's _selected files, all criteria and groups
-    # together, so row presence and seeds are criterion- and group-independent. an (arm, coord) gets
+    comps_all = _collect_comps(eval_groups, arm_coords, datasets)
+    # update_chkpt_selection materializes every completed trial's _selected files, all groups
+    # together, so row presence and seeds are group-independent. an (arm, coord) gets
     # rows only once it has >= 1 completed trial in some dataset; it then appears in every dataset
     # table (blank '-' row where that dataset has no trials for it yet)
-    comps_ref = next(iter(comps_all["map"].values()))
+    comps_ref = next(iter(comps_all.values()))
     rows_ac = [row for row in arm_coords if any(comps_ref[(row, dataset)] for dataset in datasets)]
-    rows_arms = [(arm,) for arm in arms if any(row[0] == arm for row in rows_ac)]
     seeds = sorted({seed for comps in comps_ref.values() for seed in comps}, key=int)
     hw_by, crashes_by = _collect_hw(arm_coords, datasets)
 
-    config_ac, config_arms = {}, {}
+    declared_ac, config_ac = {}, {}
     if overrides:
         # an (arm, coord) row's overrides.json / config.json are written per dataset
         # (_datasets/<dataset>/_arms/<arm>/_coords/<coord>/) but identical across them, so each row reads its
-        # from the first dataset it has completed trials in; an (arm,) row of the arms workbooks reads its
-        # arm's first (arm, coord) row's (the arm's params are the same in every coord of it)
-        rep = {}
-        for row in rows_ac:
-            rep.setdefault((row[0],), row)
+        # from the first dataset it has completed trials in
         dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows_ac}
         declared_ac = {row: load_json(dpaths[row] / "overrides.json") for row in rows_ac}  # {'arm': {...}, 'coord': {...}}
-        config_ac = {row: load_json(dpaths[row] / "config.json") for row in rows_ac}
-        declared_arms = {row: declared_ac[rep[row]] for row in rows_arms}
-        config_arms = {row: config_ac[rep[row]] for row in rows_arms}
+        config_ac = {row: [load_json(dpaths[row] / "config.json")] for row in rows_ac}
 
     def build_blocks(headers, rows, key_cells, comps_by, score_key, labels):
         """A score sheet's blocks, left to right: (label, [(title, cell grid), ...]) -- the aggregate
@@ -1351,7 +1340,7 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
         trials alone -- plain key cells (no trial counts), single-trial 'XX.XX' cells, '-'
         where that seed's trial hasn't completed. key_cells(row, dataset) -> the row's key cells
         (one per header) in that dataset's tables, dataset None the Mean table's: the row itself in
-        the arm_coords workbooks, the arm + its best coord there in the arms ones. Rows are shared
+        the armcoords workbooks, the arm + its best coord there in the arms ones. Rows are shared
         across all blocks -- when ordered, pinned to the aggregate Mean-table's first score column
         (labels[0]), descending. Each table carries the indices of its rows holding a killed trial
         (kill_thresh; in the Mean table, one from any dataset) for _write_sheet's yellow
@@ -1397,7 +1386,7 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
         return blocks, rows
 
     def build_hw_blocks(headers, rows, key_cells, hw_by, crash_totals):
-        """The 'Hardware Performance' sheet's blocks, structured like build_blocks' (aggregate
+        """The 'HW' sheet's blocks, structured like build_blocks' (aggregate
         block of per-dataset tables + Mean table, then per-seed blocks; key_cells as there) over
         the hw readings (hw_by[(row, dataset)][seed]): header key columns + _HW_LABELS (the Mean
         table appends the _HW_CRASH_LABELS crash totals, crash_totals[row]), cells the rounded mean
@@ -1450,70 +1439,74 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     def write_workbook(fpath, headers, rows, key_cells, comps_by, hw_by, crash_totals, band_specs, config_by, banner):
         wb = Workbook()
         ws_map = wb.active
-        ws_map.title = "Composite mAP"
+        ws_map.title = "mAP"
         map_blocks, map_rows = build_blocks(headers, rows, key_cells, comps_by, "map", map_labels)
         _write_sheet(ws_map, map_blocks, map_groups, _band_grids(band_specs, map_rows, config_by), banner, len(headers),
                      bold_high, heatmap)
         acc_blocks, acc_rows = build_blocks(headers, rows, key_cells, comps_by, "acc", acc_labels)
-        _write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
+        _write_sheet(wb.create_sheet("Acc"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
                      banner, len(headers), bold_high, heatmap)
         # the hardware sheet shares the mAP sheet's row order (and so its overrides bands)
-        _write_sheet(wb.create_sheet("Hardware Performance"), build_hw_blocks(headers, map_rows, key_cells, hw_by, crash_totals),
+        _write_sheet(wb.create_sheet("HW"), build_hw_blocks(headers, map_rows, key_cells, hw_by, crash_totals),
                      None, _band_grids(band_specs, map_rows, config_by), banner, len(headers), bold_high, heatmap, styled=False)
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
 
     dpath_stats = ArtifactManager.dpath_phase / "phase_metrics"
-    write_arms = ArtifactManager.dpath_phase.name != "qual"  # qual reduces each arm to its pick(s): arms/ would duplicate arm_coords/
     band_specs_ac = [("Arm Overrides", _band_keys("arm", rows_ac, declared_ac, config_ac)),
                      ("Coord Overrides", _band_keys("coord", rows_ac, declared_ac, config_ac))] if overrides else []
-    band_specs_arms = [("Arm Overrides", _band_keys("arm", rows_arms, declared_arms, config_arms))] if overrides else []
     crash_totals_ac = {
         row: {kind: sum(crashes_by[(row, dataset)][kind] for dataset in datasets) for kind in _CRASH_KINDS}
         for row in rows_ac
     }
-    # one workbook set per selection criterion: every score in <kind>/<criterion>/ (both score sheets)
-    # comes from that criterion's best checkpoints (e.g. the map/ workbooks' accuracy sheet holds the
-    # acc scores at the best-mAP checkpoint), with the banner naming the selection
-    for criterion, selection_name in _SELECTION_NAMES.items():
-        for group_key, group_name in eval_groups.items():
-            comps_by = comps_all[criterion][group_key]
-            banner = f"{group_name}; {selection_name}"
-            write_workbook(dpath_stats / "arm_coords" / "performance" / criterion / group_key / "metrics.xlsx",
+    for group_key, group_name in eval_groups.items():
+        comps_by = comps_all[group_key]
+        if ArtifactManager.dpath_phase.name != "refine":
+            write_workbook(group_path(dpath_stats / "armcoords", group_key, "metrics", ".xlsx"),
                            ("Arm", "Coord"), rows_ac,
-                           lambda row, dataset: row, comps_by, hw_by, crash_totals_ac, band_specs_ac, config_ac, banner)
-            if not write_arms:
-                continue
-            # arms: each arm at its best coord per dataset under this criterion x group (_arm_rows' rows
-            # are rows_arms: which arms have trials doesn't depend on the criterion or group), the pick
-            # named in the row's Coord cell -- '-' where the arm has no trials in that dataset, and in the
-            # Mean table (dataset None: no single pick there)
-            rows, comps_arms, best = _arm_rows(arms, arm_coords, datasets, comps_by, criterion)
+                           lambda row, dataset: row, comps_by, hw_by, crash_totals_ac, band_specs_ac, config_ac, group_name)
+        # arms: each arm at its best coord per dataset under this group, the pick
+        # named in the row's Coord cell -- '-' where the arm has no trials in that dataset, and in the
+        # Mean table (dataset None: no single pick there)
+        rows, comps_arms, best = _arm_rows(arms, arm_coords, datasets, comps_by)
 
-            def key_cells_arms(row, dataset):
-                return (row[0], best[(row[0], dataset)] if (row[0], dataset) in best else "-")
+        def key_cells_arms(row, dataset):
+            return (row[0], best[(row[0], dataset)] if (row[0], dataset) in best else "-")
 
-            hw_arms = {
-                ((arm,), dataset): hw_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
-                for (arm,) in rows
-                for dataset in datasets
-            }
-            crash_totals_arms = {
-                (arm,): {kind: sum(crashes_by[((arm, best[(arm, dataset)]), dataset)][kind]
-                                   for dataset in datasets if (arm, dataset) in best)
-                         for kind in _CRASH_KINDS}
-                for (arm,) in rows
-            }
-            write_workbook(dpath_stats / "arms" / "performance" / criterion / group_key / "metrics.xlsx",
-                           ("Arm", "Coord"), rows, key_cells_arms,
-                           comps_arms, hw_arms, crash_totals_arms, band_specs_arms, config_arms, banner)
+        hw_arms = {
+            ((arm,), dataset): hw_by[((arm, best[(arm, dataset)]), dataset)] if (arm, dataset) in best else {}
+            for (arm,) in rows
+            for dataset in datasets
+        }
+        crash_totals_arms = {
+            (arm,): {kind: sum(crashes_by[((arm, best[(arm, dataset)]), dataset)][kind]
+                               for dataset in datasets if (arm, dataset) in best)
+                     for kind in _CRASH_KINDS}
+            for (arm,) in rows
+        }
+        band_specs_arms, config_arms = [], {}
+        if overrides:
+            # an arms/ row's configs are its per-dataset best coords' (dataset order, each once), its declared
+            # params their union
+            picks = {(arm,): list(dict.fromkeys((arm, best[(arm, dataset)]) for dataset in datasets if (arm, dataset) in best))
+                     for (arm,) in rows}
+            declared_arms = {row: {side: dict.fromkeys(key for pick in picks[row] for key in declared_ac[pick][side])
+                                   for side in ("arm", "coord")}
+                             for row in rows}
+            config_arms = {row: [config for pick in picks[row] for config in config_ac[pick]] for row in rows}
+            band_specs_arms = [("Arm Overrides", _band_keys("arm", rows, declared_arms, config_arms)),
+                               ("Coord Overrides", _band_keys("coord", rows, declared_arms, config_arms))]
+        write_workbook(group_path(dpath_stats / "arms", group_key, "metrics", ".xlsx"),
+                       ("Arm", "Coord"), rows, key_cells_arms,
+                       comps_arms, hw_arms, crash_totals_arms, band_specs_arms, config_arms, group_name)
 
 
 def _collect_test_scores(group_keys, arm_coords, datasets):
     """(comps_all, chkpts) over the test tree (ArtifactManager.dpath_phase): per eval group, each
     (arm, coord) x dataset's scored-trial score maps keyed by trial seed (the seed dir name; empty
     dict -> no scored trials yet) -- comps_all[group_key][((arm, coord), dataset)][seed] is a
-    _comp_entry read from the trial's _seeds/<seed>/<group_key>.json (test.py writes all groups
+    _comp_entry (+ 'killed': False, as _collect_comps' entries) read from the trial's _seeds/<seed>/ metrics file (metrics.json for native,
+    secondary/metrics-<group>.json for the rest; test.py writes all groups
     together, so any group's presence marks the trial scored) -- and chkpts[((arm, coord), dataset)]
     the files' 'chkpt' field: the checkpoint index the combo's trainval models were saved at
     (identical across its seeds); no entry where the combo has no scored trials."""
@@ -1526,10 +1519,11 @@ def _collect_test_scores(group_keys, arm_coords, datasets):
             if (dpath_coord / "_seeds").exists():
                 for dpath_trial in sorted((dpath_coord / "_seeds").iterdir()):
                     for group_key in group_keys:
-                        fpath_scores = dpath_trial / f"{group_key}.json"
+                        fpath_scores = group_path(dpath_trial, group_key, "metrics", ".json")
                         if fpath_scores.exists():
                             data = load_json(fpath_scores)
-                            comps[group_key][dpath_trial.name] = _comp_entry(data["scores"])
+                            # never killed: trainval runs no evals, so kill_thresh never fires
+                            comps[group_key][dpath_trial.name] = {**_comp_entry(data["scores"]), "killed": False}
                             chkpts[((arm, coord), dataset)] = data["chkpt"]
             for group_key in group_keys:
                 comps_all[group_key][((arm, coord), dataset)] = comps[group_key]
@@ -1580,20 +1574,23 @@ def _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, score_key, label
 
 @rank0
 def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
-    """Write the test workbooks, one per eval group at artifacts/<campaign>/test/map/test_<group>.xlsx
-    (ArtifactManager.dpath_phase = the test dir; the map/ folder mirrors the phase workbooks'
-    <kind>/<criterion>/ layout for consistency -- test has no selection-criterion dimension, every
-    trainval model already sitting at its qual-selected best-mAP checkpoint, so map/ is the only
-    folder). Each workbook is laid out like the qual phase's phase_metrics/arm_coords/ ones --
-    'Composite mAP' + 'Composite I2T Accuracy' sheets of stacked per-dataset tables + bottom Mean
+    """Write the test workbooks, one per eval group under artifacts/<campaign>/_phase/test/phase_metrics/arms/:
+    metrics.xlsx for native, secondary/metrics-<group>.xlsx for the rest
+    (ArtifactManager.dpath_phase = the test dir; every trainval model already sits at its refine-selected
+    best-mAP checkpoint). Each workbook is laid out like the phase_metrics/armcoords/ ones --
+    'mAP' + 'Acc' sheets of stacked per-dataset tables + bottom Mean
     summary, per-seed blocks, and the 'Arm Overrides' / 'Coord Overrides' config bands (read from
     the test tree's coord config.json/overrides.json copies), with all of stats.yaml's styling
     (spread_type/bold_high/ordered/heatmap/supp_scores/overrides) applied the same way -- except
     that a third 'Chkpt' key column carries each (row, dataset)'s saved-checkpoint index
-    (_build_test_blocks) and there is no 'Hardware Performance' sheet (the readings describe
+    (_build_test_blocks) and there is no 'HW' sheet (the readings describe
     training trials; test runs none). Rows and scores come from the test tree's per-trial score
     files (_collect_test_scores) over the recorded matrix, same row-presence rule as the phase
-    workbooks: a planned (arm, coord) appears once it has >= 1 scored trial in some dataset."""
+    workbooks: a planned (arm, coord) appears once it has >= 1 scored trial in some dataset.
+    Alongside, each dataset's score tables, like the phase's dataset_metrics/arms/ ones:
+    _datasets/<dataset>/dataset_metrics/arms/performance/{scores,secondary/scores-<group>}.png (_render_stats_pngs), one
+    ('Arm', 'Coord') row per row with >= 1 scored trial in the dataset -- trainval runs each arm at its one
+    refine pick, so no best-coord selection -- and no convergence.png (test scores a single checkpoint)."""
     matrix = _matrix()
     datasets = list(matrix)
     arm_coords = _matrix_arm_coords(matrix, datasets)
@@ -1608,11 +1605,11 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
         # each row reads its from the first dataset it has scored trials in
         dpaths = {row: _dpath_coord(next(d for d in datasets if comps_ref[(row, d)]), *row) for row in rows}
         declared = {row: load_json(dpaths[row] / "overrides.json") for row in rows}  # {'arm': {...}, 'coord': {...}}
-        config_by = {row: load_json(dpaths[row] / "config.json") for row in rows}
+        config_by = {row: [load_json(dpaths[row] / "config.json")] for row in rows}
         band_specs = [("Arm Overrides", _band_keys("arm", rows, declared, config_by)),
                       ("Coord Overrides", _band_keys("coord", rows, declared, config_by))]
 
-    nshot_names = _nshot_names({"test": comps_all})
+    nshot_names = _nshot_names(comps_all)
     map_labels, acc_labels = _score_labels(supp_scores, nshot_names)
     map_groups = _map_groups(supp_scores, nshot_names)
 
@@ -1621,18 +1618,26 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
         banner = f"{group_name}; test"
         wb = Workbook()
         ws_map = wb.active
-        ws_map.title = "Composite mAP"
+        ws_map.title = "mAP"
         map_blocks, map_rows = _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, "map", map_labels,
                                                   spread_type, ordered)
         _write_sheet(ws_map, map_blocks, map_groups, _band_grids(band_specs, map_rows, config_by), banner, 3,
                      bold_high, heatmap)
         acc_blocks, acc_rows = _build_test_blocks(rows, datasets, seeds, comps_by, chkpts, "acc", acc_labels,
                                                   spread_type, ordered)
-        _write_sheet(wb.create_sheet("Composite I2T Accuracy"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
+        _write_sheet(wb.create_sheet("Acc"), acc_blocks, None, _band_grids(band_specs, acc_rows, config_by),
                      banner, 3, bold_high, heatmap)
-        fpath = ArtifactManager.dpath_phase / "map" / f"test_{group_key}.xlsx"
+        fpath = group_path(ArtifactManager.dpath_phase / "phase_metrics" / "arms", group_key, "metrics", ".xlsx")
         fpath.parent.mkdir(parents=True, exist_ok=True)
         wb.save(fpath)
+
+    for dataset in datasets:
+        rows_dataset = [row for row in rows if comps_ref[(row, dataset)]]
+        if rows_dataset:
+            _render_stats_pngs(ArtifactManager.dpath_phase / "_datasets" / dataset / "dataset_metrics" / "arms" / "performance",
+                               ("Arm", "Coord"), lambda group_key, rows=rows_dataset: (rows, comps_all[group_key], []),
+                               dataset, DATASET_ALIAS2NAME[dataset], eval_groups, map_labels, spread_type, bold_high,
+                               ordered, heatmap)
 
 
 @rank0
@@ -1668,8 +1673,9 @@ def plot_metrics(
     # measured on the pre-step model -- stamp at batch start so the train curves anchor at 0
     x_train = [0.0, *(v / epoch_size for v in data_epoch["n_samps_seen"][:-1])]
 
-    # under learning_curves/: the five eval-score panels go to scores/<group>.png, once per eval group (a
-    # trial with no eval data -- the trainval phase -- gets none), and the rest, the same for every group,
+    # under learning_curves/: the five eval-score panels go to scores.png for the native group and to
+    # secondary/scores-<group>.png for each other eval group (a trial with no eval data -- the trainval
+    # phase -- gets none), and the rest, the same for every group,
     # to general.png (loss, gradients, batch stats, LR), scale.png / logscale.png (the logit scale, as
     # the alpha the logits carry / as the log alpha parameter the model learns, over its InfoNCE
     # gradient decomposition), KL.png (the InfoNCE KL decomposition), sim_grad_entropy.png (the InfoNCE
@@ -1684,7 +1690,6 @@ def plot_metrics(
             plot_score_curves(
                 data_eval,
                 x_eval,
-                dpath_trial,
                 nshot_bucket_names,
                 fontsize_axes,
                 fontsize_ticks,
@@ -1695,7 +1700,7 @@ def plot_metrics(
                 height_panel_scores,
                 group_key=group_key,
                 plot_title=f"{title_prefix} ({group_name})",
-                output_filename=f"learning_curves/scores/{group_key}.png",
+                fpath_plot=group_path(dpath_trial / "learning_curves", group_key, "scores", ".png"),
             )
     plot_general_curves(
         data_epoch,
@@ -1792,7 +1797,6 @@ def plot_metrics(
 def plot_score_curves(
     data_eval,
     x_eval,
-    dpath_trial,
     bucket_comp_keys,
     fontsize_axes,
     fontsize_ticks,
@@ -1803,7 +1807,7 @@ def plot_score_curves(
     height_panel,
     group_key,
     plot_title,
-    output_filename,
+    fpath_plot,
 ):
     fig = plt.figure(figsize=(fig_width, height_fixed + 5 * height_panel))
     gs = gridspec.GridSpec(5, 1, hspace=0)
@@ -1895,7 +1899,7 @@ def plot_score_curves(
     ax4.grid(True)
     ax4.tick_params(labelsize=fontsize_ticks)
 
-    _finish_curves(fig, [ax0, ax1, ax2, ax3, ax4], [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, [ax0, ax1, ax2, ax3, ax4], [], legend_handles, plot_title, fpath_plot, fontsize_legend, subplot_border_width)
 
 def plot_general_curves(
     data_epoch,
@@ -2476,7 +2480,7 @@ def plot_sim_grad_entropy_curves(
 
     for key, caption, level, comp in panels:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
-        ax.plot(x_train, data_epoch[key], color="black", linewidth=1.0)
+        ax.plot(x_train, data_epoch[key], color="red", linewidth=1.0)
         # a normalized entropy or an anchor fraction, in [0, 1] with both ends readings in their own right, so the
         # limits are padded past them as the scale figures' ratio panels are: at exactly (0, 1) the curve lies
         # under the panel's border

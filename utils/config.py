@@ -49,6 +49,14 @@ def eval_groups(cfg_reporting: dict) -> dict:
         if key == "native" or cfg_reporting["eval"][key]
     }
 
+def group_path(dpath, group_key: str, stem: str, suffix: str = ""):
+    """Where eval group `group_key`'s artifact `stem` (a file with `suffix`, or a dir without) lives under
+    `dpath`: native, the primary group, at dpath/<stem><suffix>; every secondary group under
+    dpath/secondary/<stem>-<group_key><suffix>."""
+    if group_key == "native":
+        return dpath / f"{stem}{suffix}"
+    return dpath / "secondary" / f"{stem}-{group_key}{suffix}"
+
 def cfg_key(stem: str) -> str:
     """The cfg key a config file's contents live under: its config.file alias, else its stem."""
     return CFG_FILE_ALIASES.get(stem, stem)
@@ -105,7 +113,7 @@ def _aug_cfg_openclip() -> dict:
 class TrainConfig:
 
     campaign: str
-    phase: str  # the campaign phase whose tree the trial writes to: '_screen' | 'qual' | 'trainval' (campaign_runner)
+    phase: str  # the campaign phase whose tree the trial writes to: 'screen' | 'refine' | 'trainval' (campaign_runner)
     arm: str
     coord: str
     seed: int | None
@@ -140,7 +148,7 @@ class TrainConfig:
     idx_trial: int | None = None  # 1-based position of this trial in the campaign launch order
     n_trials_total: int | None = None  # total planned trials in the campaign matrix
     chkpt_stop: int | None = None  # trainval phase: stop training once this checkpoint index (0..n_chkpts, the pick's
-    # qual-selected one) is reached instead of running to sample_volume; the LR schedule keeps its full horizon.
+    # refine-selected one) is reached instead of running to sample_volume; the LR schedule keeps its full horizon.
     # Index 0 is the base eval (the pretrained model, a selection candidate like any other): the trial trains not at
     # all and delivers the base weights (train.py's _deliver_base_model)
 
@@ -792,16 +800,16 @@ def load_zip_config_dict() -> dict:
 class CampaignConfig:
     """config/campaigns/<name>.yaml contents -- one campaign's trial matrix (see campaign_runner): its arms
     (ablation_arms) x coords (hpo_coords) x datasets, run for n_trials_screen seeds each in the screening phase,
-    then each arm's best coord per dataset topped up to n_trials_qual seeds in the qual phase (null: no qual
+    then each arm's best coord per dataset topped up to n_trials_refine seeds in the refine phase (null: no refine
     phase), then -- with trainval -- each of those picks retrained on the trainval partition up to its
-    qual-selected checkpoint, one run per qual seed (the trainval phase). baseline_overrides is a flat set of
+    refine-selected checkpoint, one run per refine seed (the trainval phase). baseline_overrides is a flat set of
     overrides laid on every trial of the campaign, nameless -- arm / coord names read as if it were empty.
     suffix is appended to the campaign name (null: none). Override keys are dot-paths into the trial config
     (utils.config.load_train_config_dict's shape: a sibling file's fields under its stem or its config.file
     alias, train.yaml's unprefixed), rewritten here to their cfg-key spelling (canonical_key_path)."""
 
     n_trials_screen: int
-    n_trials_qual: int | None
+    n_trials_refine: int | None
     trainval: bool
     datasets: list
     baseline_overrides: dict
@@ -822,17 +830,17 @@ class CampaignConfig:
                 f"It applies to every trial, so it has nothing to vary over; sweep in ablation_arms / hpo_coords instead."
             )
 
-        if self.n_trials_qual is not None and self.n_trials_screen > self.n_trials_qual:
+        if self.n_trials_refine is not None and self.n_trials_screen > self.n_trials_refine:
             raise ValueError(
-                f"n_trials_screen ({self.n_trials_screen}) exceeds n_trials_qual ({self.n_trials_qual}): the qual phase "
-                f"tops each pick up FROM its n_trials_screen screening trials TO n_trials_qual, so n_trials_qual must be "
-                f">= n_trials_screen (or null to skip the qual phase)"
+                f"n_trials_screen ({self.n_trials_screen}) exceeds n_trials_refine ({self.n_trials_refine}): the refine phase "
+                f"tops each pick up FROM its n_trials_screen screening trials TO n_trials_refine, so n_trials_refine must be "
+                f">= n_trials_screen (or null to skip the refine phase)"
             )
 
-        if self.trainval and self.n_trials_qual is None:
+        if self.trainval and self.n_trials_refine is None:
             raise ValueError(
-                "trainval: true requires a qual phase (n_trials_qual set): the trainval phase trains each qual pick "
-                "up to its qual-selected checkpoint"
+                "trainval: true requires a refine phase (n_trials_refine set): the trainval phase trains each refine pick "
+                "up to its refine-selected checkpoint"
             )
 
         # one spelling per key from here on (hardware.x -> hw.x), so the names, overrides.json, the disjointness /

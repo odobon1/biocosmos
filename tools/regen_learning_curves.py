@@ -1,14 +1,14 @@
 """
 python -m tools.regen_learning_curves <campaign>
 
-Re-render every trial's learning-curve plots (learning_curves/scores/<group>.png, one per eval group the campaign has in play + learning_curves/{general,scale,logscale,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores/), in
-every phase of the campaign (_screen/, and qual/ + trainval/ when they exist), from its persisted data_trial.pkl using the
+Re-render every trial's learning-curve plots (learning_curves/scores.png for the native eval group + learning_curves/secondary/scores-<group>.png, one per other eval group the campaign has in play + learning_curves/{general,scale,logscale,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores.png / secondary/), in
+every phase of the campaign (screen/, and refine/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code -- no train/eval rerun -- so styling/layout edits take effect for an
 already-run campaign. Each trial's config is rebuilt exactly as on the campaign launch path (the phase's frozen
 cfg_baseline.json snapshot + the coord's overrides.json, arm + coord overrides merged, against the SLURM alloc
 recorded in phase_metadata.json rather than a live one -- so no SLURM job is needed) to recover samps_per_epoch
 (the plots' epoch axis) and the split whose n-shot bucket names label the n-shot panels. Trials without a
-data_trial.pkl (never checkpointed) are skipped. Each complete arm's best_coord/ mirror (_screen/ only) is
+data_trial.pkl (never checkpointed) are skipped. Each complete arm's arm_metrics/best_coords/ mirror (screen/ and refine/) is
 re-copied from the re-rendered originals, so it never lags them.
 """
 
@@ -25,9 +25,9 @@ from utils.utils import load_json, load_split, paths
 
 
 def regen_learning_curves(campaign):
-    for phase in ("_screen", "qual", "trainval"):
-        ArtifactManager.dpath_phase = paths["artifacts"] / campaign / phase
-        if not ArtifactManager.dpath_phase.exists():  # phase not configured (n_trials_qual null / trainval false), or not reached yet
+    for phase in ("screen", "refine", "trainval"):
+        ArtifactManager.dpath_phase = paths["artifacts"] / campaign / "_phase" / phase
+        if not ArtifactManager.dpath_phase.exists():  # phase not configured (n_trials_refine null / trainval false), or not reached yet
             continue
         cfg_snapshot = load_json(ArtifactManager.dpath_phase / "cfg_baseline.json")
         metadata = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
@@ -74,7 +74,7 @@ def regen_learning_curves(campaign):
                         plot_metrics(data_tracker, dpath_trial, nshot_bucket_names, cfg.samps_per_epoch,
                                      cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting))
                         print(f"regenerated: {dpath_trial / 'learning_curves'}")
-                # the arm's best_coord/ mirror is a copy of curves just re-rendered: re-copy it rather than leave
+                # the arm's arm_metrics/best_coords/ mirror is a copy of curves just re-rendered: re-copy it rather than leave
                 # it on the old renders
                 update_best_coord_curves(dataset, arm)
 

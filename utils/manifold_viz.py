@@ -20,6 +20,7 @@ from utils.data import load_cid_2_penult, load_cid_2_nshot
 from utils.ddp import rank0
 from utils.utils import DATASET_ALIAS2NAME, save_pickle, load_pickle
 from utils.config import DATASET2MARKER_SIZE
+from utils.train import dpath_viz_cache, dpath_viz_plots
 
 
 @dataclass(frozen=True)
@@ -1252,7 +1253,7 @@ def _pooled_pools(dirs, idx_id, idx_ood):
     is a single contiguous slice (`_pooled_block_sizes`)."""
     id_blocks, ood_blocks = [], []
     for d in dirs:
-        with np.load(d / "embs.npz") as e:
+        with np.load(dpath_viz_cache(d) / "embs.npz") as e:
             id_blocks.append(e["embs_id"][idx_id].astype(np.float32))
             ood_blocks.append(e["embs_ood"][idx_ood].astype(np.float32))
     pools = {
@@ -1280,12 +1281,12 @@ def compute_umap_projections(dpath_evals, cfg_manifold_viz):
     cfg_umap = cfg_manifold_viz["umap"]
     prev = None  # previous eval's {proj key: layout} -> this eval's init
     for d in _ordered_eval_dirs(dpath_evals, "embs.npz"):
-        with np.load(d / "projections.npz") as npz:
+        with np.load(dpath_viz_cache(d) / "projections.npz") as npz:
             cache = dict(npz)  # materialize: the same path is rewritten below with UMAP appended
         if "umap_sphere_joint" in cache:  # already fit -- reuse as the next eval's init rather than refitting
             prev = {m: {k: cache[f"{m}_{k}"] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
             continue
-        with np.load(d / "embs.npz") as e:
+        with np.load(dpath_viz_cache(d) / "embs.npz") as e:
             embs_id, embs_ood = e["embs_id"].astype(np.float32), e["embs_ood"].astype(np.float32)
         by_key = {"id": embs_id, "ood": embs_ood, "joint": np.concatenate([embs_id, embs_ood], axis=0)}
         projs = {}
@@ -1296,12 +1297,12 @@ def compute_umap_projections(dpath_evals, cfg_manifold_viz):
             projs[("umap", k)] = compute_umap(by_key[k], cfg_umap, flat_init, knn=knn)
             projs[("umap_sphere", k)] = compute_umap(by_key[k], cfg_umap, sph_init, spherical=True, knn=knn)
         cache.update({f"{m}_{k}": projs[(m, k)] for m, k in projs})
-        np.savez(d / "projections.npz", **cache)
+        np.savez(dpath_viz_cache(d) / "projections.npz", **cache)
         prev = {m: {k: projs[(m, k)] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
 
 def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     """CPU, single process. Fit ONE shared UMAP over all eval thresholds' pooled embeddings and append the
-    per-threshold blocks as umap_{id,ood,joint} to each <eval>/projections_pooled.npz -- the UMAP
+    per-threshold blocks as umap_{id,ood,joint} to each <eval>/viz/cache/projections_pooled.npz -- the UMAP
     counterpart of `compute_pooled_projections`, run by the post-trial render worker. Reuses the subsample
     that compute_pooled_projections recorded in the pooled cache (idx_id/idx_ood), so the pooled UMAP
     covers exactly the same points in the same row order as the pooled PCA/t-SNE. One fit spans the whole
@@ -1315,12 +1316,12 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     # carrying the UMAP blocks means every dir does. Probing the first would misread a sweep killed
     # mid-write (threshold 0 written, the rest not) as complete and strand the tail without UMAP blocks;
     # probing before loading also makes the already-done path free.
-    with np.load(dirs[-1] / "projections_pooled.npz") as npz:
+    with np.load(dpath_viz_cache(dirs[-1]) / "projections_pooled.npz") as npz:
         if "umap_sphere_joint" in npz:
             return
     caches = []
     for d in dirs:
-        with np.load(d / "projections_pooled.npz") as npz:
+        with np.load(dpath_viz_cache(d) / "projections_pooled.npz") as npz:
             caches.append(dict(npz))  # materialize: the same paths are rewritten below with UMAP appended
     idx_id, idx_ood = caches[0]["idx_id"], caches[0]["idx_ood"]
     m_id, m_ood = len(idx_id), len(idx_ood)
@@ -1338,12 +1339,12 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
         for k, blk in _pooled_block_sizes(m_id, m_ood):
             for m in ("umap", "umap_sphere"):
                 cache[f"{m}_{k}"] = projs[(m, k)][t * blk:(t + 1) * blk]
-        np.savez(d / "projections_pooled.npz", **cache)
+        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
 
 def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
     """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
     embeddings pooled (read from each eval's embs.npz) and, on rank 0, write per-threshold masked blocks
-    to <eval>/projections_pooled.npz. The pooled UMAP is fit off this path, post-trial, by
+    to <eval>/viz/cache/projections_pooled.npz. The pooled UMAP is fit off this path, post-trial, by
     `compute_umap_pooled`, which reuses the subsample recorded here. The geometry is shared, so each threshold is a masked subset of the
     single layout (no orientation needed) and the plots show the eval set migrating through a fixed frame
     as training progresses.
@@ -1362,7 +1363,7 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elem
     if not dirs:
         return
     T = len(dirs)
-    with np.load(dirs[0] / "embs.npz") as e0:  # eval set is fixed across thresholds -> any threshold's cids
+    with np.load(dpath_viz_cache(dirs[0]) / "embs.npz") as e0:  # eval set is fixed across thresholds -> any threshold's cids
         cids_id, cids_ood = np.asarray(e0["cids_id"]), np.asarray(e0["cids_ood"])
     n_id, n_ood, n_full = len(cids_id), len(cids_ood), len(cids_id) + len(cids_ood)
     per_thresh = min(n_full * T, budget) / T  # target pooled ID + OOD points per threshold (all samples used when the full pool <= budget)
@@ -1389,23 +1390,23 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elem
             sl = slice(t * blk, (t + 1) * blk)
             cache[f"pca_{k}"] = pca_projs[k][sl]
             cache[f"tsne_{k}"] = tsne_projs[k][sl]
-        np.savez(d / "projections_pooled.npz", **cache)
+        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
     _log("pooled projections complete")
 
-def _load_projections(dpath_cache, fname="projections.npz"):
-    """Load an eval's cached raw projections from dpath_cache/<fname>:
+def _load_projections(dpath_eval, fname="projections.npz"):
+    """Load an eval's cached raw projections from its viz cache (dpath_viz_cache(dpath_eval)/<fname>):
     ({method: {proj key: (N,2)}}, cids_id, cids_ood) -- one entry per `_METHODS`, each keyed id/ood/joint.
     `fname` selects the per-eval independent cache (projections.npz) or the pooled shared-frame cache
     (projections_pooled.npz), which share this schema."""
-    npz = np.load(dpath_cache / fname)
+    npz = np.load(dpath_viz_cache(dpath_eval) / fname)
     return ({m: {k: npz[f"{_METHOD_DIR[m]}_{k}"] for k in _PROJ_KEYS} for m in _METHODS},
             list(npz["cids_id"]), list(npz["cids_ood"]))
 
 def _ordered_eval_dirs(dpath_evals, fname="projections.npz"):
-    """Eval dirs that hold a cached <fname>, in chronological order (base, eval1..evalN). `fname`
+    """Eval dirs that hold a cached <fname>, in chronological order (0 = base, 1..N). `fname`
     selects the per-eval cache (projections.npz), the pooled cache (projections_pooled.npz), or the raw
     embedding cache (embs.npz, swept by the pooled compute)."""
-    return sorted((d for d in dpath_evals.iterdir() if (d / fname).exists()),
+    return sorted((d for d in dpath_evals.iterdir() if (dpath_viz_cache(d) / fname).exists()),
                   key=lambda d: _eval_sort_key(d.name))
 
 def _ema_through(dpath_evals, eval_name, ema_tau):
@@ -1430,14 +1431,14 @@ def _save_orient_ref(dpath_eval, ref, ema_tau):
     (see `_incoming_ref`). ema_tau and the method set are stored alongside so a render under a different
     smoothing factor -- or a reference keyed by a different set of methods -- recomputes rather than
     silently reusing a reference that no longer answers to the keys the render looks up."""
-    save_pickle({"ema_tau": ema_tau, "methods": list(_METHODS), "ref": ref}, dpath_eval / "orient_ref.pkl")
+    save_pickle({"ema_tau": ema_tau, "methods": list(_METHODS), "ref": ref}, dpath_viz_cache(dpath_eval) / "orient_ref.pkl")
 
 def _load_orient_ref(dpath_eval, ema_tau):
     """This eval's cached outgoing orientation reference, or None when absent or written under a different
     ema_tau / method set (forcing a correct recompute rather than reusing a reference the render can no
     longer look up -- the keys are (method, proj key), so a reference built for a different method set
     would resolve to nothing and silently un-orient every eval)."""
-    fpath = dpath_eval / "orient_ref.pkl"
+    fpath = dpath_viz_cache(dpath_eval) / "orient_ref.pkl"
     if not fpath.exists():
         return None
     blob = load_pickle(fpath)
@@ -1472,14 +1473,14 @@ def _final_pca_limits(dpath_final, fname):
 
 @rank0
 def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=True, fname="projections.npz"):
-    """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz(_pooled)/.
+    """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz/{vanilla,pooled}/.
 
     Default (per-eval, `orient=True`, projections.npz): every method's independently-fit projection is
     aligned against the reference accumulated over the prior evals on disk (rigid for t-SNE/UMAP, sign-only
     for PCA), so it matches that eval's frame in the evolving GIF -- and needs no live state.
 
     Pooled (`orient=False`, fname=projections_pooled.npz): the projection already shares one frame across
-    thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz_pooled/. The
+    thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz/pooled/. The
     cache holds only this threshold's subsample, so colors are still built from the FULL eval set
     (projections.npz) -- coloring by the subsample would reorder the count-ranked hues and break color
     correspondence with the other plots. `cfg_manifold_viz`'s plot_2/4/7panel flags gate which panel groups."""
@@ -1511,17 +1512,21 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=Tr
         _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
     else:  # pooled: shared frame across thresholds -> no orientation
         render_projs = projs_by_method
-    tag = eval_name
+    tag = _eval_label(eval_name)
     pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
                   if not orient and cfg_manifold_viz["pooled"]["pca_bounds"] == "final" else None)
     _render_grids(render_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
-                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag,
+                  dpath_viz_plots(dpath_eval, pooled=not orient), cfg_manifold_viz, viz_context, tag,
                   pca_limits)
 
 def _eval_sort_key(name):
-    """Chronological order of eval dirs: base first, then eval1..evalN ascending."""
-    return 0 if name == "base" else int(name.removeprefix("eval"))
+    """Chronological order of eval dirs: named by checkpoint index, 0 (the base eval) first."""
+    return int(name)
+
+def _eval_label(name):
+    """An eval dir's name as plot titles carry it: 'base' for checkpoint 0, else 'eval<k>'."""
+    return "base" if name == "0" else f"eval{name}"
 
 @rank0
 def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
@@ -1574,7 +1579,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orie
 
     Default (per-eval, projections.npz) orients every method by aligning each eval to a running reference
     swept across evals -- the same orientation `render_eval` reproduces per eval. Pooled (`orient=False`,
-    projections_pooled.npz, dpath_out=viz_pooled) skips orientation: the pooled projections already share
+    projections_pooled.npz, dpath_out=viz/pooled) skips orientation: the pooled projections already share
     one frame, so the GIF just masks the single layout to each threshold's subsample. Colors always come
     from the FULL eval set (projections.npz) so class colors match the other plots. Caches are streamed one
     eval at a time (frozen limits precomputed in a single pass), so peak memory doesn't scale with the number of checkpoints."""
@@ -1583,7 +1588,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orie
     evals = _ordered_eval_dirs(dpath_evals, fname)
     if not evals:
         return
-    names = [d.name for d in evals]
+    names = [_eval_label(d.name) for d in evals]
 
     cfg_color = cfg_manifold_viz["color"]
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]

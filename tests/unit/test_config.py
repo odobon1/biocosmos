@@ -241,8 +241,6 @@ def test_eval_groups_is_native_plus_the_toggles_on(monkeypatch: pytest.MonkeyPat
 def test_group_path_puts_native_plain_and_the_rest_under_secondary(tmp_path) -> None:
     assert config.group_path(tmp_path, "native", "metrics", ".json") == tmp_path / "metrics.json"
     assert config.group_path(tmp_path, "joint_macro", "metrics", ".json") == tmp_path / "secondary" / "metrics-joint_macro.json"
-    assert config.group_path(tmp_path, "native", "stats") == tmp_path / "stats"
-    assert config.group_path(tmp_path, "joint", "stats") == tmp_path / "secondary" / "stats-joint"
 
 
 def test_train_config_rejects_unknown_del_base_eval_cache(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,12 +7,12 @@ saved there (the phase's matrix x seeds, each trial's model.pt) is rebuilt from 
 config snapshot + its coord's recorded overrides, its weights loaded, and evaluated once on the split's
 TEST partitions (test_id/test_ood, EvaluationPipeline with eval_pt="test"; n-shot buckets from the
 split's "trainval/test" view -- test_id classes by their trainval shot counts). Per-trial scores land as
-artifacts/<campaign>/_phase/test/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>/<group>.json
-({'chkpt': the saved checkpoint index, 'scores': the group's scores}); trials whose score files are all
+artifacts/<campaign>/_phase/test/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_seed/<seed>/{scores,secondary/scores-<group>}.json
+(the group's scores subtree; the tables' Chkpt column reads the coord's config.json copy); trials whose score files are all
 present are skipped, so a relaunch resumes (and a fully-scored campaign just re-renders the tables).
 The run ends with the test workbooks, one per eval group at artifacts/<campaign>/_phase/test/
-phase_metrics/arms/{metrics,secondary/metrics-<group>}.xlsx, plus per-dataset score tables at
-_datasets/<dataset>/dataset_metrics/arms/performance/{scores,secondary/scores-<group>}.png
+phase_metrics/arms/<campaign>_test-arms.xlsx (+ secondary/<campaign>_test-arms_<group>.xlsx), plus per-dataset score tables at
+_dataset/<dataset>/dataset_metrics/arms/performance/{scores,secondary/scores-<group>}.png
 (report.update_test_stats), styled per the live config/render/stats.yaml.
 """
 
@@ -36,7 +36,7 @@ import pdb
 
 
 def _dpath_coord(dpath_phase, dataset, arm, coord):
-    return dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord
+    return dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord
 
 def _plan(campaign):
     """(cfg_snapshot, metadata, combos): the trainval phase's frozen config snapshot, its
@@ -58,14 +58,14 @@ def _plan(campaign):
 
 def _pending(dpath_test, combos, seeds, groups):
     """{(dataset, arm, coord): [seeds]} of the trials still to score: those whose test score files
-    (_seeds/<seed>/ metrics.json + secondary/metrics-<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
+    (_seed/<seed>/ scores.json + secondary/scores-<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
     once up front, before anything is written, so every rank derives the identical eval sequence
     (evaluate() is collective)."""
     pending = {}
     for dataset, arm, coord in combos:
         for seed in seeds:
-            dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed)
-            if not all(group_path(dpath_scores, group_key, "metrics", ".json").exists() for group_key in groups):
+            dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_seed" / str(seed)
+            if not all(group_path(dpath_scores, group_key, "scores", ".json").exists() for group_key in groups):
                 pending.setdefault((dataset, arm, coord), []).append(seed)
     return pending
 
@@ -85,16 +85,15 @@ def _seed_test_tree(dpath_test, dpath_trainval, metadata, combos):
             shutil.copyfile(_dpath_coord(dpath_trainval, dataset, arm, coord) / fname, dpath_dst / fname)
 
 @rank0
-def _save_test_scores(dpath_scores, eval_metrics, chkpt):
-    """The trial's test score files, one per eval group (metrics.json for native, secondary/metrics-<group>.json
-    for the rest): {'chkpt': the checkpoint index the trainval
-    model was saved at, 'scores': the group's scores} -- the shape report._collect_test_scores reads.
-    All groups are written together, so any one file's presence marks the trial scored."""
+def _save_test_scores(dpath_scores, eval_metrics):
+    """The trial's test score files, one per eval group (scores.json for native, secondary/scores-<group>.json
+    for the rest): the group's scores subtree, the shape report._collect_test_scores reads. All groups are
+    written together, so any one file's presence marks the trial scored."""
     formatted = format_scores(eval_metrics["scores"])
     for group_key, scores_grp in formatted.items():
-        fpath = group_path(dpath_scores, group_key, "metrics", ".json")
+        fpath = group_path(dpath_scores, group_key, "scores", ".json")
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        save_json({"chkpt": chkpt, "scores": scores_grp}, fpath)
+        save_json(scores_grp, fpath)
 
 def main():
     from models import VLMWrapper  # local: models pulls open_clip/transformers, too heavy for module import
@@ -116,7 +115,7 @@ def main():
     missing = [f"{dataset}/{arm}/{coord}/{seed}"
                for (dataset, arm, coord), combo_seeds in pending.items()
                for seed in combo_seeds
-               if not (_dpath_coord(dpath_trainval, dataset, arm, coord) / "_seeds" / str(seed) / "model.pt").exists()]
+               if not (_dpath_coord(dpath_trainval, dataset, arm, coord) / "_seed" / str(seed) / "model.pt").exists()]
     if missing:
         raise FileNotFoundError(
             f"no trainval model.pt for {len(missing)} trial(s) of campaign '{campaign}': {missing} -- "
@@ -169,12 +168,11 @@ def main():
         eval_pipe = EvaluationPipeline(cfg, text_template_eval, modelw.img_pp_inf, eval_pt="test")
         for seed in pending[combo]:
             idx_eval += 1
-            dpath_trial_tv = _dpath_coord(dpath_trainval, dataset, arm, coord) / "_seeds" / str(seed)
+            dpath_trial_tv = _dpath_coord(dpath_trainval, dataset, arm, coord) / "_seed" / str(seed)
             state = torch.load(dpath_trial_tv / "model.pt", map_location="cpu", weights_only=True)
             modelw._unwrapped_model.load_state_dict(state)
             eval_metrics, time_eval, _ = eval_pipe.evaluate(modelw, loss_flag=False)
-            _save_test_scores(_dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed),
-                              eval_metrics, cfg.chkpt_stop)
+            _save_test_scores(_dpath_coord(dpath_test, dataset, arm, coord) / "_seed" / str(seed), eval_metrics)
             if dist.get_rank() == 0:
                 score = float(eval_metrics["scores"]["native"]["comp"]["map"]["all"])
                 print(f"[{idx_eval}/{n_evals}] {dataset}/{arm}/{coord}/{seed} (chkpt {cfg.chkpt_stop}): "

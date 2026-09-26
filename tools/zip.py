@@ -25,17 +25,17 @@ MANIF_VIZ_CACHE = ("embs.npz", "projections.npz", "projections_pooled.npz", "ori
 
 def _bulky_toggle(rel):
     """The zip.yaml toggle governing a campaign file at campaign-relative path `rel`, or None for a file that is
-    always included. Bulky contents all live inside trial dirs (.../_seeds/<seed>/), so the match is on the
+    always included. Bulky contents all live inside trial dirs (.../_seed/<seed>/), so the match is on the
     trial-relative path."""
     parts = rel.parts
-    if "_seeds" not in parts:
+    if "_seed" not in parts:
         return None
-    sub = parts[parts.index("_seeds") + 2:]  # trial-relative
+    sub = parts[parts.index("_seed") + 2:]  # trial-relative
     if sub[0] in ("model.pt", "chkpts"):  # trainval product weights; in-progress resume state (model + optimizer)
         return "weights"
-    if sub[0] == "evals" and sub[-2:-1] == ("cache",) and sub[-1] in MANIF_VIZ_CACHE:  # evals/evals/<k>/viz/cache/ + its evals/{_selected,_best}/viz/cache/ copies
+    if sub[0] == "evals" and sub[-2:-1] == ("cache",) and sub[-1] in MANIF_VIZ_CACHE:  # evals/evals/<k>/viz/cache/ + its evals/{sel,best}/viz/cache/ copies
         return "manifold_viz_cache"
-    if "viz" in sub[:-1]:  # per-eval plots (evals/evals/<k>/viz/{vanilla,pooled}/, their evals/{_selected,_best}/viz/ copies) + evolving GIFs (<trial>/viz/{vanilla,pooled}/)
+    if "viz" in sub[:-1]:  # per-eval plots (evals/evals/<k>/viz/{vanilla,pooled}/, their evals/{sel,best}/viz/ copies) + evolving GIFs (<trial>/viz/{vanilla,pooled}/)
         return "manifold_viz"
     if sub[:2] == ("logs", "batch"):
         return "batch_logs"

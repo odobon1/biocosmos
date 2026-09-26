@@ -43,13 +43,13 @@ def test_pending_skips_fully_scored_trials(tmp_path) -> None:
     dpath_test = tmp_path / "test"
     combos = [("cub", "a1", "c1")]
     groups = {"native": "Standard", "joint_macro": "GZSL"}
-    dpath_seeds = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_seeds"
+    dpath_seeds = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_seed"
     for group_key in groups:  # seed 42: fully scored
-        fpath = group_path(dpath_seeds / "42", group_key, "metrics", ".json")
+        fpath = group_path(dpath_seeds / "42", group_key, "scores", ".json")
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text("{}")
     (dpath_seeds / "43").mkdir(parents=True)  # seed 43: partially scored
-    (dpath_seeds / "43" / "metrics.json").write_text("{}")
+    (dpath_seeds / "43" / "scores.json").write_text("{}")
 
     pending = test_script._pending(dpath_test, combos, [42, 43, 44], groups)
 

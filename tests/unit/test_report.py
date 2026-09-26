@@ -24,15 +24,20 @@ _MAP_LABELS = ["All", "ID", "OOD", "I2T", "I2I", "T2I"]
 _PRIM_MAP_LABELS = _MAP_LABELS + ["ID I2T", "ID I2I", "ID T2I", "OOD I2T", "OOD I2I", "OOD T2I"]
 
 
-def _metrics_file(dpath, group_key):
-    """Group `group_key`'s metrics file under `dpath` (utils.config.group_path), its dir made."""
-    fpath = group_path(dpath, group_key, "metrics", ".json")
+def _scores_file(dpath, group_key):
+    """Group `group_key`'s score file under `dpath` (utils.config.group_path), its dir made."""
+    fpath = group_path(dpath, group_key, "scores", ".json")
     fpath.parent.mkdir(parents=True, exist_ok=True)
     return fpath
 
 
 def _dpath_coord(dpath_phase, dataset, arm, coord):
-    return dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord
+    return dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord
+
+
+def _fpath_wb(dpath_phase, kind):
+    """Native's `kind` workbook of the phase at `dpath_phase` (report.fpath_workbook)."""
+    return report.fpath_workbook(dpath_phase, kind, "native")
 
 
 def _write_meta(dpath_phase, arms, coords, datasets, matrix=None, seeds=(42,)) -> None:
@@ -71,94 +76,83 @@ def test_aggregate_metric_stats_single_trial_returns_leaves_verbatim() -> None:
 
 def test_update_metric_stats_counts_trials_lacking_complete_flag(tmp_path, monkeypatch) -> None:
     # completion is now marked by the orchestrator after stats run, so update_metric_stats must aggregate
-    # trials by their written selected-checkpoint (_selected/) metrics -- not by a `complete` flag that
+    # trials by their written selected-checkpoint (sel/) metrics -- not by a `complete` flag that
     # isn't set yet
     dataset = "cub"
     dpath_coord = tmp_path
     for seed, all_v in (("42", "0.50"), ("43", "0.60")):
-        dpath_selected = dpath_coord / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected = dpath_coord / "_seed" / seed / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         for group_key in _GROUP_KEYS:
-            _metrics_file(dpath_selected / "metrics", group_key).write_text(json.dumps({
-                "scores": {"comp": {"map": {"all": all_v}}},
-                "loss_raw": {"id": "0.70", "ood": None},
-                "sim": {"mean": "0.0925"},
-                "targ": {"mean": "-0.9895"},
-                "chkpt": "1/1 (0.0M/0.0M samples)",
-                "killed": False,
-            }))
+            _scores_file(dpath_selected, group_key).write_text(json.dumps({"comp": {"map": {"all": all_v}}}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_metric_stats(_EVAL_GROUPS, "std")
 
-    stats = json.loads((dpath_coord / "coord_stats" / "stats" / "metrics.json").read_text())
+    stats = json.loads((dpath_coord / "coord_metrics" / "scores_agg.json").read_text())
     assert stats["n_trials"] == 2
-    assert stats["scores"]["comp"]["map"]["all"] == "55.00 ± 7.07"
-    # only the scores tree is aggregated; the non-score fields are dropped
-    assert set(stats) == {"n_trials", "scores"}
+    assert stats["comp"]["map"]["all"] == "55.00 ± 7.07"
+    assert set(stats) == {"n_trials", "comp"}
 
-    listview_text = (dpath_coord / "coord_stats" / "stats" / "metrics_listview.json").read_text()
+    listview_text = (dpath_coord / "coord_metrics" / "scores_trials.json").read_text()
     listview = json.loads(listview_text)
     assert listview["n_trials"] == 2
-    assert set(listview) == {"n_trials", "scores"}
-    assert listview["scores"]["comp"]["map"]["all"] == ["50.00", "60.00"]
+    assert set(listview) == {"n_trials", "comp"}
+    assert listview["comp"]["map"]["all"] == ["50.00", "60.00"]
     # each leaf list stays on a single line
     assert '"all": ["50.00", "60.00"]' in listview_text
     # one aggregate + one listview file per eval group
     for group_key in _GROUP_KEYS:
-        assert (group_path(dpath_coord / "coord_stats", group_key, "stats") / "metrics.json").exists()
-        assert (group_path(dpath_coord / "coord_stats", group_key, "stats") / "metrics_listview.json").exists()
+        assert group_path(dpath_coord / "coord_metrics", group_key, "scores_agg", ".json").exists()
+        assert group_path(dpath_coord / "coord_metrics", group_key, "scores_trials", ".json").exists()
 
 
 def test_stats_are_rendered_only_for_the_eval_groups_in_play(tmp_path, monkeypatch) -> None:
     # every renderer keys off the eval_groups map it is handed (reporting.yaml's `eval`), not the set of
-    # metrics files on disk: a group left out gets no coord_stats subtree even when its metrics are there
+    # metrics files on disk: a group left out gets no coord_metrics files even when its metrics are there
     for seed in ("42", "43"):
-        dpath_selected = tmp_path / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected = tmp_path / "_seed" / seed / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         for group_key in _GROUP_KEYS:
-            _metrics_file(dpath_selected / "metrics", group_key).write_text(json.dumps({
-                "scores": {"comp": {"map": {"all": "0.50"}}},
-                "loss_raw": {"id": "0.70", "ood": None},
-                "sim": {"mean": "0.0925"},
-                "targ": {"mean": "-0.9895"},
-                "chkpt": "1/1 (0.0M/0.0M samples)",
-                "killed": False,
-            }))
+            _scores_file(dpath_selected, group_key).write_text(json.dumps({"comp": {"map": {"all": "0.50"}}}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", "cub")
 
     report.update_metric_stats({"native": "Standard", "joint_macro": "GZSL"}, "std")
 
-    assert (tmp_path / "coord_stats" / "stats").exists()
-    assert (tmp_path / "coord_stats" / "secondary" / "stats-joint_macro").exists()
-    assert not (tmp_path / "coord_stats" / "secondary" / "stats-native_macro").exists()
-    assert not (tmp_path / "coord_stats" / "secondary" / "stats-joint").exists()
+    assert (tmp_path / "coord_metrics" / "scores_agg.json").exists()
+    assert (tmp_path / "coord_metrics" / "secondary" / "scores_agg-joint_macro.json").exists()
+    assert not (tmp_path / "coord_metrics" / "secondary" / "scores_agg-native_macro.json").exists()
+    assert not (tmp_path / "coord_metrics" / "secondary" / "scores_agg-joint.json").exists()
 
     # native alone in play: no secondary/ dir at all
-    shutil.rmtree(tmp_path / "coord_stats")
+    shutil.rmtree(tmp_path / "coord_metrics")
     report.update_metric_stats({"native": "Standard"}, "std")
-    assert [p.name for p in (tmp_path / "coord_stats").iterdir()] == ["stats"]
+    assert sorted(p.name for p in (tmp_path / "coord_metrics").iterdir()) == ["scores_agg.json", "scores_trials.json"]
 
 
-def _write_trial_evals(dpath_trial, chkpt_scores, n_chkpts=None, killed=None):
+def _write_trial_evals(dpath_trial, chkpt_scores, n_chkpts=None, killed=False):
     """A trial's per-checkpoint eval files: chkpt_scores[i] = (comp.map.all, comp.acc.i2t) at
-    checkpoint i, index 0 being the base eval. n_chkpts defaults to the last written index, i.e. a
-    completed trial; pass a larger one to leave the trial short of its final eval -- or, with
-    killed=<that last index>, a trial killed there (trial_metadata.json's killed field)."""
+    checkpoint i, index 0 being the base eval; plus its trial_metadata.json (n_chkpts, killed, an unset
+    chkpt). n_chkpts defaults to the last written index, i.e. a completed trial; pass a larger one to
+    leave the trial short of its final eval -- or, with killed=True, a trial killed at that last eval."""
     n_chkpts = len(chkpt_scores) - 1 if n_chkpts is None else n_chkpts
     for idx_eval, (map_v, acc_v) in enumerate(chkpt_scores):
         dpath_chkpt = dpath_trial / "evals" / "evals" / str(idx_eval)
         dpath_chkpt.mkdir(parents=True)
         for group_key in _GROUP_KEYS:
-            _metrics_file(dpath_chkpt / "metrics", group_key).write_text(json.dumps({
-                "scores": {"comp": {"map": {"all": map_v}, "acc": {"i2t": acc_v}}},
-                "chkpt": f"{idx_eval}/{n_chkpts} (0.0M/0.0M samples)",
-            }))
-    (dpath_trial / "trial_metadata.json").write_text(json.dumps({"killed": killed}))
+            _scores_file(dpath_chkpt, group_key).write_text(json.dumps(
+                {"comp": {"map": {"all": map_v}, "acc": {"i2t": acc_v}}}))
+    (dpath_trial / "trial_metadata.json").write_text(json.dumps(
+        {"n_chkpts": n_chkpts, "killed": killed, "chkpt": {"sel": None, "best": None}}))
+
+
+def _trial_chkpt(dpath_trial):
+    """trial_metadata.json's chkpt: the eval indices update_chkpt_selection put behind evals/sel and evals/best."""
+    return json.loads((dpath_trial / "trial_metadata.json").read_text())["chkpt"]
 
 
 def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeypatch) -> None:
@@ -168,52 +162,49 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_coord / "_seeds" / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
-    _write_trial_evals(dpath_coord / "_seeds" / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
+    _write_trial_evals(dpath_coord / "_seed" / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
+    _write_trial_evals(dpath_coord / "_seed" / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    chkpt_means = load_pickle(dpath_coord / "coord_stats" / "stats" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_coord / "coord_metrics" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
     assert list(chkpt_means["chkpts"]) == [0, 1, 2, 3]  # the base eval leads the curve
     assert chkpt_means["means"] == pytest.approx([0.10, 0.50, 0.60, 0.50])
     assert chkpt_means["idx_best"] == 2  # argmax over 1.., earliest on ties
 
-    # _selected: both trials scored at the SAME checkpoint -- neither trial's own argmax
+    # sel: both trials scored at the SAME checkpoint -- neither trial's own argmax
     for seed, score in (("42", "0.50"), ("43", "0.70")):
-        sel = json.loads((dpath_coord / "_seeds" / seed / "evals" / "_selected" / "metrics" / "metrics.json").read_text())
-        assert sel["chkpt"].startswith("2/3")
-        assert sel["scores"]["comp"]["map"]["all"] == score  # 42's own best was 0.90, 43's 0.80
+        sel = json.loads((dpath_coord / "_seed" / seed / "evals" / "sel" / "scores.json").read_text())
+        assert sel["comp"]["map"]["all"] == score  # 42's own best was 0.90, 43's 0.80
 
-    # _best: each trial at its OWN argmax (42 peaked at chkpt 1, 43 at chkpt 3)
+    # best: each trial at its OWN argmax (42 peaked at chkpt 1, 43 at chkpt 3); trial_metadata records both indices
     for seed, idx, score in (("42", 1, "0.90"), ("43", 3, "0.80")):
-        own = json.loads((dpath_coord / "_seeds" / seed / "evals" / "_best" / "metrics" / "metrics.json").read_text())
-        assert own["chkpt"].startswith(f"{idx}/3")
-        assert own["scores"]["comp"]["map"]["all"] == score
+        own = json.loads((dpath_coord / "_seed" / seed / "evals" / "best" / "scores.json").read_text())
+        assert own["comp"]["map"]["all"] == score
+        assert _trial_chkpt(dpath_coord / "_seed" / seed) == {"sel": 2, "best": idx}
 
     metadata = json.loads((tmp_path / "coord_metadata.json").read_text())
     assert metadata["best_chkpt"] == {"idx": 2, "n_trials": 2, "mean": "0.6000"}
     for group_key in _GROUP_KEYS:
-        assert (group_path(dpath_coord / "coord_stats", group_key, "stats") / "chkpt_means.pkl").exists()
-        assert (group_path(dpath_coord / "coord_stats", group_key, "stats") / "chkpt_means.png").exists()
+        assert group_path(dpath_coord / "coord_metrics", group_key, "chkpt_means", ".pkl").exists()
+        assert group_path(dpath_coord / "coord_metrics", group_key, "chkpt_means", ".png").exists()
 
 
 def test_update_chkpt_selection_scores_every_group_at_natives_pick(tmp_path, monkeypatch) -> None:
-    # native alone selects: joint's own curve peaks at chkpt 1, but every group's _selected/ and _best/ file
+    # native alone selects: joint's own curve peaks at chkpt 1, but every group's sel/ and best/ file
     # is the eval native picked (chkpt 2) -- one eval per trial across groups. joint's chkpt_means keep
     # joint's own curve, with joint's own pick (chkpt 1) marked
-    dpath_trial = tmp_path / "_seeds" / "42"
+    dpath_trial = tmp_path / "_seed" / "42"
     for idx_eval, (native_v, joint_v) in enumerate((("0.10", "0.10"), ("0.30", "0.90"), ("0.60", "0.20"))):
         dpath_chkpt = dpath_trial / "evals" / "evals" / str(idx_eval)
         for group_key in _GROUP_KEYS:
-            _metrics_file(dpath_chkpt / "metrics", group_key).write_text(json.dumps({
-                "scores": {"comp": {"map": {"all": joint_v if group_key.startswith("joint") else native_v}}},
-                "chkpt": f"{idx_eval}/2 (0.0M/0.0M samples)",
-            }))
-    (dpath_trial / "trial_metadata.json").write_text(json.dumps({"killed": None}))
+            _scores_file(dpath_chkpt, group_key).write_text(json.dumps(
+                {"comp": {"map": {"all": joint_v if group_key.startswith("joint") else native_v}}}))
+    (dpath_trial / "trial_metadata.json").write_text(json.dumps({"n_chkpts": 2, "killed": False, "chkpt": {"sel": None, "best": None}}))
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
@@ -221,31 +212,32 @@ def test_update_chkpt_selection_scores_every_group_at_natives_pick(tmp_path, mon
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    for name in ("_selected", "_best"):
-        for group_key in _GROUP_KEYS:
-            data = json.loads(group_path(dpath_trial / "evals" / name / "metrics", group_key, "metrics", ".json").read_text())
-            assert data["chkpt"].startswith("2/2")
-    joint = json.loads(group_path(dpath_trial / "evals" / "_selected" / "metrics", "joint", "metrics", ".json").read_text())
-    assert joint["scores"]["comp"]["map"]["all"] == "0.20"  # joint at native's pick, not its own 0.90
-    chkpt_means = load_pickle(group_path(tmp_path / "coord_stats", "joint", "stats") / "chkpt_means.pkl")
+    assert _trial_chkpt(dpath_trial) == {"sel": 2, "best": 2}
+    for name in ("sel", "best"):
+        for group_key in _GROUP_KEYS:  # each group's file is a verbatim copy of its eval-2 file
+            data = json.loads(group_path(dpath_trial / "evals" / name, group_key, "scores", ".json").read_text())
+            assert data == json.loads(group_path(dpath_trial / "evals" / "evals" / "2", group_key, "scores", ".json").read_text())
+    joint = json.loads(group_path(dpath_trial / "evals" / "sel", "joint", "scores", ".json").read_text())
+    assert joint["comp"]["map"]["all"] == "0.20"  # joint at native's pick, not its own 0.90
+    chkpt_means = load_pickle(group_path(tmp_path / "coord_metrics", "joint", "chkpt_means", ".pkl"))
     assert chkpt_means["means"] == pytest.approx([0.10, 0.90, 0.20]) and chkpt_means["idx_best"] == 1
     assert json.loads((tmp_path / "coord_metadata.json").read_text())["best_chkpt"] == {"idx": 2, "n_trials": 1, "mean": "0.6000"}
 
 
 def test_update_chkpt_selection_copies_viz(tmp_path, monkeypatch) -> None:
-    # _selected/viz/ and _best/viz/ mirror the whole viz/ dir (cache/ + vanilla/ + pooled/) of the eval each
+    # sel/viz/ and best/viz/ mirror the whole viz/ dir (cache/ + vanilla/ + pooled/) of the eval each
     # one's metrics came from: 42 and 43 both select chkpt 2 (the mean's peak) while 42's own best is chkpt 1.
     # 43 has no viz/ (outside the viz seed window): no viz/ copy at all; and a stale copy from
     # an earlier selection is replaced, not merged
-    _write_trial_evals(tmp_path / "_seeds" / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
-    _write_trial_evals(tmp_path / "_seeds" / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
+    _write_trial_evals(tmp_path / "_seed" / "42", (("0.10", "0.10"), ("0.90", "0.90"), ("0.50", "0.50"), ("0.20", "0.20")))
+    _write_trial_evals(tmp_path / "_seed" / "43", (("0.10", "0.10"), ("0.10", "0.10"), ("0.70", "0.70"), ("0.80", "0.80")))
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
     for idx in ("1", "2"):
-        dpath_viz = tmp_path / "_seeds" / "42" / "evals" / "evals" / idx / "viz"
+        dpath_viz = tmp_path / "_seed" / "42" / "evals" / "evals" / idx / "viz"
         for sub in ("vanilla/8panel/joint.png", "pooled/8panel/joint.png", "cache/embs.npz"):
             (dpath_viz / sub).parent.mkdir(parents=True, exist_ok=True)
             (dpath_viz / sub).write_text(f"eval{idx}")
-    fpath_stale = tmp_path / "_seeds" / "42" / "evals" / "_selected" / "viz" / "vanilla" / "stale.png"
+    fpath_stale = tmp_path / "_seed" / "42" / "evals" / "sel" / "viz" / "vanilla" / "stale.png"
     fpath_stale.parent.mkdir(parents=True)
     fpath_stale.write_text("stale")
 
@@ -254,73 +246,72 @@ def test_update_chkpt_selection_copies_viz(tmp_path, monkeypatch) -> None:
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    dpath_evals = tmp_path / "_seeds" / "42" / "evals"
-    for name, idx in (("_selected", "2"), ("_best", "1")):
+    dpath_evals = tmp_path / "_seed" / "42" / "evals"
+    for name, idx in (("sel", "2"), ("best", "1")):
         for sub in ("vanilla/8panel/joint.png", "pooled/8panel/joint.png", "cache/embs.npz"):
             assert (dpath_evals / name / "viz" / sub).read_text() == f"eval{idx}"
     assert not fpath_stale.exists()
-    assert not (tmp_path / "_seeds" / "43" / "evals" / "_selected" / "viz").exists()
+    assert not (tmp_path / "_seed" / "43" / "evals" / "sel" / "viz").exists()
 
 
 def test_update_chkpt_selection_excludes_unfinished_trials(tmp_path, monkeypatch) -> None:
-    # a trial short of its final eval doesn't enter the mean at all (nor get a _selected/ or _best/):
+    # a trial short of its final eval doesn't enter the mean at all (nor get a sel/ or best/):
     # here 43 stopped at chkpt 1 of 2
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_coord / "_seeds" / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
-    _write_trial_evals(dpath_coord / "_seeds" / "43", (("0.10", "0.10"), ("0.99", "0.99")), n_chkpts=2)
+    _write_trial_evals(dpath_coord / "_seed" / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
+    _write_trial_evals(dpath_coord / "_seed" / "43", (("0.10", "0.10"), ("0.99", "0.99")), n_chkpts=2)
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    chkpt_means = load_pickle(dpath_coord / "coord_stats" / "stats" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_coord / "coord_metrics" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1  # only trial 42 counted
     assert chkpt_means["means"] == pytest.approx([0.90, 0.10, 0.30])  # 42's curve alone
     assert list(chkpt_means["spreads"]) == [0.0] * 3  # ddof=1 undefined for one trial -> flat band
     assert chkpt_means["idx_best"] == 0  # the base eval competes like any checkpoint, and 0.90 tops the curve
-    own = json.loads((dpath_coord / "_seeds" / "42" / "evals" / "_best" / "metrics" / "metrics.json").read_text())
-    assert own["chkpt"].startswith("0/2")  # the trial's own argmax lands on the base eval too
-    assert not (dpath_coord / "_seeds" / "43" / "evals" / "_selected").exists()
-    assert not (dpath_coord / "_seeds" / "43" / "evals" / "_best").exists()
+    assert _trial_chkpt(dpath_coord / "_seed" / "42") == {"sel": 0, "best": 0}  # the trial's own argmax lands on the base eval too
+    assert not (dpath_coord / "_seed" / "43" / "evals" / "sel").exists()
+    assert not (dpath_coord / "_seed" / "43" / "evals" / "best").exists()
+    assert _trial_chkpt(dpath_coord / "_seed" / "43") == {"sel": None, "best": None}
 
 
 def test_update_chkpt_selection_base_eval_competes_like_any_checkpoint(tmp_path, monkeypatch) -> None:
     # the base eval (index 0) competes like any checkpoint: here it tops the mean
-    # curve, so every trial's _selected/ is a copy of its evals/evals/0/, and 42's own argmax is the
+    # curve, so every trial's sel/ is a copy of its evals/evals/0/, and 42's own argmax is the
     # base too while 43's is chkpt 2
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_coord / "_seeds" / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
-    _write_trial_evals(dpath_coord / "_seeds" / "43", (("0.50", "0.50"), ("0.20", "0.20"), ("0.60", "0.60")))
+    _write_trial_evals(dpath_coord / "_seed" / "42", (("0.90", "0.90"), ("0.10", "0.10"), ("0.30", "0.30")))
+    _write_trial_evals(dpath_coord / "_seed" / "43", (("0.50", "0.50"), ("0.20", "0.20"), ("0.60", "0.60")))
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    chkpt_means = load_pickle(dpath_coord / "coord_stats" / "stats" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_coord / "coord_metrics" / "chkpt_means.pkl")
     assert chkpt_means["means"] == pytest.approx([0.70, 0.15, 0.45])
     assert chkpt_means["idx_best"] == 0
     for seed, score in (("42", "0.90"), ("43", "0.50")):
-        sel = json.loads((dpath_coord / "_seeds" / seed / "evals" / "_selected" / "metrics" / "metrics.json").read_text())
-        assert sel["chkpt"].startswith("0/2")
-        assert sel["scores"]["comp"]["map"]["all"] == score
+        sel = json.loads((dpath_coord / "_seed" / seed / "evals" / "sel" / "scores.json").read_text())
+        assert sel["comp"]["map"]["all"] == score
     for seed, idx, score in (("42", 0, "0.90"), ("43", 2, "0.60")):
-        own = json.loads((dpath_coord / "_seeds" / seed / "evals" / "_best" / "metrics" / "metrics.json").read_text())
-        assert own["chkpt"].startswith(f"{idx}/2")
-        assert own["scores"]["comp"]["map"]["all"] == score
+        own = json.loads((dpath_coord / "_seed" / seed / "evals" / "best" / "scores.json").read_text())
+        assert own["comp"]["map"]["all"] == score
+        assert _trial_chkpt(dpath_coord / "_seed" / seed) == {"sel": 0, "best": idx}
     metadata = json.loads((tmp_path / "coord_metadata.json").read_text())
     assert metadata["best_chkpt"] == {"idx": 0, "n_trials": 2, "mean": "0.7000"}
 
 
 def test_chkpt_dpaths_completes_a_killed_trial_at_its_kill_checkpoint(tmp_path) -> None:
-    # a trial killed at eval k (kill_thresh; trial_metadata.json's killed = k) is complete with its
-    # evals ending there, where the same evals without the marker are a trial still short of its final
-    _write_trial_evals(tmp_path / "killed", (("0.5", "0.5"), ("0.4", "0.4"), ("0.3", "0.3")), n_chkpts=5, killed=2)
+    # a trial killed at eval k (kill_thresh; trial_metadata.json's killed flag) is complete with its
+    # evals ending there, where the same evals without the flag are a trial still short of its final
+    _write_trial_evals(tmp_path / "killed", (("0.5", "0.5"), ("0.4", "0.4"), ("0.3", "0.3")), n_chkpts=5, killed=True)
     _write_trial_evals(tmp_path / "short", (("0.5", "0.5"), ("0.4", "0.4"), ("0.3", "0.3")), n_chkpts=5)
 
     assert [d.name for d in report._chkpt_dpaths(tmp_path / "killed")] == ["0", "1", "2"]
@@ -330,28 +321,28 @@ def test_chkpt_dpaths_completes_a_killed_trial_at_its_kill_checkpoint(tmp_path) 
 def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path, monkeypatch) -> None:
     # trial 43 was killed at chkpt 1 of 3 (nothing beat its base), so it has no eval at the coord's
     # selected index: it stays out of the mean curve (42's alone, selecting chkpt 2) and is scored at
-    # its own best eval -- the base here, since nothing beat it -- its _selected copy flagged killed
+    # its own best eval -- the base here, since nothing beat it
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_coord / "_seeds" / "42", (("0.10", "0.10"), ("0.30", "0.30"), ("0.60", "0.60"), ("0.50", "0.50")))
-    _write_trial_evals(dpath_coord / "_seeds" / "43", (("0.40", "0.40"), ("0.20", "0.20")), n_chkpts=3, killed=1)
+    _write_trial_evals(dpath_coord / "_seed" / "42", (("0.10", "0.10"), ("0.30", "0.30"), ("0.60", "0.60"), ("0.50", "0.50")))
+    _write_trial_evals(dpath_coord / "_seed" / "43", (("0.40", "0.40"), ("0.20", "0.20")), n_chkpts=3, killed=True)
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    chkpt_means = load_pickle(dpath_coord / "coord_stats" / "stats" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_coord / "coord_metrics" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1
     assert chkpt_means["means"] == pytest.approx([0.10, 0.30, 0.60, 0.50])
     assert chkpt_means["idx_best"] == 2
-    sel = json.loads((dpath_coord / "_seeds" / "42" / "evals" / "_selected" / "metrics" / "metrics.json").read_text())
-    assert sel["chkpt"].startswith("2/3") and sel["killed"] is False
-    sel = json.loads((dpath_coord / "_seeds" / "43" / "evals" / "_selected" / "metrics" / "metrics.json").read_text())
-    assert sel["chkpt"].startswith("0/3") and sel["scores"]["comp"]["map"]["all"] == "0.40" and sel["killed"] is True
-    own = json.loads((dpath_coord / "_seeds" / "43" / "evals" / "_best" / "metrics" / "metrics.json").read_text())
-    assert own["chkpt"].startswith("0/3") and "killed" not in own
+    sel = json.loads((dpath_coord / "_seed" / "42" / "evals" / "sel" / "scores.json").read_text())
+    assert sel["comp"]["map"]["all"] == "0.60" and _trial_chkpt(dpath_coord / "_seed" / "42") == {"sel": 2, "best": 2}
+    sel = json.loads((dpath_coord / "_seed" / "43" / "evals" / "sel" / "scores.json").read_text())
+    assert sel["comp"]["map"]["all"] == "0.40" and _trial_chkpt(dpath_coord / "_seed" / "43") == {"sel": 0, "best": 0}
+    own = json.loads((dpath_coord / "_seed" / "43" / "evals" / "best" / "scores.json").read_text())
+    assert own == sel
     metadata = json.loads((tmp_path / "coord_metadata.json").read_text())
     assert metadata["best_chkpt"] == {"idx": 2, "n_trials": 1, "mean": "0.6000"}
 
@@ -363,22 +354,22 @@ def test_update_chkpt_selection_selects_over_killed_trials_when_all_were_killed(
     dataset = "cub"
     dpath_coord = tmp_path
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "best_chkpt": {}}))
-    _write_trial_evals(dpath_coord / "_seeds" / "42", (("0.50", "0.50"), ("0.20", "0.20")), n_chkpts=3, killed=1)
-    _write_trial_evals(dpath_coord / "_seeds" / "43", (("0.40", "0.40"), ("0.30", "0.30")), n_chkpts=3, killed=1)
+    _write_trial_evals(dpath_coord / "_seed" / "42", (("0.50", "0.50"), ("0.20", "0.20")), n_chkpts=3, killed=True)
+    _write_trial_evals(dpath_coord / "_seed" / "43", (("0.40", "0.40"), ("0.30", "0.30")), n_chkpts=3, killed=True)
 
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
     report.update_chkpt_selection(_EVAL_GROUPS, "std")
 
-    chkpt_means = load_pickle(dpath_coord / "coord_stats" / "stats" / "chkpt_means.pkl")
+    chkpt_means = load_pickle(dpath_coord / "coord_metrics" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
     assert list(chkpt_means["chkpts"]) == [0, 1]
     assert chkpt_means["means"] == pytest.approx([0.45, 0.25])
     assert chkpt_means["idx_best"] == 0
     for seed, score in (("42", "0.50"), ("43", "0.40")):
-        sel = json.loads((dpath_coord / "_seeds" / seed / "evals" / "_selected" / "metrics" / "metrics.json").read_text())
-        assert sel["chkpt"].startswith("0/3") and sel["scores"]["comp"]["map"]["all"] == score and sel["killed"] is True
+        sel = json.loads((dpath_coord / "_seed" / seed / "evals" / "sel" / "scores.json").read_text())
+        assert sel["comp"]["map"]["all"] == score and _trial_chkpt(dpath_coord / "_seed" / seed) == {"sel": 0, "best": 0}
 
 
 def test_sweep_completion_levels(tmp_path, monkeypatch) -> None:
@@ -392,10 +383,10 @@ def test_sweep_completion_levels(tmp_path, monkeypatch) -> None:
     for arm in ("sp", "mp"):
         for coord in ("c0", "c1"):
             for dataset in ("cub", "lepid"):
-                _write_trial_evals(_dpath_coord(tmp_path, dataset, arm, coord) / "_seeds" / "42", scores)
+                _write_trial_evals(_dpath_coord(tmp_path, dataset, arm, coord) / "_seed" / "42", scores)
                 # seed 43 has run everywhere but mp/c1/lepid, where it stopped short of its final eval
                 short = (arm, coord, dataset) == ("mp", "c1", "lepid")
-                _write_trial_evals(_dpath_coord(tmp_path, dataset, arm, coord) / "_seeds" / "43", scores, n_chkpts=2 if short else None)
+                _write_trial_evals(_dpath_coord(tmp_path, dataset, arm, coord) / "_seed" / "43", scores, n_chkpts=2 if short else None)
 
     assert report.seed_sweep_complete(42)
     assert report.dataset_sweep_complete(42, "lepid")
@@ -407,13 +398,11 @@ def test_sweep_completion_levels(tmp_path, monkeypatch) -> None:
     assert report.arm_sweep_complete(43, "lepid", "sp")  # sp's coords are all in on lepid
     assert not report.arm_sweep_complete(43, "lepid", "mp")  # mp/c1 still short
 
-    dpath_eval = _dpath_coord(tmp_path, "lepid", "mp", "c1") / "_seeds" / "43" / "evals" / "evals" / "2"
+    dpath_eval = _dpath_coord(tmp_path, "lepid", "mp", "c1") / "_seed" / "43" / "evals" / "evals" / "2"
     dpath_eval.mkdir()
     for group_key in _GROUP_KEYS:  # its final eval lands -> every cycle closes
-        _metrics_file(dpath_eval / "metrics", group_key).write_text(json.dumps({
-            "scores": {"comp": {"map": {"all": "0.30"}, "acc": {"i2t": "0.30"}}},
-            "chkpt": "2/2 (0.0M/0.0M samples)",
-        }))
+        _scores_file(dpath_eval, group_key).write_text(json.dumps(
+            {"comp": {"map": {"all": "0.30"}, "acc": {"i2t": "0.30"}}}))
 
     assert report.arm_sweep_complete(43, "lepid", "mp")
     assert report.dataset_sweep_complete(43, "lepid")
@@ -449,11 +438,11 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
     # absent -- a curve whose selected point is the coord's first trial's score), for tests to
     # overwrite when they assert on them.
     macro = scores_grp if macro is None else macro
-    dpath_trial = dpath_selected.parent.parent  # <coord>/_seeds/<seed>/evals/_selected
+    dpath_trial = dpath_selected.parent.parent  # <coord>/_seed/<seed>/evals/sel
     dpath_coord = dpath_trial.parents[1]
     for group_key, grp in (("native", scores_grp), ("native_macro", macro), ("joint", scores_grp), ("joint_macro", macro)):
-        _metrics_file(dpath_selected / "metrics", group_key).write_text(json.dumps({"scores": grp, "killed": killed}))
-        fpath_means = group_path(dpath_coord / "coord_stats", group_key, "stats") / "chkpt_means.pkl"
+        _scores_file(dpath_selected, group_key).write_text(json.dumps(grp))
+        fpath_means = group_path(dpath_coord / "coord_metrics", group_key, "chkpt_means", ".pkl")
         if not fpath_means.exists():
             fpath_means.parent.mkdir(parents=True, exist_ok=True)
             save_pickle({
@@ -463,10 +452,14 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
                 "spreads": np.zeros(2),
                 "idx_best": 1,
             }, fpath_means)
-    (dpath_trial / "trial_metadata.json").write_text(json.dumps({
+    # laid over whatever _write_trial_evals recorded (n_chkpts, chkpt), when the trial has evals
+    fpath_meta = dpath_trial / "trial_metadata.json"
+    metadata = json.loads(fpath_meta.read_text()) if fpath_meta.exists() else {}
+    fpath_meta.write_text(json.dumps({
+        **metadata,
         "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": "1.00"},
         "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
-        "killed": 1 if killed else None,  # the eval index a killed trial stopped at
+        "killed": killed,
         "progress": {"epoch": 2, "n_epochs": 2, "n_samps_seen": 200},  # the strips' epoch axis reads n_epochs
     }))
     # the strip figures read every completed trial's recorded series, and every trial records its logit scale
@@ -559,7 +552,7 @@ def test_update_arm_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
     # trials, so it gets no row; an arm with no dir on the dataset (planned "mp", never launched) is
     # skipped outright. bold_high=True + heatmap=True exercise the real matplotlib styling paths
     # (winner bold + heatmap shading) end-to-end.
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0", "c1"], ["cub"])
@@ -568,11 +561,11 @@ def test_update_arm_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
 
     report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
     report.update_arm_metrics("cub", "mp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
-    dpath_stats = tmp_path / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "performance"
+    dpath_stats = tmp_path / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "performance"
     for group_key in _GROUP_KEYS:
         assert (group_path(dpath_stats, group_key, "scores", ".png")).exists()
         assert (group_path(dpath_stats, group_key, "convergence", ".png")).exists()
-    assert not (tmp_path / "_datasets" / "cub" / "_arms" / "mp").exists()
+    assert not (tmp_path / "_dataset" / "cub" / "_arm" / "mp").exists()
 
 
 def test_update_arm_metrics_rows_and_curves(tmp_path, monkeypatch) -> None:
@@ -580,7 +573,7 @@ def test_update_arm_metrics_rows_and_curves(tmp_path, monkeypatch) -> None:
     # mAP scores; the convergence plot overlays those coords' mean curves, the winner being
     # the highest mean at its own selected checkpoint (b: 0.60 at chkpt 2 -- a peaks earlier but lower)
     for coord, base in (("a", 0.40), ("b", 0.60)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", "hp", coord) / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", "hp", coord) / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
     _write_chkpt_means(tmp_path, "cub", "hp", "a", [0.10, 0.40, 0.30], 1)
@@ -609,9 +602,9 @@ def _write_complete_trial(dpath_phase, dataset, arm, coord, seed, base) -> None:
     """A completed trial of (arm, coord) on `dataset` at `seed`: its per-checkpoint evals (peaking at `base`,
     so it reads as complete), its selected-checkpoint metrics, and the learning_curves/ dir the best_coords/
     mirror copies -- each png's bytes naming the trial it came from."""
-    dpath_trial = _dpath_coord(dpath_phase, dataset, arm, coord) / "_seeds" / str(seed)
+    dpath_trial = _dpath_coord(dpath_phase, dataset, arm, coord) / "_seed" / str(seed)
     _write_trial_evals(dpath_trial, (("0.10", "0.10"), (f"{base:.4f}", f"{base:.4f}")))
-    _write_group_metrics(dpath_trial / "evals" / "_selected", _scores_grp(_comp(base)))
+    _write_group_metrics(dpath_trial / "evals" / "sel", _scores_grp(_comp(base)))
     dpath_curves = dpath_trial / "learning_curves"
     dpath_curves.mkdir(parents=True)
     (dpath_curves / "general.png").write_text(f"{arm}/{coord}/{seed} general")
@@ -619,7 +612,7 @@ def _write_complete_trial(dpath_phase, dataset, arm, coord, seed, base) -> None:
 
 
 def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, monkeypatch) -> None:
-    # a complete arm gets arm_metrics/best_coords/learning_curves/_seeds/<seed>/, a copy of its BEST coord's per-trial
+    # a complete arm gets arm_metrics/best_coords/learning_curves/_seed/<seed>/, a copy of its BEST coord's per-trial
     # learning curves -- highest across-trial mean Native mAP comp All, b's 0.60/0.70 over a's 0.40/0.50 --
     # one dir per seed, whole (scores.png included), with the losing coord's curves nowhere in it
     dpath_phase = tmp_path / "screen"
@@ -632,7 +625,7 @@ def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, mo
 
     report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
 
-    dpath_curves = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
+    dpath_curves = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
     assert sorted(p.name for p in dpath_curves.iterdir()) == ["42", "43"]
     assert (dpath_curves / "42" / "general.png").read_text() == "hp/b/42 general"
     assert (dpath_curves / "43" / "general.png").read_text() == "hp/b/43 general"
@@ -650,7 +643,7 @@ def test_best_coord_curves_wait_for_every_planned_trial(tmp_path, monkeypatch) -
     _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"], seeds=[42, 43])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-    dpath_best = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "best_coords"
+    dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "best_coords"
 
     assert report.arm_sweep_complete(42, "cub", "hp")
     assert not report.arm_complete("cub", "hp")
@@ -672,7 +665,7 @@ def test_best_coord_curves_are_dropped_when_the_arm_grows(tmp_path, monkeypatch)
     _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-    dpath_curves = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
+    dpath_curves = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
 
     report.update_best_coord_curves("cub", "hp")
     assert (dpath_curves / "42" / "general.png").read_text() == "hp/b/42 general"
@@ -696,7 +689,7 @@ def test_best_coord_curves_in_refine_mirror_the_pick(tmp_path, monkeypatch) -> N
 
     report.update_best_coord_curves("cub", "hp")
 
-    dpath_curves = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
+    dpath_curves = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "best_coords" / "learning_curves"
     assert (dpath_curves / "42" / "general.png").read_text() == "hp/c1/42 general"
 
 
@@ -710,7 +703,7 @@ def test_best_coord_curves_skip_trainval(tmp_path, monkeypatch) -> None:
 
     report.update_best_coord_curves("cub", "hp")
 
-    assert not (dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "best_coords").exists()
+    assert not (dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "best_coords").exists()
 
 
 def _write_strip_trial(dpath_phase, dataset, arm, coord, seed, scale, n_epochs=2, samps_per_epoch=100,
@@ -721,10 +714,11 @@ def _write_strip_trial(dpath_phase, dataset, arm, coord, seed, scale, n_epochs=2
     values negated so the two figures are told apart. reqs=False leaves the target-implied bound trio
     empty, as a BCE-family loss does."""
     dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
-    dpath_trial = dpath_coord / "_seeds" / str(seed)
+    dpath_trial = dpath_coord / "_seed" / str(seed)
     _write_trial_evals(dpath_trial, (("0.10", "0.10"), ("0.20", "0.20")))
-    (dpath_trial / "trial_metadata.json").write_text(json.dumps(
-        {"killed": None, "progress": {"epoch": n_epochs, "n_epochs": n_epochs, "n_samps_seen": n_epochs * samps_per_epoch}}))
+    fpath_meta = dpath_trial / "trial_metadata.json"  # n_chkpts/killed/chkpt as _write_trial_evals recorded them
+    fpath_meta.write_text(json.dumps({**json.loads(fpath_meta.read_text()),
+                                      "progress": {"epoch": n_epochs, "n_epochs": n_epochs, "n_samps_seen": n_epochs * samps_per_epoch}}))
     (dpath_coord / "coord_metadata.json").write_text(json.dumps(
         {"n_crashes": {}, "horizon": {"n_samps": {"total": n_epochs * samps_per_epoch}}}))
     n = len(scale)
@@ -751,7 +745,7 @@ def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypat
 
     report.update_coord_strips("cub", "hp", "std")
 
-    dpath_strips = dpath_phase / "_datasets" / "cub" / "_arms" / "hp" / "arm_metrics" / "coord_strips"
+    dpath_strips = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_metrics" / "coord_strips"
     for name in ("scale", "logscale"):
         assert (dpath_strips / "agg" / f"{name}.png").exists()
         assert (dpath_strips / "seeds" / "42" / f"{name}.png").exists()
@@ -798,7 +792,7 @@ def test_update_coord_strips_infinite_bounds_are_unbanded(tmp_path, monkeypatch)
     dpath_phase = tmp_path / "screen"
     for seed in (42, 43):
         _write_strip_trial(dpath_phase, "cub", "hp", "a", seed, [10.0, 20.0])
-        fpath_data = _dpath_coord(dpath_phase, "cub", "hp", "a") / "_seeds" / str(seed) / "data_trial.pkl"
+        fpath_data = _dpath_coord(dpath_phase, "cub", "hp", "a") / "_seed" / str(seed) / "data_trial.pkl"
         data = load_pickle(fpath_data)
         data["epoch"].update({f"{key}_{stat}": [math.inf, math.inf]
                               for key in ("scale_req", "log_scale_req") for stat in ("min", "mean", "max")})
@@ -926,8 +920,8 @@ def _write_chkpt_means(dpath_phase, dataset, arm, coord, means, idx_best) -> Non
     """The coord's across-trial mean curve on `dataset`, the same artifact update_chkpt_selection
     writes, for every group."""
     for group_key in _GROUP_KEYS:
-        dpath_group = group_path(_dpath_coord(dpath_phase, dataset, arm, coord) / "coord_stats", group_key, "stats")
-        dpath_group.mkdir(parents=True, exist_ok=True)
+        fpath_means = group_path(_dpath_coord(dpath_phase, dataset, arm, coord) / "coord_metrics", group_key, "chkpt_means", ".pkl")
+        fpath_means.parent.mkdir(parents=True, exist_ok=True)
         save_pickle(
             {
                 "n_trials": 1,
@@ -936,7 +930,7 @@ def _write_chkpt_means(dpath_phase, dataset, arm, coord, means, idx_best) -> Non
                 "spreads": np.zeros(len(means)),
                 "idx_best": idx_best,
             },
-            dpath_group / "chkpt_means.pkl",
+            fpath_means,
         )
 
 
@@ -944,7 +938,7 @@ def test_update_dataset_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
     # the dataset's dataset_metrics/ tables + convergence plots, both kinds: armcoords/ ('Arm' + 'Coord'
     # rows) and arms/ ('Arm' + 'Coord' rows at each arm's best coord). "mp" is planned but has no completed trials
     # in this dataset -> no row in either; a dataset with no dir (planned "bryo", never launched) is skipped.
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
@@ -961,12 +955,12 @@ def test_update_dataset_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
 
     report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
     report.update_dataset_metrics("bryo", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
-    dpath_stats = tmp_path / "_datasets" / "cub" / "dataset_metrics"
+    dpath_stats = tmp_path / "_dataset" / "cub" / "dataset_metrics"
     for kind in ("armcoords", "arms"):
         for group_key in _GROUP_KEYS:
             assert (group_path(dpath_stats / kind / "performance", group_key, "scores", ".png")).exists()
             assert (group_path(dpath_stats / kind / "performance", group_key, "convergence", ".png")).exists()
-    assert not (tmp_path / "_datasets" / "bryo").exists()
+    assert not (tmp_path / "_dataset" / "bryo").exists()
     assert _captured(grids, "armcoords", "performance") == [
         ["Arm", "Coord", *_MAP_LABELS],
         ["hp", "c0 (1)", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"],
@@ -978,7 +972,7 @@ def test_update_dataset_metrics_refine_phase_arms_only(tmp_path, monkeypatch) ->
     # which would repeat it row for row
     dpath_phase = tmp_path / "refine"
     for arm, coord, base in (("hp", "c1", 0.60), ("sp", "c0", 0.40)):
-        dpath_selected = _dpath_coord(dpath_phase, "cub", arm, coord) / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(dpath_phase, "cub", arm, coord) / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
     _write_meta(dpath_phase, ["hp", "sp"], ["c0", "c1"], ["cub"], {"cub": {"hp": ["c1"], "sp": ["c0"]}})
@@ -1005,7 +999,7 @@ def test_update_dataset_metrics_arms_use_best_coord_per_arm(tmp_path, monkeypatc
         ("c", "c0"): (0.50, "0.50"), ("c", "c1"): (0.50, "0.50"),
     }
     for (arm, coord), (all_v, acc_v) in vals.items():
-        dpath_selected = _dpath_coord(tmp_path, "cub", arm, coord) / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", arm, coord) / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v, acc_v)))
     _write_meta(tmp_path, ["a", "b", "c"], ["c0", "c1"], ["cub"])
@@ -1044,7 +1038,7 @@ def test_pick_best_coords_by_native_map_all(tmp_path, monkeypatch) -> None:
         ("a", "c1", "bryo"): (0.30, "0.10"),
     }
     for (arm, coord, dataset), (all_v, acc_v) in vals.items():
-        dpath_selected = _dpath_coord(tmp_path, dataset, arm, coord) / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, dataset, arm, coord) / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v, acc_v)), macro=_scores_grp(_full_comp(0.99 if coord == "c1" else 0.01)))
     _write_meta(tmp_path, ["a", "b", "c"], ["c0", "c1"], ["cub", "bryo"])
@@ -1060,18 +1054,18 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     matrix = {"cub": {"sp": ["c0"], "mp": ["c1"]}}
     _write_meta(tmp_path, ["sp", "mp"], ["c0", "c1", "c2"], ["cub"], matrix)
     scores = (("0.10", "0.10"), ("0.30", "0.30"))
-    _write_trial_evals(_dpath_coord(tmp_path, "cub", "sp", "c0") / "_seeds" / "42", scores)
+    _write_trial_evals(_dpath_coord(tmp_path, "cub", "sp", "c0") / "_seed" / "42", scores)
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     assert report.arm_sweep_complete(42, "cub", "sp")
     assert not report.dataset_sweep_complete(42, "cub")  # mp/c1 still to come
-    _write_trial_evals(_dpath_coord(tmp_path, "cub", "mp", "c1") / "_seeds" / "42", scores)
+    _write_trial_evals(_dpath_coord(tmp_path, "cub", "mp", "c1") / "_seed" / "42", scores)
     assert report.dataset_sweep_complete(42, "cub")
     assert report.seed_sweep_complete(42)
 
     for arm, coord, base in (("sp", "c0", 0.50), ("mp", "c1", 0.40)):
-        _write_group_metrics(_dpath_coord(tmp_path, "cub", arm, coord) / "_seeds" / "42" / "evals" / "_selected", _scores_grp(_comp(base)))
-        (_dpath_coord(tmp_path, "cub", arm, coord) / "_seeds" / "42" / "learning_curves").mkdir()  # sp complete: best_coords/ mirrors it
+        _write_group_metrics(_dpath_coord(tmp_path, "cub", arm, coord) / "_seed" / "42" / "evals" / "sel", _scores_grp(_comp(base)))
+        (_dpath_coord(tmp_path, "cub", arm, coord) / "_seed" / "42" / "learning_curves").mkdir()  # sp complete: best_coords/ mirrors it
     grids = []
     monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
@@ -1083,9 +1077,9 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     assert [r[0] for r in _captured(grids, "arm_metrics", "performance")] == ["Coord", "c0 (1)"]
     assert [r[:2] for r in _captured(grids, "armcoords", "performance")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
     assert [r[:2] for r in _captured(grids, "arms", "performance")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "armcoords")).active.iter_rows()]
     assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
     assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
 
 
@@ -1100,7 +1094,7 @@ def test_update_dataset_metrics_ordered_localized_per_metric(tmp_path, monkeypat
         ("c", "bryo"): (0.90, "0.90"),
     }
     for (arm, dataset), (all_v, acc_v) in comp_vals.items():
-        dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v, acc_v)))
     _write_meta(tmp_path, ["a", "b", "c"], ["c0"], ["cub", "bryo"])
@@ -1124,7 +1118,7 @@ def test_update_phase_metrics_refine_phase_arms_only(tmp_path, monkeypatch) -> N
     # refine: the arms/ workbooks only, each arm at its single screening pick (hp: c1) keyed 'Arm' + 'Coord' --
     # no armcoords/ ones, which would repeat them row for row
     dpath_phase = tmp_path / "refine"
-    dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", "c1") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", "c1") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_comp(0.60)))
     _write_meta(dpath_phase, ["hp"], ["c1"], ["cub"])
@@ -1135,7 +1129,7 @@ def test_update_phase_metrics_refine_phase_arms_only(tmp_path, monkeypatch) -> N
 
     dpath_stats = dpath_phase / "phase_metrics"
     assert not (dpath_stats / "armcoords").exists()
-    grid = [[c.value for c in r] for r in load_workbook(dpath_stats / "arms" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(dpath_phase, "arms")).active.iter_rows()]
     assert grid[3][:2] == ["Arm", "Coord"] and grid[4][:3] == ["hp", "c1 (1)", "60.00"] and grid[5][0] is None
 
 
@@ -1147,7 +1141,7 @@ def test_update_phase_metrics_writes_stacked_tables(tmp_path, monkeypatch) -> No
     # cub trials (mean ± spread) and none in bryo -> a blank "-" row in the Bryozoa table; "mp" has no
     # completed trials anywhere -> no rows at all until its first trial completes.
     for seed, base in (("42", 0.50), ("43", 0.60)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / seed / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
@@ -1156,7 +1150,7 @@ def test_update_phase_metrics_writes_stacked_tables(tmp_path, monkeypatch) -> No
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
-    fpath_xlsx = tmp_path / "phase_metrics" / "arms" / "metrics.xlsx"
+    fpath_xlsx = _fpath_wb(tmp_path, "arms")
     assert fpath_xlsx.exists()
     wb = load_workbook(fpath_xlsx)
     ws = wb.active
@@ -1264,7 +1258,7 @@ def test_update_phase_metrics_arm_coords_layout(tmp_path, monkeypatch) -> None:
     # then coords within each); every block sits one column further right accordingly, and the mAP
     # sheet's banner title spans both key columns ahead of the group headers
     for (arm, coord), base in ((("hp", "c0"), 0.50), (("hp", "c1"), 0.60), (("mp", "c1"), 0.40)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", arm, coord) / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", arm, coord) / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp"], ["c0", "c1"], ["cub", "bryo"])
@@ -1273,7 +1267,7 @@ def test_update_phase_metrics_arm_coords_layout(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM, False)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "armcoords"))
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -1324,7 +1318,7 @@ def test_update_phase_metrics_bold_high(tmp_path, monkeypatch) -> None:
     # outranks "mp" (base 0.50) in every column, so hp's cells bold and mp's do not; "sp" completed
     # only in bryo, so its CUB row is blank "-" -- ignored and never bolded.
     for arm, dataset, base in (("hp", "cub", 0.60), ("mp", "cub", 0.50), ("sp", "bryo", 0.10)):
-        dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
     _write_meta(tmp_path, ["hp", "mp", "sp"], ["c0"], ["cub", "bryo"])
@@ -1333,7 +1327,7 @@ def test_update_phase_metrics_bold_high(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", True, False, False, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "arms")).active
     # campaign banner + blank row, then the CUB table first: banner row 3, header row 4, arm rows
     # 5/6/7 = hp/mp/sp; score cols C..H = All/ID/OOD/I2T/I2I/T2I (the Mean table sits at the bottom)
     assert ws.cell(row=3, column=1).value == "CUB"
@@ -1345,7 +1339,7 @@ def test_update_phase_metrics_bold_high(tmp_path, monkeypatch) -> None:
         assert ws.cell(row=7, column=score_col).value == "-"            # sp: no cub trials
         assert ws.cell(row=7, column=score_col).font.bold is not True   # "-" never bolds
     # same in the armcoords workbook, keyed the same way
-    ws = load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "armcoords")).active
     assert ws.cell(row=4, column=2).value == "Coord"
     for score_col in range(3, 9):
         assert ws.cell(row=5, column=score_col).font.bold is True
@@ -1353,42 +1347,44 @@ def test_update_phase_metrics_bold_high(tmp_path, monkeypatch) -> None:
 
 
 def test_update_phase_metrics_per_group_files(tmp_path, monkeypatch) -> None:
-    # one workbook per eval group under phase_metrics/{armcoords,arms}/ (native's
-    # metrics.xlsx, the rest's secondary/metrics-<group>.xlsx), each reading its own comp map: native_macro's
-    # <- the best-checkpoint secondary/metrics-native_macro.json, not the (different) standard values
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    # one workbook per eval group under phase_metrics/{armcoords,arms}/, named by campaign, phase and kind
+    # (native's <campaign>_<phase>-<kind>.xlsx, the rest's secondary/<campaign>_<phase>-<kind>_<group>.xlsx), each
+    # reading its own comp map: native_macro's <- the best-checkpoint secondary/scores-native_macro.json, not the
+    # (different) standard values
+    dpath_phase = tmp_path / "camp" / "_phase" / "screen"
+    dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(
         dpath_selected,
         _scores_grp(_comp(0.50)),        # standard All -> 50.00
         macro=_scores_grp(_comp(0.30)),  # macro All -> 30.00
     )
-    _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
+    _write_meta(dpath_phase, ["hp"], ["c0"], ["cub"])
 
-    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
-    dpath_stats = tmp_path / "phase_metrics"
+    dpath_stats = dpath_phase / "phase_metrics"
     for kind in ("armcoords", "arms"):
         dpath_perf = dpath_stats / kind
         assert sorted(p.relative_to(dpath_perf).as_posix() for p in dpath_perf.rglob("*.xlsx")) == [
-            "metrics.xlsx", "secondary/metrics-joint.xlsx", "secondary/metrics-joint_macro.xlsx",
-            "secondary/metrics-native_macro.xlsx",
+            f"camp_screen-{kind}.xlsx", f"secondary/camp_screen-{kind}_joint.xlsx",
+            f"secondary/camp_screen-{kind}_joint_macro.xlsx", f"secondary/camp_screen-{kind}_native_macro.xlsx",
         ]
-    ws = load_workbook(dpath_stats / "arms" / "metrics.xlsx").active
+    ws = load_workbook(dpath_stats / "arms" / "camp_screen-arms.xlsx").active
     assert ws.cell(row=4, column=3).value == "All"
     assert [ws.cell(row=5, column=c).value for c in (1, 2, 3)] == ["hp", "c0 (1)", "50.00"]
-    ws_macro = load_workbook(dpath_stats / "arms" / "secondary" / "metrics-native_macro.xlsx").active
+    ws_macro = load_workbook(dpath_stats / "arms" / "secondary" / "camp_screen-arms_native_macro.xlsx").active
     assert ws_macro.cell(row=5, column=3).value == "30.00"  # macro, not standard's 50.00
-    ws_ac = load_workbook(dpath_stats / "armcoords" / "secondary" / "metrics-native_macro.xlsx").active
+    ws_ac = load_workbook(dpath_stats / "armcoords" / "secondary" / "camp_screen-armcoords_native_macro.xlsx").active
     assert [ws_ac.cell(row=5, column=c).value for c in (1, 2, 3)] == ["hp", "c0 (1)", "30.00"]
 
 
 def test_update_phase_metrics_accuracy_sheet_at_the_selected_checkpoint(tmp_path, monkeypatch) -> None:
     # BOTH sheets source the selected (best-mAP) checkpoint: the accuracy sheet holds the acc scores
     # AT that checkpoint; the banner names the campaign and eval group
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))  # selected checkpoint: mAP All 50.00, acc I2T 56.00
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
@@ -1397,7 +1393,7 @@ def test_update_phase_metrics_accuracy_sheet_at_the_selected_checkpoint(tmp_path
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     agrid = [[c.value for c in r] for r in wb["Acc"].iter_rows()]
     assert grid[0][0] == f"{paths['root'].parent.name} - {tmp_path.parent.parent.name} (Native)"
@@ -1421,7 +1417,7 @@ def test_update_phase_metrics_ordered_per_sheet_metric(tmp_path, monkeypatch) ->
     # -> accuracy sheet keeps [a, b].
     for arm, acc_v, cub_all, bryo_all in (("a", "0.80", 0.20, 0.40), ("b", "0.20", 0.40, 0.40)):
         for dataset, all_v in (("cub", cub_all), ("bryo", bryo_all)):
-            dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seeds" / "42" / "evals" / "_selected"
+            dpath_selected = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seed" / "42" / "evals" / "sel"
             dpath_selected.mkdir(parents=True)
             _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v, acc_v)))
     _write_meta(tmp_path, ["a", "b"], ["c0"], ["cub", "bryo"])
@@ -1430,7 +1426,7 @@ def test_update_phase_metrics_ordered_per_sheet_metric(tmp_path, monkeypatch) ->
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     # campaign banner + blank row, then the dataset tables (Mean at the bottom); rows ordered
     # by the mean table's "All" column -> b before a
@@ -1457,7 +1453,7 @@ def test_update_phase_metrics_ordered_per_sheet_metric(tmp_path, monkeypatch) ->
     assert agrid[15][:3] == ["b", "-", "20.00"]
     assert agrid[4][4:7] == ["a", "c0", "80.00"]  # acc seed block keeps the acc sheet's [a, b] order (aligned rows)
     # the armcoords workbook orders its (arm, coord) rows the same way
-    wb_ac = load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx")
+    wb_ac = load_workbook(_fpath_wb(tmp_path, "armcoords"))
     grid = [[c.value for c in r] for r in wb_ac.active.iter_rows()]
     assert grid[4][:3] == ["b", "c0 (1)", "40.00"]
     assert grid[5][:3] == ["a", "c0 (1)", "20.00"]
@@ -1474,7 +1470,7 @@ def test_update_phase_metrics_heatmap(tmp_path, monkeypatch) -> None:
     # other cells; 20/50/80 -> #dbefdc / #a6d7a8 / #70bf73. One dataset, so the Mean "All" column
     # mirrors the values and is shaded too; "d" (no completed trials anywhere) gets no row at all.
     for arm, all_v in (("a", 0.20), ("b", 0.50), ("c", 0.80)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", arm, "c0") / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", arm, "c0") / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v)))
     _write_meta(tmp_path, ["a", "b", "c", "d"], ["c0"], ["cub"])  # "d" has no trials
@@ -1483,7 +1479,7 @@ def test_update_phase_metrics_heatmap(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "arms")).active
     # campaign banner + blank row; CUB table first: banner row 3, header row 4, "All" column is col C,
     # arm rows 5/6/7 = a/b/c
     assert ws.cell(row=8, column=1).value is None  # spacer right after c -> no "d" row
@@ -1495,7 +1491,7 @@ def test_update_phase_metrics_heatmap(tmp_path, monkeypatch) -> None:
     assert _fill_rgb(ws, 13, 3) == "70BF73"
     # key cells never shade (both workbooks' coord column included)
     assert _fill_rgb(ws, 5, 2) == "EAEAEA"
-    ws = load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "armcoords")).active
     assert _fill_rgb(ws, 5, 2) == "EAEAEA" and _fill_rgb(ws, 5, 3) == "DBEFDC"
 
 
@@ -1505,10 +1501,10 @@ def test_update_phase_metrics_shades_killed_rows_yellow(tmp_path, monkeypatch) -
     # of a surviving sibling keeps the ramp) -- and its key cell counts the kill; a row without one is
     # untouched
     for seed, killed in (("42", False), ("43", True)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", "a", "c0") / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", "a", "c0") / "_seed" / seed / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.20)), killed=killed)
-    dpath_selected = _dpath_coord(tmp_path, "cub", "b", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "b", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.80)))
     _write_meta(tmp_path, ["a", "b"], ["c0"], ["cub"])
@@ -1517,7 +1513,7 @@ def test_update_phase_metrics_shades_killed_rows_yellow(tmp_path, monkeypatch) -
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "arms")).active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # CUB table: banner row 3, header row 4, arm rows 5 (a) / 6 (b); Mean table rows 10 (a) / 11 (b)
     assert grid[4][:3] == ["a", "c0 (2, 1 killed)", "20.00 ± 0.00"]
@@ -1538,10 +1534,10 @@ def test_update_phase_metrics_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch
     # (its crash totals still counted) and the killed seed's block, while the surviving sibling seed's
     # block keeps its readings; a row without a kill is untouched
     for seed, killed in (("42", False), ("43", True)):
-        dpath_selected = _dpath_coord(tmp_path, "cub", "a", "c0") / "_seeds" / seed / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, "cub", "a", "c0") / "_seed" / seed / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.20)), killed=killed)
-    dpath_selected = _dpath_coord(tmp_path, "cub", "b", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "b", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_full_comp(0.80)))
     (_dpath_coord(tmp_path, "cub", "a", "c0") / "coord_metadata.json").write_text(json.dumps({"n_crashes": {"ram": 2, "vram": 0, "other": 1}}))
@@ -1551,7 +1547,7 @@ def test_update_phase_metrics_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, True, _SUPP_OFF, False)
 
-    ws = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")["HW"]
+    ws = load_workbook(_fpath_wb(tmp_path, "arms"))["HW"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # CUB table (7 wide): header row 3, arm rows 4 (a) / 5 (b); Mean table (10 wide): rows 9 (a) / 10 (b)
     assert grid[4][:7] == ["a", "c0 (2)", "X", "X", "X", "X", "X"]
@@ -1583,7 +1579,7 @@ def _prim_scores_grp() -> dict:
 def test_update_phase_metrics_supp_primitive(tmp_path, monkeypatch) -> None:
     # supp_scores.primitive appends the per-partition primitive score columns: ID/OOD x I2T/I2I/T2I
     # on the mAP sheet, ID I2T / OOD I2T on the accuracy sheet -- in every table, incl. the seed blocks
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _prim_scores_grp())
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
@@ -1592,7 +1588,7 @@ def test_update_phase_metrics_supp_primitive(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM, False)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     # mAP banners split: title merged over the two key columns + grey merged 'Composite Scores'/'Primitive
@@ -1628,7 +1624,7 @@ def test_update_phase_metrics_supp_primitive(tmp_path, monkeypatch) -> None:
 
 def test_update_arm_metrics_supp_primitive(tmp_path, monkeypatch) -> None:
     # supp_scores.primitive appends the per-partition primitive score columns to the png grids too
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _prim_scores_grp())
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
@@ -1667,7 +1663,7 @@ def test_update_phase_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
     # few-shot (no classes there, as on the dev split), cub has all three -> [few, med, many]; the
     # absent bucket renders "-" in bryo's rows and is left out of the Mean (cub's value alone).
     for dataset, nshot in (("bryo", _NSHOT_NO_FEW), ("cub", _NSHOT_FULL)):
-        dpath_selected = _dpath_coord(tmp_path, dataset, "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = _dpath_coord(tmp_path, dataset, "hp", "c0") / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _nshot_scores_grp(*nshot))
     _write_meta(tmp_path, ["hp"], ["c0"], ["bryo", "cub"])
@@ -1676,7 +1672,7 @@ def test_update_phase_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, {"primitive": True, "n_shot": True}, False)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -1709,7 +1705,7 @@ def test_update_phase_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
     # n_shot alone: the bucket columns follow the composite ones directly, with just the two groups
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, {"primitive": False, "n_shot": True}, False)
 
-    ws = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active
+    ws = load_workbook(_fpath_wb(tmp_path, "arms")).active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     assert grid[2][:3] == ["Bryozoa", None, "Composite Scores"]
     assert grid[2][8] == "N-Shot Scores"
@@ -1720,7 +1716,7 @@ def test_update_phase_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
 
 def test_update_arm_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
     # supp_scores.n_shot appends the bucket columns to the png grids too
-    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42" / "evals" / "_selected"
+    dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42" / "evals" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _nshot_scores_grp(*_NSHOT_FULL))
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub"])
@@ -1755,7 +1751,7 @@ def test_update_phase_metrics_overrides_bands(tmp_path, monkeypatch) -> None:
     for arm, (arm_ov, meta) in arms.items():
         for coord, lr in coords.items():
             dpath_coord = _dpath_coord(tmp_path, "cub", arm, coord)
-            dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
+            dpath_selected = dpath_coord / "_seed" / "42" / "evals" / "sel"
             dpath_selected.mkdir(parents=True)
             _write_group_metrics(dpath_selected, _scores_grp(_comp(bases[(arm, coord)])))
             (dpath_coord / "overrides.json").write_text(json.dumps({"arm": arm_ov, "coord": {"lr.init": lr}}))
@@ -1766,7 +1762,7 @@ def test_update_phase_metrics_overrides_bands(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "armcoords"))
     ws = wb.active
     grid = [[c.value for c in r] for r in ws.iter_rows()]
     merged = {str(m) for m in ws.merged_cells.ranges}
@@ -1811,7 +1807,7 @@ def test_update_phase_metrics_overrides_bands(tmp_path, monkeypatch) -> None:
     # the arms workbook: both bands (Arm Overrides A..B + separator C, Coord Overrides D + separator E, score
     # blocks at F), one row per arm at its best coord (hp: lo, mp: hi, named in the Coord key column; '-' in
     # the Mean table), the Coord band reading that coord's config
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert grid[2][5] == "CUB"
     assert grid[4][5:8] == ["hp", "lo (1)", "50.00"]
@@ -1834,14 +1830,14 @@ def test_update_phase_metrics_arms_coord_band_dropped_when_picks_differ_per_data
         for dataset in ("cub", "bryo"):
             for coord, base in bases:
                 dpath_coord = _dpath_coord(tmp_path, dataset, arm, coord)
-                dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
+                dpath_selected = dpath_coord / "_seed" / "42" / "evals" / "sel"
                 dpath_selected.mkdir(parents=True)
                 _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
                 (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": arm}, "coord": {"lr.init": coords[coord]}}))
                 (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": arm}}, "lr": {"init": coords[coord]}}))
     _write_meta(tmp_path, ["hp", "mp"], ["lo", "hi"], ["cub", "bryo"])
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    fpath_arms = tmp_path / "phase_metrics" / "arms" / "metrics.xlsx"
+    fpath_arms = _fpath_wb(tmp_path, "arms")
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
     grid = [[c.value for c in r] for r in load_workbook(fpath_arms).active.iter_rows()]
@@ -1851,7 +1847,7 @@ def test_update_phase_metrics_arms_coord_band_dropped_when_picks_differ_per_data
     assert grid[i + 2][:3] == ["hp", None, "1e-05"] and grid[i + 2][4:6] == ["hp", "-"]
     assert grid[i + 3][:3] == ["mp", None, "0.0001"] and grid[i + 3][4:6] == ["mp", "-"]
 
-    _write_group_metrics(_dpath_coord(tmp_path, "bryo", "hp", "hi") / "_seeds" / "42" / "evals" / "_selected", _scores_grp(_comp(0.60)))
+    _write_group_metrics(_dpath_coord(tmp_path, "bryo", "hp", "hi") / "_seed" / "42" / "evals" / "sel", _scores_grp(_comp(0.60)))
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
     grid = [[c.value for c in r] for r in load_workbook(fpath_arms).active.iter_rows()]
     assert not any(v == "Coord Overrides" for r in grid for v in r)
@@ -1869,7 +1865,7 @@ def test_update_phase_metrics_overrides_all_uniform_omits_bands(tmp_path, monkey
     # side, so both bands are omitted entirely and the score blocks sit leftmost
     for arm, base in (("hp", 0.50), ("mp", 0.40)):
         dpath_coord = _dpath_coord(tmp_path, "cub", arm, "c0")
-        dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = dpath_coord / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
         (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": "mp"}, "coord": {"lr.init": 1.0e-5}}))
@@ -1881,7 +1877,7 @@ def test_update_phase_metrics_overrides_all_uniform_omits_bands(tmp_path, monkey
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
 
     for kind in ("armcoords", "arms"):
-        wb = load_workbook(tmp_path / "phase_metrics" / kind / "metrics.xlsx")
+        wb = load_workbook(_fpath_wb(tmp_path, kind))
         grid = [[c.value for c in r] for r in wb.active.iter_rows()]
         assert not any(v in ("Arm Overrides", "Coord Overrides") for r in grid for v in r)
         assert grid[2][0] == "CUB"  # score blocks leftmost: no band, no separator column
@@ -1905,13 +1901,13 @@ def test_update_phase_metrics_arms_workbook_picks_best_coord_per_dataset(tmp_pat
     }
     for (dataset, coord), (all_v, acc_v) in vals.items():
         dpath_coord = _dpath_coord(tmp_path, dataset, "a", coord)
-        dpath_selected = dpath_coord / "_seeds" / "42" / "evals" / "_selected"
+        dpath_selected = dpath_coord / "_seed" / "42" / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_full_comp(all_v, acc_v)))
-        (dpath_coord / "_seeds" / "42" / "trial_metadata.json").write_text(json.dumps({
+        (dpath_coord / "_seed" / "42" / "trial_metadata.json").write_text(json.dumps({
             "runtime": {"train": {"mean": "1.00"}, "eval": {"mean": "1.00"}, "trial": trial_t[(dataset, coord)]},
             "memory": {"ram": "1.0/128.0 GB", "vram": "1.0/178.4 GB"},
-            "killed": None,
+            "killed": False,
         }))
         (dpath_coord / "coord_metadata.json").write_text(json.dumps({"n_crashes": crashes[(dataset, coord)]}))
     _write_meta(tmp_path, ["a"], ["c0", "c1"], ["cub", "bryo"])
@@ -1921,7 +1917,7 @@ def test_update_phase_metrics_arms_workbook_picks_best_coord_per_dataset(tmp_pat
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     # every table's 'Coord' key cell names the dataset's pick (the Mean table's shows '-': per dataset)
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     grid = [[c.value for c in r] for r in wb.active.iter_rows()]
     assert grid[3][:3] == ["Arm", "Coord", "All"]
     assert grid[4][:3] == ["a", "c0 (1)", "60.00"]   # CUB: c0
@@ -1936,7 +1932,7 @@ def test_update_phase_metrics_arms_workbook_picks_best_coord_per_dataset(tmp_pat
     assert hgrid[12][:3] == ["a", "-", "250"]
     assert hgrid[12][7:10] == ["1", "2", "0"]        # crash totals: cub c0's + bryo c1's
     # the armcoords workbook keeps every coord as its own row, so nothing is picked there
-    grid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "armcoords")).active.iter_rows()]
     assert grid[4][:3] == ["a", "c0 (1)", "60.00"] and grid[5][:3] == ["a", "c1 (1)", "40.00"]
 
 
@@ -1960,14 +1956,14 @@ def test_update_phase_metrics_hw_sheet(tmp_path, monkeypatch) -> None:
         ("mp", "cub", "42"): ("63.49", "7.70", "6.49", "117.2/128.0 GB", "26.3/178.4 GB"),
     }
     for (arm, dataset, seed), (trial_t, train_t, eval_t, ram, vram) in hw_vals.items():
-        dpath_trial = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seeds" / seed
-        dpath_selected = dpath_trial / "evals" / "_selected"
+        dpath_trial = _dpath_coord(tmp_path, dataset, arm, "c0") / "_seed" / seed
+        dpath_selected = dpath_trial / "evals" / "sel"
         dpath_selected.mkdir(parents=True)
         _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))
         (dpath_trial / "trial_metadata.json").write_text(json.dumps({
             "runtime": {"train": {"mean": train_t}, "eval": {"mean": eval_t}, "trial": trial_t},
             "memory": {"ram": ram, "vram": vram},
-            "killed": None,
+            "killed": False,
         }))
     # the per-dataset coord files: overrides/config identical across a coord's datasets, the
     # crash counters per dataset (hp's 2/1/0 total is split across cub and bryo)
@@ -1986,7 +1982,7 @@ def test_update_phase_metrics_hw_sheet(tmp_path, monkeypatch) -> None:
 
     report.update_phase_metrics(_EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, True)
 
-    wb = load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx")
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     assert wb.sheetnames == ["mAP", "Acc", "HW"]
     ws = wb["HW"]
     grid = [[c.value for c in r] for r in ws.iter_rows()]
@@ -2051,40 +2047,41 @@ def test_update_phase_metrics_hw_sheet(tmp_path, monkeypatch) -> None:
         assert sgrid[12][3] == "Mean"
         assert not any(v in ("HW", "Time Trial") for r in sgrid for v in r)
     # the armcoords workbook's crash totals are per (arm, coord) row -- the same sums here, one key column over
-    hgrid = [[c.value for c in r] for r in load_workbook(tmp_path / "phase_metrics" / "armcoords" / "metrics.xlsx")["HW"].iter_rows()]
+    hgrid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "armcoords"))["HW"].iter_rows()]
     assert hgrid[14][3:5] == ["hp", "c0"] and hgrid[14][10:13] == ["2", "1", "0"]
     assert hgrid[15][3:5] == ["mp", "c0"] and hgrid[15][10:13] == ["0", "0", "3"]
 
 
 def _write_test_scores(dpath_trial, scores_grp, chkpt, macro=None) -> None:
-    """A test-scored trial's per-group score files (_seeds/<seed>/ metrics.json + secondary/metrics-<group>.json), the shape test.py
-    writes: {'chkpt': saved checkpoint index, 'scores': the group's scores}; the same subtree stands
-    in for both standard groups (and `macro` for the macro ones)."""
+    """A test-scored trial's per-group score files (_seed/<seed>/ scores.json + secondary/scores-<group>.json), the shape test.py
+    writes: the group's scores subtree, the same one standing in for both standard groups (and `macro` for the macro
+    ones); plus the coord's config.json copy carrying `chkpt` as chkpt_stop (the saved checkpoint index the tables show)."""
     macro = scores_grp if macro is None else macro
     dpath_trial.mkdir(parents=True, exist_ok=True)
     for group_key, grp in (("native", scores_grp), ("native_macro", macro), ("joint", scores_grp), ("joint_macro", macro)):
-        _metrics_file(dpath_trial, group_key).write_text(json.dumps({"chkpt": chkpt, "scores": grp}))
+        _scores_file(dpath_trial, group_key).write_text(json.dumps(grp))
+    (dpath_trial.parents[1] / "config.json").write_text(json.dumps({"chkpt_stop": chkpt}))
 
 
 def test_update_test_stats_writes_stacked_tables_with_chkpt_column(tmp_path, monkeypatch) -> None:
-    # one workbook per eval group under <test dir>/phase_metrics/arms/ (metrics.xlsx, secondary/metrics-<group>.xlsx), laid out like the campaign
+    # one workbook per eval group under <test dir>/phase_metrics/arms/ (<campaign>_test-arms.xlsx,
+    # secondary/<campaign>_test-arms_<group>.xlsx), laid out like the campaign
     # armcoords workbooks -- score sheets of stacked per-dataset tables + Mean table + per-seed
     # blocks -- but with a third 'Chkpt' key column (the combo's saved-checkpoint index) and no
     # 'HW' sheet. hp/c0 has 2 scored cub trials (chkpt 7) and none in bryo (blank
     # row, '-' chkpt); mp has none anywhere -> no rows. The Mean table shows '-' for chkpt (a
     # per-dataset value).
     for seed, base in (("42", 0.50), ("43", 0.60)):
-        _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / seed, _scores_grp(_comp(base)), 7)
+        _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / seed, _scores_grp(_comp(base)), 7)
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub", "bryo"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
-    dpath_perf = tmp_path / "phase_metrics" / "arms"
     for group_key in _GROUP_KEYS:
-        assert group_path(dpath_perf, group_key, "metrics", ".xlsx").exists()
-    wb = load_workbook(dpath_perf / "metrics.xlsx")
+        assert report.fpath_workbook(tmp_path, "arms", group_key).exists()
+    wb = load_workbook(_fpath_wb(tmp_path, "arms"))
     assert wb.sheetnames == ["mAP", "Acc"]  # no hardware sheet: test runs no training
     ws = wb.active
     grid = [[c.value for c in row] for row in ws.iter_rows()]
@@ -2124,8 +2121,8 @@ def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
     # ('Arm', 'Coord') row per arm with scored trials in the dataset, no convergence plot (test scores one
     # checkpoint); a dataset with no scored trials (bryo) gets none
     for seed, base in (("42", 0.50), ("43", 0.60)):
-        _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / seed, _scores_grp(_comp(base)), 7)
-    _write_test_scores(_dpath_coord(tmp_path, "cub", "mp", "c1") / "_seeds" / "42", _scores_grp(_comp(0.40)), 4)
+        _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / seed, _scores_grp(_comp(base)), 7)
+    _write_test_scores(_dpath_coord(tmp_path, "cub", "mp", "c1") / "_seed" / "42", _scores_grp(_comp(0.40)), 4)
     _write_meta(tmp_path, None, None, None, matrix={dataset: {"hp": ["c0"], "mp": ["c1"]} for dataset in ("cub", "bryo")})
 
     grids = []
@@ -2135,7 +2132,7 @@ def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
 
     report.update_test_stats(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False)
 
-    dpath_perf = tmp_path / "_datasets" / "cub" / "dataset_metrics" / "arms" / "performance"
+    dpath_perf = tmp_path / "_dataset" / "cub" / "dataset_metrics" / "arms" / "performance"
     assert sorted(fpath for fpath, _ in grids) == sorted(group_path(dpath_perf, group_key, "scores", ".png")
                                                           for group_key in _GROUP_KEYS)
     assert _captured(grids, "arms", "performance") == [
@@ -2143,21 +2140,21 @@ def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
         ["hp", "c0 (2)", "55.00 ± 7.07", "57.00 ± 7.07", "56.00 ± 7.07", "58.00 ± 7.07", "59.00 ± 7.07", "60.00 ± 7.07"],
         ["mp", "c1 (1)", "40.00", "42.00", "41.00", "43.00", "44.00", "45.00"],
     ]
-    assert not (tmp_path / "_datasets" / "bryo").exists()
+    assert not (tmp_path / "_dataset" / "bryo").exists()
 
 
 def test_update_test_stats_chkpt_per_dataset(tmp_path, monkeypatch) -> None:
     # a coord's refine-selected checkpoint differs per dataset, so each dataset table (aggregate and
     # seed blocks alike) carries its own value; the cross-dataset Mean table has no single one -> '-'
-    _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seeds" / "42", _scores_grp(_comp(0.50)), 3)
-    _write_test_scores(_dpath_coord(tmp_path, "bryo", "hp", "c0") / "_seeds" / "42", _scores_grp(_comp(0.60)), 9)
+    _write_test_scores(_dpath_coord(tmp_path, "cub", "hp", "c0") / "_seed" / "42", _scores_grp(_comp(0.50)), 3)
+    _write_test_scores(_dpath_coord(tmp_path, "bryo", "hp", "c0") / "_seed" / "42", _scores_grp(_comp(0.60)), 9)
     _write_meta(tmp_path, ["hp"], ["c0"], ["cub", "bryo"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
-    grid = [[c.value for c in row] for row in load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in row] for row in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
     assert grid[2][0] == "CUB"
     assert grid[4][:4] == ["hp", "c0 (1)", "3", "50.00"]
     assert grid[6][0] == "Bryozoa"
@@ -2173,16 +2170,16 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
     # param, aligned with the aggregate Mean table's rows, score blocks shifted right past them
     for arm, targ, base in (("hp", "phylo", 0.50), ("mp", "mp", 0.40)):
         dpath_coord = _dpath_coord(tmp_path, "cub", arm, "c0")
-        _write_test_scores(dpath_coord / "_seeds" / "42", _scores_grp(_comp(base)), 5)
+        _write_test_scores(dpath_coord / "_seed" / "42", _scores_grp(_comp(base)), 5)
         (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {"loss.loss1.targ": targ}, "coord": {"lr.init": 1.0e-5}}))
-        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": targ}}, "lr": {"init": 1.0e-5}}))
+        (dpath_coord / "config.json").write_text(json.dumps({"loss": {"loss1": {"targ": targ}}, "lr": {"init": 1.0e-5}, "chkpt_stop": 5}))
     _write_meta(tmp_path, ["hp", "mp"], ["c0"], ["cub"])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
     report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
 
-    grid = [[c.value for c in row] for row in load_workbook(tmp_path / "phase_metrics" / "arms" / "metrics.xlsx").active.iter_rows()]
+    grid = [[c.value for c in row] for row in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
     # the arm band's one differing param at col A + separator B; lr.init is uniform -> the coord
     # band is omitted; score blocks start at C, band rows aligned with the Mean banner (row 8)
     assert grid[2][2] == "CUB"

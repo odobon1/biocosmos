@@ -4,17 +4,17 @@ python -m tools.regen_stats <campaign>
 Regenerate a campaign's stats artifacts, phase by phase (screen/, and refine/ when it exists), from its completed
 trials -- no train/eval rerun. Reselects, per run (dataset, arm, coord) of the phase's matrix, the checkpoint its
 trials are scored at (argmax of the across-trial mean Native curve) and rewrites every completed trial's
-evals/_selected/ (metrics/{metrics,secondary/metrics-<group>}.json + viz/) to that checkpoint and its
-evals/_best/ to its own best, plus
-_datasets/<dataset>/_arms/<arm>/_coords/<coord>/coord_stats/{stats,secondary/stats-<group>}/{metrics.json,
-metrics_listview.json, chkpt_means.pkl, chkpt_means.png} and coord_metadata.json's best_chkpt, and re-renders every
-cross-coord level: _datasets/<dataset>/_arms/<arm>/arm_metrics/performance/
+evals/sel/ ({scores,secondary/scores-<group>}.json + viz/) to that checkpoint and its
+evals/best/ to its own best, plus
+_dataset/<dataset>/_arm/<arm>/_coord/<coord>/coord_metrics/{scores_agg.json, scores_trials.json, chkpt_means.pkl,
+chkpt_means.png} (+ secondary/{scores_agg,scores_trials,chkpt_means}-<group>.*) and coord_metadata.json's best_chkpt, and re-renders every
+cross-coord level: _dataset/<dataset>/_arm/<arm>/arm_metrics/performance/
 ({scores,convergence}.png + secondary/{scores,convergence}-<group>.png) and
-_datasets/<dataset>/dataset_metrics/{armcoords,arms}/performance/ (arms/ only in refine/; each
+_dataset/<dataset>/dataset_metrics/{armcoords,arms}/performance/ (arms/ only in refine/; each
 {scores,convergence}.png + secondary/{scores,convergence}-<group>.png) and
-phase_metrics/{armcoords,arms}/{metrics,secondary/metrics-<group>}.xlsx (arms/ only in refine/).
+phase_metrics/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx (+ secondary/<campaign>_<phase>-<kind>_<group>.xlsx; arms/ only in refine/).
 (Native, the primary eval group, takes the plain name; every other group sits under secondary/.) Each
-arm's _arms/<arm>/arm_metrics/coord_strips/ (its coords' logit-scale panels stacked) and, when the arm is
+arm's _arm/<arm>/arm_metrics/coord_strips/ (its coords' logit-scale panels stacked) and, when the arm is
 complete, its arm_metrics/best_coords/ copy of the best coord's learning curves are rebuilt with its arm_metrics/. All using
 the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides), so edits to any
 of them take effect for an already-run campaign,  Each trial's cached per-checkpoint
@@ -52,8 +52,8 @@ def regen_campaign(campaign, cfg_stats):
             for arm, coords in arms.items():
                 # per (dataset, arm, coord) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
                 for coord in coords:
-                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
-                                                   / "_coords" / coord)
+                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
+                                                   / "_coord" / coord)
                     if ArtifactManager.dpath_coord.exists():
                         update_chkpt_selection(groups, cfg_stats.spread_type)
                         update_metric_stats(groups, cfg_stats.spread_type)

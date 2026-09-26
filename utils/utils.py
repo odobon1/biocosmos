@@ -307,8 +307,7 @@ class PrintLog:
         is Completed if its metadata says so, In Progress if it's the running one, Failed if it left an
         error.log behind, else Queued. Completed and Failed entries carry the trial's recorded wall-clock
         as 'trial_id --- D-HH:MM:SS', dash-aligned per section; a Completed trial that kill_thresh cut
-        short additionally carries ' --- ABANDON SHIP (eval <k>)', k the eval it stopped at (metadata's killed
-        field); Failed entries additionally carry sample
+        short additionally carries ' --- ABANDON SHIP' (metadata's killed flag); Failed entries additionally carry sample
         progress as ' --- E/N' (epoch index / n_epochs) and the failure type as
         ' --- RAM|VRAM|Other|Mixed' (the aggregate cause over the fatal retry loop's crashes, parsed
         from error.log's 'failure=' marker written by campaign_runner._log_trial_error). A trial that
@@ -329,13 +328,13 @@ class PrintLog:
         buckets: Dict[str, List[Any]] = {"Failed": [], "Completed": [], "In Progress": [], "Queued": []}
         for trial in trials:
             dataset, arm, coord, seed = trial
-            dpath_trial = dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "_seeds" / str(seed)
+            dpath_trial = dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord / "_seed" / str(seed)
             trial_id = f"{dataset}/{arm}/{coord}/{seed}"
             fpath_metadata_trial = dpath_trial / "trial_metadata.json"
             metadata_trial = load_json(fpath_metadata_trial) if fpath_metadata_trial.exists() else None
             if metadata_trial is not None and metadata_trial["complete"]:
                 killed = metadata_trial["killed"]
-                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial) + ("" if killed is None else f" --- ABANDON SHIP (eval {killed})")))
+                buckets["Completed"].append((trial_id, fmt_trial_time(metadata_trial) + (" --- ABANDON SHIP" if killed else "")))
             elif trial == in_progress:
                 buckets["In Progress"].append(trial_id)
             elif (dpath_trial / "error.log").exists():

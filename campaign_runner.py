@@ -194,18 +194,18 @@ def _dpath_campaign(campaign: str) -> Path:
 
 def _dpath_phase(campaign: str, phase: str) -> Path:
     """A phase's dir, artifacts/<campaign>/_phase/<phase>/ ('screen' | 'refine' | 'trainval' | 'test'): the root of every artifact the runner and
-    that phase's trials write (_datasets/, phase_metrics/, phase_metadata.json, cfg_baseline.json, manifest.log,
+    that phase's trials write (_dataset/, phase_metrics/, phase_metadata.json, cfg_baseline.json, manifest.log,
     time.pkl, nccl_traces/)."""
     return _dpath_campaign(campaign) / "_phase" / phase
 
 def _dpath_coord(dpath_phase: Path, dataset: str, arm: str, coord: str) -> Path:
     """The coord dir holding (arm, coord)'s trials on `dataset` under a phase dir:
-    <phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>."""
-    return dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord
+    <phase>/_dataset/<dataset>/_arm/<arm>/_coord/<coord>."""
+    return dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord
 
 def _dpath_trial(dpath_phase: Path, dataset: str, arm: str, coord: str, seed: int) -> Path:
-    """A trial's dir under a phase dir: its coord dir's _seeds/<seed>."""
-    return _dpath_coord(dpath_phase, dataset, arm, coord) / "_seeds" / str(seed)
+    """A trial's dir under a phase dir: its coord dir's _seed/<seed>."""
+    return _dpath_coord(dpath_phase, dataset, arm, coord) / "_seed" / str(seed)
 
 def _get_commit_hash() -> str:
     """HEAD commit hash of the repo this runner lives in, for campaign provenance."""
@@ -475,12 +475,12 @@ def _prune_removed(campaign: str, phase: str, prev_seeds: list, seeds: list, pre
     """Delete the artifacts of every dataset / arm / coord / seed the phase's recorded plan (`prev_seeds`, `prev`: the
     plan last applied) has that the current plan (`seeds`, `matrix`) drops -- an item removed from the camp yaml, a
     seed count lowered, or a refine pick replaced by a new screening best:
-    its dir under _datasets/ (the dataset), _datasets/<dataset>/_arms/ (the arm) or .../_coords/ (the coord), trials
-    and stats included, or, for a seed, its trial dir (.../_seeds/<seed>) under every coord the plan keeps, so the
+    its dir under _dataset/ (the dataset), _dataset/<dataset>/_arm/ (the arm) or .../_coord/ (the coord), trials
+    and stats included, or, for a seed, its trial dir (.../_seed/<seed>) under every coord the plan keeps, so the
     tree mirrors the plan (a dir that never came to exist -- the item's trials never launched -- needs nothing). What
     the trainval phase drops goes from the campaign's test tree as well (artifacts/<campaign>/_phase/test/, test.py's
     scores of the trainval models, laid out the same way). A coord a trial went from has its checkpoint selection and
-    coord_stats redone over the trials it has left (update_chkpt_selection / update_metric_stats, as at a trial
+    coord_metrics redone over the trials it has left (update_chkpt_selection / update_metric_stats, as at a trial
     completion: both aggregate over the coord's completed trials, and a shrink brings no completion of its own to
     redo them at) -- not in the trainval phase, which runs no evals. Returns whether anything was dropped."""
     dpath_phase = _dpath_phase(campaign, phase)
@@ -489,11 +489,11 @@ def _prune_removed(campaign: str, phase: str, prev_seeds: list, seeds: list, pre
     kept = []  # the coords `prev` has that `matrix` keeps, (dataset, arm, coord)
     for dataset, arms in prev.items():
         if dataset not in matrix:
-            removed.append((f"dataset {dataset}", Path("_datasets") / dataset))
+            removed.append((f"dataset {dataset}", Path("_dataset") / dataset))
             continue
         for arm, coords in arms.items():
             if arm not in matrix[dataset]:
-                removed.append((f"arm {dataset}/{arm}", Path("_datasets") / dataset / "_arms" / arm))
+                removed.append((f"arm {dataset}/{arm}", Path("_dataset") / dataset / "_arm" / arm))
                 continue
             for coord in coords:
                 if coord in matrix[dataset][arm]:
@@ -831,7 +831,7 @@ def _write_phase_snapshot(dpath_phase: Path, cfg_snapshot: dict) -> None:
 def _copy_refine_picks(campaign: str, matrix: dict, cfg_snapshot: dict) -> None:
     """Seed the refine tree from the screening tree: the campaign's frozen config snapshot (_write_phase_snapshot),
     then for each pick of the refine `matrix` ({dataset: {arm: [coord]}}) its coord dir wholesale -- every screening
-    seed's trial, config/overrides/coord_metadata and coord_stats -- so the refine tree reads as if the coord had run
+    seed's trial, config/overrides/coord_metadata and coord_metrics -- so the refine tree reads as if the coord had run
     there from the start; the refine phase then tops it up to n_trials_refine seeds. Copy-once per coord: an existing
     refine coord dir (a relaunch, or an earlier plan of this run) is left as is, so only a new pick's dir (a first
     pick, or one replacing a superseded pick) comes over."""
@@ -840,7 +840,7 @@ def _copy_refine_picks(campaign: str, matrix: dict, cfg_snapshot: dict) -> None:
     for dataset, arms in matrix.items():
         for arm, coords in arms.items():
             for coord in coords:
-                rel = Path("_datasets") / dataset / "_arms" / arm / "_coords" / coord
+                rel = Path("_dataset") / dataset / "_arm" / arm / "_coord" / coord
                 if not (dpath_refine / rel).exists():
                     shutil.copytree(_dpath_phase(campaign, "screen") / rel, dpath_refine / rel)
 
@@ -1068,7 +1068,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         idx_trial, (dataset, arm, coord, seed) = pending
         n_trials_total = len(trials)
         dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
-        dpath_trial = dpath_coord / "_seeds" / str(seed)
+        dpath_trial = dpath_coord / "_seed" / str(seed)
         trial_id = f"{dataset}/{arm}/{coord}/{seed}"
         # the trainval phase trains every combo on the trainval partition and stops it at its refine-selected checkpoint
         # (TrainConfig.chkpt_stop) instead of running to sample_volume
@@ -1076,7 +1076,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
 
         # the coord dir (and with it the arm dir) is created here, at trial launch, not when the plan is
         # applied -- a planned arm/coord whose trials never start leaves no
-        # artifacts/<campaign>/_phase/<phase>/_datasets/<dataset>/_arms/ entry
+        # artifacts/<campaign>/_phase/<phase>/_dataset/<dataset>/_arm/ entry
         _write_overrides(dpath_coord, arm_payloads[arm], coord_payloads[coord], cfg.baseline_overrides)
 
         cfg_dict = _build_trial_cfg_dict(cfg_snapshot, campaign, phase, arm, coord,
@@ -1164,7 +1164,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         if _trial_has_manif_cache(dpath_trial):
             if render_proc is not None and render_proc.poll() is None:
                 render_proc.wait()
-            render_proc = _spawn_render(f"{campaign}/_phase/{phase}/_datasets/{dataset}/_arms/{arm}/_coords/{coord}/_seeds/{seed}")
+            render_proc = _spawn_render(f"{campaign}/_phase/{phase}/_dataset/{dataset}/_arm/{arm}/_coord/{coord}/_seed/{seed}")
 
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
         return outcome
@@ -1258,12 +1258,12 @@ def _load_campaign_config(name: str) -> CampaignConfig:
         return CampaignConfig(**yaml.safe_load(f))
 
 def _resolve_campaign(name: str) -> str:
-    """The artifacts dir the campaign config/campaigns/<name>.yaml runs under: `<name>_<suffix>` (`<name>` with
+    """The artifacts dir the campaign config/campaigns/<name>.yaml runs under: `<name>-<suffix>` (`<name>` with
     suffix null). A launch under an existing name always resumes/extends that campaign. Resolved once, at the
     queue entry's launch (main) -- a later edit of `suffix` doesn't rename a running campaign, and the queue's
     relaunches of the campaign resume this same dir."""
     cfg = _load_campaign_config(name)
-    return f"{name}_{cfg.suffix}" if cfg.suffix is not None else name
+    return f"{name}-{cfg.suffix}" if cfg.suffix is not None else name
 
 class _Run(NamedTuple):
     """One queue entry's campaign, as launched: `spec` the entry (camp.<name>), `campaign` the artifacts dir it

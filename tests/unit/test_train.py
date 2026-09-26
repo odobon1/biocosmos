@@ -570,16 +570,17 @@ def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path,
     # chkpt_stop 0: the pick's base eval won refine selection, so the trainval trial saves the pretrained
     # model untrained and runs no training -- the trial dir is still filled out like a completed one, its
     # training telemetry empty (no batch recorded), which the runner then marks complete
-    dpath_trial = tmp_path / "_seeds" / "42"
+    dpath_trial = tmp_path / "_seed" / "42"
     dpath_trial.mkdir(parents=True)
     monkeypatch.setattr(ArtifactManager, "dpath_trial", dpath_trial)
     monkeypatch.setattr(ArtifactManager, "fpath_metadata_trial", dpath_trial / "trial_metadata.json")
-    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "_arms" / "sp" / "_coords" / "base")
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "_arm" / "sp" / "_coord" / "base")
     monkeypatch.setattr(ArtifactManager, "dataset", "cub")
     monkeypatch.setattr(ArtifactManager, "split", "D10")
     model = torch.nn.Linear(2, 1)
     cfg = SimpleNamespace(
         n_epochs=5,
+        n_chkpts=3,
         samps_per_epoch=1_000,
         reporting={"eval": {"native_macro": False, "joint": False, "joint_macro": False},
                    "learning_curves": {"hpsm": {"kappas": [0.0], "multimodal": False}}},
@@ -590,7 +591,7 @@ def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path,
     state = torch.load(dpath_trial / "model.pt", weights_only=True)
     assert torch.equal(state["weight"], model.weight.detach())  # the untrained weights, as built
     metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
-    assert metadata["base_selected"] is True and metadata["killed"] is None
+    assert metadata["base_selected"] is True and metadata["killed"] is False
     assert metadata["complete"] is False  # the runner flips it once the subprocess exits cleanly
     assert metadata["progress"] == {"epoch": 0, "n_epochs": 5, "n_samps_seen": 0}
     assert all(not series for series in load_pickle(dpath_trial / "data_trial.pkl")["epoch"].values())

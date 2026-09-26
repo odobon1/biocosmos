@@ -38,10 +38,10 @@ def regen_learning_curves(campaign):
         for dataset, arms in metadata["matrix"].items():
             for arm, coords in arms.items():
                 for coord in coords:
-                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / dataset / "_arms" / arm
-                                                   / "_coords" / coord)
+                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
+                                                   / "_coord" / coord)
                     for seed in metadata["seeds"]:
-                        dpath_trial = ArtifactManager.dpath_coord / "_seeds" / str(seed)
+                        dpath_trial = ArtifactManager.dpath_coord / "_seed" / str(seed)
                         fpath_data = dpath_trial / "data_trial.pkl"
                         if not fpath_data.exists():
                             continue

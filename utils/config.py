@@ -49,9 +49,9 @@ def eval_groups(cfg_reporting: dict) -> dict:
         if key == "native" or cfg_reporting["eval"][key]
     }
 
-def group_path(dpath, group_key: str, stem: str, suffix: str = ""):
-    """Where eval group `group_key`'s artifact `stem` (a file with `suffix`, or a dir without) lives under
-    `dpath`: native, the primary group, at dpath/<stem><suffix>; every secondary group under
+def group_path(dpath, group_key: str, stem: str, suffix: str):
+    """Where eval group `group_key`'s artifact file `stem` + `suffix` lives under `dpath`: native, the
+    primary group, at dpath/<stem><suffix>; every secondary group under
     dpath/secondary/<stem>-<group_key><suffix>."""
     if group_key == "native":
         return dpath / f"{stem}{suffix}"

@@ -10,12 +10,12 @@ the first pass, since they have no sharded GPU implementation and this process i
 t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
 
 python -m tools.regen_manifold_viz <campaign>
-python -m tools.regen_manifold_viz <campaign>/_phase/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed> [evo_only|no_evo] [snapshot]
+python -m tools.regen_manifold_viz <campaign>/_phase/<phase>/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_seed/<seed> [evo_only|no_evo] [snapshot]
 
 <campaign>  e.g. dev40 -- re-render every trial in the campaign, phase by phase (screen/, and refine/ when it
             exists) from each phase's phase_metadata.json matrix x seeds; trials that never ran are skipped
-<campaign>/_phase/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>  e.g.
-            dev40/_phase/screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/_seeds/42 -- one trial. This is the form the campaign
+<campaign>/_phase/<phase>/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_seed/<seed>  e.g.
+            dev40/_phase/screen/_dataset/cub/_arm/mp/_coord/LR-1e-5/_seed/42 -- one trial. This is the form the campaign
             render worker spawns per completed trial.
 evo_only    re-render only the cross-eval evolving GIFs (per-eval plots left as-is)
 no_evo      render only the per-eval plots, skip the cross-eval evolving GIFs
@@ -37,7 +37,7 @@ from utils.utils import load_json, paths
 
 def _viz_context(dpath_trial):
     # dataset/split from the trial metadata, arm/coord from the path
-    # (<campaign>/_phase/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>).
+    # (<campaign>/_phase/<phase>/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_seed/<seed>).
     # Training manifold viz is only produced for eval-enabled trials (train_pt="train").
     meta = load_json(dpath_trial / "trial_metadata.json")
     return VizContext(
@@ -76,15 +76,15 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
         if not skip_evo:
             render_evolution(dpath_evals, dpath_viz_plots(dpath_trial, pooled=True), cfg_manifold_viz, viz_context, orient=False, fname="projections_pooled.npz")
 
-    # the trial's selected / own-best evals carry copies of their eval's viz/ (evals/{_selected,_best}/viz/); the
+    # the trial's selected / own-best evals carry copies of their eval's viz/ (evals/{sel,best}/viz/); the
     # selection is written at trial end, before this (detached) render has drawn the stills or appended UMAP to the
-    # cache, so they're re-copied here, at the eval each one's metrics file records -- report.update_chkpt_selection
-    # re-copies them whenever a later trial of the coord moves the selection
-    for name in ("_selected", "_best"):
-        dpath_dest = dpath_trial / "evals" / name
-        if (dpath_dest / "metrics" / "metrics.json").exists():
-            idx = load_json(dpath_dest / "metrics" / "metrics.json")["chkpt"].split("/")[0]  # 'k/n_chkpts (...)'
-            copy_viz(dpath_evals / idx, dpath_dest)
+    # cache, so they're re-copied here, at the evals trial_metadata.json's chkpt records (None until the coord has
+    # selected: a hand render mid-trial) -- report.update_chkpt_selection re-copies them whenever a later trial of
+    # the coord moves the selection
+    chkpt = load_json(dpath_trial / "trial_metadata.json")["chkpt"]
+    for name in ("sel", "best"):
+        if chkpt[name] is not None:
+            copy_viz(dpath_evals / str(chkpt[name]), dpath_trial / "evals" / name)
 
 def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manifold_viz=None):
     """Re-render every trial in a campaign, sweeping each phase's planned matrix from its phase_metadata.json
@@ -99,7 +99,7 @@ def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manifold_viz=N
             for arm, coords in arms.items():
                 for coord in coords:
                     for seed in metadata["seeds"]:
-                        dpath_trial = dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord / "_seeds" / str(seed)
+                        dpath_trial = dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord / "_seed" / str(seed)
                         if not (dpath_trial / "trial_metadata.json").exists():
                             continue
                         # a campaign sweep is a long foreground job, so it reports per trial -- unlike the
@@ -113,7 +113,7 @@ def main():
     flags = {a for a in args if a in ("evo_only", "no_evo", "snapshot")}
     targets = [a for a in args if a not in flags]
     if len(targets) != 1:
-        sys.exit("usage: python -m tools.regen_manifold_viz <campaign>[/_phase/<phase>/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>] "
+        sys.exit("usage: python -m tools.regen_manifold_viz <campaign>[/_phase/<phase>/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_seed/<seed>] "
                  "[evo_only|no_evo] [snapshot]")
     target = targets[0].strip("/")
     evo_only, skip_evo = "evo_only" in flags, "no_evo" in flags

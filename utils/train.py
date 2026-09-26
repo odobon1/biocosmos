@@ -293,10 +293,10 @@ def dpath_eval_seq(dpath_trial):
     (0 = the base eval, then 1..n_chkpts)."""
     return dpath_trial / "evals" / "evals"
 
-def fpath_eval_metrics(dpath_eval, group_key):
-    """An eval dir's metrics file for eval group `group_key`: metrics/metrics.json for native,
-    metrics/secondary/metrics-<group>.json for the rest (utils.config.group_path)."""
-    return group_path(dpath_eval / "metrics", group_key, "metrics", ".json")
+def fpath_eval_scores(dpath_eval, group_key):
+    """An eval dir's score file for eval group `group_key`: scores.json for native,
+    secondary/scores-<group>.json for the rest (utils.config.group_path)."""
+    return group_path(dpath_eval, group_key, "scores", ".json")
 
 def dpath_viz_cache(dpath_eval):
     """An eval dir's manifold-viz cache (embs.npz, projections.npz, projections_pooled.npz, orient_ref.pkl): viz/cache/."""
@@ -309,7 +309,7 @@ def dpath_viz_plots(dpath, pooled):
 
 def copy_viz(dpath_eval, dpath_dest):
     """Mirror an eval's whole manifold-viz dir (viz/: cache/ + the vanilla/ and pooled/ stills) to dpath_dest/viz/ --
-    a trial's evals/_selected/ or evals/_best/. The old copy goes first, so a moved selection leaves nothing stale;
+    a trial's evals/sel/ or evals/best/. The old copy goes first, so a moved selection leaves nothing stale;
     nothing lands where the eval has no viz/ (a trial outside the manifold_viz seed window). The cache is there at
     trial end, but the stills (and the cache's UMAP coords) only once the detached render has run --
     tools.regen_manifold_viz re-copies then."""
@@ -334,13 +334,13 @@ class ArtifactManager:
     def set_paths(cfg_train):
 
         ArtifactManager.dpath_phase = paths["artifacts"] / cfg_train.campaign / "_phase" / cfg_train.phase
-        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_datasets" / cfg_train.dataset / "_arms" / cfg_train.arm
-                                       / "_coords" / cfg_train.coord)
+        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / cfg_train.dataset / "_arm" / cfg_train.arm
+                                       / "_coord" / cfg_train.coord)
         ArtifactManager.dataset = cfg_train.dataset
         ArtifactManager.split = cfg_train.split["split"]
 
         trial_name = cfg_train.seed
-        ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / "_seeds" / str(trial_name)
+        ArtifactManager.dpath_trial = ArtifactManager.dpath_coord / "_seed" / str(trial_name)
         ArtifactManager.fpath_metadata_trial = ArtifactManager.dpath_trial / "trial_metadata.json"
 
         ArtifactManager.dpath_eval_final = dpath_eval_seq(ArtifactManager.dpath_trial) / str(cfg_train.n_chkpts)
@@ -596,8 +596,8 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_samps_seen: int, mem, killed, init_flag=False, base_selected=False):
-        # killed: the train-time eval index the trial was killed at (kill_thresh), None otherwise
+    def save_metadata_trial(data: TrialData, idx_epoch: int, time_tracker: TimeTracker, epoch: int, n_epochs, n_chkpts: int, n_samps_seen: int, mem, killed, init_flag=False, base_selected=False):
+        # killed: whether the trial was killed at its kill checkpoint (kill_thresh)
         runtime_data = ArtifactManager._get_trial_runtime_data(data, idx_epoch, time_tracker)
         # epoch/n_epochs feed the manifest's progress display; n_samps_seen stays for crash-log keying
         progress_data = {"epoch": epoch, "n_epochs": n_epochs, "n_samps_seen": n_samps_seen}
@@ -612,6 +612,8 @@ class ArtifactManager:
                 "datetime_start": now,
                 "datetime_last_seen": now,
                 "complete": False,
+                "n_chkpts": n_chkpts,  # the final eval's index: the trial's evals are all in once evals/evals/<n_chkpts> is (report._chkpt_dpaths)
+                "chkpt": {"sel": None, "best": None},  # eval indices behind evals/sel and evals/best, set by report.update_chkpt_selection
                 "killed": killed,
                 "base_selected": base_selected,  # a trainval trial at chkpt_stop 0: model.pt is the pretrained model, saved untrained, with no training behind the telemetry (train.py's _deliver_base_model)
                 "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # crashes this trial has recovered from, bucketed by cause; bumped by campaign_runner._bump_crash_counts
@@ -627,21 +629,13 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_eval_data(dpath_model, eval_metrics, idx_eval, n_chkpts, n_samps_seen, sample_volume):
-        # one metrics file per eval group (fpath_eval_metrics); the shared loss_raw/sim/targ/chkpt fields repeat in each
-        formatted = format_scores(eval_metrics)
-        chkpt = f"{idx_eval}/{n_chkpts} ({n_samps_seen / 1e6:.1f}M/{sample_volume / 1e6:.1f}M samples)"
-        for group_key, scores_grp in formatted["scores"].items():
-            metadata = {
-                "chkpt": chkpt,
-                "scores": scores_grp,
-                "loss_raw": formatted["loss_raw"],
-                "sim": formatted["sim"],
-                "targ": formatted["targ"],
-            }
-            fpath = fpath_eval_metrics(dpath_model, group_key)
+    def save_eval_data(dpath_model, eval_metrics):
+        # one score file per eval group (fpath_eval_scores), holding just that group's scores subtree
+        # ({partition: ..., 'comp': ...}); loss_raw/sim/targ live only in data_trial.pkl
+        for group_key, scores_grp in format_scores(eval_metrics["scores"]).items():
+            fpath = fpath_eval_scores(dpath_model, group_key)
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            save_json(metadata, fpath)
+            save_json(scores_grp, fpath)
 
     @staticmethod
     def base_eval_cache_fpath(cfg_train):

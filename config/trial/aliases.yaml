@@ -16,8 +16,8 @@
 #
 # `eval_groups` names the eval groups (reporting.yaml's `eval`) wherever they are reported -- stats table
 # and workbook titles/banners, learning-curve plot titles, the eval printout's section headers. The group
-# KEY still places every artifact file/dir (native's plain-named, e.g. metrics.json / coord_stats/stats/;
-# every other group's under secondary/, e.g. secondary/metrics-<group>.json), so an alias can be changed freely.
+# KEY still places every artifact file (native's plain-named, e.g. scores.json / coord_metrics/scores_agg.json;
+# every other group's under secondary/, e.g. secondary/scores-<group>.json), so an alias can be changed freely.
 #
 # The rest name arm / coord names built from `ablation_arms` / `hpo_coords` keys/values (derived names
 # for unnamed items, and combo-list name components): keys map through `param` and values through

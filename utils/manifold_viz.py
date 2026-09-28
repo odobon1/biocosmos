@@ -20,16 +20,20 @@ from utils.data import load_cid_2_penult, load_cid_2_nshot
 from utils.ddp import rank0
 from utils.utils import DATASET_ALIAS2NAME, save_pickle, load_pickle
 from utils.config import DATASET2MARKER_SIZE
+from utils.train import dpath_viz_cache, dpath_viz_plots
 
 
 @dataclass(frozen=True)
 class VizContext:
     """Identity of the eval being visualized -- drives plot titles and the per-dataset color/label
-    lookups. Built once per trial and threaded through the manifold-viz entry points."""
+    lookups. Built once per trial and threaded through the manifold-viz entry points. `eval_pt` is the
+    partition tier evaluated ('val': a training trial's evals; 'test': a test trial's), which names the
+    titles and picks the n-shot bucket view the colors read."""
     arm: str
     coord: str
     dataset: str
     split: str
+    eval_pt: str
 
 
 @dataclass(frozen=True)
@@ -37,18 +41,33 @@ class RenderStyle:
     """Static styling for the composite renderers. Bundled because the same set rides through
     generate_* -> composite_plot/evolving_gif -> _composite_canvas, and is pickled to the render
     workers. `method` (a `_METHODS` entry) and `col_titles` vary per (method, grid); the rest are fixed
-    per generate_* call (composite_plot, which writes a still, ignores frame_ms)."""
+    per generate_* call."""
     method: str
     marker_size: int
     legend_by_role: dict
-    frame_ms: float  # evolving-GIF duration per eval; each eval contributes one frame
     bg_color: str | None
     col_titles: list | None = None
 
 
-def _manifold_title(method, viz_context, subject, suffix=""):
-    """Suptitle for a manifold grid, e.g. 't-SNE: Joint (ID) Validation -- hp/LR-1e-5, Nymphalidae, 50k'."""
-    return f"{method}: {subject} Validation -- {viz_context.arm}/{viz_context.coord}, {DATASET_ALIAS2NAME[viz_context.dataset]}{suffix}"
+_EVAL_PT_NAME = {"val": "Validation", "test": "Test"}  # the partition tier as the titles name it
+
+def _manifold_title(method, viz_context, subject, tag):
+    """Four-line suptitle for a manifold grid: the subject + partition tier (prefixed by the method for the
+    per-method grids; the cross-method grids pass None -- their column headers name the methods), the arm,
+    the coord, then the dataset + eval tag, e.g. 'ID Validation\nSupCon\nLR-6e-5_Alpha-30\nCUB - Eval 1'."""
+    head = f"{subject} {_EVAL_PT_NAME[viz_context.eval_pt]}"
+    if method is not None:
+        head = f"{method}: {head}"
+    return "\n".join([head, viz_context.arm, viz_context.coord, f"{DATASET_ALIAS2NAME[viz_context.dataset]} - {tag}"])
+
+_TITLE_TOP = 0.15  # inch inset from the figure's top edge to the suptitle's top
+_TITLE_H = 1.75    # inch top room the suptitle takes: _TITLE_TOP + 4 bold 22pt lines (~1.5in) + a gap
+
+def _set_suptitle(fig, text, x_left):
+    """Draw the four-line suptitle top-anchored _TITLE_TOP in below the figure's top edge (the grids' top
+    insets reserve _TITLE_H for it) and left-aligned to the leftmost plot's left edge."""
+    fig.suptitle(text, fontsize=22, fontweight="bold", x=x_left, y=1 - _TITLE_TOP / fig.get_figheight(),
+                 ha="left", va="top")
 
 _GIF_DPI = 100  # evolving-GIF frame resolution (lower than the 300-dpi static PNGs)
 _OOD_LABEL = "__OOD__"  # sentinel label for OOD points in the n-shot panel (always drawn black)
@@ -730,7 +749,8 @@ def _fixed_palette(frames):
     return stacked.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
 
 def _save_gif_stream(frame_iter, fpath_gif, frame_ms):
-    """Write a forever-looping GIF from an arbitrarily long frame stream: peak memory is one frame,
+    """Write a forever-looping GIF from an arbitrarily long frame stream, each frame shown for its `frame_ms`
+    entry (ms, one per frame, in stream order): peak memory is one frame,
     regardless of the total count (one per eval for the evolving GIFs), so it doesn't scale with the
     number of checkpoints. One shared fixed palette is built from the FIRST frame -- representative
     because an evolving GIF's frames share one color SET (same eval points, same color maps; only
@@ -748,8 +768,8 @@ def _save_gif_stream(frame_iter, fpath_gif, frame_ms):
     with open(fpath_gif, "wb") as fp:
         for block in getheader(quant(sample[0]), info={"loop": 0})[0]:  # signature + screen descriptor + global palette + loop ext
             fp.write(block)
-        for f in chain(sample, it):  # at most one streamed frame resident beyond the palette sample
-            for block in getdata(quant(f), duration=frame_ms, disposal=2):  # local header + LZW data per frame
+        for f, ms in zip(chain(sample, it), frame_ms, strict=True):  # at most one streamed frame resident beyond the palette sample
+            for block in getdata(quant(f), duration=ms, disposal=2):  # local header + LZW data per frame
                 fp.write(block)
         fp.write(b";")  # GIF trailer
 
@@ -826,9 +846,9 @@ _GRID = [
 _GRIDS = [
     ("id",          "ID",               [["id_leaf",        "id_penult"]]),
     ("ood",         "OOD",              [["ood_leaf",       "ood_penult"]]),
-    ("joint",       "Joint (ID + OOD)", [["joint_leaf",     "joint_penult"]]),
-    ("joint_id",    "Joint (ID)",       [["joint_id_leaf",  "joint_id_penult"]]),
-    ("joint_ood",   "Joint (OOD)",      [["joint_ood_leaf", "joint_ood_penult"]]),
+    ("joint",       "Joint",            [["joint_leaf",     "joint_penult"]]),
+    ("joint_id",    "Joint-ID",         [["joint_id_leaf",  "joint_id_penult"]]),
+    ("joint_ood",   "Joint-OOD",        [["joint_ood_leaf", "joint_ood_penult"]]),
     ("joint_panel", "Joint",            _GRID),
 ]
 _COMPOSITE_COL_TITLES = ["OOD", "ID", "ID + OOD", "n-shot"]  # column headers for the 2x4 joint composite
@@ -847,7 +867,6 @@ def _grid_group(out_name):
 # projection method changes that count, so the name has to move with it.
 _8PANEL_SUBJECTS = [(out_name, subject, grid[0][0], grid[0][1])
                     for out_name, subject, grid in _GRIDS if out_name != "joint_panel"]
-_8PANEL_LABEL = " + ".join(_METHODS)  # suptitle method label for the cross-method grids
 
 _CELL = 6.58  # square plotting-cell size (in)
 
@@ -857,7 +876,7 @@ def _grid_layout(nrows, ncols, header=False):
     flush (wspace=hspace=0); the single-row pairs need no right margin (no right-side axis). `header`
     reserves extra top room for centered per-column titles (composite only) below the suptitle."""
     l, r, b = 0.75, (0.15 if nrows == 1 else 0.75), 0.6
-    t = 1.15 if header else 0.55  # inch insets: left, right, bottom, top
+    t = _TITLE_H + (0.6 if header else 0)  # inch insets: left, right, bottom, top (the suptitle + column headers)
     fig_w, fig_h = l + ncols * _CELL + r, b + nrows * _CELL + t
     adjust = dict(left=l / fig_w, right=1 - r / fig_w, bottom=b / fig_h, top=1 - t / fig_h, wspace=0, hspace=0)
     return (fig_w, fig_h), adjust
@@ -885,7 +904,7 @@ def _composite_canvas(grid, limits, suptitle, dpi, style):
     nrows, ncols = len(grid), max(len(row) for row in grid)
     figsize, adjust = _grid_layout(nrows, ncols, header=col_titles is not None)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=dpi, squeeze=False)
-    fig.suptitle(suptitle, fontsize=22, fontweight="bold", x=adjust["left"], ha="left")  # align to the leftmost plot's left edge
+    _set_suptitle(fig, suptitle, adjust["left"])
     if col_titles:  # centered per-column headers over the top row (composite only)
         for c, ctitle in enumerate(col_titles):
             axes[0][c].set_title(ctitle, fontsize=16, fontweight="bold")
@@ -1009,23 +1028,23 @@ def _resolved_evals(evals, names, stems, methods, cmaps, ema_tau, orient=True, f
                     resolved[(method, stem)] = (proj, np.array([color_map[label] for label in labels]), alpha)
         yield name, resolved
 
-def composite_evolving_gif(grid, subject, viz_context, evals, names, cmaps, ema_tau, limits, fpath_gif, style,
-                            orient=True, fname="projections.npz"):
-    """Training-evolving GIF of a flush grid: one frame per eval, axes
+def composite_evolving_gif(grid, subject, viz_context, evals, names, frame_ms, cmaps, ema_tau, limits, fpath_gif,
+                            style, orient=True, fname="projections.npz"):
+    """Training-evolving GIF of a flush grid: one frame per eval (shown for its `frame_ms` entry), axes
     frozen to the cross-eval union (`limits`, precomputed by render_evolution). Loads + renders one eval's
     cache at a time and streams the frames to disk, so peak memory is independent of the number of
     evals/checkpoints. The suptitle carries the manifold subject (from `_GRIDS`) and the eval name.
     `orient`/`fname` select per-eval (oriented) vs pooled (shared-frame, `orient=False`) sources."""
     stems = _stems_of(grid)
-    supt = lambda name: _manifold_title(style.method, viz_context, subject, suffix=f", {name}")
+    supt = lambda name: _manifold_title(style.method, viz_context, subject, name)
     fig, sc_by = _composite_canvas(grid, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: render frames lazily (one eval loaded at a time) so they stream to disk
         for name, resolved in _resolved_evals(evals, names, stems, (style.method,), cmaps, ema_tau, orient, fname):
-            fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")  # align to the leftmost plot's left edge
+            _set_suptitle(fig, supt(name), fig.subplotpars.left)
             data = {s: (resolved[(style.method, s)][0], _rgba(resolved[(style.method, s)][1], resolved[(style.method, s)][2])) for s in stems}
             _composite_frame(sc_by, data, style.marker_size)
             yield _canvas_frame(fig)
-    _save_gif_stream(_frames(), fpath_gif, style.frame_ms)
+    _save_gif_stream(_frames(), fpath_gif, frame_ms)
     plt.close(fig)
 
 def _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
@@ -1041,11 +1060,11 @@ def _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
     stem): scatter}); callers push per-frame data via _composite_frame, keyed by the same tuples."""
     rows = [leaf_stem, penult_stem]
     ncols = len(_METHODS)
-    # inch insets: l/r reserve the left/right y axes, b the bottom x axis, t the column headers + suptitle
-    l, r, b, t = 0.75, 0.75, 0.6, 1.55
+    # inch insets: l/r reserve the left/right y axes, b the bottom x axis, t the suptitle + column headers
+    l, r, b, t = 0.75, 0.75, 0.6, _TITLE_H + 1.0
     fig_w, fig_h = l + ncols * _CELL + r, b + 2 * _CELL + t
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
-    fig.suptitle(suptitle, fontsize=22, fontweight="bold", x=l / fig_w, ha="left")  # align to the leftmost plot's left edge
+    _set_suptitle(fig, suptitle, l / fig_w)
     sc_by = {}
     for ri, stem in enumerate(rows):
         for ci, method in enumerate(_METHODS):
@@ -1091,25 +1110,26 @@ def _8panel_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=
     fig.savefig(fpath, dpi=300)  # no bbox_inches="tight" -- double-rasterizes; margins already exact
     plt.close(fig)
 
-def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, cmaps, ema_tau,
+def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, frame_ms, cmaps, ema_tau,
                          limits, fpath_gif, style, orient=True, fname="projections.npz"):
-    """Cross-method (one column per method) training-evolving GIF for one subject's leaf/penult pair.
+    """Cross-method (one column per method) training-evolving GIF for one subject's leaf/penult pair, one frame
+    per eval (shown for its `frame_ms` entry).
     Sweeps every method's caches in lockstep (one eval loaded at a time, resolved for all methods) and
     streams the frames to disk, so peak memory is independent of the eval count; axes frozen to the
     precomputed cross-eval union (`limits`, keyed (method, stem)). `orient`/`fname` select per-eval
     (oriented) vs pooled (shared-frame, `orient=False`) sources."""
     stems = {leaf_stem, penult_stem}
-    supt = lambda name: _manifold_title(_8PANEL_LABEL, viz_context, subject, suffix=f", {name}")
+    supt = lambda name: _manifold_title(None, viz_context, subject, name)
     fig, sc_by = _8panel_canvas(leaf_stem, penult_stem, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: one cache load per eval, resolved for every method, streamed to disk
         for name, resolved in _resolved_evals(evals, names, stems, _METHODS, cmaps, ema_tau, orient, fname):
-            fig.suptitle(supt(name), fontsize=22, fontweight="bold", x=fig.subplotpars.left, ha="left")
+            _set_suptitle(fig, supt(name), fig.subplotpars.left)
             data = {k: (resolved[k][0], _rgba(resolved[k][1], resolved[k][2]))
                     for k in ((m, s) for m in _METHODS for s in stems)}
             _composite_frame(sc_by, data, style.marker_size)
             yield _canvas_frame(fig)
 
-    _save_gif_stream(_frames(), fpath_gif, style.frame_ms)
+    _save_gif_stream(_frames(), fpath_gif, frame_ms)
     plt.close(fig)
 
 def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
@@ -1125,9 +1145,7 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
     this eval's points -- the pooled pca_bounds='final' frame (the _RIGID methods always auto-fit). Pure
     renderer -- orientation/coloring/cache are the caller's job (render_eval)."""
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
-    frame_ms = cfg_manifold_viz["eval_duration"]  # unused for stills; carried for the evolving GIFs' schedule
     bg_color = cfg_manifold_viz["bg_color"]
-    suffix = f", {tag}"
     def bake(projs):  # every panel's (proj, rgba); the grids below tile them into the pairs/composite/stacks
         return {stem: (proj, _rgba(np.array([color_map[label] for label in labels]), alpha))
                 for proj, labels, color_map, alpha, stem in _resolve_panels(
@@ -1140,9 +1158,9 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
             group, stem = _grid_group(out_name)
             if not cfg_manifold_viz[f"plot_{group}"]:  # 2panel / 7panel toggles
                 continue
-            suptitle = _manifold_title(method, viz_context, subject, suffix=suffix)
+            suptitle = _manifold_title(method, viz_context, subject, tag)
             col_titles = _COMPOSITE_COL_TITLES if out_name == "joint_panel" else None
-            style = RenderStyle(method, marker_size, legend_by_role, frame_ms, bg_color, col_titles)
+            style = RenderStyle(method, marker_size, legend_by_role, bg_color, col_titles)
             sub = {s: comp[method][s] for s in _stems_of(grid)}  # only this grid's panels (smaller to ship to a worker)
             limits = {s: pca_limits[_STEM_PROJKEY[s]] for s in sub} if method == "PCA" and pca_limits else None
             fpath = dpath_vis / group / _METHOD_DIR[method] / f"{stem}.png"
@@ -1150,9 +1168,9 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
             jobs.append((composite_plot, (grid, sub, fpath, suptitle, style, limits)))
     # cross-method grids (one column per method, _METHODS order left -> right): under viz/8panel/
     if cfg_manifold_viz["plot_8panel"]:
-        style_8panel = RenderStyle(None, marker_size, legend_by_role, frame_ms, bg_color)
+        style_8panel = RenderStyle(None, marker_size, legend_by_role, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
-            suptitle = _manifold_title(_8PANEL_LABEL, viz_context, subject, suffix=suffix)
+            suptitle = _manifold_title(None, viz_context, subject, tag)
             data = {(m, s): comp[m][s] for m in _METHODS for s in (leaf_stem, penult_stem)}
             limits = {("PCA", s): pca_limits[_STEM_PROJKEY[s]] for s in (leaf_stem, penult_stem)} if pca_limits else None
             fpath = dpath_vis / "8panel" / f"{out_name}.png"
@@ -1181,7 +1199,7 @@ def _build_color_maps(viz_context, cids_all, cfg_color):
     color across every plot/eval. Returns (color_leaf, color_penult, color_nshot, cid_2_penult,
     cid_2_nshot, nst_names)."""
     cid_2_penult = load_cid_2_penult(viz_context.dataset)
-    cid_2_nshot, nst_names = load_cid_2_nshot(viz_context.dataset, viz_context.split)
+    cid_2_nshot, nst_names = load_cid_2_nshot(viz_context.dataset, viz_context.split, viz_context.eval_pt)
     color_leaf = assign_colors(cid_2_penult.keys(), Counter(cids_all), cfg_color, hue_offset=0.0)
     color_penult = assign_colors(cid_2_penult.values(), Counter(cid_2_penult[c] for c in cids_all), cfg_color, hue_offset=0.5)
     color_nshot = nshot_color_map(nst_names)  # bucket colors matching the learning curves (+ OOD black)
@@ -1252,7 +1270,7 @@ def _pooled_pools(dirs, idx_id, idx_ood):
     is a single contiguous slice (`_pooled_block_sizes`)."""
     id_blocks, ood_blocks = [], []
     for d in dirs:
-        with np.load(d / "embs.npz") as e:
+        with np.load(dpath_viz_cache(d) / "embs.npz") as e:
             id_blocks.append(e["embs_id"][idx_id].astype(np.float32))
             ood_blocks.append(e["embs_ood"][idx_ood].astype(np.float32))
     pools = {
@@ -1277,31 +1295,38 @@ def compute_umap_projections(dpath_evals, cfg_manifold_viz):
 
     Idempotent: an eval that already carries UMAP is not refit, but its cached layout is still read to
     seed the next eval's init, so an interrupted sweep resumes to the same result as an unbroken one."""
-    cfg_umap = cfg_manifold_viz["umap"]
     prev = None  # previous eval's {proj key: layout} -> this eval's init
     for d in _ordered_eval_dirs(dpath_evals, "embs.npz"):
-        with np.load(d / "projections.npz") as npz:
-            cache = dict(npz)  # materialize: the same path is rewritten below with UMAP appended
-        if "umap_sphere_joint" in cache:  # already fit -- reuse as the next eval's init rather than refitting
-            prev = {m: {k: cache[f"{m}_{k}"] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
-            continue
-        with np.load(d / "embs.npz") as e:
-            embs_id, embs_ood = e["embs_id"].astype(np.float32), e["embs_ood"].astype(np.float32)
-        by_key = {"id": embs_id, "ood": embs_ood, "joint": np.concatenate([embs_id, embs_ood], axis=0)}
-        projs = {}
-        for k in _PROJ_KEYS:
-            knn = _umap_knn(by_key[k], cfg_umap)  # one neighbor search, both fits
-            flat_init = cache[f"pca_{k}"] if prev is None else prev["umap"][k]
-            sph_init = None if prev is None else _xyz_to_angles(prev["umap_sphere"][k])
-            projs[("umap", k)] = compute_umap(by_key[k], cfg_umap, flat_init, knn=knn)
-            projs[("umap_sphere", k)] = compute_umap(by_key[k], cfg_umap, sph_init, spherical=True, knn=knn)
-        cache.update({f"{m}_{k}": projs[(m, k)] for m, k in projs})
-        np.savez(d / "projections.npz", **cache)
-        prev = {m: {k: projs[(m, k)] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
+        prev = compute_umap_eval(d, cfg_manifold_viz["umap"], prev)
+
+def compute_umap_eval(dpath_eval, cfg_umap, prev=None):
+    """Fit ONE eval's UMAPs (flat + spherical, each subject) from its cached embs.npz and append them to its
+    projections.npz, both initialized from `prev` -- the previous eval's {method: {proj key: layout}}, the
+    chained init of compute_umap_projections' sweep -- or, without one (the first eval of a sequence, or a test
+    trial's lone eval), the flat fit from the eval's own cached PCA and the spherical one from umap-learn's
+    default. Returns this eval's layouts in `prev`'s shape; an eval that already carries UMAP is not refit,
+    its cached layouts returned instead."""
+    with np.load(dpath_viz_cache(dpath_eval) / "projections.npz") as npz:
+        cache = dict(npz)  # materialize: the same path is rewritten below with UMAP appended
+    if "umap_sphere_joint" in cache:  # already fit -- reuse as the next eval's init rather than refitting
+        return {m: {k: cache[f"{m}_{k}"] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
+    with np.load(dpath_viz_cache(dpath_eval) / "embs.npz") as e:
+        embs_id, embs_ood = e["embs_id"].astype(np.float32), e["embs_ood"].astype(np.float32)
+    by_key = {"id": embs_id, "ood": embs_ood, "joint": np.concatenate([embs_id, embs_ood], axis=0)}
+    projs = {}
+    for k in _PROJ_KEYS:
+        knn = _umap_knn(by_key[k], cfg_umap)  # one neighbor search, both fits
+        flat_init = cache[f"pca_{k}"] if prev is None else prev["umap"][k]
+        sph_init = None if prev is None else _xyz_to_angles(prev["umap_sphere"][k])
+        projs[("umap", k)] = compute_umap(by_key[k], cfg_umap, flat_init, knn=knn)
+        projs[("umap_sphere", k)] = compute_umap(by_key[k], cfg_umap, sph_init, spherical=True, knn=knn)
+    cache.update({f"{m}_{k}": projs[(m, k)] for m, k in projs})
+    np.savez(dpath_viz_cache(dpath_eval) / "projections.npz", **cache)
+    return {m: {k: projs[(m, k)] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
 
 def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     """CPU, single process. Fit ONE shared UMAP over all eval thresholds' pooled embeddings and append the
-    per-threshold blocks as umap_{id,ood,joint} to each <eval>/projections_pooled.npz -- the UMAP
+    per-threshold blocks as umap_{id,ood,joint} to each <eval>/viz/cache/projections_pooled.npz -- the UMAP
     counterpart of `compute_pooled_projections`, run by the post-trial render worker. Reuses the subsample
     that compute_pooled_projections recorded in the pooled cache (idx_id/idx_ood), so the pooled UMAP
     covers exactly the same points in the same row order as the pooled PCA/t-SNE. One fit spans the whole
@@ -1315,12 +1340,12 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     # carrying the UMAP blocks means every dir does. Probing the first would misread a sweep killed
     # mid-write (threshold 0 written, the rest not) as complete and strand the tail without UMAP blocks;
     # probing before loading also makes the already-done path free.
-    with np.load(dirs[-1] / "projections_pooled.npz") as npz:
+    with np.load(dpath_viz_cache(dirs[-1]) / "projections_pooled.npz") as npz:
         if "umap_sphere_joint" in npz:
             return
     caches = []
     for d in dirs:
-        with np.load(d / "projections_pooled.npz") as npz:
+        with np.load(dpath_viz_cache(d) / "projections_pooled.npz") as npz:
             caches.append(dict(npz))  # materialize: the same paths are rewritten below with UMAP appended
     idx_id, idx_ood = caches[0]["idx_id"], caches[0]["idx_ood"]
     m_id, m_ood = len(idx_id), len(idx_ood)
@@ -1338,12 +1363,12 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
         for k, blk in _pooled_block_sizes(m_id, m_ood):
             for m in ("umap", "umap_sphere"):
                 cache[f"{m}_{k}"] = projs[(m, k)][t * blk:(t + 1) * blk]
-        np.savez(d / "projections_pooled.npz", **cache)
+        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
 
 def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
     """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
     embeddings pooled (read from each eval's embs.npz) and, on rank 0, write per-threshold masked blocks
-    to <eval>/projections_pooled.npz. The pooled UMAP is fit off this path, post-trial, by
+    to <eval>/viz/cache/projections_pooled.npz. The pooled UMAP is fit off this path, post-trial, by
     `compute_umap_pooled`, which reuses the subsample recorded here. The geometry is shared, so each threshold is a masked subset of the
     single layout (no orientation needed) and the plots show the eval set migrating through a fixed frame
     as training progresses.
@@ -1362,7 +1387,7 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elem
     if not dirs:
         return
     T = len(dirs)
-    with np.load(dirs[0] / "embs.npz") as e0:  # eval set is fixed across thresholds -> any threshold's cids
+    with np.load(dpath_viz_cache(dirs[0]) / "embs.npz") as e0:  # eval set is fixed across thresholds -> any threshold's cids
         cids_id, cids_ood = np.asarray(e0["cids_id"]), np.asarray(e0["cids_ood"])
     n_id, n_ood, n_full = len(cids_id), len(cids_ood), len(cids_id) + len(cids_ood)
     per_thresh = min(n_full * T, budget) / T  # target pooled ID + OOD points per threshold (all samples used when the full pool <= budget)
@@ -1389,23 +1414,23 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elem
             sl = slice(t * blk, (t + 1) * blk)
             cache[f"pca_{k}"] = pca_projs[k][sl]
             cache[f"tsne_{k}"] = tsne_projs[k][sl]
-        np.savez(d / "projections_pooled.npz", **cache)
+        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
     _log("pooled projections complete")
 
-def _load_projections(dpath_cache, fname="projections.npz"):
-    """Load an eval's cached raw projections from dpath_cache/<fname>:
+def _load_projections(dpath_eval, fname="projections.npz"):
+    """Load an eval's cached raw projections from its viz cache (dpath_viz_cache(dpath_eval)/<fname>):
     ({method: {proj key: (N,2)}}, cids_id, cids_ood) -- one entry per `_METHODS`, each keyed id/ood/joint.
     `fname` selects the per-eval independent cache (projections.npz) or the pooled shared-frame cache
     (projections_pooled.npz), which share this schema."""
-    npz = np.load(dpath_cache / fname)
+    npz = np.load(dpath_viz_cache(dpath_eval) / fname)
     return ({m: {k: npz[f"{_METHOD_DIR[m]}_{k}"] for k in _PROJ_KEYS} for m in _METHODS},
             list(npz["cids_id"]), list(npz["cids_ood"]))
 
 def _ordered_eval_dirs(dpath_evals, fname="projections.npz"):
-    """Eval dirs that hold a cached <fname>, in chronological order (base, eval1..evalN). `fname`
+    """Eval dirs that hold a cached <fname>, in chronological order (0 = base, 1..N). `fname`
     selects the per-eval cache (projections.npz), the pooled cache (projections_pooled.npz), or the raw
     embedding cache (embs.npz, swept by the pooled compute)."""
-    return sorted((d for d in dpath_evals.iterdir() if (d / fname).exists()),
+    return sorted((d for d in dpath_evals.iterdir() if (dpath_viz_cache(d) / fname).exists()),
                   key=lambda d: _eval_sort_key(d.name))
 
 def _ema_through(dpath_evals, eval_name, ema_tau):
@@ -1430,14 +1455,14 @@ def _save_orient_ref(dpath_eval, ref, ema_tau):
     (see `_incoming_ref`). ema_tau and the method set are stored alongside so a render under a different
     smoothing factor -- or a reference keyed by a different set of methods -- recomputes rather than
     silently reusing a reference that no longer answers to the keys the render looks up."""
-    save_pickle({"ema_tau": ema_tau, "methods": list(_METHODS), "ref": ref}, dpath_eval / "orient_ref.pkl")
+    save_pickle({"ema_tau": ema_tau, "methods": list(_METHODS), "ref": ref}, dpath_viz_cache(dpath_eval) / "orient_ref.pkl")
 
 def _load_orient_ref(dpath_eval, ema_tau):
     """This eval's cached outgoing orientation reference, or None when absent or written under a different
     ema_tau / method set (forcing a correct recompute rather than reusing a reference the render can no
     longer look up -- the keys are (method, proj key), so a reference built for a different method set
     would resolve to nothing and silently un-orient every eval)."""
-    fpath = dpath_eval / "orient_ref.pkl"
+    fpath = dpath_viz_cache(dpath_eval) / "orient_ref.pkl"
     if not fpath.exists():
         return None
     blob = load_pickle(fpath)
@@ -1471,21 +1496,41 @@ def _final_pca_limits(dpath_final, fname):
     return {k: _common_limits([projs_by_method["PCA"][k]]) for k in _PROJ_KEYS}
 
 @rank0
-def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=True, fname="projections.npz"):
-    """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz(_pooled)/.
+def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, chkpt, orient=True, fname="projections.npz"):
+    """Rank-0. Render one eval's plots from its cached projections into <eval_name>/viz/{vanilla,pooled}/,
+    titled by its eval label (`chkpt`: the trial's {'sel', 'best'} eval indices, marking those evals -- _eval_label).
 
     Default (per-eval, `orient=True`, projections.npz): every method's independently-fit projection is
     aligned against the reference accumulated over the prior evals on disk (rigid for t-SNE/UMAP, sign-only
     for PCA), so it matches that eval's frame in the evolving GIF -- and needs no live state.
 
     Pooled (`orient=False`, fname=projections_pooled.npz): the projection already shares one frame across
-    thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz_pooled/. The
+    thresholds, so it is plotted as-is (no orientation, no ref cache) into <eval_name>/viz/pooled/. The
     cache holds only this threshold's subsample, so colors are still built from the FULL eval set
     (projections.npz) -- coloring by the subsample would reorder the count-ranked hues and break color
     correspondence with the other plots. `cfg_manifold_viz`'s plot_2/4/7panel flags gate which panel groups."""
     if _no_panels_enabled(cfg_manifold_viz):
         return
-    dpath_eval = dpath_evals / eval_name
+    # the incoming orientation reference through the prior evals (O(1) cache read); none for pooled
+    ref = _incoming_ref(dpath_evals, eval_name, cfg_manifold_viz["orient"]["ema_tau"]) if orient else None
+    pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
+                  if not orient and cfg_manifold_viz["pooled"]["pca_bounds"] == "final" else None)
+    _render_cached_eval(dpath_evals / eval_name, cfg_manifold_viz, viz_context, _eval_label(eval_name, chkpt), ref, fname, pca_limits)
+
+@rank0
+def render_test_eval(dpath_eval, cfg_manifold_viz, viz_context, tag):
+    """Rank-0. Render a test trial's one eval (its eval/sel/) from its cached projections into its viz/vanilla/:
+    with no prior eval to align to, every method is oriented from scratch (the bootstrap frame). No pooled
+    variant -- a single threshold has nothing to share a frame with. `tag` is the title's eval label."""
+    if _no_panels_enabled(cfg_manifold_viz):
+        return
+    _render_cached_eval(dpath_eval, cfg_manifold_viz, viz_context, tag, {})
+
+def _render_cached_eval(dpath_eval, cfg_manifold_viz, viz_context, tag, ref, fname="projections.npz", pca_limits=None):
+    """render_eval / render_test_eval's shared body: one eval's cached <fname> drawn into its viz/{vanilla,pooled}/.
+    `ref` is the incoming orientation reference ({} for an eval with no prior: everything aligns to its own
+    bootstrap frame), applied to every method with the outgoing reference cached beside the projections;
+    None plots the projections as-is (the pooled shared frame) under viz/pooled/."""
     projs_by_method, cids_id, cids_ood = _load_projections(dpath_eval, fname)
     # color maps span the whole dataset so a class is colored identically in every plot; colors are
     # assigned in order of how many plotted (ID+OOD) samples each class/penult-group has -> always the
@@ -1499,9 +1544,8 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=Tr
     penults_id = [cid_2_penult[c] for c in cids_id]
     penults_ood = [cid_2_penult[c] for c in cids_ood]
     nshot_id = [cid_2_nshot[c] for c in cids_id]  # OOD samples are drawn black, not bucketed
-    if orient:
+    if ref is not None:
         ema_tau = cfg_manifold_viz["orient"]["ema_tau"]
-        ref = _incoming_ref(dpath_evals, eval_name, ema_tau)  # reference through the prior evals (O(1) cache read)
         cids_by = _cids_by(cids_id, cids_ood)
         render_projs = {}
         for m in _METHODS:
@@ -1511,17 +1555,26 @@ def render_eval(dpath_evals, eval_name, cfg_manifold_viz, viz_context, orient=Tr
         _save_orient_ref(dpath_eval, ref, ema_tau)  # cache outgoing ref (before plotting) so the next eval reads it in O(1)
     else:  # pooled: shared frame across thresholds -> no orientation
         render_projs = projs_by_method
-    tag = eval_name
-    pca_limits = (_final_pca_limits(_ordered_eval_dirs(dpath_evals, fname)[-1], fname)
-                  if not orient and cfg_manifold_viz["pooled"]["pca_bounds"] == "final" else None)
     _render_grids(render_projs, cids_id, cids_ood, penults_id, penults_ood,
                   color_leaf, color_penult, nshot_id, color_nshot, _legend_specs(color_nshot, nst_names),
-                  dpath_eval / ("viz" if orient else "viz_pooled"), cfg_manifold_viz, viz_context, tag,
+                  dpath_viz_plots(dpath_eval, pooled=ref is None), cfg_manifold_viz, viz_context, tag,
                   pca_limits)
 
 def _eval_sort_key(name):
-    """Chronological order of eval dirs: base first, then eval1..evalN ascending."""
-    return 0 if name == "base" else int(name.removeprefix("eval"))
+    """Chronological order of eval dirs: named by checkpoint index, 0 (the base eval) first."""
+    return int(name)
+
+def _eval_label(name, chkpt):
+    """An eval dir's name as plot titles carry it: 'Eval <k>', marked '(base)' at checkpoint 0 and '(best)' /
+    '(selected)' at the trial's own-best / the coord's selected eval (`chkpt`: trial_metadata.json's {'sel',
+    'best'} eval indices, None until the coord has selected), e.g. 'Eval 2 (best, selected)'."""
+    marks = _eval_marks(name, chkpt)
+    return f"Eval {int(name)}" + (f" ({', '.join(marks)})" if marks else "")
+
+def _eval_marks(name, chkpt):
+    """The marks _eval_label puts on an eval dir's name: 'base' / 'best' / 'selected', those that hit."""
+    idx = int(name)
+    return [m for m, hit in (("base", idx == 0), ("best", chkpt["best"] == idx), ("selected", chkpt["sel"] == idx)) if hit]
 
 @rank0
 def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
@@ -1565,16 +1618,17 @@ def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
 
     return {p: _bound(p) for p in pairs}
 
-def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orient=True, fname="projections.npz"):
+def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, chkpt, orient=True, fname="projections.npz"):
     """Rank-0. Assemble one GIF per grid (`_GRIDS`) showing the training evolution
-    (base -> eval1 -> ... -> evalN): each eval contributes one frame, then the GIF hard-cuts
+    (Eval 0 (base) -> Eval 1 -> ... -> Eval N, each frame titled by its eval label -- _eval_label, `chkpt` marking
+    the trial's sel/best evals): each eval contributes one frame, then the GIF hard-cuts
     to the next eval, axes/gridlines frozen across evals so only the points move. Reads each eval's
     cached <fname> and writes the per-method grids under dpath_out/{2panel,7panel}/<method>/ plus
     the cross-method grids (one column per method) under dpath_out/8panel/.
 
     Default (per-eval, projections.npz) orients every method by aligning each eval to a running reference
     swept across evals -- the same orientation `render_eval` reproduces per eval. Pooled (`orient=False`,
-    projections_pooled.npz, dpath_out=viz_pooled) skips orientation: the pooled projections already share
+    projections_pooled.npz, dpath_out=viz_dyn/pooled) skips orientation: the pooled projections already share
     one frame, so the GIF just masks the single layout to each threshold's subsample. Colors always come
     from the FULL eval set (projections.npz) so class colors match the other plots. Caches are streamed one
     eval at a time (frozen limits precomputed in a single pass), so peak memory doesn't scale with the number of checkpoints."""
@@ -1583,12 +1637,14 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orie
     evals = _ordered_eval_dirs(dpath_evals, fname)
     if not evals:
         return
-    names = [d.name for d in evals]
+    names = [_eval_label(d.name, chkpt) for d in evals]
+    # each eval is one frame: held for gif.frame_dur.long at the marked evals (base / best / selected), .short elsewhere
+    frame_dur = cfg_manifold_viz["gif"]["frame_dur"]
+    frame_ms = [frame_dur["long"] if _eval_marks(d.name, chkpt) else frame_dur["short"] for d in evals]
 
     cfg_color = cfg_manifold_viz["color"]
     marker_size = DATASET2MARKER_SIZE[viz_context.dataset]
     bg_color = cfg_manifold_viz["bg_color"]
-    frame_ms = cfg_manifold_viz["eval_duration"]  # one frame per eval, so each eval shows for eval_duration
     ema_tau = cfg_manifold_viz["orient"]["ema_tau"]
     # eval set is fixed across checkpoints, so any eval's cids give the same (count-ordered) colors; always
     # the FULL eval set (projections.npz, explicit -- NOT the pooled subsample) so a class keeps its color
@@ -1611,19 +1667,19 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, orie
                 continue
             stems = _stems_of(grid)
             col_titles = _COMPOSITE_COL_TITLES if out_name == "joint_panel" else None
-            style = RenderStyle(method, marker_size, legends, frame_ms, bg_color, col_titles)
+            style = RenderStyle(method, marker_size, legends, bg_color, col_titles)
             limits = {s: limits_by[(method, _STEM_PROJKEY[s])] for s in stems}
             fpath = dpath_out / group / _METHOD_DIR[method] / f"{stem}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((composite_evolving_gif, (grid, subject, viz_context, evals, names, cmaps,
+            jobs.append((composite_evolving_gif, (grid, subject, viz_context, evals, names, frame_ms, cmaps,
                                                    ema_tau, limits, fpath, style, orient, fname)))
     # cross-method evolving GIFs (one column per method): under <dpath_out>/8panel/
     if cfg_manifold_viz["plot_8panel"]:
-        style_8panel = RenderStyle(None, marker_size, legends, frame_ms, bg_color)
+        style_8panel = RenderStyle(None, marker_size, legends, bg_color)
         for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
             limits = {(m, s): limits_by[(m, _STEM_PROJKEY[s])] for m in _METHODS for s in (leaf_stem, penult_stem)}
             fpath = dpath_out / "8panel" / f"{out_name}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((_8panel_evolving_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
-                                                cmaps, ema_tau, limits, fpath, style_8panel, orient, fname)))
+                                                frame_ms, cmaps, ema_tau, limits, fpath, style_8panel, orient, fname)))
     _parallel_render(jobs)

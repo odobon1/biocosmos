@@ -1,4 +1,4 @@
-# FROZEN at campaign launch, into artifacts/<campaign>/_screen/cfg_baseline.json --
+# FROZEN at campaign launch, into artifacts/<campaign>/_phase/screen/cfg_baseline.json --
 # edits never reach an existing campaign; every trial of it, original or added later, reads this snapshot.
 
 n_epochs: null  # {null, [int]} > 0; Trial duration in train-set epochs (sample volume = n_epochs * epoch size, where

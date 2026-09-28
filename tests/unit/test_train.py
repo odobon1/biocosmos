@@ -1,4 +1,5 @@
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -47,7 +48,7 @@ def _targ_cfg(targ):
 @dataclass
 class _FakeCoordCfg:
     campaign: str = "c"
-    phase: str = "_screen"
+    phase: str = "screen"
     arm: str = "sp"
     coord: str = "base"
     seed: int = 42
@@ -70,12 +71,14 @@ class _FakeCoordCfg:
     lr: dict = field(default_factory=lambda: {"warmup": 0.04})
 
     def __post_init__(self):
-        self.sample_volume = 102_500  # derived in TrainConfig.__post_init__, not a config field
+        # derived in TrainConfig.__post_init__, not config fields
+        self.sample_volume = 102_500
+        self.samps_per_epoch = 20_500
 
 
 def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch) -> None:
     # coord-level config params go to config.json; coord_metadata.json holds the mutable state --
-    # n_crashes (bumped by the campaign runner), best_chkpt (rewritten at each trial end), and the
+    # n_crashes (bumped by the campaign runner), sel_chkpt (rewritten at each trial end), and the
     # precomputed horizon (sample/step totals with their LR-warmup shares). A later
     # trial of the same coord must re-assert config.json unchanged and must not reset the state.
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
@@ -89,21 +92,24 @@ def test_save_metadata_coord_splits_config_and_crash_count(tmp_path, monkeypatch
     assert json.loads((tmp_path / "coord_metadata.json").read_text()) == {
         "n_crashes": {"ram": 0, "vram": 0, "other": 0},
         "horizon": {
-            # warmup is the share OF each total: round(0.04 x 102_500) samples, ceil'd to steps
-            "n_samps": {"total": 102_500, "warmup": 4_100},
-            # ceil(102_500 / 1_024): the partial final batch still steps
+            # ceil(102_500 / 1_024): the batch that reaches sample_volume still steps; warmup is the share OF
+            # each total: round(0.04 x 102_500) = 4_100 samples, ceil'd to steps
             "n_steps": {"total": 101, "warmup": 5},
+            # the samples those steps actually consume (101 x 1_024, 5 x 1_024), not the unaligned targets
+            "n_samps": {"total": 103_424, "warmup": 5_120},
+            "samps_per_epoch": 20_500,
         },
-        "best_chkpt": {},
+        "sel_chkpt": {},
     }
 
     metadata = {
         "n_crashes": {"ram": 1, "vram": 2, "other": 4},
         "horizon": {
-            "n_samps": {"total": 102_500, "warmup": 4_100},
             "n_steps": {"total": 101, "warmup": 5},
+            "n_samps": {"total": 103_424, "warmup": 5_120},
+            "samps_per_epoch": 20_500,
         },
-        "best_chkpt": {"map": {"native": {"idx": 3}}},
+        "sel_chkpt": {"idx": 3, "n_trials": 2, "mean_score": "0.5000"},
     }
     (tmp_path / "coord_metadata.json").write_text(json.dumps(metadata))  # runner/trials mutate it
     ArtifactManager.save_metadata_coord(cfg)  # a later trial re-saves: must not raise, must not reset the state
@@ -240,7 +246,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
 def test_update_campaign_time_stamps_phase_and_campaign_last_seen(tmp_path, monkeypatch) -> None:
     # every checkpoint write moves the phase's accumulated duration on and re-stamps datetime_last_seen
     # on both the phase's metadata and the campaign's, leaving the recorded starts alone
-    dpath_phase = tmp_path / "cmp" / "_screen"
+    dpath_phase = tmp_path / "cmp" / "_phase" / "screen"
     dpath_phase.mkdir(parents=True)
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
     save_pickle({"last_updated": time.time() - 3661.0, "elapsed": 0.0}, dpath_phase / "time.pkl")
@@ -332,13 +338,13 @@ def test_load_base_eval_cache_misses_when_entry_lacks_an_eval_group_in_play(tmp_
 
 
 def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> None:
-    # each save ingests the npz files compute_projections wrote into this trial's evals/base/
+    # each save ingests the npz files compute_projections wrote into this trial's eval/all/0/viz/cache/
     # (absent for non-viz trials -> None) and writes its combo's entry to that combo's own file,
     # leaving other combos' files untouched
     dpath_cache = tmp_path / "base_eval_cache"
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo.pkl")
     monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial")
-    dpath_base = tmp_path / "trial" / "evals" / "base"
+    dpath_base = tmp_path / "trial" / "eval" / "all" / "0" / "viz" / "cache"
     dpath_base.mkdir(parents=True)
     np.savez(dpath_base / "projections.npz", pca_id=np.arange(3))
     eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None}}
@@ -567,19 +573,20 @@ def test_kill_chkpt_rounds_the_threshold_up_to_the_nearest_eval() -> None:
 
 
 def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path, monkeypatch) -> None:
-    # chkpt_stop 0: the pick's base eval won qual selection, so the trainval trial saves the pretrained
+    # chkpt_stop 0: the pick's base eval won refine selection, so the trainval trial saves the pretrained
     # model untrained and runs no training -- the trial dir is still filled out like a completed one, its
     # training telemetry empty (no batch recorded), which the runner then marks complete
-    dpath_trial = tmp_path / "_seeds" / "42"
+    dpath_trial = tmp_path / "_trial" / "1"
     dpath_trial.mkdir(parents=True)
     monkeypatch.setattr(ArtifactManager, "dpath_trial", dpath_trial)
     monkeypatch.setattr(ArtifactManager, "fpath_metadata_trial", dpath_trial / "trial_metadata.json")
-    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "_arms" / "sp" / "_coords" / "base")
+    monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "_arm" / "sp" / "_coord" / "base")
     monkeypatch.setattr(ArtifactManager, "dataset", "cub")
     monkeypatch.setattr(ArtifactManager, "split", "D10")
     model = torch.nn.Linear(2, 1)
     cfg = SimpleNamespace(
         n_epochs=5,
+        n_chkpts=3,
         samps_per_epoch=1_000,
         reporting={"eval": {"native_macro": False, "joint": False, "joint_macro": False},
                    "learning_curves": {"hpsm": {"kappas": [0.0], "multimodal": False}}},
@@ -590,7 +597,7 @@ def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path,
     state = torch.load(dpath_trial / "model.pt", weights_only=True)
     assert torch.equal(state["weight"], model.weight.detach())  # the untrained weights, as built
     metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
-    assert metadata["base_selected"] is True and metadata["killed"] is None
+    assert metadata["base_selected"] is True and metadata["killed"] is False
     assert metadata["complete"] is False  # the runner flips it once the subprocess exits cleanly
     assert metadata["progress"] == {"epoch": 0, "n_epochs": 5, "n_samps_seen": 0}
     assert all(not series for series in load_pickle(dpath_trial / "data_trial.pkl")["epoch"].values())
@@ -608,3 +615,36 @@ def test_save_model_writes_unwrapped_state_dict(tmp_path, monkeypatch) -> None:
     state = torch.load(tmp_path / "model.pt")
     assert set(state) == {"weight", "bias"}
     assert torch.equal(state["weight"], model.weight.detach())
+
+
+@pytest.mark.parametrize("lr_warmup", [1_500, 4_100])  # a warmup ending one batch in; one ending on a near-full batch
+def test_lr_warmup_hands_the_full_base_lrs_to_the_cosine(lr_warmup) -> None:
+    # the train loop's LR sequence: each batch adds B to n_samps_seen, sets the warmup LR, and steps the cosine
+    # once n_samps_seen >= lr_warmup. The batch that reaches lr_warmup must run at the full base LRs (the logit
+    # scalars' group at its scalar_lr_factor), and the cosine -- whose recursive form scales its whole curve by
+    # the LR it starts from -- must then follow its closed form from those bases
+    B, n_steps, lr_init, factor = 1_024, 20, 1.0e-4, 10.0
+    opt = torch.optim.AdamW([{"params": [torch.nn.Parameter(torch.zeros(1))], "lr": lr_init},
+                             {"params": [torch.nn.Parameter(torch.zeros(1))], "lr": lr_init * factor}])
+    n_warmup = -(-lr_warmup // B)
+    t_max = n_steps - n_warmup
+    pipe = SimpleNamespace(opt=opt, lr_warmup=lr_warmup, lr_init_nom=lr_init, n_samps_seen=0,
+                           lr_sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=t_max, eta_min=0.0))
+
+    lrs = []
+    for _ in range(n_steps):
+        pipe.n_samps_seen += B
+        lr = TrainPipeline._update_lr_warmup(pipe)
+        assert lr == opt.param_groups[0]["lr"]
+        lrs.append([pg["lr"] for pg in opt.param_groups])
+        opt.step()
+        if pipe.n_samps_seen >= lr_warmup:
+            pipe.lr_sched.step()
+
+    for k, (lr, lr_scalar) in enumerate(lrs, start=1):
+        if k < n_warmup:
+            frac = k * B / lr_warmup
+        else:  # the crossing batch (cosine step 0) and on
+            frac = (1 + math.cos(math.pi * (k - n_warmup) / t_max)) / 2
+        assert lr == pytest.approx(lr_init * frac, rel=1e-9)
+        assert lr_scalar == pytest.approx(lr_init * factor * frac, rel=1e-9)

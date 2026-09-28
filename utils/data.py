@@ -761,11 +761,12 @@ def load_cid_2_penult(dataset: str) -> dict:
     key = _PENULT_KEY[dataset]
     return {cid: entry[key] for cid, entry in class_data.items()}
 
-def load_cid_2_nshot(dataset: str, split: str):
-    """(cid -> n-shot bucket name, ordered bucket names) for the validation partition's n-shot buckets
-    ('train/val') -- the same buckets the learning curves use."""
+def load_cid_2_nshot(dataset: str, split: str, eval_pt: str):
+    """(cid -> n-shot bucket name, ordered bucket names) for the n-shot buckets of the partition tier `eval_pt`:
+    'val' the validation partition's ('train/val' -- the same buckets the learning curves use), 'test' the test
+    partition's ('trainval/test' -- the buckets test.py scores by)."""
     sp = load_split(dataset, split)
-    bucket_key = "train/val"
+    bucket_key = {"val": "train/val", "test": "trainval/test"}[eval_pt]
     cid_2_nshot = {cid: name for name in sp.nshot["names"] for cid in sp.nshot["buckets"][bucket_key][name]}
     return cid_2_nshot, list(sp.nshot["names"])
 

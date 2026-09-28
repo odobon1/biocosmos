@@ -2,16 +2,23 @@
 torchrun --standalone --nproc-per-node=auto -m test <campaign>
 
 Test-partition evaluation of a campaign's trainval models -- the campaign's final scores. Requires the
-campaign to have a trainval phase on disk (artifacts/<campaign>/trainval/); errors otherwise. Every model
+campaign to have a trainval phase on disk (artifacts/<campaign>/_phase/trainval/); errors otherwise. Every model
 saved there (the phase's matrix x seeds, each trial's model.pt) is rebuilt from the campaign's frozen
 config snapshot + its coord's recorded overrides, its weights loaded, and evaluated once on the split's
 TEST partitions (test_id/test_ood, EvaluationPipeline with eval_pt="test"; n-shot buckets from the
 split's "trainval/test" view -- test_id classes by their trainval shot counts). Per-trial scores land as
-artifacts/<campaign>/test/_datasets/<dataset>/_arms/<arm>/_coords/<coord>/_seeds/<seed>/<group>.json
-({'chkpt': the saved checkpoint index, 'scores': the group's scores}); trials whose score files are all
+artifacts/<campaign>/_phase/test/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_trial/<n>/eval/sel/{scores,secondary/scores_<group>}.json
+(the group's scores subtree; the tables' Chkpt column reads the coord's config.json copy); trials whose score files are all
 present are skipped, so a relaunch resumes (and a fully-scored campaign just re-renders the tables).
-The run ends with the test workbooks, one per eval group at artifacts/<campaign>/test/map/test_<group>.xlsx
-(report.update_test_stats), styled per the live config/render/stats.yaml.
+Every trial also gets the test partitions' manifold viz (no seed window here, unlike train.py's gate): PCA + the
+sharded t-SNE in the eval loop (collective), cached with the raw embeddings under the trial's eval/sel/viz/cache/,
+then -- once every eval is done, on rank 0 -- the UMAP fits and the stills under eval/sel/viz/vanilla/
+(tools.regen_manifold_viz.render_test_trial; a relaunch renders whichever trials still lack stills). The run ends with the test workbooks, one per eval group at artifacts/<campaign>/_phase/test/
+phase_summary/arms/<campaign>_test-arms.xlsx (+ secondary/<campaign>_test-arms_<group>.xlsx), plus per-dataset score tables at
+_dataset/<dataset>/dataset_summary/arms/performance/{scores,secondary/scores_<group>}.png
+(report.update_test_stats), styled per the live config/render/stats.yaml, and each arm's
+_dataset/<dataset>/_arm/<arm>/arm_summary/best_coord/<n>/eval/sel/ mirror of its trials' score files + stills
+(report.update_test_best_coord).
 """
 
 import shutil
@@ -21,26 +28,28 @@ import torch
 import torch.distributed as dist
 
 from campaign_runner import _build_trial_cfg_dict
-from utils.config import eval_groups, get_config_stats, get_config_train
+from tools.regen_manifold_viz import render_test_trial
+from utils.config import eval_groups, get_config_stats, get_config_train, group_path, load_manifold_viz_render_config_dict
 from utils.data import stage_img_cache
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
 from utils.eval import EvaluationPipeline
 from utils.hardware import apply_backend_flags
-from utils.report import update_test_stats
-from utils.train import ArtifactManager, format_scores
+from utils.manifold_viz import compute_projections
+from utils.report import update_test_best_coord, update_test_stats
+from utils.train import ArtifactManager, dpath_viz_cache, dpath_viz_plots, format_scores
 from utils.utils import get_text_template, load_json, save_json, paths
 
 import pdb
 
 
 def _dpath_coord(dpath_phase, dataset, arm, coord):
-    return dpath_phase / "_datasets" / dataset / "_arms" / arm / "_coords" / coord
+    return dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord
 
 def _plan(campaign):
     """(cfg_snapshot, metadata, combos): the trainval phase's frozen config snapshot, its
     phase_metadata.json, and its planned (dataset, arm, coord) combos in campaign order. Raises
     when the campaign has no trainval phase on disk -- there are then no models to test."""
-    dpath_trainval = paths["artifacts"] / campaign / "trainval"
+    dpath_trainval = paths["artifacts"] / campaign / "_phase" / "trainval"
     if not dpath_trainval.exists():
         raise FileNotFoundError(
             f"{dpath_trainval} does not exist -- test evaluates the trainval phase's saved models; run the "
@@ -56,26 +65,28 @@ def _plan(campaign):
 
 def _pending(dpath_test, combos, seeds, groups):
     """{(dataset, arm, coord): [seeds]} of the trials still to score: those whose test score files
-    (_seeds/<seed>/<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
+    (_trial/<n>/eval/sel/ scores.json + secondary/scores_<group>.json, every eval group the campaign has in play) aren't all on disk. Computed
     once up front, before anything is written, so every rank derives the identical eval sequence
     (evaluate() is collective)."""
     pending = {}
     for dataset, arm, coord in combos:
         for seed in seeds:
-            dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed)
-            if not all((dpath_scores / f"{group_key}.json").exists() for group_key in groups):
+            dpath_scores = _dpath_coord(dpath_test, dataset, arm, coord) / "_trial" / str(seeds.index(seed) + 1) / "eval" / "sel"
+            if not all(group_path(dpath_scores, group_key, "scores", ".json").exists() for group_key in groups):
                 pending.setdefault((dataset, arm, coord), []).append(seed)
     return pending
 
 @rank0
 def _seed_test_tree(dpath_test, dpath_trainval, metadata, combos):
-    """Make the test tree self-contained for table rendering: phase_metadata.json (the trainval
-    phase's planned matrix, which update_test_stats keys its rows off, plus its seeds) plus every planned
-    coord's config.json + overrides.json copied over from the trainval tree (the overrides bands read
+    """Make the test tree self-contained for table and viz rendering: phase_metadata.json (the trainval
+    phase's planned matrix, which update_test_stats keys its rows off, plus its seeds), the campaign's frozen
+    config snapshot (cfg_baseline.json, which tools.regen_manifold_viz's snapshot mode reads per phase) plus every
+    planned coord's config.json + overrides.json copied over from the trainval tree (the overrides bands read
     them). Refreshed each run, so a matrix grown by a campaign relaunch carries over."""
     dpath_test.mkdir(parents=True, exist_ok=True)
     save_json({key: metadata[key] for key in ("seeds", "matrix")},
               dpath_test / "phase_metadata.json")
+    shutil.copyfile(dpath_trainval / "cfg_baseline.json", dpath_test / "cfg_baseline.json")
     for dataset, arm, coord in combos:
         dpath_dst = _dpath_coord(dpath_test, dataset, arm, coord)
         dpath_dst.mkdir(parents=True, exist_ok=True)
@@ -83,14 +94,27 @@ def _seed_test_tree(dpath_test, dpath_trainval, metadata, combos):
             shutil.copyfile(_dpath_coord(dpath_trainval, dataset, arm, coord) / fname, dpath_dst / fname)
 
 @rank0
-def _save_test_scores(dpath_scores, eval_metrics, chkpt):
-    """The trial's test score files, one per eval group: {'chkpt': the checkpoint index the trainval
-    model was saved at, 'scores': the group's scores} -- the shape report._collect_test_scores reads.
-    All groups are written together, so any one file's presence marks the trial scored."""
-    dpath_scores.mkdir(parents=True, exist_ok=True)
+def _save_test_scores(dpath_scores, eval_metrics):
+    """The trial's test score files under its eval/sel/, one per eval group (scores.json for native, secondary/scores_<group>.json
+    for the rest): the group's scores subtree, the shape report._collect_test_scores reads. All groups are
+    written together, so any one file's presence marks the trial scored."""
     formatted = format_scores(eval_metrics["scores"])
     for group_key, scores_grp in formatted.items():
-        save_json({"chkpt": chkpt, "scores": scores_grp}, dpath_scores / f"{group_key}.json")
+        fpath = group_path(dpath_scores, group_key, "scores", ".json")
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        save_json(scores_grp, fpath)
+
+@rank0
+def _render_manifold_viz(dpath_test, combos, seeds, cfg_manifold_viz):
+    """The UMAP fits + stills of every trial (every one scored by now, its eval/sel/viz/cache/ on disk) not yet
+    rendered (no eval/sel/viz/vanilla/): CPU work, run once every eval is done rather than after each, so no rank
+    waits in a collective while rank 0 draws. A trial's render also rebuilds its arm's best_coord/ mirror."""
+    for dataset, arm, coord in combos:
+        for trial_num in range(1, len(seeds) + 1):
+            dpath_trial = _dpath_coord(dpath_test, dataset, arm, coord) / "_trial" / str(trial_num)
+            if not dpath_viz_plots(dpath_trial / "eval" / "sel", pooled=False).exists():
+                print(f"manifold viz: {dataset}/{arm}/{coord}/{trial_num}", flush=True)
+                render_test_trial(dpath_trial, cfg_manifold_viz)
 
 def main():
     from models import VLMWrapper  # local: models pulls open_clip/transformers, too heavy for module import
@@ -99,8 +123,8 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: torchrun --standalone --nproc-per-node=auto -m test <campaign>")
     campaign = sys.argv[1]
-    dpath_trainval = paths["artifacts"] / campaign / "trainval"
-    dpath_test = paths["artifacts"] / campaign / "test"
+    dpath_trainval = paths["artifacts"] / campaign / "_phase" / "trainval"
+    dpath_test = paths["artifacts"] / campaign / "_phase" / "test"
 
     cfg_snapshot, metadata, combos = _plan(campaign)
     seeds = metadata["seeds"]
@@ -112,7 +136,7 @@ def main():
     missing = [f"{dataset}/{arm}/{coord}/{seed}"
                for (dataset, arm, coord), combo_seeds in pending.items()
                for seed in combo_seeds
-               if not (_dpath_coord(dpath_trainval, dataset, arm, coord) / "_seeds" / str(seed) / "model.pt").exists()]
+               if not (_dpath_coord(dpath_trainval, dataset, arm, coord) / "_trial" / str(seeds.index(seed) + 1) / "model.pt").exists()]
     if missing:
         raise FileNotFoundError(
             f"no trainval model.pt for {len(missing)} trial(s) of campaign '{campaign}': {missing} -- "
@@ -165,22 +189,35 @@ def main():
         eval_pipe = EvaluationPipeline(cfg, text_template_eval, modelw.img_pp_inf, eval_pt="test")
         for seed in pending[combo]:
             idx_eval += 1
-            dpath_trial_tv = _dpath_coord(dpath_trainval, dataset, arm, coord) / "_seeds" / str(seed)
+            trial_num = seeds.index(seed) + 1
+            dpath_trial_tv = _dpath_coord(dpath_trainval, dataset, arm, coord) / "_trial" / str(trial_num)
             state = torch.load(dpath_trial_tv / "model.pt", map_location="cpu", weights_only=True)
             modelw._unwrapped_model.load_state_dict(state)
-            eval_metrics, time_eval, _ = eval_pipe.evaluate(modelw, loss_flag=False)
-            _save_test_scores(_dpath_coord(dpath_test, dataset, arm, coord) / "_seeds" / str(seed),
-                              eval_metrics, cfg.chkpt_stop)
+            # manifold viz for every trial (no seed window, unlike train.py's gate): PCA + the sharded t-SNE here
+            # (COLLECTIVE -- every rank enters), cached with the raw embeddings under the trial's eval/sel/viz/cache/;
+            # the UMAP fits + stills follow once every eval is done (_render_manifold_viz)
+            eval_metrics, time_eval, eval_bundles = eval_pipe.evaluate(modelw, loss_flag=False, collect_eval_bundles=True)
+            dpath_sel = _dpath_coord(dpath_test, dataset, arm, coord) / "_trial" / str(trial_num) / "eval" / "sel"
+            torch.cuda.empty_cache()  # return the eval's reserved-but-unallocated pool before the t-SNE's transient buffers allocate
+            compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_viz_cache(dpath_sel), cfg.manifold_viz,
+                                1 << cfg.hw.eval["tsne_chunk_log2"])
+            _save_test_scores(dpath_sel, eval_metrics)  # last: a scored trial's viz cache is complete
             if dist.get_rank() == 0:
                 score = float(eval_metrics["scores"]["native"]["comp"]["map"]["all"])
                 print(f"[{idx_eval}/{n_evals}] {dataset}/{arm}/{coord}/{seed} (chkpt {cfg.chkpt_stop}): "
                       f"native comp mAP {score:.4f} ({time_eval:.0f}s)", flush=True)
 
-    dist.barrier()  # every trial's score files on disk before rank 0 renders the tables
+    dist.barrier()  # every trial's score files + viz caches on disk before rank 0 renders
     ArtifactManager.dpath_phase = dpath_test
     cfg_stats = get_config_stats()
     update_test_stats(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                       cfg_stats.supp_scores, cfg_stats.overrides)
+    # the viz render reads the frozen trial half of manifold_viz.yaml + the live render half, as the campaign's render
+    # worker does (tools.regen_manifold_viz's snapshot mode)
+    _render_manifold_viz(dpath_test, combos, seeds, {**cfg_snapshot["manifold_viz"], **load_manifold_viz_render_config_dict()})
+    for dataset, arms in metadata["matrix"].items():
+        for arm in arms:
+            update_test_best_coord(dataset, arm)
     cleanup_ddp()
 
 

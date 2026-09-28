@@ -8,30 +8,46 @@ import yaml
 from tools import zip as zip_tool
 
 
-TRIAL = "artifacts/camp/_screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/_seeds/42"
+TRIAL = "artifacts/camp/_phase/screen/_dataset/cub/_arm/mp/_coord/LR-1e-5/_trial/1"
+BEST = "artifacts/camp/_phase/screen/_dataset/cub/_arm/mp/arm_summary/best_coord/1"  # the arm's mirror of a trial
+TEST = "artifacts/camp/_phase/test/_dataset/cub/_arm/mp/_coord/LR-1e-5/_trial/1"  # a test trial: one eval, eval/sel/
+TEST_BEST = "artifacts/camp/_phase/test/_dataset/cub/_arm/mp/arm_summary/best_coord/1"
 CORE = {  # always included, whatever the toggles
-    "artifacts/camp/_screen/phase_metadata.json",
-    "artifacts/camp/_screen/_datasets/cub/_arms/mp/_coords/LR-1e-5/config.json",
+    "artifacts/camp/_phase/screen/phase_metadata.json",
+    "artifacts/camp/_phase/screen/_dataset/cub/_arm/mp/_coord/LR-1e-5/config.json",
     f"{TRIAL}/trial_metadata.json",
     f"{TRIAL}/data_trial.pkl",
-    f"{TRIAL}/evals/eval1/native.json",
-    f"{TRIAL}/evals/_selected/map/native.json",
-    f"{TRIAL}/learning_curves/scores/native.png",
+    f"{TRIAL}/eval/all/1/scores.json",
+    f"{TRIAL}/eval/sel/scores.json",
+    f"{TRIAL}/learning_curves/scores.png",
     f"{TRIAL}/logs/epoch.log",
+    f"{BEST}/eval/sel/scores.json",
+    f"{BEST}/learning_curves/scores.png",
+    "artifacts/camp/_phase/test/cfg_baseline.json",
+    f"{TEST}/eval/sel/scores.json",
+    f"{TEST_BEST}/eval/sel/scores.json",
 }
 BULKY = {  # toggle -> the files it governs
     "weights": {f"{TRIAL}/model.pt", f"{TRIAL}/chkpts/in_progress/train_state.pt"},
     "manifold_viz": {
-        f"{TRIAL}/evals/eval1/viz/8panel/joint.png",
-        f"{TRIAL}/evals/eval1/viz_pooled/8panel/joint.png",
-        f"{TRIAL}/viz/8panel/joint.gif",
-        f"{TRIAL}/viz_pooled/8panel/joint.gif",
+        f"{TRIAL}/eval/all/1/viz/vanilla/8panel/joint.png",
+        f"{TRIAL}/eval/all/1/viz/pooled/8panel/joint.png",
+        f"{TRIAL}/eval/sel/viz/vanilla/8panel/joint.png",
+        f"{TRIAL}/eval/best/viz/pooled/8panel/joint.png",
+        f"{BEST}/eval/sel/viz/vanilla/8panel/joint.png",
+        f"{TRIAL}/viz_dyn/vanilla/8panel/joint.gif",
+        f"{TRIAL}/viz_dyn/pooled/8panel/joint.gif",
+        f"{TEST}/eval/sel/viz/vanilla/8panel/joint.png",
+        f"{TEST_BEST}/eval/sel/viz/vanilla/8panel/joint.png",
     },
     "manifold_viz_cache": {
-        f"{TRIAL}/evals/eval1/embs.npz",
-        f"{TRIAL}/evals/eval1/projections.npz",
-        f"{TRIAL}/evals/eval1/projections_pooled.npz",
-        f"{TRIAL}/evals/eval1/orient_ref.pkl",
+        f"{TRIAL}/eval/all/1/viz/cache/embs.npz",
+        f"{TRIAL}/eval/all/1/viz/cache/projections.npz",
+        f"{TRIAL}/eval/all/1/viz/cache/projections_pooled.npz",
+        f"{TRIAL}/eval/all/1/viz/cache/orient_ref.pkl",
+        f"{TEST}/eval/sel/viz/cache/embs.npz",
+        f"{TEST}/eval/sel/viz/cache/projections.npz",
+        f"{TEST}/eval/sel/viz/cache/orient_ref.pkl",
     },
     "batch_logs": {f"{TRIAL}/logs/batch/grad_norm.log", f"{TRIAL}/logs/batch/sim_targ.log"},
 }
@@ -124,8 +140,8 @@ def test_multiple_campaigns(root: Path) -> None:
     names = _names(fpath_zip)
 
     assert fpath_zip.name.endswith("_camp_camp2.zip")
-    assert "biocosmos/artifacts/camp/_screen/phase_metadata.json" in names
-    assert "biocosmos/artifacts/camp2/_screen/phase_metadata.json" in names
+    assert "biocosmos/artifacts/camp/_phase/screen/phase_metadata.json" in names
+    assert "biocosmos/artifacts/camp2/_phase/screen/phase_metadata.json" in names
 
 
 def test_unknown_campaign_exits(root: Path) -> None:

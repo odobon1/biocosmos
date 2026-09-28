@@ -28,13 +28,11 @@ from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, sim_grad_entropies_actual
 from utils.eval import EvaluationPipeline
 from utils.manifold_viz import compute_projections, compute_pooled_projections
-from utils.train import TrialData, ArtifactManager, parse_scores
+from utils.train import TrialData, ArtifactManager, dpath_eval_seq, dpath_viz_cache, parse_scores
 from utils.report import (
     plot_metrics,
     update_metric_stats,
     update_chkpt_selection,
-    arm_sweep_complete,
-    dataset_sweep_complete,
     seed_sweep_complete,
     update_arm_metrics,
     update_dataset_metrics,
@@ -171,7 +169,7 @@ class TrainPipeline:
         self.chkpt_thresh = self.cfg.chkpt_interval
         self.samps_stop = samps_stop(self.cfg)
         self._kill_chkpt = kill_chkpt(self.cfg)
-        self._killed = None  # the train-time eval index the trial was killed at (kill_thresh); None until/unless it is
+        self._killed = False  # whether the trial was killed at its kill checkpoint (kill_thresh)
         self.lr_init_nom = self.cfg.lr["init"]
 
         self.n_samps_seen = 0
@@ -238,10 +236,13 @@ class TrainPipeline:
         self.lr_sched = CosineAnnealingLR(self.opt, T_max=total_steps, eta_min=eta_min)
 
     def _update_lr_warmup(self) -> float:
-        if self.lr_warmup == 0 or self.n_samps_seen >= self.lr_warmup:
+        # warmup holds until the cosine's first step, so the batch that reaches lr_warmup is set to the full
+        # base LRs (frac capped at 1): CosineAnnealingLR's recursive form scales its whole curve by the LR it
+        # starts from, so leaving that batch at the previous batch's fraction would lower the peak for the run
+        if self.lr_warmup == 0 or self.lr_sched.last_epoch > 0:
             lr = self.opt.param_groups[0]["lr"]
         else:
-            frac = self.n_samps_seen / self.lr_warmup
+            frac = min(self.n_samps_seen / self.lr_warmup, 1.0)
             lr = self.lr_init_nom * frac
             # per-group bases so the logit scalars keep their scalar_lr_factor through warmup
             for pg, lr_base in zip(self.opt.param_groups, self.lr_sched.base_lrs):
@@ -361,25 +362,27 @@ class TrainPipeline:
         )
 
     @rank0
-    def _save_eval_data(self, dpath, idx_eval):
-        ArtifactManager.save_eval_data(dpath, self.data.eval_metrics, idx_eval, self.cfg.n_chkpts, self.n_samps_seen, self.cfg.sample_volume)
+    def _save_eval_data(self, dpath):
+        ArtifactManager.save_eval_data(dpath, self.data.eval_metrics)
 
     @rank0
     def _write_base_eval(self, entry, eval_metrics):
-        # materialize the base-eval cache entry into evals/base/ so base is a uniform member of the
+        # materialize the base-eval cache entry into eval/all/0/ so base is a uniform member of the
         # eval sequence the render pass sweeps. The per-group metrics files always (every trial records
         # its base eval, written from eval_metrics as eval 0 so base carries the shared fields too);
         # projections + embs only for viz trials -- a non-viz trial computes none of its own projections,
         # so it mustn't inherit the cache's base projections either, and its cache hit is gated on the
         # entry carrying them (require_projections/require_embs). On a fresh base eval the npz files were
-        # computed straight into base/ (already on disk, skipped here); only a cache hit writes them.
-        dst = ArtifactManager.dpath_trial / "evals" / "base"
-        dst.mkdir(parents=True, exist_ok=True)
-        ArtifactManager.save_eval_data(dst, eval_metrics, 0, self.cfg.n_chkpts, self.n_samps_seen, self.cfg.sample_volume)
-        if self._manifold_viz and not (dst / "projections.npz").exists():
-            np.savez(dst / "projections.npz", **entry["projections"])
-        if self._manifold_viz and not (dst / "embs.npz").exists():
-            np.savez(dst / "embs.npz", **entry["embs"])
+        # computed straight into base's viz/cache/ (already on disk, skipped here); only a cache hit writes them.
+        dst = dpath_eval_seq(ArtifactManager.dpath_trial) / "0"
+        ArtifactManager.save_eval_data(dst, eval_metrics)
+        dpath_cache = dpath_viz_cache(dst)
+        if self._manifold_viz:
+            dpath_cache.mkdir(parents=True, exist_ok=True)
+        if self._manifold_viz and not (dpath_cache / "projections.npz").exists():
+            np.savez(dpath_cache / "projections.npz", **entry["projections"])
+        if self._manifold_viz and not (dpath_cache / "embs.npz").exists():
+            np.savez(dpath_cache / "embs.npz", **entry["embs"])
 
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
         # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.
@@ -392,31 +395,29 @@ class TrainPipeline:
             compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_cache, self.cfg.manifold_viz,
                                 1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
-    def _viz_eval(self, eval_bundles, eval_name):
+    def _viz_eval(self, eval_bundles, idx_eval):
         """Compute + cache this eval's manifold projections (COLLECTIVE -- every rank must enter) under
-        evals/<eval_name>/. Rendering from the cache is done off-process post-trial by the campaign render
+        eval/all/<idx_eval>/viz/cache/. Rendering from the cache is done off-process post-trial by the campaign render
         worker (tools/regen_manifold_viz.py), so no rank blocks in a collective while rank 0 renders."""
-        dpath_eval = ArtifactManager.dpath_trial / "evals" / eval_name
-        self._compute_projections_timed(eval_bundles, dpath_eval)
+        self._compute_projections_timed(eval_bundles, dpath_viz_cache(dpath_eval_seq(ArtifactManager.dpath_trial) / str(idx_eval)))
 
     def _pooled_eval(self):
         """Fit the pooled shared-frame projection over every threshold's cached embeddings (COLLECTIVE --
-        sharded t-SNE, every rank must enter) and cache the per-threshold masked blocks under evals/*/,
+        sharded t-SNE, every rank must enter) and cache the per-threshold masked blocks under eval/all/*/viz/cache/,
         rendered post-trial off-process. Runs once at end-of-trial, after every per-eval cache is written."""
         torch.cuda.empty_cache()  # release the training step's reserved pool before the pooled t-SNE buffers
         budget = self.cfg.manifold_viz["pooled"]["budget"]
         with self.time_tracker.measure("viz_compute"):
-            compute_pooled_projections(ArtifactManager.dpath_trial / "evals", self.cfg.manifold_viz, budget,
+            compute_pooled_projections(dpath_eval_seq(ArtifactManager.dpath_trial), self.cfg.manifold_viz, budget,
                                        1 << self.cfg.hw.eval["tsne_chunk_log2"])
 
     def _save_mid_eval(self, threshold_hit, eval_bundles):
         # _viz_eval -> compute_projections runs the sharded t-SNE collectively, so every rank must
         # enter here; the metrics write (_save_eval_data) is @rank0.
         idx_eval = threshold_hit // self.cfg.chkpt_interval
-        eval_name = f"eval{idx_eval}"
-        self._save_eval_data(ArtifactManager.dpath_trial / "evals" / eval_name, idx_eval)
+        self._save_eval_data(dpath_eval_seq(ArtifactManager.dpath_trial) / str(idx_eval))
         if self._manifold_viz:
-            self._viz_eval(eval_bundles, eval_name)
+            self._viz_eval(eval_bundles, idx_eval)
 
     @rank0
     def _print_log_eval(self, header):
@@ -443,9 +444,9 @@ class TrainPipeline:
         if self.eval_enabled:
             self.data.update_eval(self.n_samps_seen)
             self._print_log_eval(header)
-            self._save_eval_data(ArtifactManager.dpath_model_checkpoint, self.chkpt_thresh // self.cfg.chkpt_interval - 1)
+            self._save_eval_data(ArtifactManager.dpath_model_checkpoint)
         self._print_block_coverage(header)
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed)
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.cfg.n_chkpts, self.n_samps_seen, mem, self._killed)
         ArtifactManager.update_campaign_time()
         ArtifactManager.update_campaign_memory(mem)
 
@@ -538,7 +539,7 @@ class TrainPipeline:
 
             if self._resume_state is None:
                 mem = snapshot_memory(self.cfg.device)  # COLLECTIVE -- every rank must enter
-                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.n_samps_seen, mem, self._killed, init_flag=True)
+                ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.cfg.n_chkpts, self.n_samps_seen, mem, self._killed, init_flag=True)
                 if self.eval_enabled:
                     PrintLog.texts_eval(self.eval_pipe)
 
@@ -570,9 +571,9 @@ class TrainPipeline:
                         collect_eval_bundles=self._manifold_viz,
                     )
                     if self._manifold_viz:
-                        self._viz_eval(eval_bundles, "base")  # projections (+ embs if pooled) straight into evals/base
+                        self._viz_eval(eval_bundles, 0)  # projections (+ embs if pooled) straight into the base eval dir
                     entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics)  # rank0 gets the entry back; None elsewhere
-                self._write_base_eval(entry, eval_metrics)  # base -> evals/base (uniform member of the eval sequence)
+                self._write_base_eval(entry, eval_metrics)  # base -> eval/all/0 (uniform member of the eval sequence)
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
@@ -597,7 +598,7 @@ class TrainPipeline:
                 # the in-loop stop checks sit after a batch trains, so guard here or the resumed trial
                 # trains one extra batch past its stop and re-saves the drifted state every attempt.
                 # Likewise a resume of a killed trial (crash after its kill checkpoint) must not train on.
-                if self._killed is not None or self.n_samps_seen >= self.samps_stop:
+                if self._killed or self.n_samps_seen >= self.samps_stop:
                     break
                 self.timer_train.start()
                 self.idx_epoch += 1
@@ -715,13 +716,13 @@ class TrainPipeline:
                                 self._save_mid_eval(threshold_hit, eval_bundles)
                                 # KILL CHECK (kill_thresh): a trial that has not beaten its base eval by
                                 # this checkpoint ends here -- this checkpoint is its final one (plots,
-                                # trial_metadata.json's killed=<idx>) and the final eval below is skipped
+                                # trial_metadata.json's killed: true) and the final eval below is skipped
                                 if threshold_hit // self.cfg.chkpt_interval == self._kill_chkpt and self._kill_verdict(eval_metrics):
-                                    self._killed = threshold_hit // self.cfg.chkpt_interval
+                                    self._killed = True
                             self._checkpoint(
-                                header=f"{threshold_hit // self.cfg.chkpt_interval}/{self.cfg.n_chkpts}" + (" - Killed" if self._killed is not None else ""),
+                                header=f"{threshold_hit // self.cfg.chkpt_interval}/{self.cfg.n_chkpts}" + (" - Killed" if self._killed else ""),
                                 idx_batch=idx_batch,
-                                final=self._killed is not None,
+                                final=self._killed,
                             )
                             ArtifactManager.save_rng_states(self._local_rank)
                             dist.barrier()
@@ -729,7 +730,7 @@ class TrainPipeline:
                         self.timer_train.start()
                         pbar.refresh()
 
-                    if self._killed is not None or self.n_samps_seen >= self.samps_stop:
+                    if self._killed or self.n_samps_seen >= self.samps_stop:
                         break
 
                 # EPOCH DONE
@@ -757,12 +758,12 @@ class TrainPipeline:
                     self.cfg.n_epochs,
                 )
 
-                if self._killed is not None or self.n_samps_seen >= self.samps_stop:
+                if self._killed or self.n_samps_seen >= self.samps_stop:
                     break  # killed, or chkpt_stop reached mid-pass (trainval phase): no further passes
 
             # FINAL EVAL -- a killed trial's kill checkpoint was its final one: nothing left to evaluate or write
 
-            if self.eval_enabled and self._killed is None:
+            if self.eval_enabled and not self._killed:
                 eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
@@ -770,10 +771,10 @@ class TrainPipeline:
                 )
                 self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
-                self._save_eval_data(ArtifactManager.dpath_eval_final, self.cfg.n_chkpts)
+                self._save_eval_data(ArtifactManager.dpath_eval_final)
                 if self._manifold_viz:
-                    self._viz_eval(eval_bundles, f"eval{self.cfg.n_chkpts}")  # COLLECTIVE compute+cache; rendered post-trial off-process
-            if self._killed is None:
+                    self._viz_eval(eval_bundles, self.cfg.n_chkpts)  # COLLECTIVE compute+cache; rendered post-trial off-process
+            if not self._killed:
                 self._checkpoint(
                     header=f"{self.cfg.n_chkpts}/{self.cfg.n_chkpts}",
                     idx_batch=-1,
@@ -792,7 +793,7 @@ class TrainPipeline:
 
 @rank0
 def _deliver_base_model(cfg, modelw, mem):
-    """chkpt_stop 0 -- the pick's BASE eval won its qual checkpoint selection (checkpoint 0 is the pretrained
+    """chkpt_stop 0 -- the pick's BASE eval won its refine checkpoint selection (checkpoint 0 is the pretrained
     model, a selection candidate like any other: report.update_chkpt_selection), so the trainval phase's
     deliverable is that pretrained model itself. It is saved untrained as model.pt and the trial trains not at
     all. The trial dir is still filled out like a completed trainval trial's, its training telemetry empty --
@@ -803,7 +804,7 @@ def _deliver_base_model(cfg, modelw, mem):
     data = TrialData(ArtifactManager.dpath_trial)
     ArtifactManager.save_model(modelw)
     data.save()
-    ArtifactManager.save_metadata_trial(data, 0, TimeTracker(), 0, cfg.n_epochs, 0, mem, None, init_flag=True,
+    ArtifactManager.save_metadata_trial(data, 0, TimeTracker(), 0, cfg.n_epochs, cfg.n_chkpts, 0, mem, False, init_flag=True,
                                         base_selected=True)
     plot_metrics(data, ArtifactManager.dpath_trial, [], cfg.samps_per_epoch,
                  cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting))
@@ -857,27 +858,24 @@ def run_training(cfg):
     )
     train_pipe.train()
     if cfg.phase == "trainval":
-        # the trainval phase's product: the weights at the qual-selected checkpoint (chkpt_stop); it runs no evals,
+        # the trainval phase's product: the weights at the refine-selected checkpoint (chkpt_stop); it runs no evals,
         # so there is nothing to select or aggregate
         ArtifactManager.save_model(train_pipe.modelw)
     else:
         cfg_stats = get_config_stats()  # stats.yaml is render-time only: read live, not frozen into the campaign
         groups = eval_groups(cfg.reporting)  # the eval groups the campaign has in play (frozen)
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
-        # rewrites their evals/_selected/, so the aggregates below see the current selection
+        # rewrites their eval/sel/, so the aggregates below see the current selection
         update_chkpt_selection(groups, cfg_stats.spread_type)
         update_metric_stats(groups, cfg_stats.spread_type)
-        # every cross-coord table/plot refreshes only at the end of its own seed cycle -- once this seed has a
-        # completed trial in every coord of the arm (arm_metrics), every arm x coord of the dataset
-        # (dataset_metrics), and the whole matrix (phase_metrics) -- so it is never rendered from a mix of
-        # coords reselected against different trial counts
-        if arm_sweep_complete(cfg.seed, cfg.dataset, cfg.arm):
-            update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                             cfg_stats.heatmap, cfg_stats.supp_scores)
-        if dataset_sweep_complete(cfg.seed, cfg.dataset):
-            update_dataset_metrics(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                                 cfg_stats.heatmap, cfg_stats.supp_scores)
-        if seed_sweep_complete(cfg.seed):
+        # this trial's arm's (arm_summary) and dataset's (dataset_summary) pngs refresh at every trial completion,
+        # over whatever trials are in -- mid-sweep their rows carry different trial counts, each row naming its
+        # own; the phase workbooks (phase_summary) alone wait for the seed to complete across the whole matrix
+        update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+                           cfg_stats.heatmap, cfg_stats.supp_scores)
+        update_dataset_metrics(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
+                               cfg_stats.heatmap, cfg_stats.supp_scores)
+        if seed_sweep_complete(cfg.idx_seed + 1):
             update_phase_metrics(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                                   cfg_stats.supp_scores, cfg_stats.overrides)
 

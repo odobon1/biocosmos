@@ -2,9 +2,10 @@ import math
 
 import numpy as np
 import torch
+from PIL import Image
 
-from utils.manifold_viz import (_hbeta_search, _knn, _orient, _sparse_joint_p, _tsne_torch, compute_pca,
-                            compute_umap, orient_pca, orient_proj, orient_sphere)
+from utils.manifold_viz import (_eval_label, _hbeta_search, _knn, _orient, _save_gif_stream, _sparse_joint_p, _tsne_torch,
+                            compute_pca, compute_umap, orient_pca, orient_proj, orient_sphere)
 
 
 def _blob(n=300, d=16, seed=0):
@@ -238,3 +239,28 @@ def test_orient_sphere_moves_only_the_reorganized_cluster() -> None:
     moved = com_shift("c1")
     assert all(d < 20.0 for d in untouched.values()), untouched  # dragged less than half the 40 deg move
     assert moved > max(untouched.values())                       # the reorganized cluster glides the most
+
+
+def test_eval_label_marks_base_best_and_selected() -> None:
+    # 'Eval <k>' off the eval dir's name, marked (base) at checkpoint 0 and (best) / (selected) at the chkpt record's
+    # own-best / coord-selected indices (in that order when they coincide); unset (None) before the coord has selected
+    chkpt = {"sel": 2, "best": 0}
+    assert _eval_label("0", chkpt) == "Eval 0 (base, best)"
+    assert _eval_label("1", chkpt) == "Eval 1"
+    assert _eval_label("2", chkpt) == "Eval 2 (selected)"
+    assert _eval_label("3", {"sel": 3, "best": 3}) == "Eval 3 (best, selected)"
+    assert _eval_label("0", {"sel": None, "best": None}) == "Eval 0 (base)"
+
+
+def test_save_gif_stream_holds_each_frame_for_its_duration(tmp_path) -> None:
+    # one duration per streamed frame, in order -- render_evolution passes gif.frame_dur.long at the marked evals
+    frames = [Image.new("RGB", (8, 8), c) for c in ("red", "green", "blue")]
+    fpath = tmp_path / "evo.gif"
+    _save_gif_stream(iter(frames), fpath, [3000, 1500, 3000])
+    with Image.open(fpath) as im:
+        durations = []
+        for i in range(im.n_frames):
+            im.seek(i)
+            durations.append(im.info["duration"])
+    assert durations == [3000, 1500, 3000]
+

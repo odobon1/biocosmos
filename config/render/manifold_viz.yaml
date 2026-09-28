@@ -19,7 +19,10 @@ orient:  # Cross-eval orientation: every method's layout is aligned to a running
   ema_tau: 0.5  # (0.0, 1.0]; This fraction of the eval's oriented CoMs is mixed into the running reference
   # (=1.0 --> align to the previous eval only, <1.0 --> damps drift across evals)
 
-eval_duration: 1500  # ms each eval is shown in the evolving GIFs (one frame per eval)
+gif:
+  frame_dur:
+    short: 1000  # ms each eval is shown in the evolving GIFs (one frame per eval)
+    long: 3000  # ms instead for the marked evals: (base), (best), (selected)
 
 bg_color: "#F5F5DC"  # Panel background color in hex format; (null) White. Doubles as the ball color for the
 # umap_sphere panels, whose background behind the ball is always white

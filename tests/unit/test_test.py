@@ -3,6 +3,7 @@ import json
 import pytest
 
 import test as test_script
+from utils.config import group_path
 
 
 def _write_trainval(dpath_trainval, metadata) -> None:
@@ -26,7 +27,7 @@ def test_plan_combos_follow_the_matrix_in_campaign_order(tmp_path, monkeypatch) 
         "seeds": [42, 43],
         "matrix": {"cub": {"a1": ["c1"], "a2": ["c2"]}, "bryo": {"a1": ["c1", "c3"], "a2": ["c2"]}},
     }
-    _write_trainval(tmp_path / "camp" / "trainval", metadata)
+    _write_trainval(tmp_path / "camp" / "_phase" / "trainval", metadata)
 
     cfg_snapshot, metadata_out, combos = test_script._plan("camp")
 
@@ -42,12 +43,13 @@ def test_pending_skips_fully_scored_trials(tmp_path) -> None:
     dpath_test = tmp_path / "test"
     combos = [("cub", "a1", "c1")]
     groups = {"native": "Standard", "joint_macro": "GZSL"}
-    dpath_seeds = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_seeds"
-    for group_key in groups:  # seed 42: fully scored
-        (dpath_seeds / "42").mkdir(parents=True, exist_ok=True)
-        (dpath_seeds / "42" / f"{group_key}.json").write_text("{}")
-    (dpath_seeds / "43").mkdir(parents=True)  # seed 43: partially scored
-    (dpath_seeds / "43" / "native.json").write_text("{}")
+    dpath_trials = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_trial"
+    for group_key in groups:  # seed 42 (trial 1): fully scored
+        fpath = group_path(dpath_trials / "1" / "eval" / "sel", group_key, "scores", ".json")
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text("{}")
+    (dpath_trials / "2" / "eval" / "sel").mkdir(parents=True)  # seed 43 (trial 2): partially scored
+    (dpath_trials / "2" / "eval" / "sel" / "scores.json").write_text("{}")
 
     pending = test_script._pending(dpath_test, combos, [42, 43, 44], groups)
 
@@ -66,6 +68,7 @@ def test_seed_test_tree_copies_metadata_and_coord_configs(tmp_path) -> None:
     }
     dpath_coord_tv = test_script._dpath_coord(dpath_trainval, "cub", "a1", "c1")
     dpath_coord_tv.mkdir(parents=True)
+    (dpath_trainval / "cfg_baseline.json").write_text(json.dumps({"manifold_viz": {"n_seeds": 1}}))
     (dpath_coord_tv / "config.json").write_text(json.dumps({"loss1": {"targ": "sp"}}))
     (dpath_coord_tv / "overrides.json").write_text(json.dumps({"arm": {}, "coord": {}}))
 
@@ -73,6 +76,27 @@ def test_seed_test_tree_copies_metadata_and_coord_configs(tmp_path) -> None:
 
     written = json.loads((dpath_test / "phase_metadata.json").read_text())
     assert written == {"seeds": [42], "matrix": {"cub": {"a1": ["c1"]}}}
+    assert json.loads((dpath_test / "cfg_baseline.json").read_text()) == {"manifold_viz": {"n_seeds": 1}}
     dpath_coord_test = test_script._dpath_coord(dpath_test, "cub", "a1", "c1")
     assert json.loads((dpath_coord_test / "config.json").read_text()) == {"loss1": {"targ": "sp"}}
     assert json.loads((dpath_coord_test / "overrides.json").read_text()) == {"arm": {}, "coord": {}}
+
+
+def test_render_manifold_viz_renders_trials_lacking_stills(tmp_path, monkeypatch) -> None:
+    # the end-of-run viz render covers every trial (all scored, their eval/sel/viz/cache/ on disk) that has no
+    # stills yet: trial 1 (unrendered) is rendered, trial 2 (its stills already there -- a relaunch) is left alone
+    dpath_test = tmp_path / "test"
+    combos = [("cub", "a1", "c1")]
+    dpath_trials = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_trial"
+    for trial_num, subs in ((1, ("viz/cache/projections.npz",)),
+                            (2, ("viz/cache/projections.npz", "viz/vanilla/8panel/joint.png"))):
+        for sub in ("scores.json", *subs):
+            fpath = dpath_trials / str(trial_num) / "eval" / "sel" / sub
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            fpath.write_text("x")
+    rendered = []
+    monkeypatch.setattr(test_script, "render_test_trial", lambda dpath_trial, cfg: rendered.append((dpath_trial, cfg)))
+
+    test_script._render_manifold_viz(dpath_test, combos, [42, 43], {"umap": {}})
+
+    assert rendered == [(dpath_trials / "1", {"umap": {}})]

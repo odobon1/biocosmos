@@ -1,0 +1,21 @@
+datasets: [cub, nymph]
+
+n_trials_screen: 1
+n_trials_refine: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the refine phase; (null) no refine phase
+trainval: false  # {true, false}; (true) after the refine phase, retrain each pick on the trainval partition up to its refine-selected checkpoint, one run per refine seed, saving the weights (needs n_trials_refine)
+
+baseline_overrides:
+  loss.logits.scalar_lr_factor: 1000
+
+ablation_arms:
+  - - {loss.logits.scale.freeze: false, name: learned}
+    - {loss.logits.scale.freeze: true, name: frozen}
+  - - {loss.loss1.targ: sp, loss.loss1.infonce.tsm.type: linear, name: FLYP}
+    - {loss.loss1.targ: mp, loss.loss1.infonce.tsm.type: linear, name: SupCon}
+    - {loss.loss1.targ: phylo, loss.loss1.infonce.tsm.type: softmax, name: HCon}
+
+hpo_coords:
+  - - {lr.init: [2.0e-5, 6.0e-5, 2.0e-4]}
+  - - {loss.logits.scale.init: [1, 4, 16, 64, 256]}
+
+suffix: null  # {null, [str]}; no suffix if set to null

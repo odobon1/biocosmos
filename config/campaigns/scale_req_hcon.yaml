@@ -1,0 +1,20 @@
+datasets: [cub, nymph]
+
+n_trials_screen: 1
+n_trials_refine: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the refine phase; (null) no refine phase
+trainval: false  # {true, false}; (true) after the refine phase, retrain each pick on the trainval partition up to its refine-selected checkpoint, one run per refine seed, saving the weights (needs n_trials_refine)
+
+baseline_overrides:
+  loss.loss1.targ: phylo
+  loss.loss1.infonce.tsm.type: softmax
+
+ablation_arms:
+  - - {loss.loss1.infonce.tsm.sm_scale: pinned, name: pinned}
+    - {loss.loss1.infonce.tsm.sm_scale: pinned1, name: pinned1}
+    - {loss.loss1.infonce.tsm.sm_scale: pinned3, name: pinned3}  # violates boundary constraint
+
+hpo_coords:
+  - - {lr.init: [2.0e-5, 6.0e-5, 2.0e-4]}
+  - - {loss.logits.scale.init: [1, 4, 16, 64, 256]}
+
+suffix: null  # {null, [str]}; no suffix if set to null

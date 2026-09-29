@@ -1,2 +1,5 @@
 campaigns:
-  - camp.dev
+  - camp.grid_skid
+  - camp.res_block_bin
+  - camp.scale_req_hcon
+  - camp.scale_req_res_block_hcon

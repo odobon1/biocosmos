@@ -337,8 +337,8 @@ def test_stats_min_max_mean_exact():
     assert stats["sim_max"] == pytest.approx(sim.max().item(), abs=1e-5)
     assert stats["sim_mean"] == pytest.approx(sim.mean().item(), abs=1e-5)
     assert stats["targ_mean"] == pytest.approx(targs.mean().item(), abs=1e-5)
-    # the margins stream exactly too, one per kappa: I2T per-row margins just add across tiles, T2I
-    # per-column weight sums fold across tiles before the ratio; the mean is their average
+    # the margins stream exactly too, one per kappa: each direction's per-anchor-row margins just add across
+    # tiles (the text anchors' off their own tile); the mean is their average
     i2t = [L.hard_pair_similarity_margin(sim, targs, kappa).mean().item() for kappa in (0.0, 5.0)]
     t2i = [L.hard_pair_similarity_margin(sim.T, targs.T, kappa).mean().item() for kappa in (0.0, 5.0)]
     assert stats["sim_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
@@ -352,6 +352,37 @@ def test_stats_min_max_mean_exact():
     # and so does the similarity histogram, its bins spanning the cosine's [-1, 1]
     expected = torch.histc(sim, bins=HIST_BINS, min=-1.0, max=1.0) / sim.numel()
     assert stats["sim_hist"] == pytest.approx(expected.tolist(), abs=1e-6)
+
+
+@pytest.mark.parametrize("crit_name", ["bce", "bif_bce"])
+@pytest.mark.parametrize("targ1,lambda_", [("mp", 0.0), ("tax", 0.0), ("mp", 0.3)])  # binary, graded, their blend
+def test_stats_margins_match_full_at_any_kappa(crit_name, targ1, lambda_):
+    """The hard-pair margins of BOTH anchor directions match the full batch's at every kappa of
+    reporting.learning_curves.hpsm.kappas -- the large ones included, where a text anchor's hardness weights
+    underflow float64 if streamed per column of the image-anchor tiles under a fixed shift (exp(-kappa (s + 1)):
+    the T2I margin read NaN from kappa ~1000). Each direction is read per anchor row, the text anchors' off
+    their own tile."""
+    kappas = (0, 1, 10, 100, 1_000, 10_000, 100_000)
+    B, C, K, D = 48, 16, 20, 16
+    crit = _make_crit(_cfg(crit=crit_name, lambda_=lambda_), K, B, targ1=targ1, targ2="tax")
+    g = torch.Generator().manual_seed(3)
+    img = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
+    txt = torch.nn.functional.normalize(torch.randn(B, D, generator=g), dim=1).requires_grad_(True)
+    class_encs_b = torch.randint(0, K, (B,), generator=g)
+    targ_data_b = _make_targ_data(B, K, 4, class_encs_b)
+
+    sim = compute_sim(img.detach(), txt.detach(), "cos")
+    targs = crit.targ_memb(crit._targets(B, class_encs_b, targ_data_b))
+    _, _, stats, _ = L.chunked_bce_loss_backward(
+        img, txt, class_encs_b, targ_data_b, crit, _compute_logits_fn(_params(1)), C, False, torch.device("cpu"),
+        rank=0, world_size=1, hpsm_kappas=kappas, hist_bins=HIST_BINS,
+    )
+    i2t = [L.hard_pair_similarity_margin(sim, targs, kappa).mean().item() for kappa in kappas]
+    t2i = [L.hard_pair_similarity_margin(sim.T, targs.T, kappa).mean().item() for kappa in kappas]
+    assert all(math.isfinite(margin) for margin in i2t + t2i)  # the full-batch reference is defined at every kappa
+    assert stats["sim_margin_i2t"] == pytest.approx(i2t, abs=1e-5)
+    assert stats["sim_margin_t2i"] == pytest.approx(t2i, abs=1e-5)
+    assert stats["sim_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
 
 
 def test_stats_over_blended_targets():

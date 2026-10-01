@@ -10,8 +10,9 @@ act_chkpt: true  # {true, false}; activation checkpointing
 # InfoNCE. null -> materialize the full BxB matrices. An int U shards the rows across ranks
 # and sweeps each rank's band in U x B blocks -- exact-equivalent, peak VRAM O(U*B).
 # batch_size must be a multiple of G x U. bif_bce and infonce sweep two tiles per block (one
-# per anchor direction); infonce takes one more sweep of the band for its pair-level sim-grad
-# entropies when reporting.batch_diagnostics.sim_targ_stats is on.
+# per anchor direction). With reporting.batch_diagnostics.sim_targ_stats on, bce also forms
+# the second direction's sim tile per block (no grad: the T2I hard-pair margins are read off
+# it), and infonce takes one more sweep of the band for its pair-level sim-grad entropies.
 loss_chunk_size:
   bce: 128  # {null, 64, 128}
   infonce: 128

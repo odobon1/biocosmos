@@ -7,8 +7,10 @@ embedding gather (_AllGather fwd/bwd), the SigLIP-style row-band sharding of the
 computes only its B/world_size band), the summation of disjoint-band partial grads (encoder params via
 the _AllGather-routed representation backward, post-gather logit params via the manual per-parameter
 all-reduce -- plain sum, no /world_size), no_sync, the banded precompute constants (band-partial sums
-all-reduced to rank-identical values), and the post-backward leaf-grad fold that grad-norm logging
-relies on.
+all-reduced to rank-identical values), the post-backward leaf-grad fold that grad-norm logging
+relies on, and -- of the batch stats folded across bands -- the hard-pair similarity margins of both anchor
+directions (per-anchor sums over each rank's band: the image anchors' off the loss tiles, the text anchors'
+off their own text-row tiles), up to a kappa far past where weights streamed per column would underflow.
 
 It binds the REAL VLMWrapper methods to a lightweight harness `self`, wraps a tiny dual-encoder in DDP, and
 asserts three paths agree to fp32 precision on every rank, per config case:
@@ -155,7 +157,7 @@ def build_harness(model_ddp, crit, world_size, device):
         loss_chunk_size=None,
         hw=SimpleNamespace(mixed_prec=False),
         reporting={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
-                 "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}, "hist_bins": 20}},
+                 "learning_curves": {"hpsm": {"kappas": [0.0, 3.0, 10_000.0]}, "hist_bins": 20}},
         device=device,
     )
     return h
@@ -166,7 +168,8 @@ def full_batch_reference(toy, compute_sim, crit, fi, ft, fc, ftd):
     (grads retained: their post-backward .grad is the full-batch dL/dembs that the chunked path's
     returned leaves must carry for grad-norm logging) and the sim branch tuple ((sim,) non-bifurcated,
     (i2t, t2i) bifurcated, mirroring _loss_full_batch; grads retained: their post-backward
-    branch-summed .grad.sum() is the ground truth for the chunked path's tile-accumulated grad_sum_sim)."""
+    branch-summed .grad.sum() is the ground truth for the chunked path's tile-accumulated grad_sum_sim),
+    with the blended target matrix the batch stats read."""
     img = F.normalize(toy.img_enc(fi), dim=1)
     txt = F.normalize(toy.txt_enc(ft), dim=1)
     img.retain_grad()
@@ -207,8 +210,8 @@ def full_batch_reference(toy, compute_sim, crit, fi, ft, fc, ftd):
         logit_scale = (toy.logit_scale, toy.logit_scale2)
     else:
         crit_logits, logit_scale = crit_logits[0], toy.logit_scale
-    loss, loss_raw, _, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=logit_scale, sim=sims[0])
-    return loss, loss_raw, img, txt, sims
+    loss, loss_raw, targs, _ = crit(crit_logits, fc, ftd, train=True, logit_scale=logit_scale, sim=sims[0])
+    return loss, loss_raw, img, txt, sims, targs
 
 
 def grads(model):
@@ -266,7 +269,7 @@ def run(rank, world_size, port):
 
             # (GT) single-process full-batch ground truth
             fi, ft, fc = full_imgs.to(device), full_txts.to(device), full_cls.to(device)
-            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt, sims_gt = full_batch_reference(
+            loss_gt, loss_raw_gt, embs_img_gt, embs_txt_gt, sims_gt, targs_gt = full_batch_reference(
                 toy_gt, compute_sim, crit, fi, ft, fc, full_td)
             toy_gt.zero_grad(set_to_none=True)
             loss_gt.backward()
@@ -284,7 +287,7 @@ def run(rank, world_size, port):
             h_chunk = build_harness(ddp_chunk, crit, world_size, device)
             h_chunk.cfg.loss_chunk_size = chunk_size
             ddp_chunk.zero_grad(set_to_none=True)
-            loss_chunk, _, img_leaf, txt_leaf, _, _, _, gsum_chunk = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
+            loss_chunk, _, img_leaf, txt_leaf, _, _, stats_chunk, gsum_chunk = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
             g_chunk = grads(toy_chunk)
 
             def rel(a, b):
@@ -301,6 +304,14 @@ def run(rank, world_size, port):
             # the tile-accumulated (all-reduced) sim-grad sum must match the full-batch retained-grad sum
             assert abs(gsum_chunk - gsum_gt) < 1e-4 * (abs(gsum_gt) + 1.0), \
                 f"{tag} grad_sum_sim: CHUNK {gsum_chunk} != GT {gsum_gt}"
+            # the hard-pair margins of both anchor directions, folded across bands as per-anchor sums, must
+            # match the full batch's at every kappa -- the large one included
+            S_gt, Q_gt = sims_gt[0].detach().float(), targs_gt.float()
+            kappas = h_chunk.cfg.reporting["learning_curves"]["hpsm"]["kappas"]
+            for key, S, Q in (("sim_margin_i2t", S_gt, Q_gt), ("sim_margin_t2i", S_gt.T, Q_gt.T)):
+                for kappa, margin in zip(kappas, stats_chunk[key]):
+                    margin_gt = L.hard_pair_similarity_margin(S, Q, kappa).mean().item()
+                    assert abs(margin - margin_gt) < 1e-4, f"{tag} {key} kappa={kappa}: CHUNK {margin} != GT {margin_gt}"
             for n in g_gt:
                 assert g_gt[n] is not None, f"{tag} GT grad missing for {n}"
                 assert g_chunk[n] is not None and g_ref[n] is not None, f"{tag} None grad for used param {n}"

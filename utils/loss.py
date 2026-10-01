@@ -1723,22 +1723,20 @@ class _SimTargStatsAccum:
     of each tile (an exact BxB median would need the whole matrix). Similarities, targets and probabilities
     are also summarized as histograms of `hist_bins` bins (reporting.learning_curves.hist_bins), which stream
     exactly -- counts just add across tiles and ranks. The mean hard-pair similarity margins (sim_margin*, one entry per hpsm_kappas
-    value) are exact too. I2T (image anchors): every tile holds whole rows, so the per-row margins just
-    sum across tiles and ranks. T2I (text anchors): a text's weights over the images span every tile
-    and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
-    mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
-    weights underflow only past kappa ~ 300) and the ratio is taken after the fold -- unless the sweep
-    holds the text anchors' own tile too (`t2i_tiles`: the tiled InfoNCE loss's t2i frame, passed to update
-    beside the i2t one), where they are whole rows as well and their margins sum per row like I2T's, at
-    any kappa. p_hist is reported for a BCE-family loss alone (`p_hist`; sim_targ_batch_stats on why),
-    whose tiles pass their logits.
+    value) are exact too: a margin is a softmax-weighted mean along its anchor's whole row, so each
+    direction is read off the tile that holds its anchors as rows -- I2T off the image-anchor tile, T2I off
+    the text-anchor one (the t2i frame: text rows x all images, against the same target rows, Q being
+    symmetric) -- and the per-row margins just sum across tiles and ranks, at any kappa. (A text anchor's
+    weights are NOT streamed per column of the image-anchor tiles: across tiles that needs a shift fixed
+    in advance, and under one that cannot overflow, exp(-kappa (s + 1)), they underflow float64 from
+    kappa ~ 300 -- the margin then reads 0 / 0.) p_hist is reported for a BCE-family loss alone (`p_hist`;
+    sim_targ_batch_stats on why), whose tiles pass their logits.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = {"sim": (-1.0, 1.0), "targ": (0.0, 1.0), "p": (0.0, 1.0)}  # field -> the range its bins span
 
-    def __init__(self, device, hpsm_kappas, hist_bins, B, p_hist=True, t2i_tiles=False):
+    def __init__(self, device, hpsm_kappas, hist_bins, B, p_hist=True):
         self.hist_fields = {f: span for f, span in self._HIST_FIELDS.items() if p_hist or f != "p"}
-        self.t2i_tiles = t2i_tiles
         self.mins = {f: torch.tensor(float("inf"), device=device) for f in self._FIELDS}
         self.maxs = {f: torch.tensor(float("-inf"), device=device) for f in self._FIELDS}
         self.sums = {f: torch.zeros((), dtype=torch.float64, device=device) for f in self._FIELDS}
@@ -1748,12 +1746,13 @@ class _SimTargStatsAccum:
         self.count = 0
         self.kappas = hpsm_kappas
         self.B = B
-        self.margin_sums = torch.zeros(len(hpsm_kappas), dtype=torch.float64, device=device)  # I2T per-row margins, summed
-        # T2I per-column sums per kappa: [pos mass, pos weighted sim, neg mass, neg weighted sim] x B
-        self.t2i_sums = torch.zeros(len(hpsm_kappas), 4, 0 if t2i_tiles else B, dtype=torch.float64, device=device)
-        self.t2i_margin_sums = torch.zeros(len(hpsm_kappas), dtype=torch.float64, device=device)  # t2i_tiles: T2I per-row margins, summed
+        self.margin_sums = torch.zeros(2, len(hpsm_kappas), dtype=torch.float64, device=device)  # (I2T, T2I) per-row margins, summed
 
-    def update(self, sim_tile, targs_tile, logits_tile=None, sim_tile_t2i=None):
+    def update(self, sim_tile, sim_tile_t2i, targs_tile, logits_tile=None):
+        """One block of anchors: `sim_tile` their image-anchor tile (img rows x all txt), which the sim point
+        stats and histogram read, `sim_tile_t2i` their text-anchor one (txt rows x all img), read by the T2I
+        margins alone, `targs_tile` the rows' blended memberships (serving both), `logits_tile` the
+        image-anchor tile's logits (p_hist)."""
         tiles = {
             "sim": sim_tile.reshape(-1).float(),
             "targ": targs_tile.reshape(-1).float(),
@@ -1771,18 +1770,13 @@ class _SimTargStatsAccum:
             # clamped: histc drops what falls outside its range, and a cosine can round an ulp past +-1
             self.hists[field] += torch.histc(tiles[field].clamp(lo, hi), bins=self.hist_bins, min=lo, max=hi).double()
         self.count += tiles["sim"].numel()
-        S, Q = sim_tile.float(), targs_tile.float()
-        self.margin_sums += torch.stack([hard_pair_similarity_margin(S, Q, kappa).double().sum() for kappa in self.kappas])
-        if self.t2i_tiles:
-            # the text anchors' rows against the same target rows (Q is symmetric, so Q.T's are Q's)
-            S_t2i = sim_tile_t2i.float()
-            self.t2i_margin_sums += torch.stack([hard_pair_similarity_margin(S_t2i, Q, kappa).double().sum() for kappa in self.kappas])
-            return
-        S, Q = S.double(), Q.double()
-        for idx_kappa, kappa in enumerate(self.kappas):
-            W_pos = Q * torch.exp(-kappa * (S + 1.0))          # ∝ q exp(-kappa s), shifted by the s >= -1 bound
-            W_neg = (1.0 - Q) * torch.exp(kappa * (S - 1.0))   # ∝ (1-q) exp(+kappa s), shifted by the s <= 1 bound
-            self.t2i_sums[idx_kappa] += torch.stack([W_pos.sum(0), (W_pos * S).sum(0), W_neg.sum(0), (W_neg * S).sum(0)])
+        # each direction's anchors are the rows of its own tile, both against the rows' targets (Q is symmetric,
+        # so the text anchors' Q.T rows are Q's)
+        Q = targs_tile.float()
+        self.margin_sums += torch.stack([
+            torch.stack([hard_pair_similarity_margin(S, Q, kappa).double().sum() for kappa in self.kappas])
+            for S in (sim_tile.float(), sim_tile_t2i.float())
+        ])
 
     def finalize(self, world_size):
         mins = dict(self.mins)
@@ -1792,21 +1786,19 @@ class _SimTargStatsAccum:
         hists = dict(self.hists)
         count = self.count
         margin_sums = self.margin_sums
-        t2i_sums = self.t2i_sums
-        t2i_margin_sums = self.t2i_margin_sums
         if world_size > 1:  # fold per-band partials; the bands partition the BxB rows exactly
             ext = torch.stack([*(-mins[f] for f in self._FIELDS), *(maxs[f] for f in self._FIELDS)])
             dist.all_reduce(ext, op=dist.ReduceOp.MAX)
             mins = {f: -ext[i] for i, f in enumerate(self._FIELDS)}
             maxs = {f: ext[len(self._FIELDS) + i] for i, f in enumerate(self._FIELDS)}
             # the scalar sums and margin accumulators ride along with every histogram's bins in one collective
-            parts = [torch.stack([sums[f] for f in self._FIELDS]), margin_sums, t2i_sums.flatten(), t2i_margin_sums,
+            parts = [torch.stack([sums[f] for f in self._FIELDS]), margin_sums.flatten(),
                      *(hists[f] for f in self.hist_fields)]
             packed = torch.cat(parts)
             dist.all_reduce(packed)
-            sums_v, margin_sums, t2i_flat, t2i_margin_sums, *hists_v = torch.split(packed, [p.numel() for p in parts])
+            sums_v, margin_flat, *hists_v = torch.split(packed, [p.numel() for p in parts])
             sums = {f: sums_v[i] for i, f in enumerate(self._FIELDS)}
-            t2i_sums = t2i_flat.view_as(t2i_sums)
+            margin_sums = margin_flat.view_as(margin_sums)
             hists = dict(zip(self.hist_fields, hists_v))
             count *= world_size  # equal bands -> equal per-rank counts
             # median subsamples: equal bands + equal tile sizes -> equal lengths on every rank, so a
@@ -1823,12 +1815,7 @@ class _SimTargStatsAccum:
             stats[f"{field}_mean"] = (sums[field] / count).item()
         for field in self.hist_fields:
             stats[f"{field}_hist"] = (hists[field] / hists[field].sum()).tolist()
-        i2t = margin_sums / self.B
-        if self.t2i_tiles:
-            t2i = t2i_margin_sums / self.B
-        else:
-            pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
-            t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)
+        i2t, t2i = margin_sums / self.B
         stats["sim_margin_i2t"] = i2t.tolist()
         stats["sim_margin_t2i"] = t2i.tolist()
         stats["sim_margin"] = (0.5 * (i2t + t2i)).tolist()
@@ -2125,7 +2112,9 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
                          second logit-scalar pair (separate logit scalars: one logits tile per loss term).
     - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
     - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sim None.
-    - sim_targ_stats ---- False skips the per-tile stats accumulation and returns batch_stats None.
+    - sim_targ_stats ---- False skips the per-tile stats accumulation -- for a non-bifurcated criterion the
+                         text-anchor sim tile (txt rows x all img, no grad) it builds per block for the T2I
+                         hard-pair margins included -- and returns batch_stats None.
     - hpsm_kappas ------- kappa values the sim_margin* stats are reported at (one entry each).
     - hist_bins --------- bins of the *_hist stats (reporting.learning_curves.hist_bins).
 
@@ -2199,6 +2188,8 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
                     if j == 0:
                         sim_block_stat = sim_block.detach()  # i2t frame -- values match the non-bif sim
                         logits_block_stat = logits_fs[0].detach()  # the primary pair's, as the full-batch stats read
+                    else:
+                        sim_block_stat_t2i = sim_block.detach()  # t2i frame -- the text anchors' rows, for their margins
             else:
                 cgs = center_const if center_const is not None else [None] * n_pairs
                 if center == "sim":
@@ -2220,8 +2211,14 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
             wbce_tot += num.detach().double()
         block_loss.backward()
         if sim_targ_stats:
+            if not crit.bifurcated:
+                # the text anchors' tile (the t2i frame: txt rows x all img), which this criterion's loss never
+                # forms: built for the stats alone, whose T2I hard-pair margins are read off it
+                with torch.no_grad(), autocast_ctx():
+                    sim_block_stat_t2i = compute_sim(txt[rs:re], img, crit.cfg["sim"])
             # the blended target tile (targ_memb): the terms' tiles under their weights, either blend type
-            stats.update(sim_block_stat, sum(w * targs for w, targs in zip(term_ws, term_blocks)), logits_block_stat)
+            stats.update(sim_block_stat, sim_block_stat_t2i, sum(w * targs for w, targs in zip(term_ws, term_blocks)),
+                         logits_block_stat)
 
     if world_size > 1:  # fold the band-partial loss totals; the leaves' .grad stay band-partial
         packed = torch.stack([wbce_tot, raw_tot, grad_sum])
@@ -2552,7 +2549,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
 
     Returns (loss, loss_raw, batch_stats, grad_sum_sim), all detached; gradients left in the leaves' /
     params' .grad. batch_stats carries the full-batch path's keys -- sim_targ_batch_stats' (streamed as on
-    the BCE path, but for the T2I margins, read off the t2i frame's own tiles; no p_hist under InfoNCE),
+    the BCE path, each direction's margins off its own frame's tiles; no p_hist under InfoNCE),
     infonce_batch_stats' and, with sim_grad_sums on, sim_grad_entropies_actual's, which the full-batch
     path's caller adds off the retained sims (TrainPipeline._step_train). The measured gradient is rebuilt
     in float32, where the full-batch path reads a bf16 one under mixed precision. grad_sum_sim =
@@ -2648,7 +2645,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
     raw_tot = torch.zeros((), dtype=torch.float64, device=device)
     fold_actual = sim_targ_stats and sim_grad_sums  # the measured-gradient entropies ride the fold pass
     if sim_targ_stats:
-        stats = _SimTargStatsAccum(device, hpsm_kappas, hist_bins, B, p_hist=False, t2i_tiles=True)
+        stats = _SimTargStatsAccum(device, hpsm_kappas, hist_bins, B, p_hist=False)
         nce_stats = _InfoNCEStatsAccum(device, B, term_scales[0].detach(), clamp)  # the primary pair's scale, as the full-batch stats read
         # each live spec's tsm, its scale (at the spec's own post-clamp alpha) and every anchor's normalizer
         tsm_cfgs = [cfg_targ["infonce"]["tsm"] for _, cfg_targ in crit.targ_specs]
@@ -2707,7 +2704,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
         if sim_targ_stats:
             with torch.no_grad():
                 Q = crit.targ_memb(Qs)  # the blended memberships
-                stats.update(tiles_stat[0][0], Q, sim_tile_t2i=tiles_stat[1][0])
+                stats.update(tiles_stat[0][0], tiles_stat[1][0], Q)
                 for k, (cfg_tsm, s) in enumerate(zip(tsm_cfgs, tsm_scales)):
                     tsm_norms[k, rs:re] = _tsm_norm(Qs[k], cfg_tsm, s)
                 nce_stats.update(rs, re, stat_y(terms64, Y64), Q, tiles_stat)

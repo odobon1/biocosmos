@@ -483,7 +483,7 @@ def test_chunked_asserts_on_geo_sim_center():
     # center: sim needs the cos mean factorization for an exact global mean; TrainConfig rejects the
     # combo at config time, and the chunked entrypoint guards direct callers too
     B, K = 16, 5
-    crit = _make_crit(_cfg(sim="geo1", center="sim"), K, B)
+    crit = _make_crit(_cfg(sim="geo", center="sim"), K, B)
     g = torch.Generator().manual_seed(0)
     img = torch.nn.functional.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
     txt = torch.nn.functional.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)

@@ -280,8 +280,8 @@ class TrainConfig:
         if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
             raise ValueError(f"Unknown loss.crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")
 
-        if self.loss["sim"] not in ("cos", "geo1", "geo2"):
-            raise ValueError(f"Unknown loss.sim: '{self.loss['sim']}', must be one of {{cos, geo1, geo2}}")
+        if self.loss["sim"] not in ("cos", "geo"):
+            raise ValueError(f"Unknown loss.sim: '{self.loss['sim']}', must be one of {{cos, geo}}")
 
         for name, cfg_targ in (("loss.loss1", self.loss["loss1"]), ("loss.loss2", self.loss["loss2"])):
             if cfg_targ["targ"] not in ("sp", "mp", "tax", "phylo"):

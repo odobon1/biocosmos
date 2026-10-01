@@ -11,7 +11,7 @@ crit: null  # {null, infonce, bce, bif_bce}; (null) Resolved from the model fami
 # pretrained bias is dropped), a BCE-family loss always does (loss.logits.bce.bias).
 # note: Bifurcated BCE makes the loss reading x2, but other than that it reduces
 # to standard BCE (identical gradient flows) if no anchor-wise methods are applied
-sim: cos  # {cos, geo1, geo2}
+sim: cos  # {cos, geo}
 blend:  # Blend of loss1's / loss2's targets, under weights (1 - lambda, lambda)
   lambda: 0.0  # [0.0, 1.0]; loss2's share of the target blend; (0.0) loss1's target alone (loss2 inert); (1.0)
   # loss2's target alone (loss1 inert)

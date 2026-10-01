@@ -714,7 +714,7 @@ def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
                 {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"},
                 {"loss.loss1.targ": "mp"},
                 {"loss.loss1.targ": "sp", "name": "sp"},
-                {"loss.sim": "geo1"},
+                {"loss.sim": "geo"},
             ]
         ],
         "ablation_arms",
@@ -723,7 +723,7 @@ def test_expand_combo_groups_derives_name_from_overrides_when_omitted() -> None:
         ("Lambda-0.3_Targ2-hp", {"loss.blend.lambda": 0.3, "loss.loss2.targ": "phylo"}),
         ("Targ-MP", {"loss.loss1.targ": "mp"}),
         ("sp", {"loss.loss1.targ": "sp"}),
-        ("loss.sim-geo1", {"loss.sim": "geo1"}),
+        ("loss.sim-geo", {"loss.sim": "geo"}),
     ]
 
 
@@ -1387,14 +1387,14 @@ def test_run_campaign_persists_and_grows_matrix(tmp_path, monkeypatch) -> None:
             {"loss.loss1.targ": "sp", "name": "sp"},
             {"loss.loss1.targ": "phylo", "name": "hp"},
         ]],
-        hpo_coords=[[{"name": "base"}, {"loss.sim": "geo1"}]],
+        hpo_coords=[[{"name": "base"}, {"loss.sim": "geo"}]],
     )
     cr.run_campaign("cmp_grow", "camp")
 
     with open(tmp_path / "cmp_grow" / "_phase" / "screen" / "phase_metadata.json") as f:
         meta = json.load(f)
     assert meta["seeds"] == [42, 43]
-    assert meta["matrix"] == {d: {a: ["base", "loss.sim-geo1"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
+    assert meta["matrix"] == {d: {a: ["base", "loss.sim-geo"] for a in ("sp", "hp")} for d in ("cub", "lepid")}
 
     # the already-completed cub/sp/base/42 trial is skipped; only the 15 newly-added trials run
     relaunch_calls = scheduled[n_before:]
@@ -1547,7 +1547,7 @@ def test_run_campaign_prunes_removed_coord(tmp_path, monkeypatch) -> None:
     # a coord removed from a combo list: its dir goes from every arm on every dataset, the sibling coord stays
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo"]}]])
     cr.run_campaign("cmp_rm_coord", "camp")
 
     del scheduled[:]
@@ -1557,7 +1557,7 @@ def test_run_campaign_prunes_removed_coord(tmp_path, monkeypatch) -> None:
 
     assert scheduled == []
     dpath_coords = tmp_path / "cmp_rm_coord" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
-    assert not (dpath_coords / "loss.sim-geo1").exists()
+    assert not (dpath_coords / "loss.sim-geo").exists()
     assert (dpath_coords / "loss.sim-cos" / "_trial" / "1" / "trial_metadata.json").exists()
     meta = json.loads((tmp_path / "cmp_rm_coord" / "_phase" / "screen" / "phase_metadata.json").read_text())
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-cos"]}}
@@ -1629,10 +1629,10 @@ def test_run_campaign_drops_a_best_coord_mirror_when_a_coord_is_added(tmp_path, 
     fake_trial, at_launch = cr._run_trial_subprocess, []
     monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: (
         at_launch.append(dpath_best.exists()), fake_trial(cfg_dict, spare_render_pid)))
-    _set_camp(monkeypatch, **camp, hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+    _set_camp(monkeypatch, **camp, hpo_coords=[[{"loss.sim": ["cos", "geo"]}]])
     cr.run_campaign("cmp_best_coord", "camp")
 
-    assert scheduled == [("sp", "loss.sim-geo1", "cub", 42)]  # only the added coord's trial ran
+    assert scheduled == [("sp", "loss.sim-geo", "cub", 42)]  # only the added coord's trial ran
     assert at_launch == [False]  # the mirror was already gone when it launched
     assert not dpath_best.exists()
 
@@ -1878,7 +1878,7 @@ _PLAN_SPEC = dict(
 
 @pytest.mark.parametrize("edit, expected", [
     ({}, False),
-    ({"hpo_coords": [[{"name": "base"}, {"loss.sim": "geo1"}]]}, True),
+    ({"hpo_coords": [[{"name": "base"}, {"loss.sim": "geo"}]]}, True),
     ({"n_trials_screen": 2}, True),
     ({"datasets": ("cub", "lepid")}, True),
     ({"ablation_arms": [[{"loss.loss1.targ": "sp", "name": "sp"}]]}, True),
@@ -1945,7 +1945,7 @@ def test_plan_changed_stops_at_an_incomplete_earlier_phase(tmp_path, monkeypatch
     _set_camp(monkeypatch, **{**_PLAN_SPEC, "n_trials_refine": 1})
     assert cr._plan_changed(run) is False
 
-    _set_camp(monkeypatch, **{**_PLAN_SPEC, "hpo_coords": [[{"name": "base"}, {"loss.sim": "geo1"}]]})
+    _set_camp(monkeypatch, **{**_PLAN_SPEC, "hpo_coords": [[{"name": "base"}, {"loss.sim": "geo"}]]})
     assert cr._plan_changed(run) is True
 
 
@@ -1968,13 +1968,13 @@ def test_main_runs_the_trials_added_to_a_finished_campaign_after_the_running_one
     def _edit_a_during_b(cfg_dict, spare_render_pid=None):
         run_trial(cfg_dict, spare_render_pid)
         if cfg_dict["campaign"] == "b":
-            cfgs["a"] = _camp("a", [[{"name": "base"}, {"loss.sim": "geo1"}]])
+            cfgs["a"] = _camp("a", [[{"name": "base"}, {"loss.sim": "geo"}]])
 
     monkeypatch.setattr(cr, "_run_trial_subprocess", _edit_a_during_b)
     cr.main()
-    assert scheduled == [("sp_a", "base", "cub", 42), ("sp_b", "base", "cub", 42), ("sp_a", "loss.sim-geo1", "cub", 42)]
+    assert scheduled == [("sp_a", "base", "cub", 42), ("sp_b", "base", "cub", 42), ("sp_a", "loss.sim-geo", "cub", 42)]
     with open(tmp_path / "a" / "_phase" / "screen" / "phase_metadata.json") as f:
-        assert json.load(f)["matrix"] == {"cub": {"sp_a": ["base", "loss.sim-geo1"]}}
+        assert json.load(f)["matrix"] == {"cub": {"sp_a": ["base", "loss.sim-geo"]}}
 
 
 def test_main_rejects_arguments(tmp_path, monkeypatch) -> None:
@@ -2047,7 +2047,7 @@ def _setup_phased_campaign(tmp_path, monkeypatch, picks: dict) -> list:
 
 
 _ARMS_SP_HP = [[{"loss.loss1.targ": "sp", "name": "sp"}, {"loss.loss1.targ": "phylo", "name": "hp"}]]
-_COORDS_SIM = [[{"loss.sim": ["cos", "geo1"]}]]  # -> loss.sim-cos, loss.sim-geo1
+_COORDS_SIM = [[{"loss.sim": ["cos", "geo"]}]]  # -> loss.sim-cos, loss.sim-geo
 
 
 def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatch) -> None:
@@ -2057,7 +2057,7 @@ def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatc
     # n_trials_refine = 3 trials had run for each pick; the unpicked coords never appear in refine/, and the
     # screening tree is left untouched. The refine phase records its own matrix/coords/seeds and a copy of the
     # frozen config snapshot.
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1", ("hp", "cub"): "loss.sim-cos"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo", ("hp", "cub"): "loss.sim-cos"})
 
     _set_camp(
         monkeypatch,
@@ -2066,29 +2066,29 @@ def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatc
     )
     assert cr.run_campaign("cmp_refine", "camp")
 
-    assert scheduled[:4] == [("screen", "cub", "sp", "loss.sim-cos", 42), ("screen", "cub", "sp", "loss.sim-geo1", 42),
-                             ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo1", 42)]
-    assert scheduled[4:] == [("refine", "cub", "sp", "loss.sim-geo1", 43), ("refine", "cub", "hp", "loss.sim-cos", 43),
-                             ("refine", "cub", "sp", "loss.sim-geo1", 44), ("refine", "cub", "hp", "loss.sim-cos", 44)]
+    assert scheduled[:4] == [("screen", "cub", "sp", "loss.sim-cos", 42), ("screen", "cub", "sp", "loss.sim-geo", 42),
+                             ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo", 42)]
+    assert scheduled[4:] == [("refine", "cub", "sp", "loss.sim-geo", 43), ("refine", "cub", "hp", "loss.sim-cos", 43),
+                             ("refine", "cub", "sp", "loss.sim-geo", 44), ("refine", "cub", "hp", "loss.sim-cos", 44)]
 
     dpath_refine = tmp_path / "cmp_refine" / "_phase" / "refine"
-    dpath_pick = dpath_refine / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo1"
+    dpath_pick = dpath_refine / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo"
     assert json.loads((dpath_pick / "_trial" / "1" / "trial_metadata.json").read_text())["complete"] is True  # the copied screening trial
     assert not (dpath_pick / "_trial" / "1" / "chkpts").exists()
     for trial in ("2", "3"):
         assert json.loads((dpath_pick / "_trial" / trial / "trial_metadata.json").read_text())["complete"] is True
-    assert json.loads((dpath_pick / "overrides.json").read_text()) == {"arm": {"loss.loss1.targ": "sp"}, "coord": {"loss.sim": "geo1"},
+    assert json.loads((dpath_pick / "overrides.json").read_text()) == {"arm": {"loss.loss1.targ": "sp"}, "coord": {"loss.sim": "geo"},
                                                                        "baseline": {}}
     assert not (dpath_refine / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-cos").exists()
     assert (dpath_refine / "_dataset" / "cub" / "_arm" / "hp" / "_coord" / "loss.sim-cos" / "_trial" / "3").exists()
-    assert not (dpath_refine / "_dataset" / "cub" / "_arm" / "hp" / "_coord" / "loss.sim-geo1").exists()
+    assert not (dpath_refine / "_dataset" / "cub" / "_arm" / "hp" / "_coord" / "loss.sim-geo").exists()
     assert (dpath_refine / "cfg_baseline.json").exists()
     meta = json.loads((dpath_refine / "phase_metadata.json").read_text())
-    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1"], "hp": ["loss.sim-cos"]}}
+    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo"], "hp": ["loss.sim-cos"]}}
     assert meta["seeds"] == [42, 43, 44]
     # the refine manifest: the copied trial counts as completed there, the unpicked coords are not planned
     text = (dpath_refine / "manifest.log").read_text(encoding="utf-8")
-    assert "cub/sp/loss.sim-geo1/42 ---" in text and "cub/sp/loss.sim-cos" not in text
+    assert "cub/sp/loss.sim-geo/42 ---" in text and "cub/sp/loss.sim-cos" not in text
     # the refine phase's own stats tree renders on the way out, both kinds (phase_summary workbooks and
     # dataset_summary pngs): arms/ only -- each arm has its single pick there, so no armcoords/
     assert fpath_workbook(dpath_refine, "arms", "native").exists()
@@ -2097,8 +2097,8 @@ def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatc
     assert not (dpath_refine / "_dataset" / "cub" / "dataset_summary" / "armcoords").exists()
     # screening: both coords, still just seed 42
     dpath_screen = tmp_path / "cmp_refine" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
-    assert (dpath_screen / "loss.sim-cos" / "_trial" / "1").exists() and (dpath_screen / "loss.sim-geo1" / "_trial" / "1").exists()
-    assert not (dpath_screen / "loss.sim-geo1" / "_trial" / "2").exists()
+    assert (dpath_screen / "loss.sim-cos" / "_trial" / "1").exists() and (dpath_screen / "loss.sim-geo" / "_trial" / "1").exists()
+    assert not (dpath_screen / "loss.sim-geo" / "_trial" / "2").exists()
     assert json.loads((tmp_path / "cmp_refine" / "_phase" / "screen" / "phase_metadata.json").read_text())["seeds"] == [42]
 
 
@@ -2106,7 +2106,7 @@ def test_run_campaign_refine_prunes_removed_seed(tmp_path, monkeypatch) -> None:
     # a relaunch that lowers n_trials_refine (3 -> 2) deletes the dropped seed's trial from each refine pick, records
     # the shrunk seed list there and reselects the picks over the trials they have left; nothing new runs, and the
     # screening tree, whose seeds are unchanged, is untouched
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1", ("hp", "cub"): "loss.sim-cos"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo", ("hp", "cub"): "loss.sim-cos"})
     camp = dict(n_trials_screen=1, trainval=False, datasets=("cub",), ablation_arms=_ARMS_SP_HP, hpo_coords=_COORDS_SIM)
     _set_camp(monkeypatch, n_trials_refine=3, **camp)
     assert cr.run_campaign("cmp_refine_rm_seed", "camp")
@@ -2121,21 +2121,21 @@ def test_run_campaign_refine_prunes_removed_seed(tmp_path, monkeypatch) -> None:
 
     assert scheduled == []
     dpath_refine = tmp_path / "cmp_refine_rm_seed" / "_phase" / "refine"
-    for arm, coord in (("sp", "loss.sim-geo1"), ("hp", "loss.sim-cos")):
+    for arm, coord in (("sp", "loss.sim-geo"), ("hp", "loss.sim-cos")):
         dpath_pick = dpath_refine / "_dataset" / "cub" / "_arm" / arm / "_coord" / coord
         assert not (dpath_pick / "_trial" / "3").exists()
         assert json.loads((dpath_pick / "_trial" / "2" / "trial_metadata.json").read_text())["complete"] is True
-    assert reselected == [("refine", "loss.sim-geo1"), ("refine", "loss.sim-cos")]
+    assert reselected == [("refine", "loss.sim-geo"), ("refine", "loss.sim-cos")]
     assert json.loads((dpath_refine / "phase_metadata.json").read_text())["seeds"] == [42, 43]
     text = (dpath_refine / "manifest.log").read_text(encoding="utf-8")
-    assert "cub/sp/loss.sim-geo1/43 ---" in text and "/44" not in text
+    assert "cub/sp/loss.sim-geo/43 ---" in text and "/44" not in text
     dpath_screen = tmp_path / "cmp_refine_rm_seed" / "_phase" / "screen"
     assert json.loads((dpath_screen / "phase_metadata.json").read_text())["seeds"] == [42]
-    assert (dpath_screen / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo1" / "_trial" / "1" / "trial_metadata.json").exists()
+    assert (dpath_screen / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo" / "_trial" / "1" / "trial_metadata.json").exists()
 
 
 def test_run_campaign_refine_null_skips_refine(tmp_path, monkeypatch) -> None:
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo"})
     monkeypatch.setattr(cr, "pick_best_coords", lambda: pytest.fail("no pick with n_trials_refine null"))
 
     _set_camp(
@@ -2168,17 +2168,17 @@ def test_run_campaign_refine_equal_counts_only_copies(tmp_path, monkeypatch) -> 
 
 
 def test_run_campaign_refine_replaces_pick_on_relaunch(tmp_path, monkeypatch) -> None:
-    # a relaunch whose screening best has moved replaces the arm's pick: sp's geo1 goes from refine/ (copied trial,
+    # a relaunch whose screening best has moved replaces the arm's pick: sp's geo goes from refine/ (copied trial,
     # refine trials and all) and cos comes over from screening and is topped up over the refine seeds; the arm added
     # on the relaunch is picked fresh; the seeds also top up (n_trials_refine 2 -> 3). Screening keeps both coords.
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo"})
     _set_camp(
         monkeypatch,
         n_trials_screen=1, n_trials_refine=2, trainval=False, datasets=("cub",),
                            ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM
     )
     assert cr.run_campaign("cmp_newpick", "camp")
-    assert scheduled[2:] == [("refine", "cub", "sp", "loss.sim-geo1", 43)]
+    assert scheduled[2:] == [("refine", "cub", "sp", "loss.sim-geo", 43)]
     dpath_refine = tmp_path / "cmp_newpick" / "_phase" / "refine"
 
     del scheduled[:]
@@ -2191,9 +2191,9 @@ def test_run_campaign_refine_replaces_pick_on_relaunch(tmp_path, monkeypatch) ->
     assert cr.run_campaign("cmp_newpick", "camp")
 
     # screening: only the new arm's two coords run (sp's are complete); refine: sp's new pick cos (screening seed 42
-    # copied over, seeds 43, 44 run), hp comes in fresh on cos (seeds 43, 44); nothing more of geo1
+    # copied over, seeds 43, 44 run), hp comes in fresh on cos (seeds 43, 44); nothing more of geo
     assert scheduled == [
-        ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo1", 42),
+        ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo", 42),
         ("refine", "cub", "sp", "loss.sim-cos", 43), ("refine", "cub", "hp", "loss.sim-cos", 43),
         ("refine", "cub", "sp", "loss.sim-cos", 44), ("refine", "cub", "hp", "loss.sim-cos", 44),
     ]
@@ -2201,11 +2201,11 @@ def test_run_campaign_refine_replaces_pick_on_relaunch(tmp_path, monkeypatch) ->
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-cos"], "hp": ["loss.sim-cos"]}}
     assert meta["seeds"] == [42, 43, 44]
     dpath_coords = dpath_refine / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
-    assert not (dpath_coords / "loss.sim-geo1").exists()
+    assert not (dpath_coords / "loss.sim-geo").exists()
     # sp's new pick came over from screening with its completed seed-42 trial
     assert json.loads((dpath_coords / "loss.sim-cos" / "_trial" / "1" / "trial_metadata.json").read_text())["complete"] is True
     # the replaced pick stays in screening: coord decisions are screening's, its trials there are kept
-    assert (tmp_path / "cmp_newpick" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo1" / "_trial" / "1").exists()
+    assert (tmp_path / "cmp_newpick" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo" / "_trial" / "1").exists()
 
 
 def test_run_campaign_stops_after_incomplete_phase(tmp_path, monkeypatch, capsys) -> None:
@@ -2216,12 +2216,12 @@ def test_run_campaign_stops_after_incomplete_phase(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(cr, "pick_best_coords", lambda: pytest.fail("no pick from an incomplete screening phase"))
     fake_ok = cr._run_trial_subprocess
 
-    def _fail_hp_geo1(cfg_dict, spare_render_pid=None):
-        if (cfg_dict["arm"], cfg_dict["coord"]) == ("hp", "loss.sim-geo1"):
+    def _fail_hp_geo(cfg_dict, spare_render_pid=None):
+        if (cfg_dict["arm"], cfg_dict["coord"]) == ("hp", "loss.sim-geo"):
             raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
         fake_ok(cfg_dict, spare_render_pid)
 
-    monkeypatch.setattr(cr, "_run_trial_subprocess", _fail_hp_geo1)
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fail_hp_geo)
 
     _set_camp(
         monkeypatch,
@@ -2233,18 +2233,18 @@ def test_run_campaign_stops_after_incomplete_phase(tmp_path, monkeypatch, capsys
     assert [t[0] for t in scheduled] == ["screen"] * 3  # the 3 that ran clean; the failed one retried without landing
     assert not (tmp_path / "cmp_halt" / "_phase" / "refine").exists()
     assert "screen incomplete -- 1 trial(s) failed" in capsys.readouterr().out
-    assert "cub/hp/loss.sim-geo1/42 ---" in (tmp_path / "cmp_halt" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8").split("Completed")[0]
+    assert "cub/hp/loss.sim-geo/42 ---" in (tmp_path / "cmp_halt" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8").split("Completed")[0]
 
 
 def test_run_campaign_removed_coord_drops_its_refine_pick(tmp_path, monkeypatch) -> None:
     # a relaunch that removes a picked coord drops the pick: its refine dir (copied trial + refine trials) and its
     # screening dir go, the arm re-picks from the remaining screening results, and the new pick is copied over and
     # topped up like any other
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=2, trainval=False, datasets=("cub",),
               ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     assert cr.run_campaign("cmp_rm_pick", "camp")
-    assert scheduled[2:] == [("refine", "cub", "sp", "loss.sim-geo1", 43)]
+    assert scheduled[2:] == [("refine", "cub", "sp", "loss.sim-geo", 43)]
 
     del scheduled[:]
     monkeypatch.setattr(cr, "pick_best_coords", lambda: {("sp", "cub"): "loss.sim-cos"})
@@ -2254,8 +2254,8 @@ def test_run_campaign_removed_coord_drops_its_refine_pick(tmp_path, monkeypatch)
 
     assert scheduled == [("refine", "cub", "sp", "loss.sim-cos", 43)]
     dpath_coords_refine = tmp_path / "cmp_rm_pick" / "_phase" / "refine" / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
-    assert not (dpath_coords_refine / "loss.sim-geo1").exists()
-    assert not (tmp_path / "cmp_rm_pick" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo1").exists()
+    assert not (dpath_coords_refine / "loss.sim-geo").exists()
+    assert not (tmp_path / "cmp_rm_pick" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo").exists()
     assert json.loads((dpath_coords_refine / "loss.sim-cos" / "_trial" / "1" / "trial_metadata.json").read_text())["complete"] is True
     meta = json.loads((tmp_path / "cmp_rm_pick" / "_phase" / "refine" / "phase_metadata.json").read_text())
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-cos"]}}
@@ -2291,32 +2291,32 @@ def test_run_campaign_live_edit_removes_items_between_trials(tmp_path, monkeypat
     # trial never runs, and the matrix / manifest drop it
     scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
     _set_camp(monkeypatch, n_trials_screen=2, n_trials_refine=None, trainval=False, datasets=("cub",),
-              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo1"]}]])
+              ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos", "geo"]}]])
     fake_ok = cr._run_trial_subprocess
 
-    def _drop_geo1_during_second(cfg_dict, spare_render_pid=None):
+    def _drop_geo_during_second(cfg_dict, spare_render_pid=None):
         fake_ok(cfg_dict, spare_render_pid)
-        if len(scheduled) == 2:  # saved while geo1's seed-42 trial runs
+        if len(scheduled) == 2:  # saved while geo's seed-42 trial runs
             _set_camp(monkeypatch, n_trials_screen=2, n_trials_refine=None, trainval=False, datasets=("cub",),
                       ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=[[{"loss.sim": ["cos"]}]])
 
-    monkeypatch.setattr(cr, "_run_trial_subprocess", _drop_geo1_during_second)
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _drop_geo_during_second)
     assert cr.run_campaign("cmp_live_rm", "camp")
 
-    assert scheduled == [("sp", "loss.sim-cos", "cub", 42), ("sp", "loss.sim-geo1", "cub", 42), ("sp", "loss.sim-cos", "cub", 43)]
+    assert scheduled == [("sp", "loss.sim-cos", "cub", 42), ("sp", "loss.sim-geo", "cub", 42), ("sp", "loss.sim-cos", "cub", 43)]
     dpath_coords = tmp_path / "cmp_live_rm" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
-    assert not (dpath_coords / "loss.sim-geo1").exists()
+    assert not (dpath_coords / "loss.sim-geo").exists()
     assert (dpath_coords / "loss.sim-cos" / "_trial" / "2" / "trial_metadata.json").exists()
     meta = json.loads((tmp_path / "cmp_live_rm" / "_phase" / "screen" / "phase_metadata.json").read_text())
     assert meta["matrix"] == {"cub": {"sp": ["loss.sim-cos"]}}
-    assert "geo1" not in (tmp_path / "cmp_live_rm" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8")
+    assert "geo" not in (tmp_path / "cmp_live_rm" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8")
 
 
 def test_run_campaign_live_edit_during_refine_screens_added_arm_first(tmp_path, monkeypatch) -> None:
     # an arm added while the refine phase runs needs screening before it can be picked: the refine phase hands back, the
     # screening phase runs the new arm's trials (the old ones are complete), then refine resumes with the new arm's
     # pick alongside the recorded one
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1", ("hp", "cub"): "loss.sim-cos"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo", ("hp", "cub"): "loss.sim-cos"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=2, trainval=False, datasets=("cub",),
               ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     fake_ok = cr._run_trial_subprocess
@@ -2331,22 +2331,22 @@ def test_run_campaign_live_edit_during_refine_screens_added_arm_first(tmp_path, 
     assert cr.run_campaign("cmp_live_refine", "camp")
 
     assert scheduled == [
-        ("screen", "cub", "sp", "loss.sim-cos", 42), ("screen", "cub", "sp", "loss.sim-geo1", 42),
-        ("refine", "cub", "sp", "loss.sim-geo1", 43),
-        ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo1", 42),
+        ("screen", "cub", "sp", "loss.sim-cos", 42), ("screen", "cub", "sp", "loss.sim-geo", 42),
+        ("refine", "cub", "sp", "loss.sim-geo", 43),
+        ("screen", "cub", "hp", "loss.sim-cos", 42), ("screen", "cub", "hp", "loss.sim-geo", 42),
         ("refine", "cub", "hp", "loss.sim-cos", 43),
     ]
     meta = json.loads((tmp_path / "cmp_live_refine" / "_phase" / "refine" / "phase_metadata.json").read_text())
-    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo1"], "hp": ["loss.sim-cos"]}}
+    assert meta["matrix"] == {"cub": {"sp": ["loss.sim-geo"], "hp": ["loss.sim-cos"]}}
     assert json.loads((tmp_path / "cmp_live_refine" / "_phase" / "screen" / "phase_metadata.json").read_text())["matrix"] == {
-        "cub": {"sp": ["loss.sim-cos", "loss.sim-geo1"], "hp": ["loss.sim-cos", "loss.sim-geo1"]}
+        "cub": {"sp": ["loss.sim-cos", "loss.sim-geo"], "hp": ["loss.sim-cos", "loss.sim-geo"]}
     }
 
 
 def test_run_campaign_live_edit_switches_refine_off(tmp_path, monkeypatch) -> None:
     # n_trials_refine set to null while the refine phase runs ends the campaign after the running trial; the refine tree
     # is left as is
-    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo1"})
+    scheduled = _setup_phased_campaign(tmp_path, monkeypatch, {("sp", "cub"): "loss.sim-geo"})
     _set_camp(monkeypatch, n_trials_screen=1, n_trials_refine=3, trainval=False, datasets=("cub",),
               ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_COORDS_SIM)
     fake_ok = cr._run_trial_subprocess
@@ -2360,8 +2360,8 @@ def test_run_campaign_live_edit_switches_refine_off(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(cr, "_run_trial_subprocess", _switch_refine_off)
     assert cr.run_campaign("cmp_live_off", "camp")
 
-    assert [t for t in scheduled if t[0] == "refine"] == [("refine", "cub", "sp", "loss.sim-geo1", 43)]
-    assert (tmp_path / "cmp_live_off" / "_phase" / "refine" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo1" / "_trial" / "2" / "trial_metadata.json").exists()
+    assert [t for t in scheduled if t[0] == "refine"] == [("refine", "cub", "sp", "loss.sim-geo", 43)]
+    assert (tmp_path / "cmp_live_off" / "_phase" / "refine" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "loss.sim-geo" / "_trial" / "2" / "trial_metadata.json").exists()
 
 
 def test_run_campaign_live_edit_invalid_yaml_keeps_last_plan(tmp_path, monkeypatch, capsys) -> None:

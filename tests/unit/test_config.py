@@ -930,7 +930,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: py
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
-        sim="geo1", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
+        sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
     cfg_dict["hw"]["loss_chunk_size"] = 8
 
     with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):
@@ -942,7 +942,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
-        crit="bif_bce", sim="geo1", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
+        crit="bif_bce", sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
     cfg_dict["hw"]["loss_chunk_size"] = 8
 
     with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):

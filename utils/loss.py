@@ -495,7 +495,33 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
                     alpha_raw) U, since |0.5 mean_i sum_j R_ij T_ij| <= U with |T_ij| <= 2
     """
     alpha = (logit_scale.clamp(max=math.log(100)) if clamp else logit_scale).exp()
-    alpha64 = alpha.detach().double()
+    R, applied, feasible, skipped = _block_resid_rows(Y, alpha.detach().double(), spec)
+    coeff = torch.as_tensor(coeff, dtype=torch.float64, device=R.device).detach()
+    T = sim.detach().double()
+    T = T + T.T  # both anchor directions contracted at once
+    resid = coeff * 0.5 * (R * T).sum(dim=1).mean()  # float64 through the coefficient
+    resid = resid.to(alpha.dtype)  # the one cast, of the finished product
+    correction, bound = _block_resid_record(logit_scale, clamp, alpha, resid, coeff, Y.size(1))
+    term = -(alpha - alpha.detach()) * resid
+    if full:
+        # the residual's part of dL/dsim: per pair alpha (p* - y) / B, the two anchor directions folded
+        # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij) AFTER the per-anchor selection,
+        # so cell (i, j) keeps anchor j's half where anchor i is skipped. Off the live sim, so the gradient
+        # reaches the towers; alpha detached, the scale's own part being the term above
+        G = coeff * 0.5 * alpha.detach().double() * (R + R.T) / Y.size(0)
+        term = term - ((sim - sim.detach()) * G).sum().to(term.dtype)
+    coverage = torch.stack([applied, feasible, skipped]).double().mean(dim=1)
+    return term, correction, coverage, bound
+
+def _block_resid_rows(Y, alpha64, spec):
+    """
+    infonce_train_resid over the rows of one term's target distribution `Y` ([R, B], float64; the full matrix or
+    a row tile of it) under what the term's `spec` says of them (infonce_block_resid's): the tsm's target scale,
+    whether the memberships are binary and whether the mapping keeps every row inside the band (a fixed
+    sm_scale c decides that against alpha's value: one device sync, that configuration alone). `alpha64` the
+    term's post-clamp logit scale, detached float64. Shared by the full-batch term (infonce_block_resid) and the
+    tiled one (chunked_infonce_loss_backward).
+    """
     if spec is None:
         s, binary, inside = None, False, False
     else:
@@ -507,12 +533,17 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
             inside = True  # s = 2 alpha / alpha: inside by construction, whatever alpha is
         else:
             inside = bool(s <= 2 * alpha64)  # a fixed c: inside iff c <= alpha
-    R, applied, feasible, skipped = infonce_train_resid(Y, alpha64, s, binary, inside)
-    coeff = torch.as_tensor(coeff, dtype=torch.float64, device=R.device).detach()
-    T = sim.detach().double()
-    T = T + T.T  # both anchor directions contracted at once
-    resid = coeff * 0.5 * (R * T).sum(dim=1).mean()  # float64 through the coefficient
-    resid = resid.to(alpha.dtype)  # the one cast, of the finished product
+    return infonce_train_resid(Y, alpha64, s, binary, inside)
+
+def _block_resid_record(logit_scale, clamp, alpha, resid, coeff, B):
+    """
+    infonce_block_resid's (correction, bound) for one term, from its finished contraction `resid` (the
+    coefficient applied, cast to the parameter's dtype): the delta the term adds to the raw log-scale
+    parameter's gradient, through the clamp-then-exp Jacobian d(alpha)/d(log alpha_raw) -- zero where the
+    parameter takes no gradient -- and the magnitude bounds [U, the correction's]. `alpha` the term's post-clamp
+    scale, `coeff` its float64 coefficient, `B` the batch size (a target row's length). Shared by the
+    full-batch term and the tiled one (chunked_infonce_loss_backward), whose contraction is summed over tiles.
+    """
     if logit_scale.requires_grad:
         log_alpha = logit_scale.detach().requires_grad_(True)
         (dscale_dlog,) = torch.autograd.grad((log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp(), log_alpha)
@@ -520,19 +551,11 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
     else:
         dscale_dlog = torch.zeros_like(alpha)
         correction = torch.zeros_like(resid)
-    term = -(alpha - alpha.detach()) * resid
-    if full:
-        # the residual's part of dL/dsim: per pair alpha (p* - y) / B, the two anchor directions folded
-        # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij) AFTER the per-anchor selection,
-        # so cell (i, j) keeps anchor j's half where anchor i is skipped. Off the live sim, so the gradient
-        # reaches the towers; alpha detached, the scale's own part being the term above
-        G = coeff * 0.5 * alpha.detach().double() * (R + R.T) / Y.size(0)
-        term = term - ((sim - sim.detach()) * G).sum().to(term.dtype)
-    coverage = torch.stack([applied, feasible, skipped]).double().mean(dim=1)
-    n_minus = Y.size(1) - 1
+    alpha64 = alpha.detach().double()
+    n_minus = B - 1
     U = 2 * n_minus * torch.exp(-2 * alpha64) / (1 + n_minus * torch.exp(-2 * alpha64))
     bound = torch.stack([U, coeff.abs() * dscale_dlog.detach().double().abs() * U])
-    return term, correction, coverage, bound
+    return correction, bound
 
 class InfoNCECriterion(Criterion):
     """
@@ -584,6 +607,30 @@ class InfoNCECriterion(Criterion):
 
     def targ_dists(self, Qs, logit_scales):
         return [self._tsm(Q, cfg_targ["infonce"]["tsm"], logit_scale) for (_, cfg_targ), Q, logit_scale in zip(self.targ_specs, Qs, logit_scales)]
+
+    def _set_block_stats(self, corrections, coverages, bounds):
+        """
+        The batch's record of loss.infonce.block_residuals' intervention (block_stats;
+        TrainPipeline._record_train_batch reads it whether or not the sim_targ_stats diagnostics are on), from
+        the terms' (correction, coverage, bound) as infonce_block_resid returns them: the delta it made to each
+        logit-scale parameter's gradient (grad_after = grad_before + it) -- every term's on logit_scale under
+        shared scalars, the primary term's on logit_scale and the second's on logit_scale2 under separate ones --
+        and each term's coverage, the anchor-row fractions [applied, feasible, skipped], and its magnitude bounds
+        [U, the correction's]. Shared by the full-batch path (__call__) and the tiled one
+        (chunked_infonce_loss_backward).
+        """
+        corrections = [g.double() for g in corrections]
+        self.dlogscale_correction = corrections[0] if self.sep_scalars else sum(corrections)
+        scalars = [self.dlogscale_correction] + (corrections[1:] if self.sep_scalars else [])
+        packed = torch.cat([torch.stack(scalars), *coverages, *bounds]).tolist()  # one device sync
+        n_s, n_b = len(scalars), len(coverages)
+        self.block_stats = {
+            "dlogscale_correction": packed[0],
+            "block_coverage": [packed[n_s + 3 * k:n_s + 3 * k + 3] for k in range(n_b)],
+            "block_bound": [packed[n_s + 3 * n_b + 2 * k:n_s + 3 * n_b + 2 * k + 2] for k in range(n_b)],
+        }
+        if self.sep_scalars:
+            self.block_stats["dlogscale_correction2"] = packed[1]
 
     def __call__(self, logits, class_encs_b, targ_data_b, train, logit_scale, sim):
         B = class_encs_b.size(0)
@@ -648,24 +695,7 @@ class InfoNCECriterion(Criterion):
             blocks = [infonce_block_resid(Y_k, sim, log_scale, clamp, block == "full", c, spec)
                       for (_, Y_k), log_scale, c, spec in zip(terms64, log_scales, coeffs, term_specs)]
             loss = loss + sum(term for term, *_ in blocks)
-            # the batch's record of the intervention (block_stats; TrainPipeline._record_train_batch reads it
-            # whether or not the sim_targ_stats diagnostics are on): the delta it made to each logit-scale
-            # parameter's gradient (grad_after = grad_before + it) -- every term's on logit_scale under shared
-            # scalars, the primary term's on logit_scale and the second's on logit_scale2 under separate ones --
-            # and each term's coverage, the anchor-row fractions [applied, feasible, skipped], and its
-            # magnitude bounds [U, the correction's] (infonce_block_resid)
-            corrections = [g.double() for _, g, _, _ in blocks]
-            self.dlogscale_correction = corrections[0] if self.sep_scalars else sum(corrections)
-            scalars = [self.dlogscale_correction] + (corrections[1:] if self.sep_scalars else [])
-            packed = torch.cat([torch.stack(scalars), *(cov for _, _, cov, _ in blocks), *(bound for *_, bound in blocks)]).tolist()  # one device sync
-            n_s, n_b = len(scalars), len(blocks)
-            self.block_stats = {
-                "dlogscale_correction": packed[0],
-                "block_coverage": [packed[n_s + 3 * k:n_s + 3 * k + 3] for k in range(n_b)],
-                "block_bound": [packed[n_s + 3 * n_b + 2 * k:n_s + 3 * n_b + 2 * k + 2] for k in range(n_b)],
-            }
-            if self.sep_scalars:
-                self.block_stats["dlogscale_correction2"] = packed[1]
+            self._set_block_stats(*zip(*((g, cov, bound) for _, g, cov, bound in blocks)))
 
         if self.cfg["unitless"] and not self.sep_scalars:
             # the distribution the blended gradient follows: the terms' targets under their normalized blend
@@ -904,7 +934,7 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
     return (mass_WY / mass_W).item()
 
 # ------------------------------------------------------------------------------------------------
-# Tiled / chunked global-batch loss (hardware.loss_chunk_size)
+# Tiled / chunked global-batch BCE-family loss (hardware.loss_chunk_size.bce)
 #
 # The full-batch contrastive loss materializes several BxB matrices (sim, logits, weights, loss) and
 # their autograd graph -- O(B^2) VRAM, the wall that OOMs bs32k. The chunked path computes the exact
@@ -920,8 +950,8 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
 # to the full gradient across ranks (completed by batch_step_chunked's grad all-reduce).
 #
 # Supports the full BCE-family config space (bce and bif_bce, incl. mp/sp/tax/phylo targets and their
-# blend under either loss.blend.type, cls_imb.norm, loss.unitless) -- only InfoNCE is excluded
-# (chunking_supported). The target tiles are the loss terms' (loss_term_spec_fns): the criterion's blended
+# blend under either loss.blend.type, cls_imb.norm, loss.unitless) -- InfoNCE has its own tiled path
+# (chunked_infonce_loss_backward). The target tiles are the loss terms' (loss_term_spec_fns): the criterion's blended
 # targets under blend.type targ (blend_targ_block_fn: sum_k w_k Q_k over the live target specs, Y = Q for
 # the BCE family), each spec's own Q_k under blend.type loss -- all on the block's one logits tile, or
 # under separate logit scalars (loss.logits.shared false) each term on its own scalar pair's logits tile
@@ -949,14 +979,6 @@ def pos_prevalence(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, bat
 # g.mean() -- per branch for a bifurcated criterion (each branch's projection sees only its own
 # incoming grad, and the two frames' grad means differ under per-anchor row weighting).
 # ------------------------------------------------------------------------------------------------
-
-def chunking_supported(cfg_loss):
-    """
-    The tiled loss reproduces every BCE-family config (bce and bif_bce) but not InfoNCE (its
-    row/column softmax couples along columns, which a row-block cannot tile). Config treats
-    hardware.loss_chunk_size as inert (full BxB path) when this returns False.
-    """
-    return cfg_loss["crit"] in ("bce", "bif_bce")
 
 def make_targ_block_fn(targ_type, class_encs_b, targ_data_b, B, device):
     """
@@ -1365,9 +1387,21 @@ def _anchor_entropies(M_a, M_b):
     at all -- both, equally, as a rule; the one that has any when the other has none, whose mean is no reading
     (NaN) rather than a value to average in; NaN with neither -- and the active fractions averaged over both
     regardless, a set with none active counting as such."""
-    sets = torch.stack([_anchor_entropy(M_a), _anchor_entropy(M_b)])  # [2, (H, f)]
+    return _fold_anchor_sets(torch.stack([_anchor_entropy(M_a), _anchor_entropy(M_b)]))
+
+
+def _fold_anchor_sets(sets):
+    """_anchor_entropies' combination of its two anchor sets' (entropy, active fraction) readings, [2, (H, f)] ->
+    [2]; apart so the tiled path can fold sets whose readings it streamed over the loss tiles."""
     has_active = sets[:, 1] > 0
     return torch.stack([sets[has_active, 0].mean(), sets[:, 1].mean()])
+
+
+def _entropy_from_sums(mass, mass_log, n):
+    """_norm_entropy of a magnitude set from its streamed sums: `mass` = sum |a|, `mass_log` = sum |a| log |a|
+    (0 log 0 = 0), over `n` entries -- H = log(mass) - mass_log / mass, over log(n); NaN where the mass is zero,
+    as _norm_entropy reads it. The sums add across tiles and ranks, which the normalized form does not."""
+    return (mass.log() - mass_log / mass) / math.log(n)
 
 
 def infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R):
@@ -1603,14 +1637,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
     with torch.no_grad():
         S, Q, Y, Z = (t.detach().double() for t in (sim, targs, y, logits))
         Y = Y / Y.sum(dim=1, keepdim=True)  # rows to 1 in float64; see the renormalization note above
-        with torch.enable_grad():
-            # the scale the logits carry and its derivative in the raw parameter, d(alpha)/d(log alpha_raw),
-            # by autograd through the clamp-then-exp path compute_logits takes: alpha while the clamp is
-            # slack, zero once it holds (its backward blocks the gradient above the cap)
-            log_alpha = torch.as_tensor(logit_scale, device=S.device).detach().requires_grad_(True)
-            alpha = (log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp()
-            (dscale_dlog,) = torch.autograd.grad(alpha, log_alpha)
-        alpha, dscale_dlog = alpha.detach().double(), dscale_dlog.double()
+        alpha, dscale_dlog = _scale_and_jac(logit_scale, clamp, S.device)
         # the residual and the irreducible divergence per ROW by what that row's own target is
         # (infonce_resid: a hard binary row's closed forms, a feasible row's exact zero, the subtraction
         # for the rest), and which of the three computed each row, reported (resid_paths) so a reader --
@@ -1630,6 +1657,33 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
         entropies = infonce_sim_grad_entropies(Y, P_i2t, P_t2i, P_opt, R)  # [3, 3]
         scale_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
         reqs = torch.stack([scale_req.min(), scale_req.mean(), scale_req.max()])
+        return _infonce_stats_dict(sums, dscale_dlog, kl, reqs, paths, entropies)
+
+
+def _scale_and_jac(logit_scale, clamp, device):
+    """
+    The scale the logits carry and its derivative in the raw parameter, d(alpha)/d(log alpha_raw), both
+    detached float64 -- by autograd through the clamp-then-exp path compute_logits takes: alpha while the clamp
+    is slack, zero once it holds (its backward blocks the gradient above the cap). `logit_scale` the raw
+    log-scale parameter; callable under no_grad.
+    """
+    with torch.enable_grad():
+        log_alpha = torch.as_tensor(logit_scale, device=device).detach().requires_grad_(True)
+        alpha = (log_alpha.clamp(max=math.log(100)) if clamp else log_alpha).exp()
+        (dscale_dlog,) = torch.autograd.grad(alpha, log_alpha)
+    return alpha.detach().double(), dscale_dlog.double()
+
+
+def _infonce_stats_dict(sums, dscale_dlog, kl, reqs, paths, entropies):
+    """
+    infonce_batch_stats' returned dict from the batch's aggregates -- apart so the tiled path
+    (_InfoNCEStatsAccum) can build it from the same aggregates streamed over the loss tiles: `sums` [3, 5, 3] the
+    two directions' averaged infonce_scale_grad_sums, `dscale_dlog` d(alpha)/d(log alpha_raw), `kl` [4] the
+    directions' averaged infonce_kl_terms, `reqs` [3] the rows' scale_req (min, mean, max), `paths` [3] the
+    resid_paths row fractions, `entropies` [3, 3] infonce_sim_grad_entropies'. The ratios are taken here, off
+    the aggregates, and the reductions stacked so the device->host transfer is a single .cpu() sync.
+    """
+    with torch.no_grad():
         bounds = torch.cat([reqs, reqs.log()])  # the logscale panel's lines are the scale ones' logs
         families = []
         for G, A, C in (sums, dscale_dlog * sums):  # d/dscale, then d/d(log alpha_raw)
@@ -1673,32 +1727,39 @@ class _SimTargStatsAccum:
     sum across tiles and ranks. T2I (text anchors): a text's weights over the images span every tile
     and rank, so per column the four weighted sums behind its margin (positive / negative side, weight
     mass and weighted sim) stream in float64 with the exponents shifted to <= 0 (no overflow; the
-    weights underflow only past kappa ~ 300) and the ratio is taken after the fold. The chunked path
-    is BCE-family only, so p_hist is always reported here.
+    weights underflow only past kappa ~ 300) and the ratio is taken after the fold -- unless the sweep
+    holds the text anchors' own tile too (`t2i_tiles`: the tiled InfoNCE loss's t2i frame, passed to update
+    beside the i2t one), where they are whole rows as well and their margins sum per row like I2T's, at
+    any kappa. p_hist is reported for a BCE-family loss alone (`p_hist`; sim_targ_batch_stats on why),
+    whose tiles pass their logits.
     """
     _FIELDS = ("sim", "targ")
     _HIST_FIELDS = {"sim": (-1.0, 1.0), "targ": (0.0, 1.0), "p": (0.0, 1.0)}  # field -> the range its bins span
 
-    def __init__(self, device, hpsm_kappas, hist_bins, B):
+    def __init__(self, device, hpsm_kappas, hist_bins, B, p_hist=True, t2i_tiles=False):
+        self.hist_fields = {f: span for f, span in self._HIST_FIELDS.items() if p_hist or f != "p"}
+        self.t2i_tiles = t2i_tiles
         self.mins = {f: torch.tensor(float("inf"), device=device) for f in self._FIELDS}
         self.maxs = {f: torch.tensor(float("-inf"), device=device) for f in self._FIELDS}
         self.sums = {f: torch.zeros((), dtype=torch.float64, device=device) for f in self._FIELDS}
         self.samps = {f: [] for f in self._FIELDS}
-        self.hists = {f: torch.zeros(hist_bins, dtype=torch.float64, device=device) for f in self._HIST_FIELDS}
+        self.hists = {f: torch.zeros(hist_bins, dtype=torch.float64, device=device) for f in self.hist_fields}
         self.hist_bins = hist_bins
         self.count = 0
         self.kappas = hpsm_kappas
         self.B = B
         self.margin_sums = torch.zeros(len(hpsm_kappas), dtype=torch.float64, device=device)  # I2T per-row margins, summed
         # T2I per-column sums per kappa: [pos mass, pos weighted sim, neg mass, neg weighted sim] x B
-        self.t2i_sums = torch.zeros(len(hpsm_kappas), 4, B, dtype=torch.float64, device=device)
+        self.t2i_sums = torch.zeros(len(hpsm_kappas), 4, 0 if t2i_tiles else B, dtype=torch.float64, device=device)
+        self.t2i_margin_sums = torch.zeros(len(hpsm_kappas), dtype=torch.float64, device=device)  # t2i_tiles: T2I per-row margins, summed
 
-    def update(self, sim_tile, targs_tile, logits_tile):
+    def update(self, sim_tile, targs_tile, logits_tile=None, sim_tile_t2i=None):
         tiles = {
             "sim": sim_tile.reshape(-1).float(),
             "targ": targs_tile.reshape(-1).float(),
-            "p": logits_tile.reshape(-1).float().sigmoid(),
         }
+        if "p" in self.hist_fields:
+            tiles["p"] = logits_tile.reshape(-1).float().sigmoid()
         for field in self._FIELDS:
             vals = tiles[field]
             self.mins[field] = torch.minimum(self.mins[field], vals.min())
@@ -1706,12 +1767,17 @@ class _SimTargStatsAccum:
             self.sums[field] += vals.double().sum()
             stride = max(1, vals.numel() // 4096)  # bound the median subsample per tile
             self.samps[field].append(vals[::stride])
-        for field, (lo, hi) in self._HIST_FIELDS.items():
+        for field, (lo, hi) in self.hist_fields.items():
             # clamped: histc drops what falls outside its range, and a cosine can round an ulp past +-1
             self.hists[field] += torch.histc(tiles[field].clamp(lo, hi), bins=self.hist_bins, min=lo, max=hi).double()
         self.count += tiles["sim"].numel()
         S, Q = sim_tile.float(), targs_tile.float()
         self.margin_sums += torch.stack([hard_pair_similarity_margin(S, Q, kappa).double().sum() for kappa in self.kappas])
+        if self.t2i_tiles:
+            # the text anchors' rows against the same target rows (Q is symmetric, so Q.T's are Q's)
+            S_t2i = sim_tile_t2i.float()
+            self.t2i_margin_sums += torch.stack([hard_pair_similarity_margin(S_t2i, Q, kappa).double().sum() for kappa in self.kappas])
+            return
         S, Q = S.double(), Q.double()
         for idx_kappa, kappa in enumerate(self.kappas):
             W_pos = Q * torch.exp(-kappa * (S + 1.0))          # ∝ q exp(-kappa s), shifted by the s >= -1 bound
@@ -1727,20 +1793,21 @@ class _SimTargStatsAccum:
         count = self.count
         margin_sums = self.margin_sums
         t2i_sums = self.t2i_sums
+        t2i_margin_sums = self.t2i_margin_sums
         if world_size > 1:  # fold per-band partials; the bands partition the BxB rows exactly
             ext = torch.stack([*(-mins[f] for f in self._FIELDS), *(maxs[f] for f in self._FIELDS)])
             dist.all_reduce(ext, op=dist.ReduceOp.MAX)
             mins = {f: -ext[i] for i, f in enumerate(self._FIELDS)}
             maxs = {f: ext[len(self._FIELDS) + i] for i, f in enumerate(self._FIELDS)}
             # the scalar sums and margin accumulators ride along with every histogram's bins in one collective
-            parts = [torch.stack([sums[f] for f in self._FIELDS]), margin_sums, t2i_sums.flatten(),
-                     *(hists[f] for f in self._HIST_FIELDS)]
+            parts = [torch.stack([sums[f] for f in self._FIELDS]), margin_sums, t2i_sums.flatten(), t2i_margin_sums,
+                     *(hists[f] for f in self.hist_fields)]
             packed = torch.cat(parts)
             dist.all_reduce(packed)
-            sums_v, margin_sums, t2i_flat, *hists_v = torch.split(packed, [p.numel() for p in parts])
+            sums_v, margin_sums, t2i_flat, t2i_margin_sums, *hists_v = torch.split(packed, [p.numel() for p in parts])
             sums = {f: sums_v[i] for i, f in enumerate(self._FIELDS)}
             t2i_sums = t2i_flat.view_as(t2i_sums)
-            hists = dict(zip(self._HIST_FIELDS, hists_v))
+            hists = dict(zip(self.hist_fields, hists_v))
             count *= world_size  # equal bands -> equal per-rank counts
             # median subsamples: equal bands + equal tile sizes -> equal lengths on every rank, so a
             # plain all_gather reassembles the exact same subsample pool a single full sweep produces
@@ -1754,11 +1821,14 @@ class _SimTargStatsAccum:
             stats[f"{field}_max"] = maxs[field].item()
             stats[f"{field}_median"] = samps[field].median().item()
             stats[f"{field}_mean"] = (sums[field] / count).item()
-        for field in self._HIST_FIELDS:
+        for field in self.hist_fields:
             stats[f"{field}_hist"] = (hists[field] / hists[field].sum()).tolist()
         i2t = margin_sums / self.B
-        pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
-        t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)
+        if self.t2i_tiles:
+            t2i = t2i_margin_sums / self.B
+        else:
+            pos_mass, pos_sim, neg_mass, neg_sim = t2i_sums.unbind(1)  # [kappas, B] each
+            t2i = (pos_sim / pos_mass - neg_sim / neg_mass).mean(1)
         stats["sim_margin_i2t"] = i2t.tolist()
         stats["sim_margin_t2i"] = t2i.tolist()
         stats["sim_margin"] = (0.5 * (i2t + t2i)).tolist()
@@ -2007,6 +2077,20 @@ def _gsum_hook(acc):
         acc.add_(g.double().sum())
     return hook
 
+def _row_band(B, chunk_size, rank, world_size):
+    """
+    This rank's row-band [lo, hi) of the BxB loss matrix under the tiled loss's sharding: the rows split into
+    world_size equal bands of whole chunk_size-row blocks -- checked, since ragged bands would silently
+    double-count rows across ranks (wrong gradients, no error).
+    """
+    b = B // world_size
+    if b * world_size != B or b % chunk_size != 0:
+        raise ValueError(
+            f"global batch ({B}) must split into world_size ({world_size}) equal row-bands, each an exact "
+            f"multiple of hardware.loss_chunk_size ({chunk_size}); got band size {b}"
+        )
+    return rank * b, (rank + 1) * b
+
 def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute_logits, chunk_size, mixed_prec,
                               device, rank, world_size, sim_grad_sums=True, sim_targ_stats=True, hpsm_kappas=(0.0,),
                               *, hist_bins):
@@ -2051,15 +2135,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     grads.
     """
     B = img.size(0)
-    b = B // world_size
-    # checking that the BxB rows split into world_size equal bands of whole chunk_size-row blocks:
-    # ragged bands would silently double-count rows across ranks (wrong gradients, no error)
-    if b * world_size != B or b % chunk_size != 0:
-        raise ValueError(
-            f"global batch ({B}) must split into world_size ({world_size}) equal row-bands, each an exact "
-            f"multiple of hardware.loss_chunk_size ({chunk_size}); got band size {b}"
-        )
-    lo, hi = rank * b, (rank + 1) * b
+    lo, hi = _row_band(B, chunk_size, rank, world_size)
 
     def autocast_ctx():
         return torch.autocast(device_type=device.type, dtype=torch.bfloat16) if mixed_prec else nullcontext()
@@ -2158,4 +2234,557 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     batch_stats = stats.finalize(world_size) if sim_targ_stats else None
     if batch_stats is not None and crit.lambda_eff is not None:  # rank-identical: the term magnitudes are all-reduced
         batch_stats["lambda_eff"] = crit.lambda_eff.item()
+    return loss, loss_raw, batch_stats, grad_sum_sim
+
+# ------------------------------------------------------------------------------------------------
+# Tiled / chunked global-batch InfoNCE loss (hardware.loss_chunk_size.infonce)
+#
+# InfoNCE's softmax couples every pair of an anchor's row, and its two anchor directions normalize along
+# different axes of the one BxB logit matrix -- image anchors along its rows, text anchors along its columns --
+# so no row-block of that matrix completes a text anchor's softmax. The loss is nonetheless a sum over the
+# anchors of each direction (InfoNCECriterion scores BOTH directions against Y's rows), each anchor's term
+# reading only its own complete row in its own direction's frame. So each C-row block is swept as TWO tiles,
+# one per frame -- i2t = (img rows, all txt), t2i = (txt rows, all img), the second the matrix's column band,
+# transposed -- and in its own frame every tile holds whole anchors: the softmax, the 2D focal weights and the
+# per-anchor class-imbalance weights are tile-local, plain autograd per tile is the exact partial gradient,
+# and the tiles' backwards sum to the full one (both towers are live in both frames and the logit scale takes
+# each frame's share, so nothing is half-live as under bif_bce). The band sharding, the GradCache-style
+# embedding leaves and the all-reduced readings are the BCE path's above; ~2x its per-block compute at the
+# same O(C*B) memory (the frames backpropagate one after the other).
+#
+# What couples across tiles is precomputed, or folded after the sweep, as there: the cls_imb.norm normalizer is
+# the mean of the O(B) per-anchor weight vector (built outright), loss.unitless' term magnitudes take a no_grad
+# pre-sweep, and loss.infonce.block_residuals -- row-wise in the target, contracted against the anchor's sims
+# in both frames -- is applied per tile on the sims (full) and once after the sweep on the scale, its
+# contraction summed over the tiles in float64 (infonce_block_resid).
+#
+# The batch stats stream over the same tiles (_SimTargStatsAccum, _InfoNCEStatsAccum): every reading taken per
+# anchor direction is a sum over that direction's anchors, whole in its frame's tile. Two are not, and cost a
+# third sweep (the fold pass, run only with the diagnostics on): the PAIR-level entropies of the
+# similarity-level gradient -- infonce_sim_grad_entropies' analytic ones, and sim_grad_entropies_actual's
+# measured trio -- read dL/dS per cell, where the two directions FOLD: cell (i, j) carries image anchor i's
+# term and text anchor j's, which the main sweep sees in different tiles. The fold pass sweeps the i2t frame
+# alone and rebuilds text anchor j's half on its cells from what the main sweep left per anchor, O(B) each:
+# - its softmax normalizer, the logits' column logsumexp, so p_ji = exp(z_ij - lse_j);
+# - its target row's parameters -- each spec's tsm normalizer, and the few numbers its reachable optimum and
+#   residual are elementwise functions of (_infonce_resid_params, _train_resid_params) -- so y_ji, p*_ji and
+#   r_ji come off q_ji = q_ij (every target matrix is symmetric) without the row;
+# - for the measured gradient, the adjoint of its normalizer -- dL/d(lse_j), read off the main sweep's
+#   backward by a hook -- which carries everything the anchor's other pairs contribute to this pair's gradient
+#   (the softmax coupling, the focal weights' share of it included): the pair's own partial plus adj_j p_ji is
+#   its exact gradient, taken by autograd off a tile-local surrogate.
+# ------------------------------------------------------------------------------------------------
+
+def _infonce_num_raw(crit, log_p, Y, w):
+    """
+    One anchor direction's weighted loss sum and detached raw CE sum over a tile of pairs: `log_p` each pair's
+    log-probability under its anchor's softmax, `Y` its target, `w` the anchors' class-imbalance weights,
+    broadcast against the tile -- [C, 1] where the tile's rows are the anchors (a frame's own tile, log_p its
+    row log-softmax), [1, B] where its columns are (the fold pass's rebuilt half, log_p off the anchors'
+    precomputed normalizers). Mirrors the train-mode weighting of InfoNCECriterion.__call__ (2D focal x 1D
+    class-imbalance) pair by pair, the focal weights off the same log_p -- so the softmax normalizer is the
+    one node every pair of an anchor reads it through.
+    """
+    ce = -Y * log_p
+    W = w
+    if "focal" in crit.cfg["wting"]:
+        W = W * torch.abs(Y - log_p.exp()).clamp_min(1e-12).pow(crit.cfg["wting"]["focal"]["gamma"])
+    return (W * ce).sum(), ce.sum().detach().double()
+
+def _store_hook(buf):
+    """Tensor backward hook copying the incoming grad into `buf` (a view of a per-anchor buffer). Returns None,
+    so the gradient itself passes through untouched."""
+    def hook(g):
+        buf.copy_(g.reshape(-1))
+    return hook
+
+def _all_reduce_sum(parts):
+    """The float64 tensors `parts` summed across ranks in ONE collective, returned in order. Band partials
+    fold this way, and so do per-anchor buffers a rank filled over its own band alone (zeros elsewhere), which
+    the sum reassembles."""
+    packed = torch.cat([p.flatten() for p in parts])
+    dist.all_reduce(packed)
+    return [v.view_as(p) for v, p in zip(torch.split(packed, [p.numel() for p in parts]), parts)]
+
+def _tsm_norm(Q, cfg_tsm, s):
+    """Each row's normalizer under one spec's target simplex mapping (InfoNCECriterion._tsm), from a tile of
+    its memberships: the row mass under the linear tsm, the logsumexp of the scaled row under the softmax one
+    (`s` the mapping's scale, tsm_target_scale); float64 [C]."""
+    Q = Q.double()
+    return Q.sum(dim=1) if cfg_tsm["type"] == "linear" else torch.logsumexp(s * Q, dim=1)
+
+def _tsm_cols(Q, cfg_tsm, s, norm):
+    """
+    One spec's target distribution of the COLUMN anchors over a tile of its memberships: entry [i, j] is
+    Y[j, i], anchor j's target on candidate i -- its membership q_ji = q_ij (the target matrices are symmetric)
+    mapped under anchor j's own normalizer `norm` [B] (_tsm_norm, over every anchor's row). The fold pass's
+    stand-in for the column block of Y, which no row tile holds; float64.
+    """
+    Q = Q.double()
+    return Q / norm if cfg_tsm["type"] == "linear" else torch.exp(s * Q - norm)
+
+def _infonce_resid_params(Y, R, P_opt, hard, feasible):
+    """
+    Per row of a target tile, the parameters infonce_resid's (R, P_opt) are elementwise functions of
+    (_infonce_resid_from_params), [C, 6]: whether the row is feasible / hard, the midpoint between a hard row's
+    two levels with the residual at each, and the log cap of a subtracted row's projection (its largest p*: an
+    infeasible row always caps an entry -- read off the cap, an order-1/B number, rather than the floor
+    exp(-2 alpha) under it, which underflows from alpha ~ 370). `Y` the renormalized target rows, the rest
+    infonce_resid's returns for them.
+    """
+    R_top = R.gather(1, Y.argmax(dim=1, keepdim=True)).squeeze(1)
+    R_bot = R.gather(1, Y.argmin(dim=1, keepdim=True)).squeeze(1)
+    return torch.stack([feasible.double(), hard.double(), 0.5 * Y.amax(dim=1), R_top, R_bot, P_opt.amax(dim=1).log()], dim=1)
+
+def _infonce_resid_from_params(Y, alpha, feasible, hard, mid, R_top, R_bot, eta_cap):
+    """
+    infonce_resid's (R, P_opt) on target entries `Y` from their anchors' row parameters (_infonce_resid_params),
+    broadcast against Y -- [C, 1] for a row tile, [1, B] for the fold pass's column-anchor block: a feasible
+    row is its own projection, a hard row reads its two closed-form levels (told apart by the midpoint, which
+    an ulp on a rebuilt entry cannot cross), any other the clamp of its log to the projection's band.
+    """
+    R_hard = torch.where(Y > mid, R_top, R_bot)
+    P_sub = Y.log().clamp(min=eta_cap - 2 * alpha, max=eta_cap).exp()
+    feasible, hard = feasible > 0, hard > 0
+    R = torch.where(feasible, torch.zeros_like(Y), torch.where(hard, R_hard, P_sub - Y))
+    P_opt = torch.where(feasible, Y, torch.where(hard, Y + R_hard, P_sub))
+    return R, P_opt
+
+def _train_resid_params(Y, R, applied):
+    """
+    Per row of a term's target tile, the parameters infonce_train_resid's residual is an elementwise function
+    of (_train_resid_from_params), [C, 9], read off the residual itself: whether the row is applied, whether it
+    is two-level (its residual then one value per level, a closed form's or the active sets'), the levels'
+    midpoint, the residual at the row's largest and smallest entry, and for an active-set row the cap and
+    floor thresholds, the row's max and the floor level. Its cap residual is affine in the entry with slope -1
+    (infonce_active_set_resid's R_j (C)), so R_top + (y_max - y_j) reproduces it -- small terms only, as there
+    -- and its floor residual is floor - y_j; the sets are an upper and a lower set of the row, so one
+    threshold each places every entry (one whose residual is exactly zero reads zero either way) -- taken
+    midway between the set's edge entry and its neighbour outside, where an ulp on a rebuilt entry cannot
+    cross it (a graded target's rows hold many entries tied at one level).
+    """
+    y_max, y_min = Y.amax(dim=1), Y.amin(dim=1)
+    two_level = ((Y == y_max[:, None]) | (Y == y_min[:, None])).all(dim=1)
+    R_top = R.gather(1, Y.argmax(dim=1, keepdim=True)).squeeze(1)
+    R_bot = R.gather(1, Y.argmin(dim=1, keepdim=True)).squeeze(1)
+    inf = torch.full_like(Y, math.inf)
+    cap, floor = R < 0, R > 0  # an empty set's threshold lands at +inf / -inf: no entry passes it
+    thr_cap = 0.5 * (torch.where(cap, Y, inf).amin(dim=1) + torch.where(cap, -inf, Y).amax(dim=1))
+    thr_floor = 0.5 * (torch.where(floor, Y, -inf).amax(dim=1) + torch.where(floor, inf, Y).amin(dim=1))
+    return torch.stack([applied.double(), two_level.double(), 0.5 * (y_max + y_min), R_top, R_bot,
+                        thr_cap, thr_floor, y_max, y_min + R_bot], dim=1)
+
+def _train_resid_from_params(Y, applied, two_level, mid, R_top, R_bot, thr_cap, thr_floor, y_max, floor_lvl):
+    """infonce_train_resid's residual on target entries `Y` from their anchors' row parameters
+    (_train_resid_params), broadcast against Y as _infonce_resid_from_params takes them; exactly zero on every
+    row not applied (selected by torch.where)."""
+    zero = torch.zeros_like(Y)
+    R_two = torch.where(Y > mid, R_top, R_bot)
+    R_set = torch.where(Y >= thr_cap, R_top + (y_max - Y), torch.where(Y <= thr_floor, floor_lvl - Y, zero))
+    return torch.where(applied > 0, torch.where(two_level > 0, R_two, R_set), zero)
+
+
+class _InfoNCEStatsAccum:
+    """
+    Streams infonce_batch_stats over the tiled InfoNCE loss, so the chunked path reports its keys without the
+    BxB matrices. Per C-row block (update) the target tile gives the rows' residual / reachable optimum once,
+    and each frame's tile -- image anchors on the i2t sims / logits, text anchors on the t2i ones, both scored
+    against that one target tile (Q is symmetric, so the t2i direction's attribution masks Q.T are the same
+    rows) -- adds its direction's per-anchor sums: infonce_scale_grad_sums and infonce_kl_terms un-averaged,
+    the active anchors' entropies and their count, the resid_paths counts, scale_req's sum and extrema. All
+    are sums over anchors (the extrema a max), so they add across tiles and all-reduce across ranks; the
+    ratios, means and fractions are taken after the fold (finalize).
+
+    The pair entropies are not per-anchor: they read the two directions folded per cell. update leaves what
+    the fold needs per anchor -- `rows`, each target row's sum and _infonce_resid_params, and `lse`, each text
+    anchor's softmax normalizer -- the caller all-reduces both across ranks (each rank fills its own band, zeros
+    elsewhere), and the fold pass (fold) then rebuilds the text anchors' half on each i2t tile's cells
+    (module header).
+    """
+
+    def __init__(self, device, B, logit_scale, clamp):
+        self.B = B
+        self.alpha, self.dscale_dlog = _scale_and_jac(logit_scale, clamp, device)
+
+        def zeros(*shape):
+            return torch.zeros(*shape, dtype=torch.float64, device=device)
+
+        self.sums, self.kl, self.paths = zeros(3, 5, 3), zeros(4), zeros(3)
+        self.anchors = zeros(2, 2, 3)  # (active anchors' entropies summed, their count) x direction x (full, struct, res)
+        self.req_sum = zeros(())
+        self.req_ext = torch.full((2,), -math.inf, dtype=torch.float64, device=device)  # running max of (-min, max)
+        self.pair = zeros(3, 2)  # the fold pass's (mass, mass_log) per component
+        self.rows = zeros(B, 7)  # per anchor row: the stat target's row sum, then its _infonce_resid_params
+        self.lse = zeros(B)  # per text anchor: its softmax normalizer (the primary logits' column logsumexp)
+
+    def update(self, rs, re, Y, Q, frames):
+        """Rows rs:re: `Y` their stat target distribution (as InfoNCECriterion.__call__ returns it), `Q` their
+        blended memberships, `frames` the (sim tile, primary logits tile) of the i2t and the t2i frame."""
+        with torch.no_grad():
+            Y, Q = Y.detach().double(), Q.detach().double()
+            mass = Y.sum(dim=1)
+            Y = Y / mass[:, None]  # rows to 1 in float64; see infonce_batch_stats' renormalization note
+            R, P_opt, hard, feasible = infonce_resid(Y, self.alpha)
+            self.rows[rs:re] = torch.cat([mass[:, None], _infonce_resid_params(Y, R, P_opt, hard, feasible)], dim=1)
+            S_opt = infonce_s_opt(P_opt, self.alpha)
+            E_ir = torch.where(hard, infonce_hard_kl_ir(Y > 0, self.alpha),
+                               torch.xlogy(Y, Y).sum(dim=1) - (Y * P_opt.log()).sum(dim=1))
+            self.paths += torch.stack([hard, feasible, ~(hard | feasible)]).double().sum(dim=1)
+            n = Y.size(0)
+            for d, (S, Z) in enumerate(frames):
+                S, Z = S.double(), Z.double()
+                log_P = torch.log_softmax(Z, dim=1)
+                P = log_P.exp()
+                self.sums += n * infonce_scale_grad_sums(S, Q, Y, P, P_opt, S_opt, R)
+                self.kl += n * infonce_kl_terms(Y, log_P, P_opt, R, E_ir)
+                for c, M in enumerate((P - Y, P - P_opt, R)):
+                    active = M.abs().sum(dim=1) > 0
+                    self.anchors[0, d, c] += _norm_entropy(M[active], 1).sum()
+                    self.anchors[1, d, c] += active.sum()
+            self.lse[rs:re] = torch.logsumexp(frames[1][1].double(), dim=1)
+            scale_req = 0.5 * torch.log(Y.amax(1) / Y.amin(1))  # per row
+            self.req_sum += scale_req.sum()
+            self.req_ext = torch.maximum(self.req_ext, torch.stack([-scale_req.min(), scale_req.max()]))
+
+    def fold(self, rs, re, Y, Y_cols, Z):
+        """The pair entropies' sums over the cells of rows rs:re: `Y` the rows' stat target tile (image anchors),
+        `Y_cols` the column anchors' on the same cells (entry [i, j] text anchor j's target on image i), `Z`
+        the i2t frame's primary logits tile. Each half's gradient components are rebuilt from its anchors' row
+        parameters and the two folded per cell, as infonce_sim_grad_entropies folds M_i2t + M_t2i.T."""
+        with torch.no_grad():
+            Z = Z.detach().double()
+            halves = []
+            for Y_h, prm, P in ((Y, self.rows[rs:re].T.unsqueeze(2), torch.softmax(Z, dim=1)),
+                                (Y_cols, self.rows.T.unsqueeze(1), torch.exp(Z - self.lse))):
+                Y_h = Y_h.detach().double() / prm[0]
+                R, P_opt = _infonce_resid_from_params(Y_h, self.alpha, *prm[1:])
+                halves.append((P - Y_h, P - P_opt, R))
+            for c, (M_rows, M_cols) in enumerate(zip(*halves)):
+                A = (0.5 * (M_rows + M_cols)).abs()
+                self.pair[c] += torch.stack([A.sum(), torch.xlogy(A, A).sum()])
+
+    def finalize(self, world_size):
+        sums, kl, paths, anchors, req_sum, pair, req_ext = (
+            self.sums, self.kl, self.paths, self.anchors, self.req_sum, self.pair, self.req_ext)
+        if world_size > 1:
+            req_ext = req_ext.clone()
+            dist.all_reduce(req_ext, op=dist.ReduceOp.MAX)
+            sums, kl, paths, anchors, req_sum, pair = _all_reduce_sum([sums, kl, paths, anchors, req_sum, pair])
+        B = self.B
+        ent_sum, n_active = anchors  # [direction, component] each
+        sets = torch.stack([ent_sum / n_active, n_active / B], dim=-1)  # NaN entropy where a direction has no active anchor
+        anchor = torch.stack([_fold_anchor_sets(sets[:, c]) for c in range(3)])  # [3, (H, f)]
+        entropies = torch.stack([_entropy_from_sums(pair[:, 0], pair[:, 1], B * B), anchor[:, 0], anchor[:, 1]])
+        reqs = torch.stack([-req_ext[0], req_sum / B, req_ext[1]])
+        return _infonce_stats_dict(0.5 * sums / B, self.dscale_dlog, 0.5 * kl / B, reqs, paths / B, entropies)
+
+
+class _SimGradEntropyAccum:
+    """
+    Streams sim_grad_entropies_actual over the fold pass's tiles of the measured dL/dS (rows = image anchors,
+    whole in every tile): the pair entropy from the batch's (mass, mass_log) sums, the image anchors' entropies
+    row by row, and the text anchors' -- the columns, which span every tile and rank -- from per-column
+    (mass, mass_log) sums, the entropy taken after the fold (_entropy_from_sums).
+    """
+
+    def __init__(self, device, B):
+        self.B = B
+        self.pair = torch.zeros(2, dtype=torch.float64, device=device)
+        self.rows = torch.zeros(2, dtype=torch.float64, device=device)  # active rows' entropies summed, their count
+        self.cols = torch.zeros(2, B, dtype=torch.float64, device=device)
+
+    def update(self, G):
+        A = G.detach().double().abs()
+        A_log = torch.xlogy(A, A)
+        self.pair += torch.stack([A.sum(), A_log.sum()])
+        active = A.sum(dim=1) > 0
+        self.rows += torch.stack([_norm_entropy(A[active], 1).sum(), active.sum()])
+        self.cols += torch.stack([A.sum(dim=0), A_log.sum(dim=0)])
+
+    def finalize(self, world_size):
+        pair, rows, cols = self.pair, self.rows, self.cols
+        if world_size > 1:
+            pair, rows, cols = _all_reduce_sum([pair, rows, cols])
+        B = self.B
+        active = cols[0] > 0
+        sets = torch.stack([
+            torch.stack([rows[0] / rows[1], rows[1] / B]),
+            torch.stack([_entropy_from_sums(cols[0][active], cols[1][active], B).mean(), active.double().mean()]),
+        ])
+        anchor = _fold_anchor_sets(sets)
+        vals = torch.stack([_entropy_from_sums(pair[0], pair[1], B * B), anchor[0], anchor[1]]).cpu().tolist()
+        return dict(zip(("sim_grad_entropy_pair_actual", "sim_grad_entropy_anchor_actual", "sim_grad_entropy_active_actual"), vals))
+
+
+def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute_logits, logit_scale, chunk_size,
+                                  mixed_prec, device, rank, world_size, sim_grad_sums=True, sim_targ_stats=True,
+                                  hpsm_kappas=(0.0,), *, hist_bins):
+    """
+    Tiled + row-band-sharded global-batch InfoNCE loss + backward (GradCache-style representation gradients).
+    Computes the exact same weighted loss and gradients as the full-batch path (InfoNCECriterion.__call__ via
+    _global_batch_loss) over the full BxB matrix, but never materializes it and shares the work across ranks:
+    the anchors split into world_size equal bands, this rank sweeps its band [rank*b, (rank+1)*b) in blocks of
+    C = chunk_size anchors, and each block as two C x B tiles, one per anchor direction in the direction's own
+    frame (module header), each backpropagated into the embedding leaves as computed -- peak VRAM O(C*B),
+    per-rank compute O(B^2/world_size). The loss/raw totals, batch stats and block_residuals record are
+    all-reduced, so every rank returns identical full-batch values; the leaves' .grad hold this band's PARTIAL
+    dL/dembs, which sum to the full gradient across ranks (the caller completes them -- see
+    batch_step_chunked). Exact up to floating-point summation order.
+
+    Covers InfoNCECriterion's whole config space: every target and tsm, the blend under either
+    loss.blend.type, loss.unitless (a no_grad pre-sweep of the terms' magnitudes), separate logit scalars
+    (each term on its own pair's logits tile), class-imbalance + focal weighting, and
+    loss.infonce.block_residuals, whose record lands on the criterion as the full-batch call leaves it
+    (crit.block_stats / dlogscale_correction, lambda_eff).
+
+    - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive band-partial dL/dembs
+                         in their .grad.
+    - crit ------------- the InfoNCECriterion.
+    - compute_logits --- VLMWrapper.compute_logits(sim, clamp, center, center_global, half_live, secondary)
+                         -> logits tile (center None here: loss.logits.bce is inert under InfoNCE).
+    - logit_scale ------ the raw log logit-scale parameter(s) the criterion takes: model.logit_scale, or under
+                         separate logit scalars the (logit_scale, logit_scale2) pair.
+    - rank, world_size - this rank's band index / number of bands (1 -> unsharded full sweep).
+    - sim_grad_sums ----- False skips the sim-grad-sum hooks and returns grad_sum_sim None.
+    - sim_targ_stats ---- False skips the stats accumulation and the fold pass, and returns batch_stats None.
+    - hpsm_kappas ------- kappa values the sim_margin* stats are reported at (one entry each).
+    - hist_bins --------- bins of the *_hist stats (reporting.learning_curves.hist_bins).
+
+    Returns (loss, loss_raw, batch_stats, grad_sum_sim), all detached; gradients left in the leaves' /
+    params' .grad. batch_stats carries the full-batch path's keys -- sim_targ_batch_stats' (streamed as on
+    the BCE path, but for the T2I margins, read off the t2i frame's own tiles; no p_hist under InfoNCE),
+    infonce_batch_stats' and, with sim_grad_sums on, sim_grad_entropies_actual's, which the full-batch
+    path's caller adds off the retained sims (TrainPipeline._step_train). The measured gradient is rebuilt
+    in float32, where the full-batch path reads a bf16 one under mixed precision. grad_sum_sim =
+    sum(dL/dsim), accumulated tile-by-tile over both frames via backward hooks (all-reduced across bands).
+    """
+    B = img.size(0)
+    lo, hi = _row_band(B, chunk_size, rank, world_size)
+
+    def autocast_ctx():
+        return torch.autocast(device_type=device.type, dtype=torch.bfloat16) if mixed_prec else nullcontext()
+
+    cfg = crit.cfg
+    clamp = cfg["logits"]["scale"]["clamp"]
+    block = cfg["infonce"]["block_residuals"]
+    n_pairs = n_scalar_pairs(crit)
+    frames = ((img, txt), (txt, img))  # (anchors, candidates) per direction: i2t, t2i
+    spec_fns = make_targ_block_fns(crit, class_encs_b, targ_data_b, B, device)
+    term_ws = [w for w, _ in loss_term_spec_fns(crit, spec_fns)]
+    n_terms = len(term_ws)
+    spec_scales = crit._per_term(lambda t: t, logit_scale, len(spec_fns))  # each live spec's log scale (its tsm's under pinned)
+    term_scales = crit._per_term(lambda t: t, logit_scale, n_terms)
+
+    # per-anchor class-imbalance weights, incl. the cls_imb.norm batch-mean division -- exactly as
+    # InfoNCECriterion.__call__ computes them (rank-identical, no collective)
+    w_ci = crit._cls_imb_wts(class_encs_b)
+    if cfg["wting"]["cls_imb"]["norm"]:
+        w_ci = w_ci / w_ci.mean()
+
+    def targ_tiles(rs, re):
+        """Rows rs:re of the live specs' memberships, the loss terms' (weight, float64 target distribution)
+        pairs and the blended distribution -- InfoNCECriterion.__call__'s, per tile (the tsm is row-wise)."""
+        Qs = [fn(rs, re) for _, _, fn in spec_fns]
+        Ys64 = crit.targ_dists(Qs, spec_scales)
+        Y64 = crit.targ_memb(Ys64)
+        return Qs, crit.loss_terms(Ys64, Y64), Y64
+
+    def stat_y(terms64, Y64):
+        """The distribution the batch stats read, as a training InfoNCECriterion.__call__ returns it: the
+        primary term's under separate logit scalars, the terms' under their normalized blend coefficients
+        under loss.unitless, else the blend."""
+        if crit.sep_scalars:
+            return terms64[0][1]
+        if cfg["unitless"]:
+            return sum(c * Y_k for c, (_, Y_k) in zip(coeffs, terms64)) / sum(coeffs)
+        return Y64
+
+    def frame_logits(rows, cols, rs, re):
+        """One frame's tile for anchors rs:re: its [C, B] sims and, per logit-scalar pair, the logits tile and
+        the anchors' softmax normalizers [C, 1]."""
+        sim_tile, logits_fs = _crit_block_logits_f(crit, rows[rs:re], cols, compute_logits, None, [None] * n_pairs)
+        return sim_tile, logits_fs, [torch.logsumexp(Z, dim=1, keepdim=True) for Z in logits_fs]
+
+    def term_nums(log_ps, Ys, w):
+        """Each loss term's (weighted loss sum, raw CE sum) over a tile (_infonce_num_raw), on its own scalar
+        pair's log-probs under separate logit scalars, else the one shared."""
+        log_p_terms = log_ps if crit.sep_scalars else log_ps * len(Ys)
+        return zip(*(_infonce_num_raw(crit, log_p, Y, w) for log_p, Y in zip(log_p_terms, Ys)))
+
+    # loss.unitless: each term's full weighted loss L_k, detached -- the magnitudes term_coeffs normalizes by,
+    # which the grad sweep needs before its first tile. A no_grad band sweep of the forward, all-reduced
+    L_values = None
+    if cfg["unitless"]:
+        sums = torch.zeros(n_terms, dtype=torch.float64, device=device)
+        with torch.no_grad():
+            for rs in range(lo, hi, chunk_size):
+                re = rs + chunk_size
+                with autocast_ctx():
+                    _, terms64, _ = targ_tiles(rs, re)
+                    Ys = [Y_k.float() for _, Y_k in terms64]
+                    for rows, cols in frames:
+                        _, logits_fs, lses = frame_logits(rows, cols, rs, re)
+                        nums, _ = term_nums([Z - lse for Z, lse in zip(logits_fs, lses)], Ys, w_ci[rs:re, None])
+                        sums += torch.stack(nums).double()
+        if world_size > 1:
+            dist.all_reduce(sums)
+        L_values = list((0.5 * sums / B).float())
+    coeffs = crit.term_coeffs(term_ws, L_values)
+
+    crit.dlogscale_correction = None  # per forward, as InfoNCECriterion.__call__ resets them
+    crit.block_stats = None
+    if block is not None:
+        # per term, as infonce_block_resid takes them: its post-clamp scale (live, for the scale's part of the
+        # term), coefficient and spec; its contraction and coverage are summed over the tiles
+        alphas = [(t.clamp(max=math.log(100)) if clamp else t).exp() for t in term_scales]
+        alphas64 = [alpha.detach().double() for alpha in alphas]
+        coeffs64 = [torch.as_tensor(c, dtype=torch.float64, device=device).detach() for c in coeffs]
+        term_specs = [cfg_targ for _, cfg_targ in crit.targ_specs] if n_terms == len(crit.targ_specs) else [None]
+        resid_sums = torch.zeros(n_terms, dtype=torch.float64, device=device)
+        cov_sums = torch.zeros(n_terms, 3, dtype=torch.float64, device=device)
+
+    grad_sum = torch.zeros((), dtype=torch.float64, device=device)
+    loss_tot = torch.zeros((), dtype=torch.float64, device=device)
+    raw_tot = torch.zeros((), dtype=torch.float64, device=device)
+    fold_actual = sim_targ_stats and sim_grad_sums  # the measured-gradient entropies ride the fold pass
+    if sim_targ_stats:
+        stats = _SimTargStatsAccum(device, hpsm_kappas, hist_bins, B, p_hist=False, t2i_tiles=True)
+        nce_stats = _InfoNCEStatsAccum(device, B, term_scales[0].detach(), clamp)  # the primary pair's scale, as the full-batch stats read
+        # each live spec's tsm, its scale (at the spec's own post-clamp alpha) and every anchor's normalizer
+        tsm_cfgs = [cfg_targ["infonce"]["tsm"] for _, cfg_targ in crit.targ_specs]
+        tsm_scales = [tsm_target_scale(cfg_tsm, (t.detach().clamp(max=math.log(100)) if clamp else t.detach()).exp().double())
+                      for cfg_tsm, t in zip(tsm_cfgs, spec_scales)]
+        tsm_norms = torch.zeros(len(spec_fns), B, dtype=torch.float64, device=device)
+    if fold_actual:
+        grad_stats = _SimGradEntropyAccum(device, B)
+        # per scalar pair, every text anchor's softmax normalizer and its adjoint dL/d(lse) (module header)
+        lse_vals = torch.zeros(n_pairs, B, dtype=torch.float64, device=device)
+        lse_adjs = torch.zeros(n_pairs, B, dtype=torch.float64, device=device)
+        if block == "full":
+            resid_prms = torch.zeros(n_terms, B, 9, dtype=torch.float64, device=device)
+
+    for rs in range(lo, hi, chunk_size):
+        re = rs + chunk_size  # the band is an exact multiple of chunk_size (_row_band)
+        with autocast_ctx():
+            Qs, terms64, Y64 = targ_tiles(rs, re)
+            Ys = [Y_k.float() for _, Y_k in terms64]
+            if block is not None:
+                Rs = []
+                for k, ((_, Y_k), alpha64, spec) in enumerate(zip(terms64, alphas64, term_specs)):
+                    R, applied, feasible, skipped = _block_resid_rows(Y_k, alpha64, spec)
+                    cov_sums[k] += torch.stack([applied, feasible, skipped]).double().sum(dim=1)
+                    Rs.append(R)
+                    if fold_actual and block == "full":
+                        resid_prms[k, rs:re] = _train_resid_params(Y_k, R, applied)
+        tiles_stat = []
+        for f, (rows, cols) in enumerate(frames):
+            with autocast_ctx():
+                sim_tile, logits_fs, lses = frame_logits(rows, cols, rs, re)
+                if sim_grad_sums and sim_tile.requires_grad:
+                    sim_tile.register_hook(_gsum_hook(grad_sum))
+                if fold_actual and f == 1:
+                    for g, lse in enumerate(lses):
+                        lse_vals[g, rs:re] = lse.detach().squeeze(1)
+                        if lse.requires_grad:
+                            lse.register_hook(_store_hook(lse_adjs[g, rs:re]))
+                nums, raws = term_nums([Z - lse for Z, lse in zip(logits_fs, lses)], Ys, w_ci[rs:re, None])
+                # per-anchor loss sums over the frame's anchors, the two directions halved: the full batch's
+                # 0.5 * (mean_i2t + mean_t2i) is their sum over B
+                frame_loss = 0.5 * sum(c * num for c, num in zip(coeffs, nums)) / B
+                loss_tot += frame_loss.detach().double()
+                raw_tot += 0.5 * sum(w * raw for w, raw in zip(term_ws, raws))
+                if block is not None:
+                    # the anchors' residual rows against their sims in this frame: R_i. against sim_i. (i2t) and
+                    # sim_.i (t2i), the two halves of infonce_block_resid's contraction with sim + sim.T
+                    S = sim_tile.detach().double()
+                    resid_sums += torch.stack([(R * S).sum() for R in Rs])
+                    if block == "full":
+                        # ... and of its dL/dsim part, R + R.T against the live sim
+                        G = sum(c64 * 0.5 * alpha64 * R for c64, alpha64, R in zip(coeffs64, alphas64, Rs)) / B
+                        frame_loss = frame_loss - ((sim_tile - sim_tile.detach()) * G).sum().to(frame_loss.dtype)
+            frame_loss.backward()
+            tiles_stat.append((sim_tile.detach(), logits_fs[0].detach()))  # the primary pair's logits, as the full-batch stats read
+        if sim_targ_stats:
+            with torch.no_grad():
+                Q = crit.targ_memb(Qs)  # the blended memberships
+                stats.update(tiles_stat[0][0], Q, sim_tile_t2i=tiles_stat[1][0])
+                for k, (cfg_tsm, s) in enumerate(zip(tsm_cfgs, tsm_scales)):
+                    tsm_norms[k, rs:re] = _tsm_norm(Qs[k], cfg_tsm, s)
+                nce_stats.update(rs, re, stat_y(terms64, Y64), Q, tiles_stat)
+
+    if block is not None:
+        # the scale's part of the correction, once per rank on its band's contraction: a zero-valued term whose
+        # gradient the caller's all-reduce sums to the full batch's (infonce_block_resid's -(alpha - alpha.detach()) * resid)
+        term = sum(-(alpha - alpha.detach()) * (c64 * 0.5 * resid_sum / B).to(alpha.dtype)
+                   for alpha, c64, resid_sum in zip(alphas, coeffs64, resid_sums))
+        if term.requires_grad:
+            term.backward()
+
+    if world_size > 1:  # fold the band-partial totals; the leaves' .grad stay band-partial
+        parts = [torch.stack([loss_tot, raw_tot, grad_sum])] + ([resid_sums, cov_sums] if block is not None else [])
+        totals, *block_parts = _all_reduce_sum(parts)
+        loss_tot, raw_tot, grad_sum = totals.unbind()
+        if block is not None:
+            resid_sums, cov_sums = block_parts
+
+    if block is not None:
+        records = [_block_resid_record(t, clamp, alpha, (c64 * 0.5 * resid_sum / B).to(alpha.dtype), c64, B)
+                   for t, alpha, c64, resid_sum in zip(term_scales, alphas, coeffs64, resid_sums)]
+        crit._set_block_stats([correction for correction, _ in records], list(cov_sums / B), [bound for _, bound in records])
+
+    batch_stats = None
+    if sim_targ_stats:
+        # the fold pass (module header): the per-anchor buffers reassembled across bands, then one sweep of
+        # the i2t frame with the text anchors' half rebuilt on every tile's cells
+        if world_size > 1:
+            bufs = [tsm_norms, nce_stats.rows, nce_stats.lse] + ([lse_vals, lse_adjs] if fold_actual else []) \
+                + ([resid_prms] if fold_actual and block == "full" else [])
+            tsm_norms, nce_stats.rows, nce_stats.lse, *bufs = _all_reduce_sum(bufs)
+            if fold_actual:
+                lse_vals, lse_adjs, *bufs = bufs
+                if block == "full":
+                    (resid_prms,) = bufs
+        for rs in range(lo, hi, chunk_size):
+            re = rs + chunk_size
+            with autocast_ctx(), torch.set_grad_enabled(fold_actual):
+                Qs, terms64, Y64 = targ_tiles(rs, re)
+                Ys64_cols = [_tsm_cols(Q, cfg_tsm, s, norm) for Q, cfg_tsm, s, norm in zip(Qs, tsm_cfgs, tsm_scales, tsm_norms)]
+                Y64_cols = crit.targ_memb(Ys64_cols)
+                terms64_cols = crit.loss_terms(Ys64_cols, Y64_cols)
+                # float32 leaf: the measured gradient is taken at the node the head scales (compute_logits' own
+                # float32 cast of the sims), as _crit_center_grad_mean probes it
+                sim_leaf = compute_sim(img[rs:re].detach(), txt.detach(), cfg["sim"]).float().requires_grad_(fold_actual)
+                logits_fs = [compute_logits(sim_leaf, clamp, None, secondary=bool(g)).float() for g in range(n_pairs)]
+                nce_stats.fold(rs, re, stat_y(terms64, Y64), stat_y(terms64_cols, Y64_cols), logits_fs[0])
+                if fold_actual:
+                    # the loss over this tile's cells as BOTH directions read them: the image anchors' rows
+                    # whole, and each text anchor's pairs here -- off its precomputed normalizer, plus the
+                    # surrogate adj_j * p_ji whose gradient is what the anchor's normalizer passes to this pair
+                    nums_rows, _ = term_nums([Z - torch.logsumexp(Z, dim=1, keepdim=True) for Z in logits_fs],
+                                             [Y_k.float() for _, Y_k in terms64], w_ci[rs:re, None])
+                    log_ps_cols = [Z - lse_vals[g].to(Z.dtype) for g, Z in enumerate(logits_fs)]
+                    nums_cols, _ = term_nums(log_ps_cols, [Y_k.float() for _, Y_k in terms64_cols], w_ci[None, :])
+                    tile_loss = 0.5 * sum(c * (num_rows + num_cols) for c, num_rows, num_cols in zip(coeffs, nums_rows, nums_cols)) / B
+                    tile_loss = tile_loss + sum((lse_adjs[g].to(log_p.dtype) * log_p.exp()).sum() for g, log_p in enumerate(log_ps_cols))
+            if fold_actual:
+                (G,) = torch.autograd.grad(tile_loss, sim_leaf)
+                if block == "full":
+                    # block_residuals' own dL/dsim, -coeff * 0.5 * alpha * (R + R.T) / B per term, both halves
+                    # off the anchors' row parameters
+                    G_block = sum(
+                        c64 * 0.5 * alpha64 * (_train_resid_from_params(Y_k, *prm[rs:re].T.unsqueeze(2))
+                                               + _train_resid_from_params(Y_k_cols, *prm.T.unsqueeze(1)))
+                        for c64, alpha64, (_, Y_k), (_, Y_k_cols), prm in zip(coeffs64, alphas64, terms64, terms64_cols, resid_prms)
+                    ) / B
+                    G = G - G_block.to(G.dtype)
+                grad_stats.update(G)
+        batch_stats = {**stats.finalize(world_size), **nce_stats.finalize(world_size)}
+        if fold_actual:
+            batch_stats.update(grad_stats.finalize(world_size))
+        if crit.lambda_eff is not None:  # rank-identical: the term magnitudes are all-reduced
+            batch_stats["lambda_eff"] = crit.lambda_eff.item()
+
+    loss = loss_tot.float()
+    loss_raw = (raw_tot / B).float()
+    grad_sum_sim = grad_sum.item() if sim_grad_sums else None
     return loss, loss_raw, batch_stats, grad_sum_sim

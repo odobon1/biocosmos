@@ -475,10 +475,11 @@ class TrainPipeline:
         self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}
 
     def _step_train(self, imgs_sb, texts_sb, class_encs_sb, targ_data_sb):
-        if self.cfg.hw.loss_chunk_size is not None:
+        if self.cfg.loss_chunk_size is not None:
             # tiled path: encoder forward, loss, AND backward happen inside (representation gradients),
             # so no loss.backward() here. Autocast + DDP grad sync are handled internally. The sims slot
-            # already carries the grad_sum_sim float, accumulated tile-by-tile.
+            # already carries the grad_sum_sim float, accumulated tile-by-tile (and, under InfoNCE,
+            # batch_stats the measured sim-grad entropies the full-batch branch below adds).
             loss, loss_raw, embs_img_b, embs_txt_b, logits, _, batch_stats, grad_sum_sim = self.modelw.batch_step_chunked(
                 imgs_sb, texts_sb, class_encs_sb, targ_data_sb
             )

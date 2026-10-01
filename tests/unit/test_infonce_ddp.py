@@ -1,6 +1,7 @@
 """
-DDP equivalence tests for the InfoNCE global-batch path (the non-chunked one -- chunking_supported
-excludes InfoNCE), in particular loss.infonce.block_residuals and the actual sim-grad diagnostics.
+DDP equivalence tests for the InfoNCE global-batch paths -- the full-batch one and the tiled one
+(hardware.loss_chunk_size.infonce) -- in particular loss.infonce.block_residuals and the actual sim-grad
+diagnostics.
 
 The single-process tests in test_infonce_scale_grad.py pin down the residual/blocking math; the 2-rank
 test here pins down what only exists across ranks: the _AllGather embedding gather feeding one identical
@@ -11,11 +12,12 @@ the per-rank block_stats record being what every rank saw -- TrainPipeline._reco
 on rank 0 alone.
 
 It binds the REAL VLMWrapper methods to a lightweight harness `self` (as test_chunked_loss_ddp.py does),
-wraps a toy dual encoder in DDP, and per case compares three paths on every rank:
+wraps a toy dual encoder in DDP, and per case compares four paths on every rank:
 
   (GT)    single-process full-batch batch_step + backward on the full global batch  -- ground truth
   (REF)   production DDP path: per-rank slice -> batch_step (gather) + loss.backward()
   (CTRL)  REF's weights and data with block_residuals: None  -- for the correction-semantics check
+  (CHUNK) batch_step_chunked: no_sync + the tiled InfoNCE loss + manual all-reduce, multi- and single-tile bands
 
 asserting: the full-batch loss reading and every DDP-synced param grad match GT; block_stats identical
 across ranks and its coverage/bounds exactly GT's (they are embedding-independent: targets come off the
@@ -23,7 +25,11 @@ gathered class encodings, alpha off the replicated parameter); the recorded dlog
 equal the POST-SYNC gradient delta grad(REF) - grad(CTRL); the zero-valued term leaves the loss reading
 bit-untouched; `full` moves the tower grads where rows were applied while `alpha` leaves them alone; and
 the actual sim-grad diagnostics (grad_sum_sim + sim_grad_entropies_actual off the retained sims' .grad,
-TrainPipeline._step_train's read) match GT.
+TrainPipeline._step_train's read) match GT. The chunked path -- the anchors band-sharded across ranks, each
+block swept as one tile per anchor direction, the per-anchor buffers of its fold pass reassembled across
+bands -- must land on GT too: the loss reading, every param grad after its manual all-reduce, the returned
+leaves' full-batch dL/dembs, grad_sum_sim, the whole batch_stats dict (the full-batch path's, with the
+measured entropies the fold pass rebuilds) and the block_stats record, identical on every rank.
 
 Cases: a no-block target-blend baseline (plain DDP equivalence of the InfoNCE path), alpha/full on hard
 binary targets (every row the hard closed form), a graded tax target through the active sets and a
@@ -131,7 +137,8 @@ def build_harness(model, crit, world_size, device):
     h.txt_pp = lambda x: x  # identity: toy "text" is already a feature tensor
     h.cfg = SimpleNamespace(
         loss=crit.cfg,
-        hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
+        loss_chunk_size=None,
+        hw=SimpleNamespace(mixed_prec=False),
         reporting={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
                    "learning_curves": {"hpsm": {"kappas": [0.0]}, "hist_bins": 20}},
         device=device,
@@ -147,6 +154,15 @@ def rel(a, b):
     return (a - b).abs().max().item() / (b.abs().max().item() + 1e-12)
 
 
+def stat_close(a, b, rel=2e-4, abs_=1e-6):
+    """Whether a batch stat (a float or a list of them; NaN where a reading does not exist) matches."""
+    if isinstance(b, list):
+        return len(a) == len(b) and all(stat_close(a_i, b_i, rel, abs_) for a_i, b_i in zip(a, b))
+    if math.isnan(b) or math.isinf(b):
+        return (math.isnan(a) and math.isnan(b)) or a == b
+    return abs(a - b) <= rel * abs(b) + abs_
+
+
 def run(rank, world_size, port):
     import utils.loss as L
     from models import VLMWrapper
@@ -158,6 +174,7 @@ def run(rank, world_size, port):
     Harness._batch_stats = VLMWrapper._batch_stats
     Harness._global_batch_loss = VLMWrapper._global_batch_loss
     Harness.batch_step = VLMWrapper.batch_step
+    Harness.batch_step_chunked = VLMWrapper.batch_step_chunked
 
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
@@ -193,7 +210,7 @@ def run(rank, world_size, port):
         crit_gt = make_crit(L, cfg, spec1, spec2, K, B, device)
         h_gt = build_harness(toy_gt, crit_gt, 1, device)
         toy_gt.zero_grad(set_to_none=True)
-        loss_gt, _, _, _, _, _, _, sims_gt = Harness.batch_step(h_gt, fi, ft, fc, full_td)
+        loss_gt, _, embs_img_gt, embs_txt_gt, _, _, stats_gt, sims_gt = Harness.batch_step(h_gt, fi, ft, fc, full_td)
         loss_gt.backward()
         g_gt = grads(toy_gt)
         block_gt = crit_gt.block_stats
@@ -226,6 +243,54 @@ def run(rank, world_size, port):
             a, b = ent_ref[k], ent_gt[k]
             same = (math.isnan(a) and math.isnan(b)) or abs(a - b) < 1e-6 * (abs(b) + 1.0)
             assert same, f"{tag} {k}: REF {a} != GT {b}"
+
+        # (CHUNK) the tiled path (its own backward + manual all-reduce internally), multi-tile and single-tile
+        # bands (both divide the per-rank band B / world_size = SB)
+        for chunk_size in (SB // 3, SB):
+            ctag = f"{tag[:-1]} chunk={chunk_size}]"
+            toy_chunk = copy.deepcopy(base).to(device).train()
+            ddp_chunk = nn.parallel.DistributedDataParallel(toy_chunk, device_ids=[rank])
+            crit_chunk = make_crit(L, cfg, spec1, spec2, K, B, device)
+            h_chunk = build_harness(ddp_chunk, crit_chunk, world_size, device)
+            h_chunk.cfg.loss_chunk_size = chunk_size
+            ddp_chunk.zero_grad(set_to_none=True)
+            loss_chunk, _, img_leaf, txt_leaf, _, _, stats_chunk, gsum_chunk = Harness.batch_step_chunked(
+                h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
+            g_chunk = grads(toy_chunk)
+            block_chunk = crit_chunk.block_stats
+
+            assert abs(loss_chunk.item() - loss_gt.item()) < 1e-4 * (abs(loss_gt.item()) + 1e-6), \
+                f"{ctag} CHUNK loss {loss_chunk.item()} != GT {loss_gt.item()}"
+            for n in g_gt:
+                r = rel(g_chunk[n], g_gt[n])
+                assert r < 3e-4, f"{ctag} CHUNK grad mismatch on {n}: rel={r:.2e}"
+            # the returned leaves must carry FULL-BATCH dL/dembs on every rank (grad-norm logging contract)
+            for side, leaf, emb_gt in (("img", img_leaf, embs_img_gt), ("txt", txt_leaf, embs_txt_gt)):
+                r = rel(leaf.grad, emb_gt.grad)
+                assert r < 3e-4, f"{ctag} leaf {side}-grad mismatch: rel={r:.2e}"
+            assert abs(gsum_chunk - gsum_gt) < 1e-4 * (abs(gsum_gt) + 1.0), f"{ctag} grad_sum_sim {gsum_chunk} != {gsum_gt}"
+
+            # the batch stats: the full-batch path's keys (its measured entropies are the caller's read), streamed
+            # over the tiles and folded across bands. The medians are subsampled per tile, and a residual at
+            # rounding level (rows on the band's edge: the pinned control) has no pair entropy to agree on
+            stats_full = {**stats_gt, **ent_gt}
+            assert set(stats_chunk) == set(stats_full), f"{ctag} batch_stats keys differ: {set(stats_chunk) ^ set(stats_full)}"
+            skip = {"sim_median", "targ_median"}
+            if stats_full["dscale_sum_abs_res"][0] < 1e-12:
+                skip.add("sim_grad_entropy_pair_res")
+            for key, val in stats_full.items():
+                assert key in skip or stat_close(stats_chunk[key], val), f"{ctag} {key}: CHUNK {stats_chunk[key]} != GT {val}"
+
+            # every rank returns the same readings and records the same block_stats
+            gathered = [None] * world_size
+            dist.all_gather_object(gathered, (loss_chunk.item(), gsum_chunk, repr(stats_chunk), repr(block_chunk)))
+            assert all(other == gathered[0] for other in gathered), f"{ctag} CHUNK readings differ across ranks"
+
+            assert (block_chunk is None) == (block is None), f"{ctag} CHUNK block_stats {block_chunk}"
+            if block is not None:
+                assert set(block_chunk) == set(block_gt), f"{ctag} block_stats keys differ"
+                for key, val in block_gt.items():
+                    assert stat_close(block_chunk[key], val, rel=1e-4, abs_=1e-9), f"{ctag} {key}: CHUNK {block_chunk[key]} != GT {val}"
 
         if block is None:
             assert block_ref is None and block_gt is None, f"{tag} block_stats set without blocking"

@@ -96,7 +96,7 @@ logits:
     # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);
     # (grad_proj) Forward untouched, backward-only global-mean projection of the gradient entering sim (scale AND bias
     # learn from raw BCE grads); (grad_proj2) Same but projected at the scaled sims (bias raw, scale projected);
-    # Chunked path (hw.loss_chunk_size) reproduces full-batch centering exactly; (sim) under chunking requires
+    # Chunked path (hw.loss_chunk_size.bce) reproduces full-batch centering exactly; (sim) under chunking requires
     # sim: cos (config error otherwise -- no closed-form global mean for geo); sensitive to mixed precision
     bias:
       init: null  # {null, pos_prevalence, [float]}; (null) Use base model bias (or 0.0 non-learnable if non-existent,

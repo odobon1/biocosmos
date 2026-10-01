@@ -367,28 +367,29 @@ class TrainConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
 
-        if self.hw.loss_chunk_size is not None:
-            from utils.loss import chunking_supported  # local: avoid importing Bio.Phylo at config load
-            if not chunking_supported(self.loss):  # tiled loss supports the full BCE-family config (bce/bif_bce); inert with infonce
-                self.hw.loss_chunk_size = None
-            else:
-                # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
-                # exactly only through the cos-sim mean factorization mean(sim) = mean(img) . mean(txt)
-                # (see utils/loss.py) -- geo sims have no such closed form
-                if self.loss["logits"]["bce"]["center"] == "sim" and self.loss["sim"] != "cos":
-                    raise ValueError(
-                        f"loss.logits.bce.center: sim requires loss.sim: cos under hardware.loss_chunk_size "
-                        f"(got loss.sim: {self.loss['sim']}): the tiled loss reproduces full-batch sim-centering "
-                        f"exactly only via the cos mean factorization; use center: grad_proj/grad_proj2 or "
-                        f"disable chunking"
-                    )
-                world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
-                if self.batch_size % (world_size * self.hw.loss_chunk_size) != 0:
-                    raise ValueError(
-                        f"batch_size ({self.batch_size}) must be an exact multiple of world_size ({world_size}) "
-                        f"x hardware.loss_chunk_size ({self.hw.loss_chunk_size}): the chunked loss shards the BxB rows "
-                        f"into equal per-rank bands of whole C-row blocks"
-                    )
+        # the tiled loss's row-block height for this trial's criterion (hardware.loss_chunk_size.{bce, infonce}; bce
+        # covers the BCE family, bce / bif_bce); None -> the full BxB path
+        crit_family = "infonce" if self.loss["crit"] == "infonce" else "bce"
+        self.loss_chunk_size = self.hw.loss_chunk_size[crit_family]
+        if self.loss_chunk_size is not None:
+            # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
+            # exactly only through the cos-sim mean factorization mean(sim) = mean(img) . mean(txt)
+            # (see utils/loss.py) -- geo sims have no such closed form. BCE family only: InfoNCE never
+            # reads loss.logits.bce
+            if crit_family == "bce" and self.loss["logits"]["bce"]["center"] == "sim" and self.loss["sim"] != "cos":
+                raise ValueError(
+                    f"loss.logits.bce.center: sim requires loss.sim: cos under hardware.loss_chunk_size.bce "
+                    f"(got loss.sim: {self.loss['sim']}): the tiled loss reproduces full-batch sim-centering "
+                    f"exactly only via the cos mean factorization; use center: grad_proj/grad_proj2 or "
+                    f"disable chunking"
+                )
+            world_size = max(1, self.n_gpus)  # one rank per GPU (torchrun --nproc-per-node=auto)
+            if self.batch_size % (world_size * self.loss_chunk_size) != 0:
+                raise ValueError(
+                    f"batch_size ({self.batch_size}) must be an exact multiple of world_size ({world_size}) "
+                    f"x hardware.loss_chunk_size.{crit_family} ({self.loss_chunk_size}): the chunked loss shards the "
+                    f"BxB rows into equal per-rank bands of whole C-row blocks"
+                )
 
         self.device = torch.device("cuda")
 
@@ -665,7 +666,7 @@ class HardwareConfig:
 
     mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
-    loss_chunk_size: int | None  # row-block height for the global-batch (BxB) loss, row-band-sharded across ranks; None -> full BxB (no tiling/sharding). See config/trial/hardware.yaml.
+    loss_chunk_size: dict  # {bce, infonce: int | None}; row-block height for the global-batch (BxB) loss per criterion family (bce: bce / bif_bce), row-band-sharded across ranks; None -> full BxB (no tiling/sharding). TrainConfig.loss_chunk_size is the trial's criterion's. See config/trial/hardware.yaml.
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
@@ -678,9 +679,10 @@ class HardwareConfig:
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 
     def __post_init__(self):
-        c = self.loss_chunk_size
-        if c is not None and not (isinstance(c, int) and c > 0 and (c & (c - 1)) == 0):
-            raise ValueError(f"hardware.loss_chunk_size must be null or a positive power of 2; got {c!r}")
+        for crit_family in ("bce", "infonce"):
+            c = self.loss_chunk_size[crit_family]
+            if c is not None and not (isinstance(c, int) and c > 0 and (c & (c - 1)) == 0):
+                raise ValueError(f"hardware.loss_chunk_size.{crit_family} must be null or a positive power of 2; got {c!r}")
 
 
 def load_hardware_config_dict() -> dict:

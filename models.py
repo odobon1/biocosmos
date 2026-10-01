@@ -17,6 +17,7 @@ from utils.utils import paths
 from utils.loss import (
     Criterion,
     chunked_bce_loss_backward,
+    chunked_infonce_loss_backward,
     hard_pair_similarity_margin,
     infonce_batch_stats,
     pos_prevalence,
@@ -803,10 +804,10 @@ class VLMWrapper(abc.ABC):
 
     def batch_step_chunked(self, imgs_sb, txts_sb, class_encs_sb, targ_data_sb):
         """
-        Memory-tiled training step for the global-batch BCE-family loss (bce/bif_bce;
-        hardware.loss_chunk_size), used in place of batch_step + loss.backward() when chunking is on. Does the
-        encoder forward, the tiled loss, AND the full backward internally, so the caller must NOT call
-        loss.backward() afterwards.
+        Memory-tiled training step for the global-batch loss (hardware.loss_chunk_size: the criterion's
+        own entry, TrainConfig.loss_chunk_size), used in place of batch_step + loss.backward() when chunking
+        is on. Does the encoder forward, the tiled loss, AND the full backward internally, so the caller
+        must NOT call loss.backward() afterwards.
 
         The BxB loss is never materialized, and no rank computes more than its share of it: after
         gathering the global-batch embeddings, they are detached into leaves and the BxB rows are
@@ -814,7 +815,8 @@ class VLMWrapper(abc.ABC):
         independent BCE loss; per-rank loss compute is O(B^2/world_size)). Each rank sums its band
         over C x B row-blocks, backpropagating each block into those leaves as it is computed
         (chunked_bce_loss_backward, which all-reduces the loss/stats so every rank returns full-batch
-        values). A single representation-gradient backward then pushes the band-partial dL/dembs into
+        values; under InfoNCE chunked_infonce_loss_backward, which sweeps each block as one tile per
+        anchor direction). A single representation-gradient backward then pushes the band-partial dL/dembs into
         the encoder. DDP grad sync is suppressed during these multiple backwards and replaced with one
         manual all-reduce of every parameter's grad, which completes the exact full-batch gradient:
         each rank's param grads -- encoder params via the _AllGather-routed band partials, post-gather
@@ -826,10 +828,12 @@ class VLMWrapper(abc.ABC):
         (carrying full-batch dL/dembs in .grad after a post-backward all-reduce) in place of
         embs_img_b / embs_txt_b for grad-norm logging, and -- since the backward already ran and the
         sim matrices are gone -- the sims slot carries the grad_sum_sim float accumulated
-        tile-by-tile by chunked_bce_loss_backward. With reporting.batch_diagnostics.sim_targ_stats
-        off batch_stats is None; with .sim_grad_sums off the sims slot carries None.
+        tile-by-tile by the tiled loss. With reporting.batch_diagnostics.sim_targ_stats
+        off batch_stats is None; with .sim_grad_sums off the sims slot carries None. Under InfoNCE
+        batch_stats already holds the measured sim-grad entropies (sim_grad_entropies_actual's keys), which
+        the full-batch path's caller reads off the retained sims instead.
         """
-        chunk = self.cfg.hw.loss_chunk_size
+        chunk = self.cfg.loss_chunk_size
         mixed_prec = self.cfg.hw.mixed_prec
         device = self.cfg.device
         diag = self.cfg.reporting["batch_diagnostics"]
@@ -853,12 +857,21 @@ class VLMWrapper(abc.ABC):
             txt = embs_txt_b.detach().requires_grad_(True)
 
             rank = dist.get_rank() if self.world_size > 1 else 0
-            loss, loss_raw, batch_stats, grad_sum_sim = chunked_bce_loss_backward(
-                img, txt, class_encs_b, targ_data_b, self.crit, self.compute_logits, chunk, mixed_prec, device,
-                rank, self.world_size, sim_grad_sums=diag["sim_grad_sums"],
-                sim_targ_stats=diag["sim_targ_stats"], hpsm_kappas=cfg_curves["hpsm"]["kappas"],
-                hist_bins=cfg_curves["hist_bins"],
-            )
+            diag_kwargs = dict(sim_grad_sums=diag["sim_grad_sums"], sim_targ_stats=diag["sim_targ_stats"],
+                               hpsm_kappas=cfg_curves["hpsm"]["kappas"], hist_bins=cfg_curves["hist_bins"])
+            if self.cfg.loss["crit"] == "infonce":
+                model = self._unwrapped_model
+                # the log-scale parameter(s) the criterion takes, as _loss_full_batch hands them over
+                logit_scale = (model.logit_scale, model.logit_scale2) if self.crit.sep_scalars else model.logit_scale
+                loss, loss_raw, batch_stats, grad_sum_sim = chunked_infonce_loss_backward(
+                    img, txt, class_encs_b, targ_data_b, self.crit, self.compute_logits, logit_scale, chunk, mixed_prec,
+                    device, rank, self.world_size, **diag_kwargs,
+                )
+            else:
+                loss, loss_raw, batch_stats, grad_sum_sim = chunked_bce_loss_backward(
+                    img, txt, class_encs_b, targ_data_b, self.crit, self.compute_logits, chunk, mixed_prec, device,
+                    rank, self.world_size, **diag_kwargs,
+                )
 
             # representation gradient: push the accumulated band-partial dL/dembs into the encoder (one
             # backward, only for sides whose encoder is trainable -- a frozen tower's embeddings do not

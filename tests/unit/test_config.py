@@ -58,7 +58,7 @@ def make_train_config_dummy(**overrides):
         "hw": {
             "mixed_prec": True,
             "act_chkpt": False,
-            "loss_chunk_size": None,
+            "loss_chunk_size": {"bce": None, "infonce": None},
             "cudnn_benchmark": False,
             "prefetch_factor": 4,
             "max_n_workers_gpu": None,
@@ -329,7 +329,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     cfg = TrainConfig(**make_train_config_dummy(hw={
         "mixed_prec": False,
         "act_chkpt": True,
-        "loss_chunk_size": None,
+        "loss_chunk_size": {"bce": None, "infonce": None},
         "cudnn_benchmark": True,
         "prefetch_factor": 8,
         "max_n_workers_gpu": 3,
@@ -708,7 +708,7 @@ def test_train_config_rejects_batch_size_indivisible_by_loss_chunk(monkeypatch: 
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(batch_size=24)
-    cfg_dict["hw"]["loss_chunk_size"] = 16  # 24 % (1 * 16) != 0; ragged band unsupported
+    cfg_dict["hw"]["loss_chunk_size"]["bce"] = 16  # 24 % (1 * 16) != 0; ragged band unsupported
 
     with pytest.raises(ValueError, match="must be an exact multiple of world_size"):
         TrainConfig(**cfg_dict)
@@ -723,7 +723,7 @@ def test_train_config_rejects_batch_size_indivisible_by_world_size_x_loss_chunk(
     )
 
     cfg_dict = make_train_config_dummy(batch_size=16)
-    cfg_dict["hw"]["loss_chunk_size"] = 16  # 16 % (2 * 16) != 0
+    cfg_dict["hw"]["loss_chunk_size"]["bce"] = 16  # 16 % (2 * 16) != 0
 
     with pytest.raises(ValueError, match="must be an exact multiple of world_size"):
         TrainConfig(**cfg_dict)
@@ -733,34 +733,53 @@ def test_train_config_accepts_batch_size_divisible_by_loss_chunk(monkeypatch: py
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(batch_size=32)
-    cfg_dict["hw"]["loss_chunk_size"] = 16  # 32 % 16 == 0
+    cfg_dict["hw"]["loss_chunk_size"]["bce"] = 16  # 32 % 16 == 0
 
     cfg = TrainConfig(**cfg_dict)
-    assert cfg.hw.loss_chunk_size == 16
+    assert cfg.loss_chunk_size == 16
 
 
-def test_train_config_infonce_makes_chunking_inert(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_loss_chunk_size_is_the_criterions_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    # hardware.loss_chunk_size.{bce, infonce}: a trial reads its own criterion's entry -- bce covers the BCE family
+    # (bce / bif_bce) -- and the other never reaches it
     patch_hw(monkeypatch)
 
-    cfg_dict = make_train_config_dummy()  # batch_size 8
+    for crit, chunk in (("bce", 8), ("bif_bce", 8), ("infonce", 4)):
+        cfg_dict = make_train_config_dummy()  # batch_size 8
+        cfg_dict["loss"]["crit"] = crit
+        cfg_dict["loss"]["loss1"]["targ"] = "mp"
+        cfg_dict["hw"]["loss_chunk_size"] = {"bce": 8, "infonce": 4}
+        assert TrainConfig(**cfg_dict).loss_chunk_size == chunk
+
+    # ... its validations included: an entry the batch size could not band-shard over is no error under the other family
+    for crit, chunks in (("bce", {"bce": None, "infonce": 16}), ("infonce", {"bce": 16, "infonce": None})):
+        cfg_dict = make_train_config_dummy()  # batch_size 8: 8 % 16 != 0
+        cfg_dict["loss"]["crit"] = crit
+        cfg_dict["loss"]["loss1"]["targ"] = "mp"
+        cfg_dict["hw"]["loss_chunk_size"] = chunks
+        assert TrainConfig(**cfg_dict).loss_chunk_size is None
+
+
+def test_train_config_rejects_batch_size_indivisible_by_infonce_loss_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(batch_size=24)
     cfg_dict["loss"]["crit"] = "infonce"
     cfg_dict["loss"]["loss1"]["targ"] = "mp"
-    cfg_dict["hw"]["loss_chunk_size"] = 8  # ignored with InfoNCE: nulled out, no error
+    cfg_dict["hw"]["loss_chunk_size"]["infonce"] = 16  # 24 % (1 * 16) != 0
 
-    cfg = TrainConfig(**cfg_dict)
-    assert cfg.hw.loss_chunk_size is None
+    with pytest.raises(ValueError, match=r"world_size \(1\) x hardware\.loss_chunk_size\.infonce \(16\)"):
+        TrainConfig(**cfg_dict)
 
 
-def test_train_config_bif_bce_keeps_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
-    # bif_bce is BCE-family: the tiled loss supports it, so the chunk size survives config
+def test_train_config_rejects_loss_chunk_size_not_a_power_of_2(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    cfg_dict = make_train_config_dummy()  # batch_size 8
-    cfg_dict["loss"]["crit"] = "bif_bce"
-    cfg_dict["hw"]["loss_chunk_size"] = 8
-
-    cfg = TrainConfig(**cfg_dict)
-    assert cfg.hw.loss_chunk_size == 8
+    for crit_family in ("bce", "infonce"):
+        cfg_dict = make_train_config_dummy()
+        cfg_dict["hw"]["loss_chunk_size"][crit_family] = 6
+        with pytest.raises(ValueError, match=rf"hardware\.loss_chunk_size\.{crit_family} must be null or a positive power of 2"):
+            TrainConfig(**cfg_dict)
 
 
 def test_train_config_rejects_unknown_center(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -931,7 +950,7 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking(monkeypatch: py
 
     cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
         sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
-    cfg_dict["hw"]["loss_chunk_size"] = 8
+    cfg_dict["hw"]["loss_chunk_size"]["bce"] = 8
 
     with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):
         TrainConfig(**cfg_dict)
@@ -943,10 +962,22 @@ def test_train_config_rejects_sim_center_with_geo_under_chunking_bif(monkeypatch
 
     cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
         crit="bif_bce", sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
-    cfg_dict["hw"]["loss_chunk_size"] = 8
+    cfg_dict["hw"]["loss_chunk_size"]["bce"] = 8
 
     with pytest.raises(ValueError, match="center: sim requires loss.sim: cos"):
         TrainConfig(**cfg_dict)
+
+
+def test_train_config_accepts_sim_center_with_geo_under_infonce_chunking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # loss.logits.bce is inert under InfoNCE, whose tiled loss never centers: no cos requirement there
+    patch_hw(monkeypatch)
+
+    cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
+        crit="infonce", sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
+    cfg_dict["loss"]["loss1"]["targ"] = "mp"
+    cfg_dict["hw"]["loss_chunk_size"]["infonce"] = 8
+
+    assert TrainConfig(**cfg_dict).loss_chunk_size == 8
 
 
 def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):

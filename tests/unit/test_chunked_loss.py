@@ -1,5 +1,6 @@
 """
-Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.loss_chunk_size).
+Equivalence tests for the tiled/chunked global-batch BCE-family loss (hardware.loss_chunk_size.bce; InfoNCE's
+tiled loss is covered by test_chunked_infonce.py).
 
 chunked_bce_loss_backward must reproduce the loss and gradients (wrt image/text embeddings and the
 logit scale/bias) of the full-batch path (BCECriterion.__call__ / BifurcatedBCECriterion.__call__ via
@@ -468,15 +469,6 @@ def test_chunked_matches_full_under_mixed_precision_with_the_real_head(center):
     # inherent to chunking under bf16, and bounded here only against a gross error
     assert ((txtc.grad - txt.grad).norm() / txt.grad.norm()).item() < 1e-2
     torch.testing.assert_close(modelc.logit_scale.grad, model.logit_scale.grad, rtol=1e-4, atol=1e-5)
-
-
-def test_chunking_unsupported_with_infonce():
-    assert not L.chunking_supported({"crit": "infonce"})
-
-
-@pytest.mark.parametrize("crit", ["bce", "bif_bce"])
-def test_chunking_supported(crit):
-    assert L.chunking_supported({"crit": crit})
 
 
 def test_chunked_asserts_on_geo_sim_center():

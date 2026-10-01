@@ -1,5 +1,5 @@
 """
-DDP equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss_chunk_size).
+DDP equivalence tests for the tiled/chunked global-batch BCE loss (hardware.loss_chunk_size.bce).
 
 The single-GPU tests in test_chunked_loss.py pin down the tiling math across the full config space; the
 2-rank test here pins down the DISTRIBUTED machinery that only exists across ranks: the cross-rank
@@ -152,7 +152,8 @@ def build_harness(model_ddp, crit, world_size, device):
     h.txt_pp = lambda x: x  # identity: toy "text" is already a feature tensor
     h.cfg = SimpleNamespace(
         loss=crit.cfg,
-        hw=SimpleNamespace(loss_chunk_size=None, mixed_prec=False),
+        loss_chunk_size=None,
+        hw=SimpleNamespace(mixed_prec=False),
         reporting={"batch_diagnostics": {"emb_logit_grads": True, "sim_grad_sums": True, "sim_targ_stats": True},
                  "learning_curves": {"hpsm": {"kappas": [0.0, 3.0]}, "hist_bins": 20}},
         device=device,
@@ -281,7 +282,7 @@ def run(rank, world_size, port):
 
             # (CHUNK) tiled path (its own backward + manual all-reduce internally)
             h_chunk = build_harness(ddp_chunk, crit, world_size, device)
-            h_chunk.cfg.hw.loss_chunk_size = chunk_size
+            h_chunk.cfg.loss_chunk_size = chunk_size
             ddp_chunk.zero_grad(set_to_none=True)
             loss_chunk, _, img_leaf, txt_leaf, _, _, _, gsum_chunk = Harness.batch_step_chunked(h_chunk, imgs_sb, txts_sb, cls_sb, targ_sb)
             g_chunk = grads(toy_chunk)

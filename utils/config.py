@@ -703,11 +703,13 @@ DATASET2MARKER_SIZE = {
 @dataclass
 class ManifoldVizConfig:
     """manifold_viz.yaml contents -- the whole manifold-viz subsystem: which trials run it (the
-    n_seeds/n_seeds_offset seed window), which panel groups are emitted, the pooled shared-frame fit, the
-    per-method params, and colors."""
+    n_seeds/n_seeds_offset seed window), whether the per-eval caches outlive the post-trial render
+    (store_cache), which panel groups are emitted, the pooled shared-frame fit, the per-method params,
+    and colors."""
 
     n_seeds: int
     n_seeds_offset: int
+    store_cache: bool
     gif: dict
     bg_color: str | None
     plot_2panel: bool

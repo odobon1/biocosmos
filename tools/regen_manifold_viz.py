@@ -9,6 +9,10 @@ This is also where BOTH UMAP variants are FIT (flat + spherical, from each eval'
 the first pass, since they have no sharded GPU implementation and this process is CPU-only; PCA and
 t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
 
+And it is where `manifold_viz.store_cache: false` takes effect: a FULL render's last step deletes the
+trial's viz/cache/ dirs (a partial render -- evo_only/no_evo -- leaves them for the half it skipped),
+so such a trial cannot be re-rendered or refit afterwards -- the caches it would read are gone.
+
 A test trial (test.py's, under _phase/test/) has one eval, its eval/sel/, cached under eval/sel/viz/cache/: its UMAPs
 are fit and its stills drawn there (render_test_trial) -- no evolving GIFs and no pooled frame, a single eval having
 no sequence -- and the arm's test best_coord/ mirror, which copies the stills, is rebuilt. test.py runs this itself at
@@ -32,6 +36,7 @@ snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under a
 """
 
 from pathlib import Path
+import shutil
 import sys
 
 from utils.config import load_manifold_viz_config_dict, load_manifold_viz_render_config_dict
@@ -57,7 +62,8 @@ def _viz_context(dpath_trial):
 
 def trial_viz_cached(dpath_trial):
     """Whether a test trial ran: test.py caches every trial's projections under eval/sel/viz/cache/ (before its score
-    files, so a scored trial's cache is complete)."""
+    files, so a scored trial's cache is complete). A store_cache: false trial's cache is deleted after its render, so
+    it reads as un-run here and the campaign sweep skips it -- there is nothing left to re-render from anyway."""
     return (dpath_viz_cache(dpath_trial / "eval" / "sel") / "projections.npz").exists()
 
 def render_test_trial(dpath_trial, cfg_manifold_viz=None):
@@ -85,6 +91,12 @@ def render_test_trial(dpath_trial, cfg_manifold_viz=None):
     render_test_eval(dpath_eval, cfg_manifold_viz, viz_context, f"Chkpt {chkpt_stop}")
     ArtifactManager.dpath_phase = dpath_phase
     update_test_best_coord(dpath_trial.parents[5].name, dpath_trial.parents[3].name)
+
+    # delete-after-use, as in render_trial: the stills are drawn and the mirror rebuilt, so the lone
+    # eval's cache has no consumer left (a test trial has no partial-render modes)
+    dpath_cache = dpath_viz_cache(dpath_eval)
+    if not cfg_manifold_viz["store_cache"] and dpath_cache.exists():
+        shutil.rmtree(dpath_cache)
 
 def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=None):
     dpath_evals = dpath_eval_seq(dpath_trial)
@@ -140,6 +152,15 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     # the arm's best_coord/ mirror copies those eval/{sel,best}/ dirs, and the trial end's rebuild of it predates
     # the stills: rebuilt now (a no-op unless the arm is complete)
     update_best_coord(dpath_trial.parents[5].name, dpath_arm.name)
+
+    # delete-after-use: this render is the caches' last consumer, so a campaign that doesn't keep them
+    # (store_cache false) drops them here -- only after a FULL render, since a partial one (evo_only /
+    # no_evo) still needs them for the half it skipped
+    if not (evo_only or skip_evo) and not cfg_manifold_viz["store_cache"]:
+        for d in dpath_evals.iterdir():
+            dpath_cache = dpath_viz_cache(d)
+            if dpath_cache.exists():
+                shutil.rmtree(dpath_cache)
 
 def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manifold_viz=None):
     """Re-render every trial in a campaign, sweeping each phase's planned matrix from its phase_metadata.json

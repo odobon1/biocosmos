@@ -138,6 +138,7 @@ def make_manifold_viz_config_dummy(**overrides):
     config = {
         "n_seeds": 1,
         "n_seeds_offset": 0,
+        "store_cache": True,
         "gif": {"frame_dur": {"short": 1500, "long": 3000}},
         "bg_color": None,
         "plot_2panel": True,

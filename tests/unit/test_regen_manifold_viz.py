@@ -25,7 +25,7 @@ def test_render_trial_copies_viz_to_selected_and_best(tmp_path, monkeypatch) -> 
     # already on disk; the stills come over, the cache stays in eval/all/ -- then rebuilds the arm's best_coord/
     # mirror, which copies them
     dpath_trial, rebuilt = _stub_render(tmp_path, monkeypatch)
-    cfg = {"pooled": {"enabled": False}}
+    cfg = {"pooled": {"enabled": False}, "store_cache": True}
 
     dpath_evals = dpath_trial / "eval" / "all"
     for idx in ("1", "2"):
@@ -41,6 +41,7 @@ def test_render_trial_copies_viz_to_selected_and_best(tmp_path, monkeypatch) -> 
     assert (dpath_trial / "eval" / "best" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "eval1"
     assert not (dpath_trial / "eval" / "sel" / "viz" / "cache").exists()
     assert not (dpath_trial / "eval" / "best" / "viz" / "cache").exists()
+    assert (dpath_evals / "1" / "viz" / "cache" / "projections.npz").exists()  # store_cache: the source cache stays
     assert rebuilt == [(tmp_path / "screen", "cub", "hp")]
 
 
@@ -55,7 +56,7 @@ def test_render_trial_marks_selected_only_once_the_coord_is_complete(tmp_path, m
     fpath.parent.mkdir(parents=True)
     fpath.write_text("")
     (dpath_trial / "trial_metadata.json").write_text(json.dumps({"chkpt": {"sel": 1, "best": 1}}))
-    cfg = {"pooled": {"enabled": False}}
+    cfg = {"pooled": {"enabled": False}, "store_cache": True}
 
     rmv.render_trial(dpath_trial, cfg_manifold_viz=cfg)
     monkeypatch.setattr(rmv, "coord_complete", lambda dataset, arm, coord: (dataset, arm, coord) == ("cub", "hp", "c0"))
@@ -73,9 +74,34 @@ def test_render_trial_leaves_unselected_trials_alone(tmp_path, monkeypatch) -> N
     fpath.write_text("x")
     (dpath_trial / "trial_metadata.json").write_text(json.dumps({"chkpt": {"sel": None, "best": None}}))
 
-    rmv.render_trial(dpath_trial, cfg_manifold_viz={"pooled": {"enabled": False}})
+    rmv.render_trial(dpath_trial, cfg_manifold_viz={"pooled": {"enabled": False}, "store_cache": True})
 
     assert not (dpath_trial / "eval" / "sel").exists() and not (dpath_trial / "eval" / "best").exists()
+
+
+def test_render_trial_full_render_drops_the_caches_when_not_stored(tmp_path, monkeypatch) -> None:
+    # store_cache false: the full render is the caches' last consumer, so its final step deletes every eval's
+    # viz/cache/ -- the stills and the sel/best copies survive. A partial render (no_evo here) leaves the
+    # caches for the half it skipped
+    dpath_trial, _ = _stub_render(tmp_path, monkeypatch)
+    cfg = {"pooled": {"enabled": False}, "store_cache": False}
+
+    dpath_evals = dpath_trial / "eval" / "all"
+    for idx in ("1", "2"):
+        for sub in ("vanilla/8panel/joint.png", "cache/projections.npz"):
+            fpath = dpath_evals / idx / "viz" / sub
+            fpath.parent.mkdir(parents=True)
+            fpath.write_text(f"eval{idx}")
+    (dpath_trial / "trial_metadata.json").write_text(json.dumps({"chkpt": {"sel": 2, "best": 1}}))
+
+    rmv.render_trial(dpath_trial, skip_evo=True, cfg_manifold_viz=cfg)
+    assert (dpath_evals / "1" / "viz" / "cache" / "projections.npz").exists()
+
+    rmv.render_trial(dpath_trial, cfg_manifold_viz=cfg)
+    assert not (dpath_evals / "1" / "viz" / "cache").exists()
+    assert not (dpath_evals / "2" / "viz" / "cache").exists()
+    assert (dpath_evals / "2" / "viz" / "vanilla" / "8panel" / "joint.png").exists()
+    assert (dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "eval2"
 
 
 def test_render_test_trial_renders_the_lone_eval_and_rebuilds_the_mirror(tmp_path, monkeypatch) -> None:
@@ -92,7 +118,7 @@ def test_render_test_trial_renders_the_lone_eval_and_rebuilds_the_mirror(tmp_pat
     dpath_trial.mkdir(parents=True)
     (dpath_trial.parents[7] / "cfg_baseline.json").write_text(json.dumps({"train": {"split": {"split": "s1"}}}))
     (dpath_trial.parents[1] / "config.json").write_text(json.dumps({"split": {"train_pt": "trainval"}, "chkpt_stop": 3}))
-    cfg = {"umap": {"n_neighbors": 15}, "pooled": {"enabled": True}}
+    cfg = {"umap": {"n_neighbors": 15}, "pooled": {"enabled": True}, "store_cache": True}
 
     rmv.render_test_trial(dpath_trial, cfg)
 
@@ -101,6 +127,23 @@ def test_render_test_trial_renders_the_lone_eval_and_rebuilds_the_mirror(tmp_pat
     assert calls == [("umap", dpath_eval, cfg["umap"]),
                      ("render", dpath_eval, cfg, viz_context, "Chkpt 3"),
                      ("mirror", tmp_path / "camp" / "_phase" / "test", "cub", "hp")]
+
+
+def test_render_test_trial_drops_the_cache_when_not_stored(tmp_path, monkeypatch) -> None:
+    # delete-after-use for a test trial's lone eval: stills drawn and mirror rebuilt, then eval/sel/viz/cache/ goes
+    for fn in ("compute_umap_eval", "render_test_eval"):
+        monkeypatch.setattr(rmv, fn, lambda *a: None)
+    monkeypatch.setattr(rmv, "update_test_best_coord", lambda dataset, arm: None)
+    dpath_trial = tmp_path / "camp" / "_phase" / "test" / "_dataset" / "cub" / "_arm" / "hp" / "_coord" / "c0" / "_trial" / "1"
+    fpath_cache = dpath_trial / "eval" / "sel" / "viz" / "cache" / "projections.npz"
+    fpath_cache.parent.mkdir(parents=True)
+    fpath_cache.write_text("x")
+    (dpath_trial.parents[7] / "cfg_baseline.json").write_text(json.dumps({"train": {"split": {"split": "s1"}}}))
+    (dpath_trial.parents[1] / "config.json").write_text(json.dumps({"chkpt_stop": 3}))
+
+    rmv.render_test_trial(dpath_trial, {"umap": {}, "store_cache": False})
+
+    assert not fpath_cache.parent.exists()
 
 
 def test_render_campaign_sweeps_the_test_tree_too(tmp_path, monkeypatch) -> None:

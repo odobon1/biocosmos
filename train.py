@@ -23,7 +23,7 @@ from utils.utils import (
     model_grad_l2_norm,
 )
 from models import VLMWrapper
-from utils.config import eval_groups, get_config_stats
+from utils.config import eval_groups, get_config_stats, load_learning_curves_config_dict
 from utils.data import spawn_dataloader, spawn_partition_data
 from utils.loss import configure_phylo_targs, Criterion, sep_logit_scalars, sim_grad_entropies_actual
 from utils.eval import EvaluationPipeline
@@ -455,7 +455,8 @@ class TrainPipeline:
         ArtifactManager.save_trial_state(self.data)
         if final or self.cfg.reporting["plot_every"] == "chkpt":
             plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch,
-                         self.cfg.reporting["learning_curves"]["hpsm"], eval_groups(self.cfg.reporting))
+                         self.cfg.reporting["learning_curves"]["hpsm"], eval_groups(self.cfg.reporting),
+                         load_learning_curves_config_dict()["dpi"])
 
     def _print_block_coverage(self, header):
         """One line per checkpoint (rank 0, from _checkpoint_writes) on loss.infonce.block_residuals' coverage since
@@ -808,7 +809,7 @@ def _deliver_base_model(cfg, modelw, mem):
     ArtifactManager.save_metadata_trial(data, 0, TimeTracker(), 0, cfg.n_epochs, cfg.n_chkpts, 0, mem, False, init_flag=True,
                                         base_selected=True)
     plot_metrics(data, ArtifactManager.dpath_trial, [], cfg.samps_per_epoch,
-                 cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting))
+                 cfg.reporting["learning_curves"]["hpsm"], eval_groups(cfg.reporting), load_learning_curves_config_dict()["dpi"])
 
 def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
@@ -867,15 +868,15 @@ def run_training(cfg):
         groups = eval_groups(cfg.reporting)  # the eval groups the campaign has in play (frozen)
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
         # rewrites their eval/sel/, so the aggregates below see the current selection
-        update_chkpt_selection(groups, cfg_stats.spread_type)
+        update_chkpt_selection(groups, cfg_stats.spread_type, cfg_stats.dpi)
         update_metric_stats(groups, cfg_stats.spread_type)
         # this trial's arm's (arm_summary) and dataset's (dataset_summary) pngs refresh at every trial completion,
         # over whatever trials are in -- mid-sweep their rows carry different trial counts, each row naming its
         # own; the phase workbooks (phase_summary) alone wait for the seed to complete across the whole matrix
         update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                           cfg_stats.heatmap, cfg_stats.supp_scores)
+                           cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.dpi)
         update_dataset_metrics(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                               cfg_stats.heatmap, cfg_stats.supp_scores)
+                               cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.dpi)
         if seed_sweep_complete(cfg.idx_seed + 1):
             update_phase_metrics(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
                                   cfg_stats.supp_scores, cfg_stats.overrides)

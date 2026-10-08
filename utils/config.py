@@ -777,6 +777,7 @@ class StatsConfig:
     heatmap: bool  # (True) shade score cells by value over a fixed 0 -> 100 range
     supp_scores: dict  # {primitive: bool, n_shot: bool}; supplemental score columns appended right of the composite columns
     overrides: bool  # (True) append the "Arm Overrides" / "Coord Overrides" config tables to each xlsx sheet
+    dpi: int  # raster resolution of every stats png (chkpt_means, the score / convergence / logit-scale tables and plots, the coord strips)
 
     def __post_init__(self):
 
@@ -793,6 +794,13 @@ def load_stats_config_dict() -> dict:
 
 def get_config_stats():
     return StatsConfig(**load_stats_config_dict())
+
+
+def load_learning_curves_config_dict() -> dict:
+    """learning_curves.yaml contents -- the trial learning-curve figures' render settings (report.plot_metrics). Render-time
+    only, like stats.yaml: read live at each render (trial checkpoints / tools.regen_learning_curves), never frozen."""
+    with open(paths["config"] / "render" / "learning_curves.yaml") as f:
+        return yaml.safe_load(f)
 
 
 def load_zip_config_dict() -> dict:

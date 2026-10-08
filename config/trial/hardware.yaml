@@ -15,7 +15,7 @@ act_chkpt: true  # {true, false}; activation checkpointing
 # it), and infonce takes one more sweep of the band for its pair-level sim-grad entropies.
 loss_chunk_size:
   bce: 128  # {null, 64, 128}
-  infonce: 128
+  infonce: null
 
 # cuDNN autotunes conv algorithms per input shape; speedup for fixed-shape
 # batches, trades away algo-choice reproducibility (PyTorch default is false)

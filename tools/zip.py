@@ -3,11 +3,13 @@ python -m tools.zip [<campaign> ...]
 
 Bundle a snapshot of the source tree -- every git-tracked file (per the index, so staged adds count and a `git rm`
 drops out), plus the untracked files config/render/zip.yaml lists -- and, optionally, whole campaigns
-(artifacts/<campaign>/, every phase incl. test/) into one zip under temp/:
+(artifacts/<campaign>/, every phase incl. test/, per-dataset results only for the datasets in DATASETS) into one zip
+under temp/:
 temp/biocosmos_<YYYYMMDD-HHMMSS>[_<campaign>...].zip, laid out as a checkout (everything under a top-level
 biocosmos/ dir, campaigns at biocosmos/artifacts/<campaign>/). Which of a campaign's bulky contents ship is
 governed by config/render/zip.yaml's toggles (weights, manifold_viz, manifold_viz_cache, batch_logs); the rest of a campaign --
 metrics, metadata, stats tables and plots, learning curves, the epoch/eval/init logs -- is always included.
+.pkl files are never included.
 """
 
 from pathlib import Path
@@ -22,6 +24,7 @@ from utils.utils import paths
 
 MANIF_VIZ_CACHE = ("embs.npz", "projections.npz", "projections_pooled.npz", "orient_ref.pkl")
 
+DATASETS = ("cub",)
 
 def _bulky_toggle(rel):
     """The zip.yaml toggle governing a campaign file at campaign-relative path `rel`, or None for a file that is
@@ -55,14 +58,18 @@ def source_files(cfg_zip):
     return files
 
 def campaign_files(campaign, cfg_zip):
-    """Root-relative paths of a campaign's contents, minus the bulky categories zip.yaml switches off."""
+    """Root-relative paths of a campaign's contents, minus the bulky categories zip.yaml switches off and the
+    _dataset/ results of datasets not in DATASETS."""
     dpath = paths["artifacts"] / campaign
     if not dpath.is_dir():
         sys.exit(f"no such campaign: {dpath}")
     files = []
     for f in sorted(dpath.rglob("*")):
         if f.is_file():
-            toggle = _bulky_toggle(f.relative_to(dpath))
+            rel = f.relative_to(dpath)
+            if "_dataset" in rel.parts and rel.parts[rel.parts.index("_dataset") + 1] not in DATASETS:
+                continue
+            toggle = _bulky_toggle(rel)
             if toggle is None or cfg_zip[toggle]:
                 files.append(f.relative_to(paths["root"]))
     return files
@@ -72,6 +79,7 @@ def zip_snapshot(campaigns):
     files = source_files(cfg_zip)
     for campaign in campaigns:
         files += campaign_files(campaign, cfg_zip)
+    files = [f for f in files if f.suffix != ".pkl"]
     dpath_out = paths["root"] / "temp"
     dpath_out.mkdir(exist_ok=True)
     fpath_zip = dpath_out / ("_".join(["biocosmos", time.strftime("%Y%m%d-%H%M%S"), *campaigns]) + ".zip")

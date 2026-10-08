@@ -211,7 +211,7 @@ def main():
     ArtifactManager.dpath_phase = dpath_test
     cfg_stats = get_config_stats()
     update_test_stats(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                      cfg_stats.supp_scores, cfg_stats.overrides)
+                      cfg_stats.supp_scores, cfg_stats.overrides, cfg_stats.dpi)
     # the viz render reads the frozen trial half of manifold_viz.yaml + the live render half, as the campaign's render
     # worker does (tools.regen_manifold_viz's snapshot mode)
     _render_manifold_viz(dpath_test, combos, seeds, {**cfg_snapshot["manifold_viz"], **load_manifold_viz_render_config_dict()})

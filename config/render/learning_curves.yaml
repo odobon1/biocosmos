@@ -1,0 +1,8 @@
+# READ LIVE at every render -- edits apply to all campaigns, past ones included, from the next
+# render on (trial completion, or the tools/regen_*.py re-render).
+
+# Settings of each trial's learning-curve figures (learning_curves/*.png, utils.report.plot_metrics) that only decide
+# how the recorded series are DRAWN -- no recompute, so editing them restyles any campaign's existing curves. What each
+# trial records (batch_diagnostics, learning_curves.hpsm) lives in config/trial/reporting.yaml.
+
+dpi: 150  # int; raster resolution of every learning-curve png

@@ -1595,7 +1595,7 @@ def test_run_campaign_prunes_removed_seed(tmp_path, monkeypatch) -> None:
     assert (dpath_arms / "hp" / "_coord" / "base" / "_trial" / "2" / "trial_metadata.json").exists()
 
     reselected = []
-    monkeypatch.setattr(cr, "update_chkpt_selection", lambda groups, spread_type: reselected.append(("select", cr.ArtifactManager.dpath_coord)))
+    monkeypatch.setattr(cr, "update_chkpt_selection", lambda groups, spread_type, dpi: reselected.append(("select", cr.ArtifactManager.dpath_coord)))
     monkeypatch.setattr(cr, "update_metric_stats", lambda groups, spread_type: reselected.append(("stats", cr.ArtifactManager.dpath_coord)))
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_screen=1, **camp)
@@ -2113,7 +2113,7 @@ def test_run_campaign_refine_prunes_removed_seed(tmp_path, monkeypatch) -> None:
 
     reselected = []
     monkeypatch.setattr(cr, "update_chkpt_selection",
-                        lambda groups, spread_type: reselected.append((cr.ArtifactManager.dpath_phase.name, cr.ArtifactManager.dpath_coord.name)))
+                        lambda groups, spread_type, dpi: reselected.append((cr.ArtifactManager.dpath_phase.name, cr.ArtifactManager.dpath_coord.name)))
     monkeypatch.setattr(cr, "update_metric_stats", lambda groups, spread_type: None)
     del scheduled[:]
     _set_camp(monkeypatch, n_trials_refine=2, **camp)

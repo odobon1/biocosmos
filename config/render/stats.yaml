@@ -9,3 +9,5 @@ supp_scores:  # supplemental score columns appended right of the composite colum
   primitive: true  # {true, false}; (true) per-partition primitive scores -- mAP tables: "ID I2T"/"ID I2I"/"ID T2I"/"OOD I2T"/"OOD I2I"/"OOD T2I"; accuracy tables: "ID I2T"/"OOD I2T"
   n_shot: true  # {true, false}; (true) ID-partition n-shot bucket scores, one column per bucket (split_gen.yaml nst_names, e.g. "few-shot"/"med-shot"/"many-shot") -- mAP tables: the bucket's composite mAP; accuracy tables: its I2T accuracy; "-" where a dataset's eval partition has no classes in the bucket
 overrides: true  # {true, false}; (true) append the "Arm Overrides" / "Coord Overrides" config tables to each xlsx sheet (the arms workbooks get the arm table only): one column per param overridden in the campaign's ablation_arms / hpo_coords, values from each row's config.json; params absent there (inert under that config) show "-"
+dpi: 150  # int; raster resolution of every stats png -- coord_summary/chkpt_means.png, the score / convergence / logit-scale
+# tables and plots (arm_summary/performance, dataset_summary/) and the coord strips (arm_summary/coord_strips/)

@@ -16,14 +16,17 @@ phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx (+ secondary/<camp
 (Native, the primary eval group, takes the plain name; every other group sits under secondary/.) Each
 arm's _arm/<arm>/arm_summary/coord_strips/ (its coords' logit-scale panels stacked) and, when the arm is
 complete, its arm_summary/best_coord/ copy of the best coord's learning curves + eval/{best,sel}/ are rebuilt with its arm_summary/. All using
-the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides), so edits to any
+the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides/dpi), so edits to any
 of them take effect for an already-run campaign,  Each trial's cached per-checkpoint
 eval/all/<k>/ metrics files are reused and re-aggregated exactly as on the trial-completion path in train.py
 (update_chkpt_selection -> update_metric_stats -> update_arm_metrics -> update_dataset_metrics -> update_phase_metrics) --
 except that the phase workbooks render unconditionally here, rather than only at the end of a full seed sweep.
+A tqdm bar per phase tracks its (dataset, arm, coord) runs.
 """
 
 import sys
+
+from tqdm import tqdm
 
 from utils.config import eval_groups, get_config_stats
 from utils.report import (
@@ -47,18 +50,21 @@ def regen_campaign(campaign, cfg_stats):
         if not ArtifactManager.dpath_phase.exists():  # no refine phase: n_trials_refine null, or not reached yet
             continue
         matrix = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")["matrix"]
-        for dataset, arms in matrix.items():
-            ArtifactManager.dataset = dataset
-            for arm, coords in arms.items():
-                # per (dataset, arm, coord) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
-                for coord in coords:
-                    ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
-                                                   / "_coord" / coord)
-                    if ArtifactManager.dpath_coord.exists():
-                        update_chkpt_selection(groups, cfg_stats.spread_type)
-                        update_metric_stats(groups, cfg_stats.spread_type)
-                update_arm_metrics(dataset, arm, groups, *style)
-            update_dataset_metrics(dataset, groups, *style)
+        n_coords = sum(len(coords) for arms in matrix.values() for coords in arms.values())
+        with tqdm(total=n_coords, desc=phase, unit="coord") as pbar:
+            for dataset, arms in matrix.items():
+                ArtifactManager.dataset = dataset
+                for arm, coords in arms.items():
+                    # per (dataset, arm, coord) reselection + aggregations; skip combos with no trial dir (they iterdir() it)
+                    for coord in coords:
+                        ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
+                                                       / "_coord" / coord)
+                        if ArtifactManager.dpath_coord.exists():
+                            update_chkpt_selection(groups, cfg_stats.spread_type, cfg_stats.dpi)
+                            update_metric_stats(groups, cfg_stats.spread_type)
+                        pbar.update(1)
+                    update_arm_metrics(dataset, arm, groups, *style, cfg_stats.dpi)
+                update_dataset_metrics(dataset, groups, *style, cfg_stats.dpi)
         update_phase_metrics(groups, *style, cfg_stats.overrides)
 
 

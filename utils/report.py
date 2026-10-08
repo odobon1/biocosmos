@@ -290,7 +290,7 @@ def seed_sweep_complete(trial_num):
         for coord in coords
     )
 
-def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath):
+def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath, dpi):
     chkpts = np.arange(len(means))
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(chkpts, means, color="blue", label=f"mean (n={n_trials})")
@@ -305,11 +305,11 @@ def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_nam
     ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
     ax.set_ylim(0, 1)
     ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curve and the selected-point marker
-    fig.savefig(fpath, dpi=200, bbox_inches="tight")
+    fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
 @rank0
-def update_chkpt_selection(eval_groups, spread_type):
+def update_chkpt_selection(eval_groups, spread_type, dpi):
     """Checkpoint selection for this coord/dataset: the ONE checkpoint index every one of its trials is
     scored at, argmaxed over the across-trial MEAN Native curve rather than per trial --
     argmax(mean(...)), not mean(argmax(...)). The curve is native's comp mAP All score
@@ -403,7 +403,7 @@ def update_chkpt_selection(eval_groups, spread_type):
             f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
         )
         _plot_chkpt_means(means, spreads, idx_group, n_trials, spread_type, "Composite mAP", title,
-                          group_path(dpath_metrics, group_key, "chkpt_means", ".png"))
+                          group_path(dpath_metrics, group_key, "chkpt_means", ".png"), dpi)
 
     fpath_meta = dpath_coord / "coord_metadata.json"
     metadata = load_json(fpath_meta)
@@ -704,7 +704,7 @@ def _heat_hex(mean):
     frac = max(0.0, min(1.0, mean / 100.0))
     return "".join(f"{round(255 - (255 - channel) * frac):02X}" for channel in (0x4C, 0xAF, 0x50))
 
-def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows):
+def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi):
     # matplotlib lays table rows out at a fixed 10pt * 1.2 = 1/6in apiece whatever the figure size
     # (1/4in after the 1.5x scale below), so the axes is made exactly that tall and fills the
     # figure: the table then spans it edge to edge for any row count and the title's pad is the
@@ -729,10 +729,10 @@ def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_r
             cell.set_text_props(fontweight="bold")
         if heatmap and row in means:
             cell.set_facecolor(f"#{_KILLED_HEX if row in killed_rows else _heat_hex(means[row])}")
-    fig.savefig(fpath, dpi=200, bbox_inches="tight")
+    fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
-def _plot_convergence(curves, idx_win, score_name, title, fpath):
+def _plot_convergence(curves, idx_win, score_name, title, fpath, dpi):
     """[(row key, mean curve, its selected index), ...] overlaid on one log-x axes: every row grey,
     curves[idx_win] redrawn in black on top (legend: its key's cells joined by '/', e.g. 'hp/LR-1e-5')
     with its selection marked by a diamond and a red dashed line across the plot at its score.
@@ -763,11 +763,11 @@ def _plot_convergence(curves, idx_win, score_name, title, fpath):
     ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
     ax.set_ylim(0, 1)
     ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curves and the selected-point marker
-    fig.savefig(fpath, dpi=200, bbox_inches="tight")
+    fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
 def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, spread_type, bold_high,
-                       ordered, heatmap):
+                       ordered, heatmap, dpi):
     """Render one score table + one convergence plot per eval group for ONE
     dataset: dpath_stats/scores.png for native, dpath_stats/secondary/scores_<group>.png for
     the rest -- the comp mAP table (All/ID/OOD/I2T/I2I/T2I score columns, plus the enabled
@@ -805,13 +805,13 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
             spread_type,
         )
         _render_stats_table(grid, len(headers), f"Composite mAP{title_suffix}", fpath_scores, bold_high, heatmap,
-                            killed_rows)
+                            killed_rows, dpi)
         if curves:
             idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
             _plot_convergence(curves, idx_win, "Composite mAP", f"Composite mAP Convergence{title_suffix}",
-                              group_path(dpath_stats, group_key, "convergence", ".png"))
+                              group_path(dpath_stats, group_key, "convergence", ".png"), dpi)
 
-def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset, subject, spread_type, ordered):
+def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset, subject, spread_type, ordered, dpi):
     """Render the logit-scale tables for ONE dataset beside its score tables: dpath/scale.png, the alpha the
     logits carry, and dpath/logscale.png, the log alpha parameter the model learns, over the score tables' `rows`
     recording the primary logit scale alone, and dpath/{scale1,scale2,logscale1,logscale2}.png over those recording
@@ -830,10 +830,10 @@ def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset,
         for key, name, sym in tables:
             grid, killed_rows = _stats_table_grid(headers, _SCALE_LABELS, entries, key, spread_type, mult=1.0)
             _render_stats_table(grid, len(headers), f"Logit Scale {sym} -- {subject}", dpath / f"{name}.png", False,
-                                False, killed_rows)
+                                False, killed_rows, dpi)
 
 @rank0
-def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
     _dataset/<dataset>/_arm/<arm>/arm_summary/performance/{scores,convergence}.png (+ secondary/, see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
@@ -861,14 +861,14 @@ def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordere
 
     subject = f"{arm}, {DATASET_ALIAS2NAME[dataset]}"
     _render_stats_pngs(dpath_arm / "arm_summary" / "performance", ("Coord",), rowset, dataset, subject, eval_groups,
-                       _score_labels(supp_scores, _nshot_names(comps_all))[0], spread_type, bold_high, ordered, heatmap)
+                       _score_labels(supp_scores, _nshot_names(comps_all))[0], spread_type, bold_high, ordered, heatmap, dpi)
     scales_by = _collect_scales(arm_coords, (dataset,))
     _render_scale_tables(dpath_arm / "arm_summary", ("Coord",), rows,
                          {((coord,), dataset): comps_all["native"][((arm, coord), dataset)] for (coord,) in rows},
                          {((coord,), dataset): scales_by[((arm, coord), dataset)] for (coord,) in rows},
-                         dataset, subject, spread_type, ordered)
+                         dataset, subject, spread_type, ordered, dpi)
     update_best_coord(dataset, arm)
-    update_coord_strips(dataset, arm, spread_type)
+    update_coord_strips(dataset, arm, spread_type, dpi)
 
 @rank0
 def update_best_coord(dataset, arm):
@@ -1000,7 +1000,7 @@ def _strip_data(panels, scale_key, req_key, spread_type):
     return panels[0][0][:n], agg(scale_key), reqs
 
 def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_axes, fontsize_ticks,
-                   fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel):
+                   fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel, dpi):
     """One figure of scale strips, `strips` [(coord, x, scale, reqs)] top to bottom (_strip_data): the
     scale panel plot_scale_curves gives each trial -- the scale in purple, on the per-trial figures over
     its bound trio in red, the min and max solid and the mean dashed (the agg figure's reqs are empty) --
@@ -1070,7 +1070,7 @@ def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_ax
             handles.setdefault(label, handle)
     axes[0].legend(handles=list(handles.values()), loc="lower right", bbox_to_anchor=(1.0, 1.0),
                    ncol=len(handles), fontsize=fontsize_legend)
-    _finish_curves(fig, axes, [], {}, plot_title, fpath_plot, fontsize_legend, subplot_border_width,
+    _finish_curves(fig, axes, [], {}, plot_title, fpath_plot, fontsize_legend, subplot_border_width, dpi,
                    axes_blocks=_strip_blocks(strips, axes), box_blocks=True, alternate_sides=False)
 
 def _strip_blocks(strips, axes):
@@ -1088,7 +1088,7 @@ def _strip_blocks(strips, axes):
     return [] if len(blocks) == len(axes) else blocks
 
 @rank0
-def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
+def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
                       subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
     """Render `arm`'s logit-scale strips for `dataset` --
     _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale}.png:
@@ -1129,7 +1129,7 @@ def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ti
     for scale_key, req_key, sym, name in _STRIP_FIGURES:
         plot_title = f"{arm}\n{DATASET_ALIAS2NAME[dataset]}"
         style = (fontsize_axes, fontsize_ticks, fontsize_legend, subplot_border_width, fig_width, height_fixed,
-                 height_panel)
+                 height_panel, dpi)
         for trial_num in sorted({trial_num for by_trial in panels.values() for trial_num in by_trial}, key=int):
             strips = [(coord, *_strip_data([by_trial[trial_num]], scale_key, req_key, None))
                       for coord, by_trial in panels.items() if trial_num in by_trial]
@@ -1139,7 +1139,7 @@ def update_coord_strips(dataset, arm, spread_type, fontsize_axes=12, fontsize_ti
         _render_strips(strips, dpath_strips / "agg" / f"{name}.png", sym, plot_title, spread_type, *style)
 
 @rank0
-def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores):
+def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
     """Render `dataset`'s cross-arm tables/plots:
     _dataset/<dataset>/dataset_summary/{armcoords,arms}/performance/{scores,convergence}.png (+ secondary/, see
     _render_stats_pngs). armcoords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
@@ -1181,13 +1181,13 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
     scales_by = _collect_scales(arm_coords, (dataset,))
     if ArtifactManager.dpath_phase.name != "refine":
         _render_stats_pngs(dpath_stats / "armcoords" / "performance", ("Arm", "Coord"), rowset_arm_coords, dataset,
-                           subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap)
+                           subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap, dpi)
         _render_scale_tables(dpath_stats / "armcoords", ("Arm", "Coord"), rows_ac, comps_all["native"], scales_by,
-                             dataset, subject, spread_type, ordered)
+                             dataset, subject, spread_type, ordered, dpi)
     _render_stats_pngs(dpath_stats / "arms" / "performance", ("Arm", "Coord"), rowset_arms, dataset, subject, eval_groups,
-                       labels, spread_type, bold_high, ordered, heatmap)
+                       labels, spread_type, bold_high, ordered, heatmap, dpi)
     _render_scale_tables(dpath_stats / "arms", ("Arm", "Coord"), rowset_arms("native")[0], comps_all["native"], scales_by,
-                         dataset, subject, spread_type, ordered)
+                         dataset, subject, spread_type, ordered, dpi)
 
 def _override_value(config, key):
     """Effective value of dot-path `key` in a row's config.json dict; '-' when a segment is absent --
@@ -1715,7 +1715,7 @@ def _build_test_blocks(rows, datasets, trial_nums, comps_by, chkpts, score_key, 
     return blocks, rows
 
 @rank0
-def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
+def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides, dpi):
     """Write the test workbooks, one per eval group under artifacts/<campaign>/_phase/test/phase_summary/arms/:
     <campaign>_test-arms.xlsx for native, secondary/<campaign>_test-arms_<group>.xlsx for the rest (fpath_workbook)
     (ArtifactManager.dpath_phase = the test dir; every trainval model already sits at its refine-selected
@@ -1723,7 +1723,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
     'mAP' + 'Acc' sheets of stacked per-dataset tables + bottom Mean
     summary, per-trial blocks, and the 'Arm Overrides' / 'Coord Overrides' config bands (read from
     the test tree's coord config.json/overrides.json copies), with all of stats.yaml's styling
-    (spread_type/bold_high/ordered/heatmap/supp_scores/overrides) applied the same way -- except
+    (spread_type/bold_high/ordered/heatmap/supp_scores/overrides/dpi) applied the same way -- except
     that a third 'Chkpt' key column carries each (row, dataset)'s saved-checkpoint index
     (_build_test_blocks) and there is no 'HW' sheet (the readings describe
     training trials; test runs none). Rows and scores come from the test tree's per-trial score
@@ -1779,7 +1779,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
             _render_stats_pngs(ArtifactManager.dpath_phase / "_dataset" / dataset / "dataset_summary" / "arms" / "performance",
                                ("Arm", "Coord"), lambda group_key, rows=rows_dataset: (rows, comps_all[group_key], []),
                                dataset, DATASET_ALIAS2NAME[dataset], eval_groups, map_labels, spread_type, bold_high,
-                               ordered, heatmap)
+                               ordered, heatmap, dpi)
 
 
 @rank0
@@ -1790,6 +1790,7 @@ def plot_metrics(
         epoch_size,
         hpsm,
         eval_groups,
+        dpi,
         fontsize_axes=12,
         fontsize_ticks=8,
         fontsize_legend=8,
@@ -1840,6 +1841,7 @@ def plot_metrics(
                 fig_width,
                 height_fixed,
                 height_panel_scores,
+                dpi,
                 group_key=group_key,
                 plot_title=f"{title_prefix} ({group_name})",
                 fpath_plot=group_path(dpath_trial / "learning_curves", group_key, "scores", ".png"),
@@ -1858,6 +1860,7 @@ def plot_metrics(
         fig_width,
         height_fixed,
         height_panel_general,
+        dpi,
         hpsm,
         plot_title=title_prefix,
         output_filename="learning_curves/general.png",
@@ -1875,6 +1878,7 @@ def plot_metrics(
             fig_width,
             height_fixed,
             height_panel_general,
+            dpi,
             scale_key,
             prefix,
             sym,
@@ -1892,6 +1896,7 @@ def plot_metrics(
         fig_width,
         height_fixed,
         height_panel_general,
+        dpi,
         plot_title=title_prefix,
         output_filename="learning_curves/KL.png",
     )
@@ -1906,6 +1911,7 @@ def plot_metrics(
         fig_width,
         height_fixed,
         height_panel_general,
+        dpi,
         plot_title=title_prefix,
         output_filename="learning_curves/sim_grad_entropy.png",
     )
@@ -1931,6 +1937,7 @@ def plot_metrics(
             fig_width,
             height_fixed,
             height_panel_general,
+            dpi,
             panels,
             plot_title=title_prefix,
             output_filename=f"learning_curves/{name}.png",
@@ -1947,6 +1954,7 @@ def plot_score_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     group_key,
     plot_title,
     fpath_plot,
@@ -2041,7 +2049,7 @@ def plot_score_curves(
     ax4.grid(True)
     ax4.tick_params(labelsize=fontsize_ticks)
 
-    _finish_curves(fig, [ax0, ax1, ax2, ax3, ax4], [], legend_handles, plot_title, fpath_plot, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, [ax0, ax1, ax2, ax3, ax4], [], legend_handles, plot_title, fpath_plot, fontsize_legend, subplot_border_width, dpi)
 
 def plot_general_curves(
     data_epoch,
@@ -2057,6 +2065,7 @@ def plot_general_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     hpsm,
     plot_title,
     output_filename,
@@ -2229,7 +2238,7 @@ def plot_general_curves(
     ax10.tick_params(labelsize=fontsize_ticks)
     axes.append(ax10)
 
-    _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width, dpi)
 
 def plot_scalar_curves(
     data_epoch,
@@ -2242,6 +2251,7 @@ def plot_scalar_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     panels,
     plot_title,
     output_filename,
@@ -2266,7 +2276,7 @@ def plot_scalar_curves(
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
-    _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, axes, [], {}, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width, dpi)
 
 def _resid_unvalidated(data_epoch):
     """Per batch, whether any of its rows' residual family came off the plain p* - y subtraction
@@ -2298,6 +2308,7 @@ def plot_scale_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     scale_key,
     prefix,
     sym,
@@ -2500,7 +2511,7 @@ def plot_scale_curves(
         for agg in _DSCALE_AGGS
     ]
     _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
-                   subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
+                   subplot_border_width, dpi, axes_blocks=[group for group in axes_blocks if group])
 
 def plot_kl_curves(
     data_epoch,
@@ -2513,6 +2524,7 @@ def plot_kl_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     plot_title,
     output_filename,
 ):
@@ -2562,7 +2574,7 @@ def plot_kl_curves(
     axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
     axes[-1].tick_params(labelbottom=True)
 
-    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width)
+    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width, dpi)
 
 def plot_sim_grad_entropy_curves(
     data_epoch,
@@ -2575,6 +2587,7 @@ def plot_sim_grad_entropy_curves(
     fig_width,
     height_fixed,
     height_panel,
+    dpi,
     plot_title,
     output_filename,
 ):
@@ -2640,10 +2653,10 @@ def plot_sim_grad_entropy_curves(
 
     axes_blocks = [[ax for ax, panel in zip(axes, panels) if panel[2] == level] for level in ("pair", "anchor", "active")]
     _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend,
-                   subplot_border_width, axes_blocks=[group for group in axes_blocks if group])
+                   subplot_border_width, dpi, axes_blocks=[group for group in axes_blocks if group])
 
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
-                   subplot_border_width, axes_blocks=(), box_blocks=False, alternate_sides=True):
+                   subplot_border_width, dpi, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
     The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_scalar_curves /
     plot_scale_curves / plot_kl_curves / plot_sim_grad_entropy_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
@@ -2700,7 +2713,7 @@ def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot,
             _place_legend_outside(ax, legend_handles[ax], side, fontsize_legend)
     plt.tight_layout()
     fpath_plot.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(fpath_plot, dpi=300)
+    fig.savefig(fpath_plot, dpi=dpi)
     plt.close(fig)
 
 class _SciTickFormatter(ScalarFormatter):

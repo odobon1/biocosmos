@@ -167,7 +167,7 @@ def test_update_chkpt_selection_picks_argmax_of_the_mean_curve(tmp_path, monkeyp
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     chkpt_means = load_pickle(dpath_coord / "coord_summary" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -209,7 +209,7 @@ def test_update_chkpt_selection_scores_every_group_at_natives_pick(tmp_path, mon
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", "cub")
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     assert _trial_chkpt(dpath_trial) == {"sel": 2, "best": 2}
     for name in ("sel", "best"):
@@ -243,7 +243,7 @@ def test_update_chkpt_selection_copies_viz(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", "cub")
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     dpath_evals = tmp_path / "_trial" / "1" / "eval"
     for name, idx in (("sel", "2"), ("best", "1")):
@@ -266,7 +266,7 @@ def test_update_chkpt_selection_excludes_unfinished_trials(tmp_path, monkeypatch
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     chkpt_means = load_pickle(dpath_coord / "coord_summary" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1  # only trial 1 counted
@@ -292,7 +292,7 @@ def test_update_chkpt_selection_base_eval_competes_like_any_checkpoint(tmp_path,
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     chkpt_means = load_pickle(dpath_coord / "coord_summary" / "chkpt_means.pkl")
     assert chkpt_means["means"] == pytest.approx([0.70, 0.15, 0.45])
@@ -331,7 +331,7 @@ def test_update_chkpt_selection_scores_killed_trials_at_their_own_best(tmp_path,
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     chkpt_means = load_pickle(dpath_coord / "coord_summary" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 1
@@ -360,7 +360,7 @@ def test_update_chkpt_selection_selects_over_killed_trials_when_all_were_killed(
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path)
     monkeypatch.setattr(ArtifactManager, "dataset", dataset)
 
-    report.update_chkpt_selection(_EVAL_GROUPS, "std")
+    report.update_chkpt_selection(_EVAL_GROUPS, "std", 150)
 
     chkpt_means = load_pickle(dpath_coord / "coord_summary" / "chkpt_means.pkl")
     assert chkpt_means["n_trials"] == 2
@@ -550,8 +550,8 @@ def test_update_arm_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
-    report.update_arm_metrics("cub", "mp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
+    report.update_arm_metrics("cub", "mp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
     dpath_stats = tmp_path / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "performance"
     for group_key in _GROUP_KEYS:
         assert (group_path(dpath_stats, group_key, "scores", ".png")).exists()
@@ -573,10 +573,10 @@ def test_update_arm_metrics_rows_and_curves(tmp_path, monkeypatch) -> None:
 
     grids, plotted = [], []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
-    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath, dpi: plotted.append((fpath, curves, idx_win)))
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
     grids = [(fpath, grid) for fpath, grid in grids if fpath.name.startswith("scores")]  # the scale tables aside
     assert len(grids) == 4 and len(plotted) == 4  # one per eval group
     assert _captured(grids, "arm_summary", "performance") == [
@@ -633,10 +633,10 @@ def test_scale_tables_split_the_rows_by_the_scales_they_record(tmp_path, monkeyp
 
     tables = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: tables.append((fpath, title, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: tables.append((fpath, title, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
     scale_tables = [(fpath.name, title, grid) for fpath, title, grid in tables if fpath.parent.name == "arm_summary"]
     assert [name for name, _, _ in scale_tables] == ["scale.png", "logscale.png", "scale1.png", "scale2.png", "logscale1.png", "logscale2.png"]
     assert [title for _, title, _ in scale_tables] == [f"Logit Scale {sym} -- hp, CUB" for sym in ("α", "log α", "α₁", "α₂", "log α₁", "log α₂")]
@@ -673,10 +673,10 @@ def test_update_arm_metrics_writes_scale_tables(tmp_path, monkeypatch) -> None:
 
     tables = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: tables.append((fpath, title, grid, bold_high, heatmap)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: tables.append((fpath, title, grid, bold_high, heatmap)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
     scale_tables = [t for t in tables if t[0].name in ("scale.png", "logscale.png")]
     assert [(fpath.parent.name, fpath.name) for fpath, *_ in scale_tables] == [("arm_summary", "scale.png"), ("arm_summary", "logscale.png")]
     fpath, title, grid, bold_high, heatmap = scale_tables[0]
@@ -701,10 +701,10 @@ def test_update_dataset_metrics_writes_scale_tables(tmp_path, monkeypatch) -> No
 
         tables = []
         monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-        monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: tables.append((fpath, grid)))
+        monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: tables.append((fpath, grid)))
         monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-        report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+        report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
         scale_tables = {fpath.parent.name: grid for fpath, grid in tables if fpath.name == "scale.png"}
         assert set(scale_tables) == ({"armcoords", "arms"} if phase == "screen" else {"arms"})
         if phase == "screen":
@@ -747,7 +747,7 @@ def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, mo
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
 
     dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord"
     assert sorted(p.name for p in dpath_best.iterdir()) == ["1", "2"]
@@ -870,7 +870,7 @@ def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypat
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
 
-    report.update_coord_strips("cub", "hp", "std")
+    report.update_coord_strips("cub", "hp", "std", 150)
 
     dpath_strips = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "coord_strips"
     for name in ("scale", "logscale"):
@@ -894,7 +894,7 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
     monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, *args: calls.append((fpath, strips)))
 
-    report.update_coord_strips("cub", "hp", "std")
+    report.update_coord_strips("cub", "hp", "std", 150)
 
     figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips in calls}
     assert [coord for coord, *_ in figures[("1", "scale")]] == ["a", "b"]
@@ -925,7 +925,7 @@ def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypa
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
     monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, *args: calls.append((fpath, strips)))
 
-    report.update_coord_strips("cub", "hp", "std")
+    report.update_coord_strips("cub", "hp", "std", 150)
 
     assert [[coord for coord, *_ in strips] for _, strips in calls] == [["a", "b"]] * 4
     assert all(reqs == {} for _, strips in calls for *_, reqs in strips)
@@ -933,7 +933,7 @@ def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypa
     assert vals == pytest.approx([14.0, 14.0])
 
     calls.clear()
-    report.update_coord_strips("cub", "mp", "std")  # planned, nothing run
+    report.update_coord_strips("cub", "mp", "std", 150)  # planned, nothing run
     assert calls == []
 
 
@@ -953,7 +953,7 @@ def test_render_strips_tick_a_flat_strip_at_its_value(tmp_path, monkeypatch) -> 
     reqs = {stat: np.array([3.0, 4.0, 5.0]) + off for stat, off in (("min", 0.0), ("mean", 1.0), ("max", 2.0))}
     strips = [("frozen", x, flat, {}), ("frozen_bounded", x, flat, reqs), ("learnable", x, (np.array([1.0, 2.0, 3.0]), None), {})]
 
-    report._render_strips(strips, tmp_path / "x.png", r"\alpha", "t", "std", 12, 8, 8, 1, 10, 1.8, 0.8)
+    report._render_strips(strips, tmp_path / "x.png", r"\alpha", "t", "std", 12, 8, 8, 1, 10, 1.8, 0.8, 150)
 
     assert seen["yticks"][0] == ["14.29"]
     lo, hi = seen["ylims"][0]
@@ -980,7 +980,7 @@ def test_finish_curves_boxes_blocks_when_asked(tmp_path) -> None:
     fig, axs = plt.subplots(4, 1)
     axes = list(axs)
 
-    report._finish_curves(fig, axes, [], {}, "t", tmp_path / "boxed.png", 8, 1, axes_blocks=[axes[1:3]],
+    report._finish_curves(fig, axes, [], {}, "t", tmp_path / "boxed.png", 8, 1, 150, axes_blocks=[axes[1:3]],
                           box_blocks=True)
 
     widths = {ax: {side: spine.get_linewidth() for side, spine in ax.spines.items()} for ax in axes}
@@ -996,7 +996,7 @@ def test_finish_curves_rules_off_panel_blocks(tmp_path) -> None:
     fig, axs = plt.subplots(5, 1)
     axes = list(axs)
 
-    report._finish_curves(fig, axes, [], {}, "t", tmp_path / "blocks.png", 8, 1, axes_blocks=[axes[1:4]])
+    report._finish_curves(fig, axes, [], {}, "t", tmp_path / "blocks.png", 8, 1, 150, axes_blocks=[axes[1:4]])
 
     widths = {ax: {side: spine.get_linewidth() for side, spine in ax.spines.items()} for ax in axes}
     assert set(widths[axes[0]].values()) == {1}  # panels outside a block are untouched
@@ -1010,8 +1010,8 @@ def test_plot_convergence_draws_a_base_selection(tmp_path) -> None:
     # with the base eval a candidate the curves start at checkpoint 0 on a symlog axis, so a
     # selection there (row a) is drawable; without it the log axis starts at checkpoint 1
     curves = [(("a",), np.array([0.6, 0.4, 0.5]), 0), (("b",), np.array([0.2, 0.3, 0.1]), 1)]
-    report._plot_convergence(curves, 0, "mAP", "with base", tmp_path / "with_base.png")
-    report._plot_convergence(curves, 1, "mAP", "second row", tmp_path / "without_base.png")
+    report._plot_convergence(curves, 0, "mAP", "with base", tmp_path / "with_base.png", 150)
+    report._plot_convergence(curves, 1, "mAP", "second row", tmp_path / "without_base.png", 150)
     assert (tmp_path / "with_base.png").exists()
     assert (tmp_path / "without_base.png").exists()
 
@@ -1047,14 +1047,14 @@ def test_update_dataset_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
     render = report._render_stats_table
 
-    def _spy(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows):
+    def _spy(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi):
         grids.append((fpath, grid))
-        render(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows)
+        render(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi)
 
     monkeypatch.setattr(report, "_render_stats_table", _spy)
 
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
-    report.update_dataset_metrics("bryo", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF)
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
+    report.update_dataset_metrics("bryo", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
     dpath_stats = tmp_path / "_dataset" / "cub" / "dataset_summary"
     for kind in ("armcoords", "arms"):
         for group_key in _GROUP_KEYS:
@@ -1079,10 +1079,10 @@ def test_update_dataset_metrics_refine_phase_arms_only(tmp_path, monkeypatch) ->
 
     grids = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
     assert not any("armcoords" in fpath.parts for fpath, _ in grids)
     assert [r[:3] for r in _captured(grids, "arms", "performance")] == [
         ["Arm", "Coord", "All"], ["hp", "c1 (1)", "60.00"], ["sp", "c0 (1)", "40.00"]]
@@ -1106,10 +1106,10 @@ def test_update_dataset_metrics_arms_use_best_coord_per_arm(tmp_path, monkeypatc
 
     grids, plotted = [], []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
-    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath: plotted.append((fpath, curves, idx_win)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath, dpi: plotted.append((fpath, curves, idx_win)))
 
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
     assert [r[:3] for r in _captured(grids, "arms", "performance")] == [
         ["Arm", "Coord", "All"], ["a", "c0 (1)", "60.00"], ["b", "c1 (1)", "50.00"], ["c", "c0 (1)", "50.00"]]
     assert [r[:3] for r in _captured(grids, "armcoords", "performance")] == [
@@ -1166,11 +1166,11 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
         _write_group_metrics(_dpath_coord(tmp_path, "cub", arm, coord) / "_trial" / "1" / "eval" / "best", _scores_grp(_comp(base)))
         (_dpath_coord(tmp_path, "cub", arm, coord) / "_trial" / "1" / "learning_curves").mkdir()  # sp complete: best_coord/ mirrors it
     grids = []
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-    report.update_arm_metrics("cub", "sp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF)
+    report.update_arm_metrics("cub", "sp", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_summary", "performance")] == ["Coord", "c0 (1)"]
@@ -1200,9 +1200,9 @@ def test_update_dataset_metrics_ordered_localized_per_metric(tmp_path, monkeypat
 
     grids = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
 
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, True, False, _SUPP_OFF)
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, 150)
     grids = [(fpath, grid) for fpath, grid in grids if fpath.name.startswith("scores")]  # the scale tables aside
     assert len(grids) == 8  # one per eval group, both kinds
     grid_map = _captured(grids, "armcoords", "performance")
@@ -1684,7 +1684,7 @@ def test_update_phase_metrics_hw_sheet_x_marks_killed_rows(tmp_path, monkeypatch
 def test_render_stats_table_shades_killed_rows_yellow(tmp_path) -> None:
     # the png renderer's killed rows take the same yellow (a smoke render with the real styling path)
     grid = [["Coord", "All"], ["c0 (2, 1 killed)", "55.00 ± 7.07"], ["c1 (1)", "40.00"]]
-    report._render_stats_table(grid, 1, "mAP", tmp_path / "metrics.png", True, True, {1})
+    report._render_stats_table(grid, 1, "mAP", tmp_path / "metrics.png", True, True, {1}, 150)
     assert (tmp_path / "metrics.png").exists()
 
 
@@ -1751,9 +1751,9 @@ def test_update_arm_metrics_supp_primitive(tmp_path, monkeypatch) -> None:
 
     grids = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM)
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, _SUPP_PRIM, 150)
     grids = [(fpath, grid) for fpath, grid in grids if fpath.name.startswith("scores")]  # the scale tables aside
     assert len(grids) == 4  # one per eval group
     grid_map = _captured(grids, "arm_summary", "performance")
@@ -1844,9 +1844,9 @@ def test_update_arm_metrics_supp_n_shot(tmp_path, monkeypatch) -> None:
 
     grids = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
 
-    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, {"primitive": False, "n_shot": True})
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", False, False, False, {"primitive": False, "n_shot": True}, 150)
     grid_map = _captured(grids, "arm_summary", "performance")
     assert grid_map[0] == ["Coord", *_MAP_LABELS, "few-shot", "med-shot", "many-shot"]
     assert grid_map[1][7:] == ["31.00", "32.00", "33.00"]
@@ -2200,7 +2200,7 @@ def test_update_test_stats_writes_stacked_tables_with_chkpt_column(tmp_path, mon
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False, 150)
 
     for group_key in _GROUP_KEYS:
         assert report.fpath_workbook(tmp_path, "arms", group_key).exists()
@@ -2250,10 +2250,10 @@ def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
 
     grids = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows: grids.append((fpath, grid)))
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: pytest.fail("test tables have no convergence plot"))
 
-    report.update_test_stats(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False, 150)
 
     dpath_perf = tmp_path / "_dataset" / "cub" / "dataset_summary" / "arms" / "performance"
     assert sorted(fpath for fpath, _ in grids) == sorted(group_path(dpath_perf, group_key, "scores", ".png")
@@ -2275,7 +2275,7 @@ def test_update_test_stats_chkpt_per_dataset(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False, 150)
 
     grid = [[c.value for c in row] for row in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
     assert grid[2][0] == "CUB"
@@ -2300,7 +2300,7 @@ def test_update_test_stats_overrides_bands(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
 
-    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True)
+    report.update_test_stats(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, True, 150)
 
     grid = [[c.value for c in row] for row in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
     # the arm band's one differing param at col A + separator B; lr.init is uniform -> the coord
@@ -2369,7 +2369,7 @@ def test_general_figure_closes_on_the_margin_and_s_q_panels_above_lr(tmp_path, m
         plt.close(fig)
 
     monkeypatch.setattr(report, "_finish_curves", finish)
-    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
                                {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
 
     assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-4:] == [
@@ -2382,7 +2382,7 @@ def test_general_figure_closes_on_the_margin_and_s_q_panels_above_lr(tmp_path, m
     # a BCE-family loss records the predicted pair probabilities too: P Hist., directly above the Q Hist. it
     # reads against, on the same [0, 1] axis
     data_epoch["p_hist"] = [[1.0 / bins] * bins] * n
-    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
                                {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
     assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-5:] == [
         ("S Stats", False), ("S Hist.", True), ("P Hist.", True), ("Q Hist.", True), ("η", False)]
@@ -2397,7 +2397,7 @@ def test_scalar_figures_materialize_only_where_their_series_are_recorded(tmp_pat
     bias_panels = [("bias", r"$b$", dict(color="blue")), ("bias2", r"$b_2$", dict(color="blue"))]
     lambda_panels = [("lambda_eff", r"$\lambda_{\mathrm{eff}}$", dict(color="tab:olive", linewidth=1.0))]
     plot = lambda data_epoch, panels, name: report.plot_scalar_curves(
-        data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.8, 0.8, panels, plot_title="a\nb\nc", output_filename=name)
+        data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.8, 0.8, 150, panels, plot_title="a\nb\nc", output_filename=name)
 
     unrecorded = {"bias": [], "bias2": [], "lambda_eff": []}
     plot(unrecorded, bias_panels, "learning_curves/bias.png")
@@ -2619,7 +2619,7 @@ def _plot_scale(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
         plt.close(fig)
 
     monkeypatch.setattr(report, "_finish_curves", finish)
-    report.plot_scale_curves(data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0,
+    report.plot_scale_curves(data_epoch, list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
                              scale_key, prefix, sym, plot_title="t", output_filename="x.png")
     _plot_scale.seen = seen
     return seen["panels"]
@@ -2824,7 +2824,7 @@ def test_kl_figure_marks_its_residual_panels_unvalidated(tmp_path, monkeypatch) 
     monkeypatch.setattr(report, "_finish_curves", finish)
     n = 3
     kl = {key: [0.1] * n for key in ("kl", "kl_u", "kl_ir", "kl_ur")}
-    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0)
+    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150)
 
     report.plot_kl_curves({**kl, "resid_paths": [[0.5, 0.0, 0.5]] * n}, *args, plot_title="t", output_filename="x.png")
     assert seen["marks"] == [[], [], ["unvalidated"], ["unvalidated"], ["unvalidated"]] and seen["legends"] == 3
@@ -2852,7 +2852,7 @@ def test_sim_grad_entropy_figure_panels_blocks_and_marks(tmp_path, monkeypatch) 
     n = 3
     comps = ("actual", "full", "struct", "res")
     series = {f"sim_grad_entropy_{level}_{comp}": [0.5] * n for level in ("pair", "anchor", "active") for comp in comps}
-    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0)
+    args = (list(range(n)), tmp_path, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150)
 
     report.plot_sim_grad_entropy_curves({**series, "resid_paths": [[0.5, 0.0, 0.5]] * n}, *args, plot_title="t",
                                         output_filename="x.png")

@@ -1190,6 +1190,7 @@ def _make_stats_config_dummy(**overrides):
         "heatmap": False,
         "supp_scores": {"primitive": False, "n_shot": False},
         "overrides": False,
+        "dpi": 150,
     }
     config.update(overrides)
     return config

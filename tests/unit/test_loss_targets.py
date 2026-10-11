@@ -128,7 +128,7 @@ def test_targ_dist_is_q_for_bce_and_the_tsm_row_transform_for_infonce() -> None:
     Y = _infonce(loss_mod, [(1.0, _spec("softmax", "pinned1"))], clamp=False).targ_dist([Q], [logit_scale])
     assert torch.allclose(Y, torch.softmax(Qd * torch.exp(logit_scale), dim=1))
     Y = _infonce(loss_mod, [(1.0, _spec("softmax", 3.0))]).targ_dist([Q], [logit_scale])
-    assert torch.allclose(Y, torch.softmax(2 * Qd * 3.0, dim=1))
+    assert torch.allclose(Y, torch.softmax(Qd * 3.0, dim=1))
 
 
 def test_softmax_tsm_keeps_full_support_at_the_base_model_scales() -> None:
@@ -163,7 +163,7 @@ def test_targ_dist_blends_each_spec_under_its_own_tsm() -> None:
     crit = _infonce(loss_mod, specs)
     Y = crit.targ_dist([Q1, Q2], [logit_scale] * 2)
     Q1d, Q2d = Q1.double(), Q2.double()  # the tsm's float64 (InfoNCECriterion._tsm); targ_memb keeps Q's dtype
-    assert torch.allclose(Y, 0.7 * Q1d / Q1d.sum(dim=1, keepdim=True) + 0.3 * torch.softmax(2 * Q2d * 3.0, dim=1))
+    assert torch.allclose(Y, 0.7 * Q1d / Q1d.sum(dim=1, keepdim=True) + 0.3 * torch.softmax(Q2d * 3.0, dim=1))
     assert torch.allclose(crit.targ_memb([Q1, Q2]), 0.7 * Q1 + 0.3 * Q2)
     # a lone spec is at full weight, so its blend is the matrix itself -- returned as-is, not copied
     assert _infonce(loss_mod, [(1.0, _spec("linear", "pinned"))]).targ_memb([Q1]) is Q1

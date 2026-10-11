@@ -304,8 +304,8 @@ def infonce_hard_kl_ir(Q, alpha):
 def tsm_target_scale(cfg_tsm, alpha):
     """
     The scale the target simplex mapping puts on the memberships Q before its row softmax
-    (InfoNCECriterion._tsm's constants): 2 alpha under sm_scale pinned, alpha under pinned1, 3 alpha under
-    pinned3, 2 c under a fixed c -- and inf under the linear tsm, whose zeros sit at minus infinity in the
+    (InfoNCECriterion._tsm's constants): 2 alpha under sm_scale pinned, alpha under pinned1, 4 alpha under
+    pinned4, c itself under a fixed c -- and inf under the linear tsm, whose zeros sit at minus infinity in the
     log. For a two-level row of binary memberships it is the log ratio of the positive level to the negative
     one, and for any Q in [0, 1] (every target type's) a row's log range is at most this, so a mapping at or
     under the band 2 alpha keeps every row of every target inside it (infonce_train_resid). `alpha` post-clamp,
@@ -314,9 +314,9 @@ def tsm_target_scale(cfg_tsm, alpha):
     if cfg_tsm["type"] == "linear":
         return math.inf
     scale_Q = cfg_tsm["sm_scale"]
-    if scale_Q in ("pinned", "pinned1", "pinned3"):
-        return {"pinned": 2.0, "pinned1": 1.0, "pinned3": 3.0}[scale_Q] * alpha
-    return 2.0 * scale_Q
+    if scale_Q in ("pinned", "pinned1", "pinned4"):
+        return {"pinned": 2.0, "pinned1": 1.0, "pinned4": 4.0}[scale_Q] * alpha
+    return scale_Q
 
 def infonce_train_resid(Y, alpha, s, binary, inside):
     """
@@ -329,7 +329,7 @@ def infonce_train_resid(Y, alpha, s, binary, inside):
     tsm's target scale (tsm_target_scale: the log ratio of a two-level row's levels, inf under the linear tsm;
     None where the term is a blend of two specs and says nothing), `binary` whether the spec's memberships are
     binary (targ sp / mp), and `inside` whether the mapping keeps every row inside the band by construction
-    (a softmax tsm at s <= 2 alpha: sm_scale pinned, pinned1, a fixed c <= alpha; Q in [0, 1] for every target).
+    (a softmax tsm at s <= 2 alpha: sm_scale pinned, pinned1, a fixed c <= 2 alpha; Q in [0, 1] for every target).
 
     Per row, in this order:
     - inside: every row is feasible, exactly -- the boundary included (pinned: s = 2 alpha), where the stored
@@ -348,7 +348,7 @@ def infonce_train_resid(Y, alpha, s, binary, inside):
       tsm: a graded target's row that happens to hold two levels has a ratio of its own, and goes below.
     - a row whose log range max_j log y_j - min_j log y_j is within the band, by that direct criterion on its
       stored floats (on the boundary included: its residual is zero to rounding): feasible, nothing to apply.
-    - every other row -- a graded row outside the band (the linear tsm on tax / phylo, pinned3 on them, a
+    - every other row -- a graded row outside the band (the linear tsm on tax / phylo, pinned4 on them, a
       target blend's rows): the projection's active-set closed form (infonce_active_set_resid), resolved
       where its sets pass their optimality conditions and its residual its sign and magnitude checks --
       numerically checked, not certified: to relative precision where the row is well past the band, and to
@@ -527,12 +527,12 @@ def _block_resid_rows(Y, alpha64, spec):
     else:
         tsm = spec["infonce"]["tsm"]
         s, binary = tsm_target_scale(tsm, alpha64), spec["targ"] in ("sp", "mp")
-        if tsm["type"] == "linear" or tsm["sm_scale"] == "pinned3":
+        if tsm["type"] == "linear" or tsm["sm_scale"] == "pinned4":
             inside = False
         elif tsm["sm_scale"] in ("pinned", "pinned1"):
             inside = True  # s = 2 alpha / alpha: inside by construction, whatever alpha is
         else:
-            inside = bool(s <= 2 * alpha64)  # a fixed c: inside iff c <= alpha
+            inside = bool(s <= 2 * alpha64)  # a fixed c: inside iff c <= 2 alpha
     return infonce_train_resid(Y, alpha64, s, binary, inside)
 
 def _block_resid_record(logit_scale, clamp, alpha, resid, coeff, B):
@@ -591,7 +591,7 @@ class InfoNCECriterion(Criterion):
             Y = Q / Q_mass[:, None]  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         elif cfg_tsm["type"] == "softmax":
             scale_Q = cfg_tsm["sm_scale"]
-            if scale_Q in ("pinned", "pinned1", "pinned3"):
+            if scale_Q in ("pinned", "pinned1", "pinned4"):
                 logit_scale = logit_scale.detach()
                 if self.cfg["logits"]["scale"]["clamp"]:
                     logit_scale = logit_scale.clamp(max=math.log(100))
@@ -599,10 +599,10 @@ class InfoNCECriterion(Criterion):
                     Y = F.softmax(2 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
                 elif scale_Q == "pinned1":
                     Y = F.softmax(Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
-                elif scale_Q == "pinned3":
-                    Y = F.softmax(3 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                elif scale_Q == "pinned4":
+                    Y = F.softmax(4 * Q * torch.exp(logit_scale), dim=1)  # pt[B, B]; for HCon (note: symmetrical for MP, non-symmetrical for HCon)
             else:
-                Y = F.softmax(2 * Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
+                Y = F.softmax(Q * scale_Q, dim=1)  # pt[B, B]; for MP + HCon (note: symmetrical for MP, non-symmetrical for HCon)
         return Y
 
     def targ_dists(self, Qs, logit_scales):

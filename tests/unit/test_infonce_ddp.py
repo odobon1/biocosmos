@@ -87,7 +87,7 @@ CASES = [
     # softmax tsm pinned: inside the band by construction -> all feasible, correction exactly zero
     ("alpha_pinned_control", cfg_infonce(block="alpha"), spec("mp", "softmax", "pinned"), spec("sp"), 0.5, "all_feasible"),
     # binary memberships under a fixed sm_scale c past the band -> the soft two-level closed form
-    ("full_softmax_c", cfg_infonce(block="full"), spec("mp", "softmax", 3.0), spec("sp"), 0.5, "all_applied"),
+    ("full_softmax_c", cfg_infonce(block="full"), spec("mp", "softmax", 6.0), spec("sp"), 0.5, "all_applied"),
     # loss blend + unitless: per-term tensor coefficients applied inside the term, in float64
     ("full_loss_blend_unitless", cfg_infonce(lambda_=0.3, blend_type="loss", block="full", unitless=True),
      spec("mp"), spec("tax"), 0.5, "some_applied"),

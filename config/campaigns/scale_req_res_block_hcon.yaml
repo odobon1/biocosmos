@@ -7,7 +7,7 @@ trainval: false  # {true, false}; (true) after the refine phase, retrain each pi
 baseline_overrides:
   loss.loss1.targ: phylo
   loss.loss1.infonce.tsm.type: softmax
-  loss.loss1.infonce.tsm.sm_scale: pinned3
+  loss.loss1.infonce.tsm.sm_scale: pinned4
 
 ablation_arms:
   - - {loss.logits.scale.freeze: false, loss.infonce.block_residuals: alpha, name: LearnedScale-ScaleResBlock}

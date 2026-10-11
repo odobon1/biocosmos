@@ -852,7 +852,7 @@ def test_train_config_block_residuals_takes_any_infonce_target(monkeypatch: pyte
     for blend_type in ("loss", "targ"):  # two live targets: one term per spec, or the one term on their blend
         TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type=blend_type), **targs))
     TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("phylo"), loss2=_linear_targ("mp")))
-    for sm_scale in ("pinned", "pinned1", "pinned3", 10.0):
+    for sm_scale in ("pinned", "pinned1", "pinned4", 10.0):
         TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_softmax_targ("phylo", sm_scale), loss2=_linear_targ("sp")))
     TrainConfig(**make_train_config_dummy(
         loss=_block_resid_cfg(lambda_=0.3, blend_type="targ"), loss1=_softmax_targ("phylo", "pinned"), loss2=_softmax_targ("mp", "pinned1"),

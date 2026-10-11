@@ -39,10 +39,10 @@ infonce:  # Inert iff (loss.crit != infonce)
   # the target; (null) The full gradient. Applied as a zero-valued correction term, so the loss reading is
   # untouched. RELIABILITY-GATED, per anchor row of each term's target distribution (utils.loss.infonce_train_resid):
   # a two-level row of binary memberships (SP, MP: hard under the linear tsm -- FLYP, SupCon -- or soft under a
-  # softmax tsm past the band, pinned3 or a fixed sm_scale above alpha) is blocked exactly, in closed form; a row
+  # softmax tsm past the band, pinned4 or a fixed sm_scale above 2 alpha) is blocked exactly, in closed form; a row
   # inside the band has nothing to block -- under sm_scale pinned / pinned1 that is every row of every target, by
   # construction, so blocking is inert there and reads as 100% feasible (a control); any other row -- a graded
-  # target's (tax / phylo) outside the band, under the linear tsm or pinned3 -- is blocked from the projection's
+  # target's (tax / phylo) outside the band, under the linear tsm or pinned4 -- is blocked from the projection's
   # active-set closed form, numerically checked rather than certified (utils.loss.infonce_active_set_resid: its
   # sets pass their optimality conditions and its residual the sign and magnitude checks; relative precision well
   # past the band, rounding at it), and a row left unresolved there is SKIPPED, keeping its ordinary, unblocked
@@ -113,13 +113,14 @@ loss1:  # Primary target params; Inert iff (loss.blend.lambda: 1.0)
     tsm:  # Target Simplex Mapping
       type: linear  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
-      # (softmax) Softmax mapping (intended for HCon), targets first scaled by x2 to make alpha_Q comparable to logits' alpha
-      # i.e. target range --> similarity range
-      sm_scale: pinned  # {pinned, pinned1, pinned3, [float]}
-      # (pinned) Target scale alpha_Q pinned to the logits' learnable logit-scale alpha = exp(logit_scale) (targs scaled by x2 first)
-      # (pinned1) Same as pinned but without the x2 target scaling
-      # (pinned3) Same as pinned but with x3 target scaling
-      # ([float]) Fixed alpha_Q (non-learnable), set =0.5 for no target scaling;
+      # (softmax) Softmax mapping (intended for HCon): row softmax of the memberships Q at the scale sm_scale sets
+      sm_scale: pinned  # {pinned, pinned1, pinned4, [float]}
+      # (pinned) Target scale alpha_Q pinned to the logits' learnable logit-scale alpha = exp(logit_scale), targs scaled by x2
+      # first (target range [0, 1] --> similarity range [-1, 1], so alpha_Q is comparable to alpha): softmax(2 alpha Q)
+      # (pinned1) Same as pinned but without the x2 target scaling: softmax(alpha Q)
+      # (pinned4) Same as pinned but with x4 target scaling: softmax(4 alpha Q)
+      # ([float]) Fixed scale c (non-learnable), the literal multiplier on Q with no x2: softmax(c Q); c = 1.0 is the
+      # unscaled memberships, c = 2 alpha matches pinned
       # Inert if (loss.loss1.infonce.tsm.type: linear)
 
 loss2:  # Secondary target params; Inert iff (loss.blend.lambda: 0.0)
@@ -127,4 +128,4 @@ loss2:  # Secondary target params; Inert iff (loss.blend.lambda: 0.0)
   infonce:
     tsm:
       type: softmax  # {linear, softmax}
-      sm_scale: pinned  # {pinned, pinned1, pinned3, [float]}
+      sm_scale: pinned  # {pinned, pinned1, pinned4, [float]}

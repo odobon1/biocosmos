@@ -366,7 +366,7 @@ def test_batch_stats_row_wise_scale_bounds():
     Q, Y_lin = _targets(B, 4, seed=6)
     S = _sims(B, seed=7)
     logits = (alpha * S).float()
-    Y = torch.softmax(2.0 * Q * 3.0, dim=1)  # the softmax tsm at sm_scale 3: zero-free, every row finite
+    Y = torch.softmax(6.0 * Q, dim=1)  # the softmax tsm at sm_scale 6: zero-free, every row finite
     stats = L.infonce_batch_stats(S.float(), Q.float(), Y.float(), logits, _log_scale(alpha), False)
     Yf = Y.float().double()
     scale_req = 0.5 * torch.log(Yf.amax(1) / Yf.amin(1))  # == 3 * (max_j Q_ij - min_j Q_ij) per row
@@ -953,12 +953,12 @@ def _two_level_reference_resid(K, M, alpha, s):
 
 
 @pytest.mark.parametrize("alpha", [0.5, 3.0, 15.0, 25.0, 55.0, 200.0])
-@pytest.mark.parametrize("sm_scale", ["pinned3", 4.0])
+@pytest.mark.parametrize("sm_scale", ["pinned4", 8.0])
 def test_two_level_closed_form_matches_the_reference_on_the_intended_row(alpha, sm_scale):
     # binary memberships under a softmax tsm past the band: the two-level closed form (R_top = -M (r - t) / D,
     # R_bottom = K (r - t) / D) against the independent mpmath reference on the intended row, at scales from
     # where the residual is order one to where it is ~1e-174 and a subtraction would read only noise; a fixed
-    # sm_scale c maps to s = 2 c, so at c = 4 the row is feasible once alpha reaches 4 and there is no residual
+    # sm_scale c is s itself, so at c = 8 the row is feasible once alpha reaches 4 and there is no residual
     L = import_loss_module()
     B, K = 12, 3
     M = B - K
@@ -966,7 +966,7 @@ def test_two_level_closed_form_matches_the_reference_on_the_intended_row(alpha, 
     Q[:, :K] = 1.0  # every row: the same K positives
     tsm = {"type": "softmax", "sm_scale": sm_scale}
     s = L.tsm_target_scale(tsm, alpha)
-    Y = torch.softmax(s * Q, dim=1)  # what _tsm stores (its softmax(2 * Q * c) at a fixed c: the same product)
+    Y = torch.softmax(s * Q, dim=1)  # what _tsm stores (its softmax(Q * c) at a fixed c)
 
     R, applied, feasible, skipped = L.infonce_train_resid(Y, alpha, s, binary=True, inside=s <= 2 * alpha)
     R_ref, ref_feasible = _two_level_reference_resid(K, M, alpha, s)
@@ -998,20 +998,20 @@ def test_two_level_closed_form_is_the_hard_one_at_t_zero_and_agrees_with_the_act
         torch.testing.assert_close(R, L.infonce_hard_resid(Q, alpha), rtol=0.0, atol=0.0)
         assert applied.all()
 
-    Y_soft = torch.softmax(3 * alpha * Q, dim=1)  # pinned3 on the same memberships
-    R_spec, applied, _, _ = L.infonce_train_resid(Y_soft, alpha, 3 * alpha, True, inside=False)
+    Y_soft = torch.softmax(4 * alpha * Q, dim=1)  # pinned4 on the same memberships
+    R_spec, applied, _, _ = L.infonce_train_resid(Y_soft, alpha, 4 * alpha, True, inside=False)
     assert applied.all()
-    for s, binary in ((3 * alpha, False), (None, False)):
+    for s, binary in ((4 * alpha, False), (None, False)):
         R, applied, _, skipped = L.infonce_train_resid(Y_soft, alpha, s, binary, inside=False)
         assert applied.all() and not skipped.any()
         torch.testing.assert_close(R, R_spec, rtol=1e-12, atol=0.0)
 
 
 def _phylo_like_targs(B):
-    # a graded kernel in [0.4, 1] with a unit diagonal, every row's spread under two thirds (inside pinned3's band),
+    # a graded kernel in [0.5, 1] with a unit diagonal, every row's spread under a half (inside pinned4's band),
     # and, on rows 0 to B // 2 - 1, three root-split zeros apiece, which put those rows past any band
     g = torch.Generator().manual_seed(7)
-    Q = 0.4 + 0.6 * torch.rand(B, B, generator=g, dtype=torch.float64)
+    Q = 0.5 + 0.5 * torch.rand(B, B, generator=g, dtype=torch.float64)
     Q.fill_diagonal_(1.0)
     for i in range(B // 2):
         Q[i, [(i + 1) % B, (i + 5) % B, (i + 9) % B]] = 0.0
@@ -1105,7 +1105,7 @@ def test_residuals_past_the_supported_scale_read_skipped():
     S = _sims(B, seed=5)
     for alpha, expect_applied in ((330.0, True), (345.0, False), (400.0, False)):
         for Y, s, binary in ((Y_hard, math.inf, True),
-                             (torch.softmax(3 * alpha * Q, dim=1), 3 * alpha, True),
+                             (torch.softmax(4 * alpha * Q, dim=1), 4 * alpha, True),
                              (Q_graded / Q_graded.sum(dim=1, keepdim=True), math.inf, False)):
             R, applied, feasible, skipped = L.infonce_train_resid(Y, alpha, s, binary, inside=False)
             past = ~feasible
@@ -1119,17 +1119,17 @@ def test_residuals_past_the_supported_scale_read_skipped():
 
 
 @pytest.mark.parametrize("alpha", [0.5, 3.0, 15.0, 55.0])
-@pytest.mark.parametrize("mapping", ["linear", "pinned3"])
+@pytest.mark.parametrize("mapping", ["linear", "pinned4"])
 def test_active_set_residual_matches_the_reference_on_graded_rows(alpha, mapping):
     # phylo-like graded rows -- kernel values in [0, 1], a unit diagonal, root-split zeros on half the rows --
-    # through the linear tsm and pinned3: every row past the band resolves and agrees with the reference to 1e-9
+    # through the linear tsm and pinned4: every row past the band resolves and agrees with the reference to 1e-9
     # of its largest residual, down to residuals of ~1e-48 at alpha 55, where the subtraction reads only rounding
     import mpmath as mp
     from tests.unit import infonce_reference as ref
     L = import_loss_module()
     B = 12
     Q = _phylo_like_targs(B)
-    Y = Q / Q.sum(dim=1, keepdim=True) if mapping == "linear" else torch.softmax(3 * alpha * Q, dim=1)
+    Y = Q / Q.sum(dim=1, keepdim=True) if mapping == "linear" else torch.softmax(4 * alpha * Q, dim=1)
     R, resolved = L.infonce_active_set_resid(Y, alpha)
     n_past = 0
     for i in range(B):
@@ -1146,13 +1146,13 @@ def test_active_set_residual_matches_the_reference_on_graded_rows(alpha, mapping
 
 @pytest.mark.parametrize("block", ["alpha", "full"])
 @pytest.mark.parametrize("targ", ["mp", "phylo"])
-@pytest.mark.parametrize("sm_scale", ["pinned", "pinned1", "pinned3"])
+@pytest.mark.parametrize("sm_scale", ["pinned", "pinned1", "pinned4"])
 def test_block_residuals_on_the_pinned_family(block, targ, sm_scale):
     # end to end, the three pinned mappings alike, on memberships and on a graded phylo-like kernel: pinned
     # (s = 2 alpha, the boundary itself) and pinned1 (s = alpha) keep every row inside the band by construction, so
     # blocking is inert -- the correction reads exactly zero, loss and gradients are those of blocking off, and the
-    # coverage says feasible, not skipped; pinned3 (s = 3 alpha) puts memberships' rows past it (the two-level closed
-    # form) and the kernel's rows with a spread over two thirds (the active sets), and blocks the residual the
+    # coverage says feasible, not skipped; pinned4 (s = 4 alpha) puts memberships' rows past it (the two-level closed
+    # form) and the kernel's rows with a spread over a half (the active sets), and blocks the residual the
     # reference gives on the scale's gradient and, under full, on dL/dS, with the kernel's other rows feasible
     L = import_loss_module()
     B, K, alpha = 16, 4, 3.0
@@ -1176,7 +1176,7 @@ def test_block_residuals_on_the_pinned_family(block, targ, sm_scale):
     for i in (0, 1):  # loss, loss_raw
         torch.testing.assert_close(on[i], off[i], rtol=0.0, atol=0.0)
     stats = on[5].block_stats
-    if sm_scale != "pinned3":
+    if sm_scale != "pinned4":
         for i in (2, 3):
             torch.testing.assert_close(on[i], off[i], rtol=0.0, atol=0.0)
         assert stats["dlogscale_correction"] == 0.0 and stats["block_coverage"] == [[0.0, 1.0, 0.0]]
@@ -1197,7 +1197,7 @@ def test_block_residuals_on_the_pinned_family(block, targ, sm_scale):
 def test_block_bound_is_recorded_and_holds():
     # the recorded magnitude bounds: U = 2 (B - 1) r / (1 + (B - 1) r) on any infeasible row's |p* - y|_1, which
     # the one-hot row attains, and |coeff| alpha U on the correction -- both above what was applied, on hard
-    # rows and on pinned3's soft ones alike
+    # rows and on pinned4's soft ones alike
     L = import_loss_module()
     B, alpha, coeff = 16, 3.0, 2.5
     _, _, Y_hard = _hard_targs(B, 4, "sp")
@@ -1213,11 +1213,11 @@ def test_block_bound_is_recorded_and_holds():
     assert abs(correction.item()) <= bound[1].item()
 
     Q = (torch.arange(B)[:, None] % 4 == torch.arange(B)[None, :] % 4).double()
-    Y_soft = torch.softmax(3 * alpha * Q, dim=1)
-    spec = {"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned3"}}}
+    Y_soft = torch.softmax(4 * alpha * Q, dim=1)
+    spec = {"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned4"}}}
     _, correction, coverage, bound = L.infonce_block_resid(Y_soft, S, log_scale, clamp=False, full=False, coeff=coeff, spec=spec)
     assert coverage.tolist() == [1.0, 0.0, 0.0]
-    R, *_ = L.infonce_train_resid(Y_soft, alpha, 3 * alpha, binary=True, inside=False)
+    R, *_ = L.infonce_train_resid(Y_soft, alpha, 4 * alpha, binary=True, inside=False)
     assert R.abs().sum(dim=1).max().item() < U and abs(correction.item()) <= bound[1].item()
 
 
@@ -1345,8 +1345,9 @@ def test_block_residuals_mixed_batch_applies_resolved_rows_and_skips_the_rest(bl
 
 
 def test_block_residuals_resolve_the_high_scale_unitless_case_exactly():
-    # the case that broke the subtraction path: a nearly one-hot graded target (softmax tsm at sm_scale
-    # pinned3, alpha 55) fitted to a raw loss ~ 1e-12, so loss.unitless' coefficient sits at its 1e12 floor.
+    # the case that broke the subtraction path: a nearly one-hot graded target (softmax tsm at a fixed sm_scale
+    # 165 -- 3 alpha at alpha 55, the x3 pinned mapping the case was found under) fitted to a raw loss ~ 1e-12,
+    # so loss.unitless' coefficient sits at its 1e12 floor.
     # The solve's noise on a cap entry (~1e-14, against a true residual ~1e-48) times that coefficient made a
     # correction of order one where the true one is ~1e-34. Now rows 1 and 2 (three levels) come out of the
     # active sets and row 3 (two levels) of its closed form, all three to relative precision: the applied
@@ -1356,7 +1357,7 @@ def test_block_residuals_resolve_the_high_scale_unitless_case_exactly():
     Q = torch.tensor([[1.0, 0.81, 0.0], [0.81, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float64)
     alpha = 55.0
     S = torch.eye(3, dtype=torch.float64)  # orthonormal embeddings: the fitted geometry
-    spec = {"targ": "phylo", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned3"}}}
+    spec = {"targ": "phylo", "infonce": {"tsm": {"type": "softmax", "sm_scale": 165.0}}}  # 3 alpha at alpha 55
 
     def run(block):
         log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
@@ -1432,7 +1433,7 @@ def test_block_resid_runs_the_solver_only_where_the_spec_leaves_rows_to_it(monke
     log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
     for targ, Y, cfg_tsm, expected, n_calls in (
         ("mp", Y_hard, {"type": "linear", "sm_scale": "pinned"}, [1.0, 0.0, 0.0], 0),
-        ("mp", torch.softmax(3 * alpha * Q_mp, dim=1), {"type": "softmax", "sm_scale": "pinned3"}, [1.0, 0.0, 0.0], 0),
+        ("mp", torch.softmax(4 * alpha * Q_mp, dim=1), {"type": "softmax", "sm_scale": "pinned4"}, [1.0, 0.0, 0.0], 0),
         ("tax", torch.softmax(alpha * Q, dim=1), {"type": "softmax", "sm_scale": "pinned1"}, [0.0, 1.0, 0.0], 0),
         ("tax", Q / Q.sum(dim=1, keepdim=True), {"type": "linear", "sm_scale": "pinned"}, [1.0, 0.0, 0.0], 1),
     ):
@@ -1674,7 +1675,7 @@ def test_sim_grad_entropies_read_nan_where_the_residual_is_exactly_zero():
     L = import_loss_module()
     B, alpha = 8, 6.0
     Q, _ = _targets(B, 4, seed=6)
-    Y = torch.softmax(2 * Q, dim=1)  # the softmax tsm at sm_scale 1: a row's log range is at most 2 < 2 alpha
+    Y = torch.softmax(2 * Q, dim=1)  # the softmax tsm at sm_scale 2: a row's log range is at most 2 < 2 alpha
     S = _sims(B, seed=5)
     stats = L.infonce_batch_stats(S, Q, Y, alpha * S, _log_scale(alpha), False)
     assert stats["resid_paths"] == [0.0, 1.0, 0.0]

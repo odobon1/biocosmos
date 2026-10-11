@@ -223,10 +223,10 @@ CASES = [
     ("tax_linear", _cfg(), _spec("tax"), _spec("sp")),                                # graded rows holding zeros: the subtracted residual
     ("phylo_linear", _cfg(), _spec("phylo"), _spec("sp")),                            # graded, full-support rows past the band
     ("tax_softmax_pinned", _cfg(), _spec("tax", "softmax", "pinned"), _spec("sp")),   # inside the band: every row feasible
-    ("tax_softmax_c", _cfg(), _spec("tax", "softmax", 3.0), _spec("sp")),             # a fixed scale past the band
-    ("phylo_softmax_c", _cfg(), _spec("phylo", "softmax", 3.0), _spec("sp")),
+    ("tax_softmax_c", _cfg(), _spec("tax", "softmax", 6.0), _spec("sp")),             # a fixed scale past the band
+    ("phylo_softmax_c", _cfg(), _spec("phylo", "softmax", 6.0), _spec("sp")),
     ("targ_blend_mp_phylo", _cfg(lambda_=0.3), _spec("mp"), _spec("phylo", "softmax", "pinned")),  # loss.yaml's default pair
-    ("mp_softmax_pinned3", _cfg(), _spec("mp", "softmax", "pinned3"), _spec("sp")),   # soft two-level rows
+    ("mp_softmax_pinned4", _cfg(), _spec("mp", "softmax", "pinned4"), _spec("sp")),   # soft two-level rows
     ("targ_blend", _cfg(lambda_=0.3), _spec("mp"), _spec("tax")),
     ("targ_blend_softmax", _cfg(lambda_=0.3), _spec("mp"), _spec("tax", "softmax", "pinned")),  # one normalizer per spec
     ("loss2_alone", _cfg(lambda_=1.0), _spec("mp"), _spec("tax")),
@@ -248,10 +248,10 @@ CASES = [
     ("block_full_tax", _cfg(block="full"), _spec("tax"), _spec("sp")),
     ("block_full_targ_blend", _cfg(lambda_=0.3, block="full"), _spec("mp"), _spec("tax")),
     ("block_alpha_pinned_control", _cfg(block="alpha"), _spec("mp", "softmax", "pinned"), _spec("sp")),
-    ("block_full_softmax_c", _cfg(block="full"), _spec("mp", "softmax", 3.0), _spec("sp")),
-    ("block_full_tax_pinned3", _cfg(block="full"), _spec("tax", "softmax", "pinned3"), _spec("sp")),
+    ("block_full_softmax_c", _cfg(block="full"), _spec("mp", "softmax", 6.0), _spec("sp")),
+    ("block_full_tax_pinned4", _cfg(block="full"), _spec("tax", "softmax", "pinned4"), _spec("sp")),
     ("block_full_phylo", _cfg(block="full"), _spec("phylo"), _spec("sp")),
-    ("block_full_phylo_pinned3", _cfg(block="full"), _spec("phylo", "softmax", "pinned3"), _spec("sp")),
+    ("block_full_phylo_pinned4", _cfg(block="full"), _spec("phylo", "softmax", "pinned4"), _spec("sp")),
     ("block_full_loss_blend_unitless", _cfg(lambda_=0.3, blend_type="loss", block="full", unitless=True), _spec("mp"), _spec("tax")),
     ("block_full_sep_scalars", _cfg(lambda_=0.3, blend_type="loss", block="full", shared=False), _spec("mp"), _spec("tax")),
 ]
@@ -267,7 +267,7 @@ def test_chunked_matches_full(name, cfg, spec1, spec2, C):
     # would pass the equivalence above without exercising the tiles' contraction
     if name in ("block_alpha_mp", "block_full_mp", "block_full_softmax_c"):
         assert block["block_coverage"][0][0] == 1.0  # every row a closed form
-    if name in ("block_full_tax", "block_full_targ_blend", "block_full_tax_pinned3", "block_full_phylo", "block_full_phylo_pinned3"):
+    if name in ("block_full_tax", "block_full_targ_blend", "block_full_tax_pinned4", "block_full_phylo", "block_full_phylo_pinned4"):
         assert block["block_coverage"][0][0] > 0.0  # some rows through the active sets
     if name == "block_alpha_pinned_control":
         assert block["block_coverage"][0] == [0.0, 1.0, 0.0] and block["dlogscale_correction"] == 0.0
@@ -294,7 +294,7 @@ def test_chunked_matches_full_where_the_correction_is_skipped(targ, block):
 
 
 @pytest.mark.parametrize("name", ["focal_cls_imb_norm", "loss_blend_focal", "sep_scalars_unitless_focal", "geo_focal",
-                                  "targ_blend_mp_phylo", "block_alpha_mp", "block_full_tax", "block_full_phylo_pinned3",
+                                  "targ_blend_mp_phylo", "block_alpha_mp", "block_full_tax", "block_full_phylo_pinned4",
                                   "block_full_loss_blend_unitless", "block_full_sep_scalars"])
 def test_chunked_is_exact_in_float64(name, monkeypatch):
     """In float32 the two paths agree to ~1e-6 of the gradient's magnitude, their summation orders apart -- a
@@ -332,7 +332,7 @@ def test_chunked_is_exact_in_float64(name, monkeypatch):
 
 @pytest.mark.parametrize("name", ["focal_cls_imb_norm", "loss_blend_focal", "sep_scalars_unitless_focal", "geo_focal",
                                   "block_full_mp", "block_full_tax", "block_full_targ_blend", "block_full_softmax_c",
-                                  "block_full_tax_pinned3", "block_full_phylo", "block_full_phylo_pinned3",
+                                  "block_full_tax_pinned4", "block_full_phylo", "block_full_phylo_pinned4",
                                   "block_full_loss_blend_unitless", "block_full_sep_scalars"])
 def test_fold_pass_rebuilds_the_full_batch_sim_gradient(name, monkeypatch):
     """The measured entropies are taken off dL/dS rebuilt cell by cell in the fold pass: each image anchor's row
@@ -429,11 +429,11 @@ def test_batch_diagnostics_off():
 
 @pytest.mark.parametrize("cfg,spec", [
     (_cfg(block="full"), _spec("mp")),                           # hard two-level rows
-    (_cfg(block="full"), _spec("mp", "softmax", 3.0)),           # soft two-level rows
+    (_cfg(block="full"), _spec("mp", "softmax", 6.0)),           # soft two-level rows
     (_cfg(block="full"), _spec("tax")),                          # active-set rows, many entries tied per level
-    (_cfg(block="full"), _spec("tax", "softmax", "pinned3")),
+    (_cfg(block="full"), _spec("tax", "softmax", "pinned4")),
     (_cfg(block="full"), _spec("phylo")),                        # ... and full-support ones
-    (_cfg(block="full"), _spec("phylo", "softmax", "pinned3")),
+    (_cfg(block="full"), _spec("phylo", "softmax", "pinned4")),
 ])
 def test_resid_row_params_reproduce_the_row_functions(cfg, spec):
     """The fold pass rebuilds a residual from its anchor's row parameters; on the rows themselves that must be

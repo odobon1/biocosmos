@@ -12,7 +12,7 @@ def _loss_cfg(lambda_=0.0, **overrides):
     """The dummy's minimal `loss` block (train.yaml's loss schema, the sections __post_init__ reads)."""
     cfg = {
         "crit": "bce", "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
-        "infonce": {"block_residuals": None},
+        "xnce": {"block_res": None},
         "wting": {"cls_imb": {"type": None}, "focal": {"gamma": 0.0}},
         "logits": {"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": None, "bias": {"init": None}}},
     }
@@ -58,7 +58,7 @@ def make_train_config_dummy(**overrides):
         "hw": {
             "mixed_prec": True,
             "act_chkpt": False,
-            "loss_chunk_size": {"bce": None, "infonce": None},
+            "loss_chunk_size": {"bce": None, "xnce": None},
             "cudnn_benchmark": False,
             "prefetch_factor": 4,
             "max_n_workers_gpu": None,
@@ -329,7 +329,7 @@ def test_train_config_reads_hw_from_cfg_dict(monkeypatch: pytest.MonkeyPatch) ->
     cfg = TrainConfig(**make_train_config_dummy(hw={
         "mixed_prec": False,
         "act_chkpt": True,
-        "loss_chunk_size": {"bce": None, "infonce": None},
+        "loss_chunk_size": {"bce": None, "xnce": None},
         "cudnn_benchmark": True,
         "prefetch_factor": 8,
         "max_n_workers_gpu": 3,
@@ -415,10 +415,10 @@ def test_apply_overrides_rejects_undeclared_leaf() -> None:
 
 
 def test_apply_overrides_rejects_undeclared_section() -> None:
-    base = {"loss1": {"targ": "mp", "crit": "infonce"}}
+    base = {"loss1": {"targ": "mp", "crit": "xnce"}}
 
-    with pytest.raises(ValueError, match=r"loss1\.infonce"):
-        apply_overrides(base, {"loss1.infonce.targ_mass_preservation": True})
+    with pytest.raises(ValueError, match=r"loss1\.xnce"):
+        apply_overrides(base, {"loss1.xnce.targ_mass_preservation": True})
 
 
 def test_apply_overrides_rejects_path_through_scalar() -> None:
@@ -557,12 +557,12 @@ def test_model_specific_defaults_use_passed_snapshot(monkeypatch: pytest.MonkeyP
 
 def test_model_specific_defaults_fill_any_dot_path(monkeypatch: pytest.MonkeyPatch) -> None:
     # the defaults file keys are dot-paths into the config, so a family can default anything declared
-    # there -- loss.crit among them (clip -> infonce, siglip -> bce)
+    # there -- loss.crit among them (clip -> xnce, siglip -> bce)
     monkeypatch.setattr(
         "utils.config.load_model_specific_config_dict",
-        lambda: {"siglip": {"loss.crit": "bce"}, "clip": {"loss.crit": "infonce"}},
+        lambda: {"siglip": {"loss.crit": "bce"}, "clip": {"loss.crit": "xnce"}},
     )
-    for model_type, crit in (("clip_vitb16", "infonce"), ("siglip_vitb16", "bce")):
+    for model_type, crit in (("clip_vitb16", "xnce"), ("siglip_vitb16", "bce")):
         cfg_in = make_train_config_dummy(arch={"model_type": model_type, "clip": {"non_causal": False}})
         cfg_in["loss"]["crit"] = None
         assert apply_model_specific_defaults(cfg_in)["loss"]["crit"] == crit
@@ -740,19 +740,19 @@ def test_train_config_accepts_batch_size_divisible_by_loss_chunk(monkeypatch: py
 
 
 def test_train_config_loss_chunk_size_is_the_criterions_own(monkeypatch: pytest.MonkeyPatch) -> None:
-    # hardware.loss_chunk_size.{bce, infonce}: a trial reads its own criterion's entry -- bce covers the BCE family
+    # hardware.loss_chunk_size.{bce, xnce}: a trial reads its own criterion's entry -- bce covers the BCE family
     # (bce / bif_bce) -- and the other never reaches it
     patch_hw(monkeypatch)
 
-    for crit, chunk in (("bce", 8), ("bif_bce", 8), ("infonce", 4)):
+    for crit, chunk in (("bce", 8), ("bif_bce", 8), ("xnce", 4)):
         cfg_dict = make_train_config_dummy()  # batch_size 8
         cfg_dict["loss"]["crit"] = crit
         cfg_dict["loss"]["loss1"]["targ"] = "mp"
-        cfg_dict["hw"]["loss_chunk_size"] = {"bce": 8, "infonce": 4}
+        cfg_dict["hw"]["loss_chunk_size"] = {"bce": 8, "xnce": 4}
         assert TrainConfig(**cfg_dict).loss_chunk_size == chunk
 
     # ... its validations included: an entry the batch size could not band-shard over is no error under the other family
-    for crit, chunks in (("bce", {"bce": None, "infonce": 16}), ("infonce", {"bce": 16, "infonce": None})):
+    for crit, chunks in (("bce", {"bce": None, "xnce": 16}), ("xnce", {"bce": 16, "xnce": None})):
         cfg_dict = make_train_config_dummy()  # batch_size 8: 8 % 16 != 0
         cfg_dict["loss"]["crit"] = crit
         cfg_dict["loss"]["loss1"]["targ"] = "mp"
@@ -764,18 +764,18 @@ def test_train_config_rejects_batch_size_indivisible_by_infonce_loss_chunk(monke
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(batch_size=24)
-    cfg_dict["loss"]["crit"] = "infonce"
+    cfg_dict["loss"]["crit"] = "xnce"
     cfg_dict["loss"]["loss1"]["targ"] = "mp"
-    cfg_dict["hw"]["loss_chunk_size"]["infonce"] = 16  # 24 % (1 * 16) != 0
+    cfg_dict["hw"]["loss_chunk_size"]["xnce"] = 16  # 24 % (1 * 16) != 0
 
-    with pytest.raises(ValueError, match=r"world_size \(1\) x hardware\.loss_chunk_size\.infonce \(16\)"):
+    with pytest.raises(ValueError, match=r"world_size \(1\) x hardware\.loss_chunk_size\.xnce \(16\)"):
         TrainConfig(**cfg_dict)
 
 
 def test_train_config_rejects_loss_chunk_size_not_a_power_of_2(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    for crit_family in ("bce", "infonce"):
+    for crit_family in ("bce", "xnce"):
         cfg_dict = make_train_config_dummy()
         cfg_dict["hw"]["loss_chunk_size"][crit_family] = 6
         with pytest.raises(ValueError, match=rf"hardware\.loss_chunk_size\.{crit_family} must be null or a positive power of 2"):
@@ -808,7 +808,7 @@ def test_train_config_rejects_pos_prevalence_bias_init_with_infonce(monkeypatch:
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy()
-    cfg_dict["loss"]["crit"] = "infonce"
+    cfg_dict["loss"]["crit"] = "xnce"
     cfg_dict["loss"]["logits"]["bce"]["bias"]["init"] = "pos_prevalence"
     with pytest.raises(ValueError, match="loss.logits.bce.bias.init: pos_prevalence requires a BCE-family crit"):
         TrainConfig(**cfg_dict)
@@ -823,23 +823,23 @@ def test_train_config_rejects_unknown_bias_init(monkeypatch: pytest.MonkeyPatch)
         TrainConfig(**cfg_dict)
 
 
-def _block_resid_cfg(lambda_=0.0, blend_type="targ", block="alpha", **loss_overrides):
-    # an InfoNCE loss with loss.infonce.block_residuals on (utils.loss.infonce_block_resid)
-    loss = _loss_cfg(crit="infonce", lambda_=lambda_, **loss_overrides)
-    loss["infonce"]["block_residuals"] = block
+def _block_resid_cfg(lambda_=0.0, blend_type="targ", block="alpha_res", **loss_overrides):
+    # an InfoNCE loss with loss.xnce.block_res on (utils.loss.infonce_block_resid)
+    loss = _loss_cfg(crit="xnce", lambda_=lambda_, **loss_overrides)
+    loss["xnce"]["block_res"] = block
     loss["blend"]["type"] = blend_type
     return loss
 
 
 def _linear_targ(targ):
-    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 def _softmax_targ(targ, sm_scale):
-    return {"targ": targ, "infonce": {"tsm": {"type": "softmax", "sm_scale": sm_scale}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": "softmax", "sm_scale": sm_scale}}}
 
 
-def test_train_config_block_residuals_takes_any_infonce_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_block_res_takes_any_infonce_target(monkeypatch: pytest.MonkeyPatch) -> None:
     # the residual utils.loss.infonce_block_resid removes is each term's own target's (utils.loss.infonce_train_resid):
     # a hard binary one's in closed form; a graded one -- the linear tsm on tax / phylo, a softmax tsm, the target
     # blend of two live specs -- is accepted, its rows outside the band skipped at run time and its rows inside it
@@ -847,8 +847,8 @@ def test_train_config_block_residuals_takes_any_infonce_target(monkeypatch: pyte
     patch_hw(monkeypatch)
     targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
 
-    for block in ("alpha", "full"):
-        assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs)).loss["infonce"]["block_residuals"] == block
+    for block in ("alpha_res", "alpha_ires", "alpha_ures", "full_res", "full_ures"):
+        assert TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs)).loss["xnce"]["block_res"] == block
     for blend_type in ("loss", "targ"):  # two live targets: one term per spec, or the one term on their blend
         TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type=blend_type), **targs))
     TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(), loss1=_linear_targ("phylo"), loss2=_linear_targ("mp")))
@@ -862,8 +862,8 @@ def test_train_config_block_residuals_takes_any_infonce_target(monkeypatch: pyte
     ))
 
 
-def test_inert_params_block_residuals_makes_blend_type_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    # block_residuals blocks each term's OWN target's residual (utils.loss.infonce_block_resid), and p* is
+def test_inert_params_block_res_makes_blend_type_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    # block_res blocks each term's OWN target's residual (utils.loss.infonce_block_resid), and p* is
     # not linear in the target -- a target-dependent loss factor, so it sets the two
     # blend types apart. Left out of targ_dependent_loss, the sp + mp loss blend the feature supports is
     # unreachable from a campaign: loss.yaml's blend.type is targ, so getting to it needs an override, and
@@ -871,21 +871,21 @@ def test_inert_params_block_residuals_makes_blend_type_live(monkeypatch: pytest.
     patch_hw(monkeypatch)
     targs = {"loss1": _linear_targ("sp"), "loss2": _linear_targ("mp")}
 
-    off = TrainConfig(**make_train_config_dummy(loss=_loss_cfg(crit="infonce", lambda_=0.3), **targs))
+    off = TrainConfig(**make_train_config_dummy(loss=_loss_cfg(crit="xnce", lambda_=0.3), **targs))
     assert inert_params(off)["loss.blend.type"].startswith("no target-dependent loss factor is live")
 
     on = TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(lambda_=0.3, blend_type="loss"), **targs))
     assert "loss.blend.type" not in inert_params(on)
-    _check_overrides_live(on, {"loss.blend.type": "loss", "loss.infonce.block_residuals": "alpha"})
+    _check_overrides_live(on, {"loss.blend.type": "loss", "loss.xnce.block_res": "alpha_res"})
 
 
-def test_train_config_block_residuals_requires_an_unweighted_infonce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_config_block_res_requires_an_unweighted_infonce_loss(monkeypatch: pytest.MonkeyPatch) -> None:
     # the decomposition is the plain cross-entropy's: class-imbalance and focal weights scale the scale
     # gradient the residual was derived against, and the BCE family has no such decomposition at all
     patch_hw(monkeypatch)
     targs = {"loss1": _linear_targ("mp"), "loss2": _linear_targ("sp")}
 
-    with pytest.raises(ValueError, match="requires loss.crit: infonce"):
+    with pytest.raises(ValueError, match="requires loss.crit: xnce"):
         loss = _block_resid_cfg()
         loss["crit"] = "bce"
         TrainConfig(**make_train_config_dummy(loss=loss, **targs))
@@ -897,8 +897,9 @@ def test_train_config_block_residuals_requires_an_unweighted_infonce_loss(monkey
         loss = _block_resid_cfg()
         loss["wting"]["focal"]["gamma"] = 2.0
         TrainConfig(**make_train_config_dummy(loss=loss, **targs))
-    for block in (True, "true", "both"):
-        with pytest.raises(ValueError, match="loss.infonce.block_residuals must be one of"):
+    # full_ires is not a value: under ires the similarities carry no residual gradient, so it would be alpha_ires
+    for block in (True, "true", "alpha", "res", "alpha_sres", "full_ires"):
+        with pytest.raises(ValueError, match="loss.xnce.block_res must be one of"):
             TrainConfig(**make_train_config_dummy(loss=_block_resid_cfg(block=block), **targs))
 
 
@@ -910,16 +911,16 @@ def test_train_config_rejects_identical_target_distributions_under_a_live_blend(
         TrainConfig(**make_train_config_dummy(loss=_loss_cfg(lambda_=0.3), loss1={"targ": "mp"}, loss2={"targ": "mp"}))
     # under InfoNCE the same targ type still blends two distributions when the specs' tsm differ
     cfg = TrainConfig(**make_train_config_dummy(
-        loss=_loss_cfg(crit="infonce", lambda_=0.3),
-        loss1={"targ": "mp", "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
-        loss2={"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}},
+        loss=_loss_cfg(crit="xnce", lambda_=0.3),
+        loss1={"targ": "mp", "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
+        loss2={"targ": "mp", "xnce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}},
     ))
     assert cfg.loss["blend"]["lambda"] == 0.3
     with pytest.raises(ValueError, match="same target distribution"):
         TrainConfig(**make_train_config_dummy(
-            loss=_loss_cfg(crit="infonce", lambda_=0.3),
-            loss1={"targ": "mp", "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
-            loss2={"targ": "mp", "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
+            loss=_loss_cfg(crit="xnce", lambda_=0.3),
+            loss1={"targ": "mp", "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
+            loss2={"targ": "mp", "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}},
         ))
     # the endpoints have one live target: nothing to blend, no error
     assert TrainConfig(**make_train_config_dummy(loss=_loss_cfg(lambda_=1.0), loss1={"targ": "mp"}, loss2={"targ": "mp"})).loss["blend"]["lambda"] == 1.0
@@ -973,9 +974,9 @@ def test_train_config_accepts_sim_center_with_geo_under_infonce_chunking(monkeyp
     patch_hw(monkeypatch)
 
     cfg_dict = make_train_config_dummy(loss=_loss_cfg(  # batch_size 8
-        crit="infonce", sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
+        crit="xnce", sim="geo", logits={"shared": True, "scalar_lr_factor": 1.0, "scale": {"init": None}, "bce": {"center": "sim", "bias": {"init": None}}}))
     cfg_dict["loss"]["loss1"]["targ"] = "mp"
-    cfg_dict["hw"]["loss_chunk_size"]["infonce"] = 8
+    cfg_dict["hw"]["loss_chunk_size"]["xnce"] = 8
 
     assert TrainConfig(**cfg_dict).loss_chunk_size == 8
 
@@ -984,7 +985,7 @@ def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):
     # the train.yaml loss schema in full: the dummy's minimal block lacks the sections the inert rules read
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": unitless,
-        "infonce": {"block_residuals": None},
+        "xnce": {"block_res": None},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {"type": cls_imb_type, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -997,7 +998,7 @@ def _full_loss_cfg(crit="bce", cls_imb_type=None, lambda_=0.0, unitless=False):
 
 
 def _full_targ_cfg(targ="mp", tsm_type="softmax"):
-    return {"targ": targ, "infonce": {"tsm": {"type": tsm_type, "sm_scale": "pinned"}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": tsm_type, "sm_scale": "pinned"}}}
 
 
 def test_get_config_train_rejects_inert_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1023,28 +1024,28 @@ def test_get_config_train_accepts_override_a_live_phylo_target_reads(monkeypatch
 
 
 def test_get_config_train_inert_override_names_outermost_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss.loss2.infonce.tsm.type is inert both through loss.crit (bce) and through loss.blend.lambda 0.0 (all of loss2):
+    # loss.loss2.xnce.tsm.type is inert both through loss.crit (bce) and through loss.blend.lambda 0.0 (all of loss2):
     # the enclosing cause is the one reported; every inert key is listed
     patch_hw(monkeypatch)
     cfg_dict = make_train_config_dummy(loss=_full_loss_cfg(), loss1=_full_targ_cfg(), loss2=_full_targ_cfg())
-    cfg_dict["_overrides"] = {"loss.loss2.infonce.tsm.type": "linear", "loss.loss2.targ": "phylo"}
+    cfg_dict["_overrides"] = {"loss.loss2.xnce.tsm.type": "linear", "loss.loss2.targ": "phylo"}
 
     with pytest.raises(ValueError) as excinfo:
         get_config_train(cfg_dict)
     msg = str(excinfo.value)
-    assert "loss.loss2.infonce.tsm.type (loss.blend.lambda is 0.0)" in msg
+    assert "loss.loss2.xnce.tsm.type (loss.blend.lambda is 0.0)" in msg
     assert "loss.loss2.targ (loss.blend.lambda is 0.0)" in msg
 
 
 def test_train_config_lets_either_family_train_under_either_criterion(monkeypatch: pytest.MonkeyPatch) -> None:
-    # loss.crit's family default (clip -> infonce, siglip -> bce) is a default, not a constraint: a pretrained
+    # loss.crit's family default (clip -> xnce, siglip -> bce) is a default, not a constraint: a pretrained
     # model can be held fixed across a softmax-vs-sigmoid comparison. What makes that safe is that the logit
     # bias follows the CRITERION (models.py) -- InfoNCE never carries one, a BCE-family loss always does -- so
     # neither crossing puts a pretrained bias under a row softmax or a bias-free head under a sigmoid
     patch_hw(monkeypatch)
     for model_type in ("clip_vitb16", "bioclip", "siglip_vitb16"):
         arch = {"model_type": model_type, "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}}
-        for crit in ("infonce", "bce", "bif_bce"):
+        for crit in ("xnce", "bce", "bif_bce"):
             assert TrainConfig(**make_train_config_dummy(arch=arch, loss=_loss_cfg(crit=crit))).loss["crit"] == crit
 
 
@@ -1055,7 +1056,7 @@ def test_inert_params_clip_lone_bce_loss(monkeypatch: pytest.MonkeyPatch) -> Non
     inert = inert_params(cfg)
     assert {
         "model.arch.siglip", "model.dropout.siglip", "htarg", "loss.loss2",
-        "loss.loss1.infonce", "loss.bce", "loss.wting.cls_imb.inv_freq", "loss.wting.cls_imb.class_bal",
+        "loss.loss1.xnce", "loss.bce", "loss.wting.cls_imb.inv_freq", "loss.wting.cls_imb.class_bal",
         "loss.wting.cls_imb.norm", "loss.logits.bce.bias.freeze",  # CLIP's fixed 0.0 bias buffer
     } <= inert.keys()
     assert inert["loss.bce"] == "loss.crit is bce"
@@ -1073,7 +1074,7 @@ def test_inert_params_siglip_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> N
     cfg = TrainConfig(**make_train_config_dummy(
         arch={"model_type": "siglip_vitb16", "clip": {"non_causal": False}, "siglip": {"vis_proj_head": None}},
         htarg={"kernel": "bm", "exp": {"beta": 1.0}, "shuffle": False},
-        loss=_full_loss_cfg(crit="infonce", cls_imb_type="inv_freq", lambda_=0.3),
+        loss=_full_loss_cfg(crit="xnce", cls_imb_type="inv_freq", lambda_=0.3),
         loss1=_full_targ_cfg("phylo", tsm_type="softmax"),
         loss2=_full_targ_cfg("mp", tsm_type="linear"),
     ))
@@ -1081,14 +1082,14 @@ def test_inert_params_siglip_infonce_blend(monkeypatch: pytest.MonkeyPatch) -> N
     inert = inert_params(cfg)
     assert {
         "model.arch.clip", "model.dropout.siglip.proj_head", "htarg.exp",
-        "loss.bce", "loss.wting.bce", "loss.logits.bce", "loss.wting.cls_imb.class_bal", "loss.loss2.infonce.tsm.sm_scale",
+        "loss.bce", "loss.wting.bce", "loss.logits.bce", "loss.wting.cls_imb.class_bal", "loss.loss2.xnce.tsm.sm_scale",
     } <= inert.keys()
-    assert inert["loss.loss2.infonce.tsm.sm_scale"] == "loss.loss2.infonce.tsm.type is linear"
-    assert not {"loss1", "loss2", "loss.loss1.infonce", "loss.loss2.infonce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
+    assert inert["loss.loss2.xnce.tsm.sm_scale"] == "loss.loss2.xnce.tsm.type is linear"
+    assert not {"loss1", "loss2", "loss.loss1.xnce", "loss.loss2.xnce", "loss.wting.cls_imb.norm", "htarg"} & inert.keys()
     _check_overrides_live(cfg, {
         "model.dropout.siglip.stoch_depth": 0.1, "htarg.kernel": "bm", "htarg.shuffle": False, "loss.blend.lambda": 0.5,
-        "loss.loss1.infonce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
-        "loss.loss2.targ": "mp", "loss.loss2.infonce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
+        "loss.loss1.xnce.tsm.sm_scale": "pinned1", "loss.wting.cls_imb.inv_freq.gamma": 1.0, "loss.wting.cls_imb.norm": True,
+        "loss.loss2.targ": "mp", "loss.loss2.xnce.tsm.type": "softmax", "loss.wting.cls_imb.type": None,
     })
 
 
@@ -1110,11 +1111,11 @@ def test_inert_params_targ_mass_neut_live_when_any_live_target_has_mass(monkeypa
 
 def test_inert_params_linear_tsm_makes_sm_scale_inert(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
-    cfg = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(crit="infonce"), loss1=_full_targ_cfg(tsm_type="linear"), loss2=_full_targ_cfg()))
+    cfg = TrainConfig(**make_train_config_dummy(loss=_full_loss_cfg(crit="xnce"), loss1=_full_targ_cfg(tsm_type="linear"), loss2=_full_targ_cfg()))
 
     inert = inert_params(cfg)
-    assert inert["loss.loss1.infonce.tsm.sm_scale"] == "loss.loss1.infonce.tsm.type is linear"
-    assert "loss.loss1.infonce" not in inert
+    assert inert["loss.loss1.xnce.tsm.sm_scale"] == "loss.loss1.xnce.tsm.type is linear"
+    assert "loss.loss1.xnce" not in inert
 
 
 def test_inert_params_blend_type_needs_two_targets_and_a_target_dependent_factor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1135,7 +1136,7 @@ def test_inert_params_blend_type_needs_two_targets_and_a_target_dependent_factor
     for loss in (unit, focal, dsmr):
         assert "loss.blend.type" not in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
     # DSMR is BCE-only and targ_mass_neut bif_bce-only: neither counts where the criterion never reads it
-    loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
+    loss = _full_loss_cfg(crit="xnce", lambda_=0.3)
     loss["wting"]["bce"]["dsmr"] = loss["bce"]["targ_mass_neut"] = True
     assert "loss.blend.type" in inert_params(TrainConfig(**make_train_config_dummy(loss=loss, **targs)))
     loss = _full_loss_cfg(crit="bif_bce", lambda_=0.3)

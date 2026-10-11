@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 import math
 import os
+import platform
 import time
 import random
 import numpy as np
@@ -184,14 +185,14 @@ class TrialData:
             # blend off the nominal loss.blend.lambda; a scalar, its own figure (unitless_loss_blend.png). Recorded only under
             # loss.unitless over a live loss blend (loss.blend.type loss), so the series stays empty otherwise.
             "lambda_eff": [],
-            # dlogscale_correction: per batch, the delta loss.infonce.block_residuals made to model.logit_scale's
+            # dlogscale_correction: per batch, the delta loss.xnce.block_res made to model.logit_scale's
             # gradient, signed so that grad_after = grad_before + dlogscale_correction -- i.e. MINUS the blocked
             # residual, sum_k c_k * d(alpha)/d(log alpha_raw) * (the term's residual scale gradient over the rows
             # the correction was APPLIED to; a skipped row adds zero) (utils.loss.infonce_block_resid). The
             # correction the parameter actually received: zero while logits.scale.clamp holds or the scale is
             # frozen. The exact reading of the intervention: the dlogscale_* family is built from the blended
             # target distribution, which on a loss blend is not what the correction is applied per term against
-            # (see utils.loss.infonce_batch_stats). A scalar; recorded only under loss.infonce.block_residuals
+            # (see utils.loss.infonce_batch_stats). A scalar; recorded only under loss.xnce.block_res
             # (utils.loss.InfoNCECriterion.block_stats, whether or not sim_targ_stats is on), so the series stays
             # empty otherwise. dlogscale_correction2 is the same for logit_scale2 under separate logit scalars
             # (loss.logits.shared: false), the second term's correction; empty otherwise.
@@ -484,7 +485,7 @@ class ArtifactManager:
             is_bce_family = crit in ("bce", "bif_bce")  # sigmoid-BCE losses; wting.bce applies
 
             # blend.type: a lone target has nothing to blend, and on shared logit scalars without a loss
-            # factor that reads the target (unitless, focal, DSMR, targ_mass_neut, block_residuals) the loss
+            # factor that reads the target (unitless, focal, DSMR, targ_mass_neut, block_res) the loss
             # is affine in it -- a loss blend is then the target blend's loss, value and gradients. Taken
             # from the one predicate inert_params reads, so a param this prunes is exactly one a campaign
             # may not override. logits.shared: only a live loss blend has two terms to give separate scalars
@@ -497,18 +498,18 @@ class ArtifactManager:
             # the logit bias goes with the criterion (models.py): InfoNCE carries none, whichever the family,
             # so the whole bias block is never read; and under a BCE-family loss a CLIP model's is a fixed 0.0
             # buffer under bias.init: null (logits = sim * scale.exp() + 0), a no-op block just the same
-            if crit == "infonce" or (not is_siglip and loss["logits"]["bce"]["bias"]["init"] is None):
+            if crit == "xnce" or (not is_siglip and loss["logits"]["bce"]["bias"]["init"] is None):
                 del loss["logits"]["bce"]["bias"]
 
-            # per-target infonce sub-block: the BCE losses never read it, and under sp the linear tsm
+            # per-target xnce sub-block: the BCE losses never read it, and under sp the linear tsm
             # mapping is an identical no-op (row sums already 1)
             for key in ("loss1", "loss2"):
                 if key in loss and (is_bce_family or loss[key]["targ"] == "sp"):
-                    del loss[key]["infonce"]
+                    del loss[key]["xnce"]
 
-            # infonce sub-block (block_residuals): the BCE losses never read it
+            # xnce sub-block (block_res): the BCE losses never read it
             if is_bce_family:
-                del loss["infonce"]
+                del loss["xnce"]
 
             # bce sub-block (targ_mass_neut): read only by the bifurcated variant
             if crit != "bif_bce":
@@ -728,7 +729,7 @@ class ArtifactManager:
                 entry[name] = dict(np.load(fpath_npz))
         fpath = ArtifactManager.base_eval_cache_fpath(cfg_train)
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath_tmp = fpath.with_name(f"{fpath.name}.{os.uname().nodename}.{os.getpid()}.tmp")  # node+pid: campaigns on different nodes can share a pid
+        fpath_tmp = fpath.with_name(f"{fpath.name}.{platform.node()}.{os.getpid()}.tmp")  # node+pid: campaigns on different nodes can share a pid
         save_pickle(entry, fpath_tmp)
         fpath_tmp.replace(fpath)
         return entry

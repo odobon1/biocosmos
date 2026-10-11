@@ -15,7 +15,7 @@ holds the parameter above its cap. The KL decomposition: per anchor, D_KL(y || p
 D_KL(p* || p) + <y - p*, log(p* / p)> = E_ir + E_u + E_ur, batch-meaned. Both averaged over the I2T /
 T2I anchor directions.
 
-loss.infonce.block_residuals acts on that decomposition: utils.loss.infonce_block_resid contributes a
+loss.xnce.block_res acts on that decomposition: utils.loss.infonce_block_resid contributes a
 zero-valued loss term whose scale gradient is minus the residual, so on a hard binary target the
 criterion's logit scale follows the structural part alone -- exactly so on a lone target, while on a
 loss blend of two the strips are built from the BLENDED distribution and the correction from each
@@ -749,17 +749,17 @@ def test_feasibility_branch_is_continuous_at_the_boundary():
         assert 0.0 < resid < 1.0 - frac  # nonzero, and small in proportion to how far outside it sits
 
 
-def _hard_targ_crit(L, targ, B, K, block_residuals, specs=None, lambda_=0.0, blend_type="targ", unitless=False):
+def _hard_targ_crit(L, targ, B, K, block, specs=None, lambda_=0.0, blend_type="targ", unitless=False, type_res="res"):
     """An InfoNCE criterion over hard binary targets under the linear tsm (or over `specs`), unweighted
-    -- as loss.infonce.block_residuals requires."""
+    -- as loss.xnce.block_res requires."""
     crit = L.InfoNCECriterion.__new__(L.InfoNCECriterion)  # bypass build_wting (no dataset needed)
     crit.cfg = {
-        "crit": "infonce", "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
-        "infonce": {"block_residuals": block_residuals},
+        "crit": "xnce", "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
+        "xnce": {"block_res": None if block is None else f"{block}_{type_res}"},
         "wting": {"cls_imb": {"type": None, "norm": False}},
         "logits": {"shared": True, "scale": {"clamp": False}},
     }
-    linear = lambda t: {"targ": t, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    linear = lambda t: {"targ": t, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
     crit.targ_specs = specs or [(1.0, linear(targ))]
     crit.device = torch.device("cpu")
     crit.batch_size = B
@@ -768,18 +768,18 @@ def _hard_targ_crit(L, targ, B, K, block_residuals, specs=None, lambda_=0.0, ble
     return crit
 
 
-def _run_crit(L, targ, class_encs, S, log_alpha, block):
-    """(loss, raw loss, d/d(log alpha), dL/dS) of the criterion on the batch's sims."""
+def _run_crit(L, targ, class_encs, S, log_alpha, block, type_res="res"):
+    """(loss, raw loss, d/d(log alpha), dL/dS, the criterion) of the criterion on the batch's sims."""
     log_scale = torch.tensor(log_alpha, dtype=torch.float64, requires_grad=True)
     S = S.clone().requires_grad_(True)
-    crit = _hard_targ_crit(L, targ, S.size(0), int(class_encs.max()) + 1, block)
+    crit = _hard_targ_crit(L, targ, S.size(0), int(class_encs.max()) + 1, block, type_res=type_res)
     loss, loss_raw, _, _ = crit(S * log_scale.exp(), class_encs, None, True, log_scale, S)
     loss.backward()
-    return loss.detach(), loss_raw.detach(), log_scale.grad, S.grad
+    return loss.detach(), loss_raw.detach(), log_scale.grad, S.grad, crit
 
 
 @pytest.mark.parametrize("targ", ["mp", "sp"])
-def test_block_residuals_leaves_the_criterion_only_its_structural_scale_gradient(targ):
+def test_block_res_leaves_the_criterion_only_its_structural_scale_gradient(targ):
     # end to end: the criterion's loss reading and dL/dS are untouched (the term values at zero and
     # reads the logits detached), while the log-scale parameter's gradient drops the residual and
     # lands on the structural part alone
@@ -802,7 +802,7 @@ def test_block_residuals_leaves_the_criterion_only_its_structural_scale_gradient
 
 
 @pytest.mark.parametrize("targ", ["mp", "sp"])
-def test_block_residuals_full_leaves_the_whole_model_only_its_structural_gradient(targ):
+def test_block_res_full_leaves_the_whole_model_only_its_structural_gradient(targ):
     # under full the same residual leaves dL/dS too: the loss reading is untouched and the scale's
     # gradient is what alpha gives it (the scale's part is one term either way), while the gradient
     # into the sims drops to what the loss would send the towers against the reachable optimum p* in
@@ -832,6 +832,46 @@ def test_block_residuals_full_leaves_the_whole_model_only_its_structural_gradien
     torch.testing.assert_close(full[3], dS_struct, rtol=1e-5, atol=1e-8)
 
 
+@pytest.mark.parametrize("block", ["alpha", "full"])
+@pytest.mark.parametrize("targ", ["mp", "sp"])
+def test_block_res_type_res_blocks_one_part_of_the_residual_along_s_opt(block, targ):
+    # loss.xnce.block_res.type_res: the residual's scale gradient (p* - y) s splits along s* into the
+    # structural-residual interaction (p* - y)(s - s*) and the irreducible residual (p* - y) s* -- the dscale
+    # strips' ures and ires, here from the reference decomposition off the solve's p*. ires blocks the second
+    # alone, ures the first alone, the two corrections sum to res's, the recorded correction is each one's own
+    # and the loss reading is untouched throughout. The similarities' residual gradient is the interaction's
+    # (the irreducible divergence D_KL(y || p*) does not depend on the sims), so under full it is blocked whole
+    # under ures -- the same dL/dS as under res -- and not at all under ires, where full is alpha
+    L = import_loss_module()
+    B, log_alpha = 16, math.log(3.0)
+    class_encs, Q, Y = _hard_targs(B, 4, targ)
+    S = _sims(B, seed=23)
+
+    off = _run_crit(L, targ, class_encs, S, log_alpha, block=None)
+    runs = {type_res: _run_crit(L, targ, class_encs, S, log_alpha, block, type_res) for type_res in ("res", "ires", "ures")}
+    sums, _ = _res_grad_ref(L, Q, Y, S, math.exp(log_alpha))
+    res, ures, ires = (sums[c, 0].item() for c in (2, 3, 4))
+    assert abs(ures) > 1e-3 * abs(res) and abs(ires) > 1e-3 * abs(res)  # both parts real shares at this alpha
+
+    deltas = {}
+    for type_res, on in runs.items():
+        for i in (0, 1):  # loss, loss_raw
+            torch.testing.assert_close(on[i], off[i], rtol=0.0, atol=0.0)
+        deltas[type_res] = (on[2] - off[2]).item()
+        assert on[4].dlogscale_correction.item() == pytest.approx(deltas[type_res], rel=1e-9)
+    assert deltas["res"] == pytest.approx(-res, rel=1e-9)
+    assert deltas["ires"] == pytest.approx(-ires, rel=1e-9)
+    assert deltas["ures"] == pytest.approx(-ures, rel=1e-9)
+    assert deltas["ires"] + deltas["ures"] == pytest.approx(deltas["res"], rel=1e-9)
+
+    torch.testing.assert_close(runs["ires"][3], off[3], rtol=0.0, atol=0.0)  # nothing on the sims under ires
+    if block == "full":
+        assert (runs["res"][3] - off[3]).abs().max().item() > 0.0
+        torch.testing.assert_close(runs["ures"][3], runs["res"][3], rtol=0.0, atol=0.0)
+    else:
+        torch.testing.assert_close(runs["ures"][3], off[3], rtol=0.0, atol=0.0)
+
+
 @pytest.mark.parametrize("unitless", [False, True])
 def test_blocked_stat_is_the_correction_a_loss_blend_actually_applies(unitless):
     # on a loss blend the correction removes each TERM's own residual under that term's coefficient,
@@ -846,7 +886,7 @@ def test_blocked_stat_is_the_correction_a_loss_blend_actually_applies(unitless):
 
     def run(block):
         log_scale = torch.tensor(log_alpha, dtype=torch.float64, requires_grad=True)
-        linear = lambda t: {"targ": t, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+        linear = lambda t: {"targ": t, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
         specs = L.targ_specs(lambda_, linear("sp"), linear("mp"))
         crit = _hard_targ_crit(L, None, B, K, block, specs=specs, lambda_=lambda_,
                                blend_type="loss", unitless=unitless)
@@ -896,12 +936,20 @@ def _graded_targs(B):
     return torch.where(same_cls, 1.0, torch.where(same_fam, 0.5, 0.0)).double()
 
 
+def _contraction(S, S_opt, type_res):
+    # what the two directions' residual rows are contracted against under each type_res: sim + sim.T, s* twice (one
+    # geometry for both directions), or the sims standing off it
+    return {"res": S + S.T, "ires": 2 * S_opt, "ures": S + S.T - 2 * S_opt}[type_res]
+
+
+@pytest.mark.parametrize("type_res", ["res", "ires", "ures"])
 @pytest.mark.parametrize("alpha", [1.0, 3.0])
-def test_block_resid_blocks_a_graded_target_outside_the_band_through_the_active_sets(alpha):
+def test_block_resid_blocks_a_graded_target_outside_the_band_through_the_active_sets(alpha, type_res):
     # a graded target outside the reachable band (its zeros put it there under the linear tsm, as tax / phylo's
     # do) has no two-level closed form: its residual comes from the projection's active sets, and the term's
     # scale gradient is minus that residual's contraction against sim + sim.T, the residual as the independent
-    # reference gives it
+    # reference gives it -- or, under ires / ures, against s* / sim - s*, s* here off the projection's own solve
+    # where the term takes it off the active sets' p* = y + R
     L = import_loss_module()
     B = 16
     Q = _graded_targs(B)
@@ -909,13 +957,14 @@ def test_block_resid_blocks_a_graded_target_outside_the_band_through_the_active_
     S = _sims(B, seed=5)
     log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
 
-    term, correction, coverage, _ = L.infonce_block_resid(Y, S, log_scale, clamp=False, full=False, coeff=1.0)
+    term, correction, coverage, _ = L.infonce_block_resid(Y, S, log_scale, clamp=False, full=False, coeff=1.0, type_res=type_res)
     (grad,) = torch.autograd.grad(term, log_scale)
 
     R = _reference_resid(Y, alpha)
+    S_opt = L.infonce_s_opt(L.infonce_p_opt(Y, alpha), alpha)
     assert (R != 0.0).any(dim=1).all()  # every row outside the band
     assert term.item() == 0.0
-    assert grad.item() == pytest.approx(-alpha * 0.5 * ((R * (S + S.T)).sum(dim=1)).mean().item(), rel=1e-9)
+    assert grad.item() == pytest.approx(-alpha * 0.5 * ((R * _contraction(S, S_opt, type_res)).sum(dim=1)).mean().item(), rel=1e-9)
     assert correction.item() == pytest.approx(grad.item(), rel=1e-12)
     assert coverage.tolist() == [1.0, 0.0, 0.0]
 
@@ -1144,26 +1193,29 @@ def test_active_set_residual_matches_the_reference_on_graded_rows(alpha, mapping
     assert n_past >= B // 2
 
 
+@pytest.mark.parametrize("type_res", ["res", "ires", "ures"])
 @pytest.mark.parametrize("block", ["alpha", "full"])
 @pytest.mark.parametrize("targ", ["mp", "phylo"])
 @pytest.mark.parametrize("sm_scale", ["pinned", "pinned1", "pinned4"])
-def test_block_residuals_on_the_pinned_family(block, targ, sm_scale):
+def test_block_res_on_the_pinned_family(block, targ, sm_scale, type_res):
     # end to end, the three pinned mappings alike, on memberships and on a graded phylo-like kernel: pinned
     # (s = 2 alpha, the boundary itself) and pinned1 (s = alpha) keep every row inside the band by construction, so
     # blocking is inert -- the correction reads exactly zero, loss and gradients are those of blocking off, and the
     # coverage says feasible, not skipped; pinned4 (s = 4 alpha) puts memberships' rows past it (the two-level closed
     # form) and the kernel's rows with a spread over a half (the active sets), and blocks the residual the
-    # reference gives on the scale's gradient and, under full, on dL/dS, with the kernel's other rows feasible
+    # reference gives on the scale's gradient -- against the sims, s* (ires) or the sims standing off it (ures),
+    # s* off the projection's own solve -- and, under full, on dL/dS (never under ires), with the kernel's other
+    # rows feasible
     L = import_loss_module()
     B, K, alpha = 16, 4, 3.0
     class_encs = torch.arange(B) % K
     S = _sims(B, seed=23)
     Q = _phylo_like_targs(B) if targ == "phylo" else (class_encs[:, None] == class_encs[None, :]).double()
-    spec = {"targ": targ, "infonce": {"tsm": {"type": "softmax", "sm_scale": sm_scale}}}
+    spec = {"targ": targ, "xnce": {"tsm": {"type": "softmax", "sm_scale": sm_scale}}}
 
     def run(block):
         log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
-        crit = _hard_targ_crit(L, None, B, K, block, specs=[(1.0, spec)])
+        crit = _hard_targ_crit(L, None, B, K, block, specs=[(1.0, spec)], type_res=type_res)
         crit._targets = lambda *args: [Q]
         Sg = S.clone().requires_grad_(True)
         loss, loss_raw, _, Y = crit(Sg * log_scale.exp(), class_encs, None, True, log_scale, Sg)
@@ -1186,11 +1238,12 @@ def test_block_residuals_on_the_pinned_family(block, targ, sm_scale):
     assert past.all() if targ == "mp" else (past.any() and not past.all())
     frac = past.double().mean().item()
     assert stats["block_coverage"] == [pytest.approx([frac, 1.0 - frac, 0.0])]
-    blocking = -alpha * 0.5 * ((R * (S + S.T)).sum(dim=1)).mean().item()
+    S_opt = L.infonce_s_opt(L.infonce_p_opt(off[4], alpha), alpha)
+    blocking = -alpha * 0.5 * ((R * _contraction(S, S_opt, type_res)).sum(dim=1)).mean().item()
     assert abs(blocking) > 1e-3 * abs(off[2].item())  # a real share of the gradient at this alpha
     assert (on[2] - off[2]).item() == pytest.approx(blocking, rel=1e-9)
     assert stats["dlogscale_correction"] == pytest.approx(blocking, rel=1e-9)
-    expected_S = -0.5 * alpha * (R + R.T) / B if block == "full" else torch.zeros_like(S)
+    expected_S = -0.5 * alpha * (R + R.T) / B if block == "full" and type_res != "ires" else torch.zeros_like(S)
     torch.testing.assert_close(on[3] - off[3], expected_S, rtol=1e-9, atol=1e-14)
 
 
@@ -1211,10 +1264,15 @@ def test_block_bound_is_recorded_and_holds():
     R, *_ = L.infonce_train_resid(Y_hard, alpha, math.inf, binary=True, inside=False)
     assert R.abs().sum(dim=1).max().item() == pytest.approx(U, rel=1e-12)  # sp: the one-hot row attains it
     assert abs(correction.item()) <= bound[1].item()
+    # ires contracts against s* (|s*| <= 1 like |s|: the same bound); ures against s - s*, which reaches 2
+    for type_res, t in (("ires", 1.0), ("ures", 2.0)):
+        _, correction, _, bound = L.infonce_block_resid(Y_hard, S, log_scale, clamp=False, full=False, coeff=coeff, type_res=type_res)
+        assert bound.tolist() == pytest.approx([U, t * coeff * alpha * U], rel=1e-12)
+        assert abs(correction.item()) <= bound[1].item()
 
     Q = (torch.arange(B)[:, None] % 4 == torch.arange(B)[None, :] % 4).double()
     Y_soft = torch.softmax(4 * alpha * Q, dim=1)
-    spec = {"targ": "mp", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned4"}}}
+    spec = {"targ": "mp", "xnce": {"tsm": {"type": "softmax", "sm_scale": "pinned4"}}}
     _, correction, coverage, bound = L.infonce_block_resid(Y_soft, S, log_scale, clamp=False, full=False, coeff=coeff, spec=spec)
     assert coverage.tolist() == [1.0, 0.0, 0.0]
     R, *_ = L.infonce_train_resid(Y_soft, alpha, 4 * alpha, binary=True, inside=False)
@@ -1235,7 +1293,7 @@ def _reference_resid(Y, alpha):
 
 @pytest.mark.parametrize("block", ["alpha", "full"])
 @pytest.mark.parametrize("blend", [False, True])
-def test_block_residuals_under_unitless_apply_the_coefficient_to_the_reference_residual(block, blend):
+def test_block_res_under_unitless_apply_the_coefficient_to_the_reference_residual(block, blend):
     # hard targets under loss.unitless: a term's coefficient c = w / L is applied once to its loss and once
     # to its correction, so the scale gradient's delta is -sum_k c_k * alpha * (the term's residual contracted
     # against sim + sim.T), the residual from the independent mpmath reference -- for one term and, under a
@@ -1245,7 +1303,7 @@ def test_block_residuals_under_unitless_apply_the_coefficient_to_the_reference_r
     B, K, alpha = 16, 4, 3.0
     class_encs = torch.arange(B) % K
     S = _sims(B, seed=23)
-    linear = lambda t: {"targ": t, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    linear = lambda t: {"targ": t, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
     specs = L.targ_specs(0.3, linear("sp"), linear("mp")) if blend else [(1.0, linear("mp"))]
 
     def run(block):
@@ -1286,7 +1344,7 @@ def test_block_residuals_under_unitless_apply_the_coefficient_to_the_reference_r
 
 
 @pytest.mark.parametrize("block", ["alpha", "full"])
-def test_block_residuals_mixed_batch_applies_resolved_rows_and_skips_the_rest(block, monkeypatch):
+def test_block_res_mixed_batch_applies_resolved_rows_and_skips_the_rest(block, monkeypatch):
     # one batch, four kinds of anchor row: hard binary rows (closed form), a graded row inside the band (feasible:
     # nothing to apply), graded rows outside it (the active sets) and one such row the active sets are made to
     # leave unresolved (skipped: its ordinary gradient stands). The selection is per anchor before the directions
@@ -1344,7 +1402,7 @@ def test_block_residuals_mixed_batch_applies_resolved_rows_and_skips_the_rest(bl
         torch.testing.assert_close(on[3], off[3], rtol=0.0, atol=0.0)
 
 
-def test_block_residuals_resolve_the_high_scale_unitless_case_exactly():
+def test_block_res_resolve_the_high_scale_unitless_case_exactly():
     # the case that broke the subtraction path: a nearly one-hot graded target (softmax tsm at a fixed sm_scale
     # 165 -- 3 alpha at alpha 55, the x3 pinned mapping the case was found under) fitted to a raw loss ~ 1e-12,
     # so loss.unitless' coefficient sits at its 1e12 floor.
@@ -1357,7 +1415,7 @@ def test_block_residuals_resolve_the_high_scale_unitless_case_exactly():
     Q = torch.tensor([[1.0, 0.81, 0.0], [0.81, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float64)
     alpha = 55.0
     S = torch.eye(3, dtype=torch.float64)  # orthonormal embeddings: the fitted geometry
-    spec = {"targ": "phylo", "infonce": {"tsm": {"type": "softmax", "sm_scale": 165.0}}}  # 3 alpha at alpha 55
+    spec = {"targ": "phylo", "xnce": {"tsm": {"type": "softmax", "sm_scale": 165.0}}}  # 3 alpha at alpha 55
 
     def run(block):
         log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
@@ -1388,10 +1446,11 @@ def test_block_residuals_resolve_the_high_scale_unitless_case_exactly():
         assert abs((on[2] - off[2]).item()) <= 1e-20 and (on[3] - off[3]).abs().max().item() <= 1e-20
 
 
-def test_block_residuals_skip_a_row_whose_closed_form_is_not_finite(monkeypatch):
+@pytest.mark.parametrize("type_res", ["res", "ires", "ures"])
+def test_block_res_skip_a_row_whose_closed_form_is_not_finite(monkeypatch, type_res):
     # the optional correction never contaminates the loss or the gradient: a row whose closed form comes back
     # non-finite is skipped by selection (torch.where), not by a multiply that would carry the NaN through,
-    # and the other rows' corrections stand
+    # and the other rows' corrections stand -- s* included (ires / ures), which is never taken off a skipped row
     L = import_loss_module()
     B, alpha = 16, 3.0
     _, Q, Y = _hard_targs(B, 4, "mp")
@@ -1406,14 +1465,19 @@ def test_block_residuals_skip_a_row_whose_closed_form_is_not_finite(monkeypatch)
     monkeypatch.setattr(L, "infonce_hard_resid", poisoned)
     log_scale = torch.tensor(math.log(alpha), dtype=torch.float64, requires_grad=True)
 
-    term, correction, coverage, _ = L.infonce_block_resid(Y, S, log_scale, clamp=False, full=True, coeff=1.0)
-    grad, grad_S = torch.autograd.grad(term, (log_scale, S))
+    term, correction, coverage, _ = L.infonce_block_resid(Y, S, log_scale, clamp=False, full=True, coeff=1.0, type_res=type_res)
+    grad, grad_S = torch.autograd.grad(term, (log_scale, S), allow_unused=True)
 
-    assert term.item() == 0.0 and math.isfinite(grad.item()) and torch.isfinite(grad_S).all()
+    assert term.item() == 0.0 and math.isfinite(grad.item())
     R_used = real(Q, alpha)
     R_used[0] = 0.0
-    assert grad.item() == pytest.approx(-alpha * 0.5 * ((R_used * (S + S.T)).sum(dim=1)).mean().item(), rel=1e-9)
-    torch.testing.assert_close(grad_S, -0.5 * alpha * (R_used + R_used.T) / B, rtol=1e-9, atol=1e-14)
+    S_opt = L.infonce_s_opt(L.infonce_p_opt(Y, alpha), alpha)  # s* = 2q - 1 on these hard rows
+    assert grad.item() == pytest.approx(-alpha * 0.5 * ((R_used * _contraction(S.detach(), S_opt, type_res)).sum(dim=1)).mean().item(), rel=1e-9)
+    if type_res == "ires":
+        assert grad_S is None  # the irreducible part has no similarity gradient: the term never touches S
+    else:
+        assert torch.isfinite(grad_S).all()
+        torch.testing.assert_close(grad_S, -0.5 * alpha * (R_used + R_used.T) / B, rtol=1e-9, atol=1e-14)
     assert correction.item() == pytest.approx(grad.item(), rel=1e-12)
     assert coverage.tolist() == pytest.approx([15 / 16, 0.0, 1 / 16])
 
@@ -1438,7 +1502,7 @@ def test_block_resid_runs_the_solver_only_where_the_spec_leaves_rows_to_it(monke
         ("tax", Q / Q.sum(dim=1, keepdim=True), {"type": "linear", "sm_scale": "pinned"}, [1.0, 0.0, 0.0], 1),
     ):
         calls.clear()
-        spec = {"targ": targ, "infonce": {"tsm": cfg_tsm}}
+        spec = {"targ": targ, "xnce": {"tsm": cfg_tsm}}
         _, _, coverage, _ = L.infonce_block_resid(Y, S, log_scale, clamp=False, full=True, coeff=1.0, spec=spec)
         assert coverage.tolist() == expected and len(calls) == n_calls, (targ, cfg_tsm)
 
@@ -1451,7 +1515,7 @@ def test_block_stats_cover_separate_logit_scalars():
     B, K, lambda_ = 16, 4, 0.3
     class_encs = torch.arange(B) % K
     S = _sims(B, seed=29)
-    linear = lambda t: {"targ": t, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    linear = lambda t: {"targ": t, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
     specs = L.targ_specs(lambda_, linear("sp"), linear("mp"))
 
     def run(block):
@@ -1708,7 +1772,7 @@ def test_anchor_entropy_is_the_mean_over_the_active_anchors_with_their_fraction_
 def test_actual_sim_grad_entropies_read_the_gradient_the_towers_received():
     # the (actual) trio off the criterion's own dL/dS: on an unweighted lone hard target the pair entropy is the
     # analytic full one exactly (the same folded gradient, the loss carrying no weight the stats leave out), and
-    # under block_residuals: full it is the analytic STRUCTURAL one -- the residual the towers never received is
+    # under block_res full_res it is the analytic STRUCTURAL one -- the residual the towers never received is
     # not in it -- while the anchor entropy reads the fold's rows and columns, its own construction (every row and
     # column active here: each entry of the fold pushes)
     L = import_loss_module()

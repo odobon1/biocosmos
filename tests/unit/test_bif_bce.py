@@ -25,7 +25,7 @@ def _cfg(crit, lambda_=0.0, cls_imb=None, focal_gamma=0.0, dsmr=False, neut=Fals
     """The loss-level config (train.yaml's `loss` block, as the criterion reads it)."""
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": "targ"}, "unitless": False,
-        "infonce": {"block_residuals": None},
+        "xnce": {"block_res": None},
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999},
@@ -39,10 +39,10 @@ def _cfg(crit, lambda_=0.0, cls_imb=None, focal_gamma=0.0, dsmr=False, neut=Fals
 
 def _targ(targ, tsm_type="linear"):
     """A target spec (train.yaml's loss1 / loss2 block); the tsm is read by InfoNCE only."""
-    return {"targ": targ, "infonce": {"tsm": {"type": tsm_type, "sm_scale": 1.0}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": tsm_type, "sm_scale": 1.0}}}
 
 
-CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "infonce": L.InfoNCECriterion}
+CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "xnce": L.InfoNCECriterion}
 HIST_BINS = 20  # the harness' reporting.learning_curves.hist_bins
 
 
@@ -244,7 +244,7 @@ def test_target_blend_through_global_batch_loss(crit_name):
     assert batch_stats["sim_margin"] == pytest.approx([0.5 * (a + b) for a, b in zip(i2t, t2i)], abs=1e-5)
 
 
-@pytest.mark.parametrize("crit_name", ["bce", "bif_bce", "infonce"])
+@pytest.mark.parametrize("crit_name", ["bce", "bif_bce", "xnce"])
 def test_batch_stats_carry_a_unitless_loss_blends_lambda_eff(crit_name):
     # the lambda_eff curve strip's series: recorded by the criterion where unitless reweights a loss blend's two
     # terms (Criterion.term_coeffs), absent from the batch stats on static weights
@@ -271,7 +271,7 @@ def test_bce_centering_is_not_read_under_infonce(center, focal_gamma):
     K, B = 6, 24
 
     def grads(center_):
-        crit = _make_crit(_cfg("infonce", focal_gamma=focal_gamma, center=center_), K, B)
+        crit = _make_crit(_cfg("xnce", focal_gamma=focal_gamma, center=center_), K, B)
         g = torch.Generator().manual_seed(0)
         img = F.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
         txt = F.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
@@ -293,7 +293,7 @@ def test_infonce_stats():
     # latter its logit_scale grad outright, since the parameter is log(alpha)
     B, K, D = 16, 5, 8
     img, txt, class_encs_b = _data(B, K, D)
-    crit = _make_crit(_cfg("infonce", lambda_=0.3), K, B, targ1="mp", targ2="sp")
+    crit = _make_crit(_cfg("xnce", lambda_=0.3), K, B, targ1="mp", targ2="sp")
     toy = Toy().train()
     h = _make_harness(toy, crit)
 

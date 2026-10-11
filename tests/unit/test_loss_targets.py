@@ -97,7 +97,7 @@ def test_compute_targs_phylo_delegates_to_phylo_matrix() -> None:
 
 
 def _spec(tsm_type, sm_scale):
-    return {"targ": "phylo", "infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
+    return {"targ": "phylo", "xnce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
 
 
 def _infonce(loss_mod, specs, clamp=True):

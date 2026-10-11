@@ -62,7 +62,7 @@ def _build(monkeypatch, model_type, crit, bias_init=None, bias_freeze=False, sep
 
 @pytest.mark.parametrize("model_type", ["clip_vitb16", "siglip_vitb16"])
 def test_infonce_carries_no_bias_whichever_the_family(monkeypatch, model_type):
-    model = _build(monkeypatch, model_type, "infonce", bias_init=-10.0)  # bias.init is never read here
+    model = _build(monkeypatch, model_type, "xnce", bias_init=-10.0)  # bias.init is never read here
     assert model.logit_bias is None
     # and nothing of it is left for DDP to wait on, or for the optimizer / a checkpoint to carry
     assert [name for name, _ in model.named_parameters()] == ["logit_scale"]
@@ -70,7 +70,7 @@ def test_infonce_carries_no_bias_whichever_the_family(monkeypatch, model_type):
 
 
 def test_infonce_separate_scalars_copy_the_scale_alone(monkeypatch):
-    model = _build(monkeypatch, "siglip_vitb16", "infonce", sep=True)
+    model = _build(monkeypatch, "siglip_vitb16", "xnce", sep=True)
     assert model.logit_bias is None and model.logit_bias2 is None
     assert sorted(name for name, _ in model.named_parameters()) == ["logit_scale", "logit_scale2"]
 

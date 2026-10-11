@@ -19,7 +19,7 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
         "sim": "cos",
         "blend": {"lambda": lambda_, "type": "targ"},
         "unitless": False,
-        "infonce": {"block_residuals": None},
+        "xnce": {"block_res": None},
         "bce": {"targ_mass_neut": False},
         "wting": {
             "cls_imb": {
@@ -42,7 +42,7 @@ def _full_loss_cfg(crit="bce", lambda_=0.0):
 
 
 def _targ_cfg(targ):
-    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 @dataclass
@@ -148,14 +148,14 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s2")
     cfg = _FakeCoordCfg()
     cfg.model["arch"] = {"model_type": "clip_vitb16", "clip": {"non_causal": True}, "siglip": {"vis_proj_head": None}}
-    cfg.loss = _full_loss_cfg(crit="infonce")
+    cfg.loss = _full_loss_cfg(crit="xnce")
     cfg.loss["wting"]["cls_imb"]["type"] = "class_bal"
     cfg.loss["wting"]["cls_imb"]["norm"] = False
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s2" / "config.json").read_text())
     assert "siglip" not in config["model"]["arch"] and "siglip" not in config["model"]["dropout"]
     assert config["model"]["arch"]["clip"] == {"non_causal": True}
-    assert config["loss"]["loss1"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # infonce + mp: block live
+    assert config["loss"]["loss1"]["xnce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}  # xnce + mp: block live
     wting = config["loss"]["wting"]
     assert "bce" not in wting  # BCE-only
     assert wting["cls_imb"] == {  # inv_freq inert (type class_bal)
@@ -170,7 +170,7 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     cfg.loss = _full_loss_cfg(crit="bif_bce")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s4" / "config.json").read_text())
-    assert "infonce" not in config["loss"]["loss1"]
+    assert "xnce" not in config["loss"]["loss1"]
     assert config["loss"]["bce"] == {"targ_mass_neut": False}  # bif_bce reads it
     assert config["loss"]["wting"]["bce"] == {"dsmr": True}  # dsmr applies to bif_bce too
 
@@ -202,14 +202,15 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     (tmp_path / "s6").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s6")
     cfg = _FakeCoordCfg()
-    cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
+    cfg.loss = _full_loss_cfg(crit="xnce", lambda_=0.3)
     cfg.loss["loss1"] = _targ_cfg("sp")
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s6" / "config.json").read_text())
     assert config["loss"]["loss1"] == {"targ": "sp"}
-    assert config["loss"]["loss2"]["infonce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
+    assert config["loss"]["loss2"]["xnce"] == {"tsm": {"type": "linear", "sm_scale": "pinned"}}
     assert config["loss"]["blend"]["type"] == "targ"  # a live blend under focal: the blend types differ
     assert "shared" not in config["loss"]["logits"]  # a target blend is one loss on one set of logits
+    assert config["loss"]["xnce"] == {"block_res": None}
 
     # unitless: its rescale cancels cls_imb.norm's per-batch normalizer, and makes a blend's type matter
     (tmp_path / "s7").mkdir()
@@ -225,22 +226,22 @@ def test_save_metadata_coord_prunes_inert_params(tmp_path, monkeypatch) -> None:
     assert config["loss"]["logits"]["shared"] is True  # a live loss blend: its terms could run on separate scalars
     assert config["loss"]["wting"]["cls_imb"] == {"type": "inv_freq", "inv_freq": {"gamma": 0.5}}
 
-    # block_residuals is a target-dependent factor too (each term's residual is its own target's), so a
+    # block_res is a target-dependent factor too (each term's residual is its own target's), so a
     # loss blend under it keeps blend.type -- which that configuration REQUIRES, making a pruned one a
     # recorded config the trial could not be rebuilt from (utils.config.targ_dependent_loss)
     (tmp_path / "s8").mkdir()
     monkeypatch.setattr(ArtifactManager, "dpath_coord", tmp_path / "s8")
     cfg = _FakeCoordCfg()
-    cfg.loss = _full_loss_cfg(crit="infonce", lambda_=0.3)
+    cfg.loss = _full_loss_cfg(crit="xnce", lambda_=0.3)
     cfg.loss["blend"]["type"] = "loss"
-    cfg.loss["infonce"]["block_residuals"] = "alpha"
+    cfg.loss["xnce"]["block_res"] = "alpha_res"
     cfg.loss["loss1"], cfg.loss["loss2"] = _targ_cfg("mp"), _targ_cfg("sp")
     del cfg.loss["wting"]["focal"]
     cfg.loss["wting"]["cls_imb"]["type"] = None
     ArtifactManager.save_metadata_coord(cfg)
     config = json.loads((tmp_path / "s8" / "config.json").read_text())
     assert config["loss"]["blend"]["type"] == "loss"
-    assert config["loss"]["infonce"] == {"block_residuals": "alpha"}
+    assert config["loss"]["xnce"] == {"block_res": "alpha_res"}
 
 
 def test_update_campaign_time_stamps_phase_and_campaign_last_seen(tmp_path, monkeypatch) -> None:
@@ -423,14 +424,14 @@ def test_tracked_logit_scalars_keep_a_frozen_scale_and_skip_a_frozen_or_inert_bi
 
     assert tracked(_fake_pipe("bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias"}
     assert tracked(_fake_pipe("bif_bce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias"}
-    assert tracked(_fake_pipe("infonce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
+    assert tracked(_fake_pipe("xnce", all_learnable)) == {"scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
 
     # a frozen scale keeps its two value series -- a flat line, but the alpha its figures' bound lines and
     # gradient decomposition read against -- and drops only the .grad one (a frozen parameter has none, which
     # is also how the figures tell it is frozen); a frozen bias is dropped outright
     frozen_scale = {"scale": "logit_scale", "logit_scale": "logit_scale"}
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True})) == {**frozen_scale, "bias": "logit_bias"}
-    assert tracked(_fake_pipe("infonce", {"logit_scale": False, "logit_bias": True})) == frozen_scale
+    assert tracked(_fake_pipe("xnce", {"logit_scale": False, "logit_bias": True})) == frozen_scale
     assert tracked(_fake_pipe("bce", {"logit_scale": True, "logit_bias": False})) == {
         "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale"}
 
@@ -438,7 +439,7 @@ def test_tracked_logit_scalars_keep_a_frozen_scale_and_skip_a_frozen_or_inert_bi
     assert tracked(_fake_pipe("bce", all_learnable, sep=True)) == {
         "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale", "bias": "logit_bias",
         "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "logit_scale2_grad": "logit_scale2", "bias2": "logit_bias2"}
-    assert tracked(_fake_pipe("infonce", all_learnable, sep=True)) == {
+    assert tracked(_fake_pipe("xnce", all_learnable, sep=True)) == {
         "scale": "logit_scale", "logit_scale": "logit_scale", "logit_scale_grad": "logit_scale",
         "scale2": "logit_scale2", "logit_scale2": "logit_scale2", "logit_scale2_grad": "logit_scale2"}
     assert tracked(_fake_pipe("bce", {"logit_scale": False, "logit_bias": True}, sep=True)) == {
@@ -516,7 +517,7 @@ def test_record_train_batch_curves_the_targ_hist_and_drops_the_targ_point_stats(
 
 
 def _record_pipe(recorded, block_stats):
-    # a pipeline stub for _record_train_batch: the criterion's block_residuals record and the tally it feeds
+    # a pipeline stub for _record_train_batch: the criterion's block_res record and the tally it feeds
     return SimpleNamespace(
         n_samps_seen=64, data=SimpleNamespace(update_train_batch=lambda n_samps_seen, **series: recorded.update(series)),
         modelw=SimpleNamespace(crit=SimpleNamespace(block_stats=block_stats)),
@@ -524,8 +525,8 @@ def _record_pipe(recorded, block_stats):
     )
 
 
-def test_record_train_batch_records_the_block_residuals_record_without_the_diagnostics(capsys) -> None:
-    # loss.infonce.block_residuals' per-batch record (utils.loss.InfoNCECriterion.block_stats) reaches the curve
+def test_record_train_batch_records_the_block_res_record_without_the_diagnostics(capsys) -> None:
+    # loss.xnce.block_res' per-batch record (utils.loss.InfoNCECriterion.block_stats) reaches the curve
     # series whether or not sim_targ_stats put a batch_stats dict on the batch, and its coverage is tallied for
     # the checkpoint line (_print_block_coverage), which resets the tally
     recorded = {}
@@ -539,7 +540,7 @@ def test_record_train_batch_records_the_block_residuals_record_without_the_diagn
 
     TrainPipeline._print_block_coverage(pipe, "3/10")
     line = capsys.readouterr().out
-    assert line.startswith("[3/10] block_residuals coverage over 2 batches, 2 with skipped rows -- ")
+    assert line.startswith("[3/10] block_res coverage over 2 batches, 2 with skipped rows -- ")
     assert "term 0: applied 50.0%, feasible 25.0%, skipped 25.0%; term 1: applied 100.0%, feasible 0.0%, skipped 0.0%" in line
     assert pipe._block_tally == {"batches": 0, "batches_skipped": 0, "coverage": {}}
     TrainPipeline._print_block_coverage(pipe, "4/10")

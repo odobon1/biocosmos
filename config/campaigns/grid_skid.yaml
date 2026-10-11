@@ -10,9 +10,9 @@ baseline_overrides:
 ablation_arms:
   - - {loss.logits.scale.freeze: false, name: learned}
     - {loss.logits.scale.freeze: true, name: frozen}
-  - - {loss.loss1.targ: sp, loss.loss1.infonce.tsm.type: linear, name: FLYP}
-    - {loss.loss1.targ: mp, loss.loss1.infonce.tsm.type: linear, name: SupCon}
-    - {loss.loss1.targ: phylo, loss.loss1.infonce.tsm.type: softmax, name: HCon}
+  - - {loss.loss1.targ: sp, loss.loss1.xnce.tsm.type: linear, name: FLYP}
+    - {loss.loss1.targ: mp, loss.loss1.xnce.tsm.type: linear, name: SupCon}
+    - {loss.loss1.targ: phylo, loss.loss1.xnce.tsm.type: softmax, name: HCon}
 
 hpo_coords:
   - - {lr.init: [2.0e-5, 6.0e-5, 2.0e-4]}

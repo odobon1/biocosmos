@@ -165,7 +165,7 @@ class TrainPipeline:
         self.lr_warmup = round(self.cfg.lr["warmup"] * self.cfg.sample_volume)  # warmup fraction -> samples
         self.init_opt_and_lr_sched()
         self.n_batches_seen = 0
-        self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}  # block_residuals coverage since the last checkpoint (_print_block_coverage)
+        self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}  # block_res coverage since the last checkpoint (_print_block_coverage)
         self.chkpt_thresh = self.cfg.chkpt_interval
         self.samps_stop = samps_stop(self.cfg)
         self._kill_chkpt = kill_chkpt(self.cfg)
@@ -337,7 +337,7 @@ class TrainPipeline:
                 key: val for key, val in batch_stats.items()
                 if not key.startswith("targ") or key == "targ_hist"
             }
-        # loss.infonce.block_residuals' record of the batch (utils.loss.InfoNCECriterion.block_stats: the
+        # loss.xnce.block_res' record of the batch (utils.loss.InfoNCECriterion.block_stats: the
         # correction(s) applied and each term's [applied, feasible, skipped] anchor-row coverage), recorded
         # whether or not the sim_targ_stats diagnostics are on, and tallied for the checkpoint summary
         block_stats = self.modelw.crit.block_stats
@@ -459,7 +459,7 @@ class TrainPipeline:
                          load_learning_curves_config_dict()["dpi"])
 
     def _print_block_coverage(self, header):
-        """One line per checkpoint (rank 0, from _checkpoint_writes) on loss.infonce.block_residuals' coverage since
+        """One line per checkpoint (rank 0, from _checkpoint_writes) on loss.xnce.block_res' coverage since
         the last: per loss term, the mean anchor-row fractions the correction was applied to / found feasible /
         SKIPPED (utils.loss.infonce_train_resid), and how many batches had a skipped row. A run that skips is a
         PARTIALLY blocked ablation, and this is where that shows -- without a line per batch."""
@@ -471,7 +471,7 @@ class TrainPipeline:
             f"skipped {cov[2] / tally['batches']:.1%}"
             for k, cov in sorted(tally["coverage"].items())
         )
-        print(f"[{header}] block_residuals coverage over {tally['batches']} batches, {tally['batches_skipped']} with "
+        print(f"[{header}] block_res coverage over {tally['batches']} batches, {tally['batches_skipped']} with "
               f"skipped rows -- {per_term}", flush=True)
         self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}
 
@@ -508,7 +508,7 @@ class TrainPipeline:
             # the entropies of that gradient beside the batch stats' analytic ones (the sim_grad_entropy figure's
             # (actual) panels): an InfoNCE loss only, whose one branch carries it, where the stats are on and the
             # sims took a gradient at all (both towers frozen: none)
-            if batch_stats is not None and self.cfg.loss["crit"] == "infonce" and sims[0].grad is not None:
+            if batch_stats is not None and self.cfg.loss["crit"] == "xnce" and sims[0].grad is not None:
                 batch_stats.update(sim_grad_entropies_actual(sims[0].grad))
         return loss, loss_raw, embs_img_b, embs_txt_b, logits, batch_stats, grad_sum_sim
 

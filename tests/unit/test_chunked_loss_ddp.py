@@ -66,7 +66,7 @@ def cfg_loss(lambda_=0.0, cls_imb_norm=False, center=None, crit="bce", neut=Fals
 
 def targ_spec(targ):
     """A target spec (train.yaml's loss1 / loss2 block); the tsm is read by InfoNCE only."""
-    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 class _ZSG(torch.autograd.Function):

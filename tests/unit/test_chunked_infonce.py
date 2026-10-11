@@ -1,15 +1,15 @@
 """
-Equivalence tests for the tiled/chunked global-batch InfoNCE loss (hardware.loss_chunk_size.infonce).
+Equivalence tests for the tiled/chunked global-batch InfoNCE loss (hardware.loss_chunk_size.xnce).
 
 chunked_infonce_loss_backward must reproduce the full-batch path (InfoNCECriterion.__call__ via
 _global_batch_loss) up to floating-point summation order: the loss and raw loss, the gradients wrt the
-image/text embeddings and the logit scale(s), sum(dL/dsim), loss.infonce.block_residuals' record
+image/text embeddings and the logit scale(s), sum(dL/dsim), loss.xnce.block_res' record
 (crit.block_stats), and every batch stat the full-batch path reports -- sim_targ_batch_stats',
 infonce_batch_stats' and sim_grad_entropies_actual's, the last two including the pair-level entropies
 that fold the two anchor directions per cell and so come off the tiled path's fold pass. Across
 InfoNCECriterion's config space: sp/mp/tax/phylo targets under the linear and softmax tsm, their blend
 under either loss.blend.type, loss.unitless, separate logit scalars, class-imbalance + focal weighting,
-block_residuals alpha/full over every residual path (hard and soft two-level closed forms, the active
+block_res alpha_* / full_* (res / ires / ures) over every residual path (hard and soft two-level closed forms, the active
 sets, a target blend's spec-less rows), geo sims and the scale clamp.
 """
 import math
@@ -61,12 +61,12 @@ def _make_targ_data(B, K, R, class_encs_b):
     return [{"rank_encs": rank_encs[i], "cid": f"c{int(class_encs_b[i])}", "dataset": "cub"} for i in range(B)]
 
 
-def _cfg(lambda_=0.0, blend_type="targ", unitless=False, shared=True, clamp=False, block=None, focal_gamma=0.0,
+def _cfg(lambda_=0.0, blend_type="targ", unitless=False, shared=True, clamp=False, block=None, type_res="res", focal_gamma=0.0,
          cls_imb=None, norm=False, sim="cos"):
     """The loss-level config (train.yaml's `loss` block, as InfoNCECriterion reads it)."""
     return {
-        "crit": "infonce", "sim": sim, "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
-        "infonce": {"block_residuals": block},
+        "crit": "xnce", "sim": sim, "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
+        "xnce": {"block_res": None if block is None else f"{block}_{type_res}"},
         "wting": {
             "cls_imb": {"type": cls_imb, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": norm},
             **({"focal": {"gamma": focal_gamma}} if focal_gamma > 0.0 else {}),  # config load prunes the block when gamma = 0.0
@@ -77,7 +77,7 @@ def _cfg(lambda_=0.0, blend_type="targ", unitless=False, shared=True, clamp=Fals
 
 def _spec(targ, tsm_type="linear", sm_scale="pinned"):
     """A target spec (train.yaml's loss1 / loss2 block)."""
-    return {"targ": targ, "infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
 
 
 def _make_crit(cfg, spec1, spec2, K, B):
@@ -205,9 +205,9 @@ def _run(cfg, spec1, spec2, C, log_scale=0.5, seed=0, freeze_scale=False):
         if key not in skip:
             _assert_stat_close(key, stats_c[key], val)
 
-    # loss.infonce.block_residuals' record, as the full-batch criterion leaves it
+    # loss.xnce.block_res' record, as the full-batch criterion leaves it
     block_c = crit_c.block_stats
-    assert (block_c is None) == (block_ref is None) == (cfg["infonce"]["block_residuals"] is None)
+    assert (block_c is None) == (block_ref is None) == (cfg["xnce"]["block_res"] is None)
     if block_ref is not None:
         assert set(block_c) == set(block_ref)
         for key, val in block_ref.items():
@@ -241,7 +241,7 @@ CASES = [
      _spec("mp"), _spec("tax", "softmax", "pinned")),                                 # each spec's tsm pinned to its own scale
     ("geo_focal", _cfg(sim="geo", focal_gamma=2.0), _spec("mp"), _spec("sp")),
     ("clamp", _cfg(clamp=True), _spec("tax", "softmax", "pinned"), _spec("sp")),
-    # block_residuals: the hard closed form, the active sets, a target blend's spec-less rows, the soft
+    # block_res: the hard closed form, the active sets, a target blend's spec-less rows, the soft
     # two-level closed form, per-term coefficients (unitless) and per-term scales (separate logit scalars)
     ("block_alpha_mp", _cfg(block="alpha"), _spec("mp"), _spec("sp")),
     ("block_full_mp", _cfg(block="full"), _spec("mp"), _spec("sp")),
@@ -254,6 +254,14 @@ CASES = [
     ("block_full_phylo_pinned4", _cfg(block="full"), _spec("phylo", "softmax", "pinned4"), _spec("sp")),
     ("block_full_loss_blend_unitless", _cfg(lambda_=0.3, blend_type="loss", block="full", unitless=True), _spec("mp"), _spec("tax")),
     ("block_full_sep_scalars", _cfg(lambda_=0.3, blend_type="loss", block="full", shared=False), _spec("mp"), _spec("tax")),
+    # block_res.type_res: the scale's contraction against s* (ires) or the sims standing off it (ures), s* off the
+    # applied rows' p* = y + R per tile -- closed forms and active sets -- and the sims' part off under ires
+    ("block_alpha_ires_mp", _cfg(block="alpha", type_res="ires"), _spec("mp"), _spec("sp")),
+    ("block_alpha_ures_mp", _cfg(block="alpha", type_res="ures"), _spec("mp"), _spec("sp")),
+    ("block_full_ires_tax", _cfg(block="full", type_res="ires"), _spec("tax"), _spec("sp")),
+    ("block_full_ures_phylo_pinned4", _cfg(block="full", type_res="ures"), _spec("phylo", "softmax", "pinned4"), _spec("sp")),
+    ("block_full_ures_loss_blend_unitless", _cfg(lambda_=0.3, blend_type="loss", block="full", type_res="ures", unitless=True),
+     _spec("mp"), _spec("tax")),
 ]
 
 
@@ -265,9 +273,10 @@ def test_chunked_matches_full(name, cfg, spec1, spec2, C):
     assert ("lambda_eff" in stats) == unitless_blend
     # the cases named for a residual path must reach it: a correction that is skipped or feasible everywhere
     # would pass the equivalence above without exercising the tiles' contraction
-    if name in ("block_alpha_mp", "block_full_mp", "block_full_softmax_c"):
+    if name in ("block_alpha_mp", "block_full_mp", "block_full_softmax_c", "block_alpha_ires_mp", "block_alpha_ures_mp"):
         assert block["block_coverage"][0][0] == 1.0  # every row a closed form
-    if name in ("block_full_tax", "block_full_targ_blend", "block_full_tax_pinned4", "block_full_phylo", "block_full_phylo_pinned4"):
+    if name in ("block_full_tax", "block_full_targ_blend", "block_full_tax_pinned4", "block_full_phylo", "block_full_phylo_pinned4",
+                "block_full_ires_tax", "block_full_ures_phylo_pinned4"):
         assert block["block_coverage"][0][0] > 0.0  # some rows through the active sets
     if name == "block_alpha_pinned_control":
         assert block["block_coverage"][0] == [0.0, 1.0, 0.0] and block["dlogscale_correction"] == 0.0
@@ -333,11 +342,12 @@ def test_chunked_is_exact_in_float64(name, monkeypatch):
 @pytest.mark.parametrize("name", ["focal_cls_imb_norm", "loss_blend_focal", "sep_scalars_unitless_focal", "geo_focal",
                                   "block_full_mp", "block_full_tax", "block_full_targ_blend", "block_full_softmax_c",
                                   "block_full_tax_pinned4", "block_full_phylo", "block_full_phylo_pinned4",
-                                  "block_full_loss_blend_unitless", "block_full_sep_scalars"])
+                                  "block_full_loss_blend_unitless", "block_full_sep_scalars",
+                                  "block_full_ires_tax", "block_full_ures_phylo_pinned4"])
 def test_fold_pass_rebuilds_the_full_batch_sim_gradient(name, monkeypatch):
     """The measured entropies are taken off dL/dS rebuilt cell by cell in the fold pass: each image anchor's row
     whole, each text anchor's pairs from its softmax normalizer, that normalizer's adjoint (which carries the
-    focal weights' coupling) and, under block_residuals: full, its target row's residual parameters. An entropy
+    focal weights' coupling) and, under block_res full_*, its target row's residual parameters. An entropy
     is a forgiving summary of that, so the rebuilt gradient itself is held against the full-batch path's
     retained one."""
     cfg, spec1, spec2 = next(case[1:] for case in CASES if case[0] == name)
@@ -388,7 +398,7 @@ def test_chunked_matches_full_under_a_held_clamp(block):
 
 
 def test_batch_diagnostics_off():
-    """Disabling either diagnostics component must leave the loss, every gradient and the block_residuals
+    """Disabling either diagnostics component must leave the loss, every gradient and the block_res
     record identical (the hooks, the stats and the fold pass only observe): sim_grad_sums=False returns
     grad_sum_sim None and drops the measured entropies, sim_targ_stats=False returns batch_stats None."""
     B, C, K, D = 48, 16, 8, 16

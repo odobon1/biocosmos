@@ -3,9 +3,9 @@
 
 # Loss params: one criterion over the blended target distribution Y = (1 - lambda) * Y1 + lambda * Y2, Yk the
 # target distribution of target k (loss1 / loss2) under the criterion -- its target matrix Qk itself for the BCE
-# family, Qk through its own target simplex mapping (lossk.infonce.tsm) for InfoNCE
-crit: null  # {null, infonce, bce, bif_bce}; (null) Resolved from the model family's default
-# (model_specific.yaml: clip -> infonce, siglip -> bce) -- a default only: either family trains under either criterion,
+# family, Qk through its own target simplex mapping (lossk.xnce.tsm) for InfoNCE
+crit: null  # {null, xnce, bce, bif_bce}; (null) Resolved from the model family's default
+# (model_specific.yaml: clip -> xnce, siglip -> bce) -- a default only: either family trains under either criterion,
 # so a pretrained model can be held fixed across a softmax-vs-sigmoid comparison. The logit bias goes with the
 # criterion, not the family: InfoNCE never carries one (a shared scalar cannot move a row softmax; a SigLIP model's
 # pretrained bias is dropped), a BCE-family loss always does (loss.logits.bce.bias).
@@ -18,9 +18,9 @@ blend:  # Blend of loss1's / loss2's targets, under weights (1 - lambda, lambda)
   type: targ  # {targ, loss}; (targ) One loss against the blended target, L(Y); (loss) Blend of the per-target
   # losses, (1 - lambda) * L(Y1) + lambda * L(Y2) -- one criterion, sim and weighting config either way; on shared
   # logit scalars the loss is affine in the target, so the two coincide (value and gradients) unless a
-  # target-dependent factor is on: focal / DSMR / targ_mass_neut / infonce.block_residuals then read each term's
+  # target-dependent factor is on: focal / DSMR / targ_mass_neut / xnce.block_res then read each term's
   # own target, and unitless rescales each term; Inert iff (loss.blend.lambda: 0.0 | 1.0) or none of
-  # (loss.unitless, focal, DSMR, targ_mass_neut, infonce.block_residuals, loss.logits.shared: false) is live
+  # (loss.unitless, focal, DSMR, targ_mass_neut, xnce.block_res, loss.logits.shared: false) is live
 unitless: false  # {true, false}; (true) Rescale each loss term by its detached magnitude, L / L.detach() (bif_bce: by
 # L/2, its gradient-scale-equivalent value): a lone term reads a constant 1.0 (bif_bce 2.0), and under blend.type:
 # loss the terms are equalized to unit magnitude so lambda is loss2's share of the loss reading -- equivalently (with
@@ -28,29 +28,38 @@ unitless: false  # {true, false}; (true) Rescale each loss term by its detached 
 # logged per batch (general log) and curved in learning_curves/unitless_loss_blend.png (needs
 # diagnostics.batch_diagnostics.sim_targ_stats);
 # (false) Raw losses
-infonce:  # Inert iff (loss.crit != infonce)
-  block_residuals: null  # {null, alpha, full}; Block the residual component of the gradient -- both its
-  # structural-residual and its irreducible-residual part (utils.loss.infonce_block_resid; the res / ures / ires
-  # terms of the dscale strips): the pressure a target puts on the model by being unreachable is dropped, the
-  # pressure the model's own geometry puts on it is kept. (alpha) From the logit scale's gradient alone, so alpha
-  # learns from its structural gradient while every other gradient (the towers' included) is untouched; (full)
-  # From the whole model's -- the logit scale's and, through the similarities, the towers' -- so the towers and
-  # logit scale receive the gradient they would receive against the current reachable optimum p* in place of
-  # the target; (null) The full gradient. Applied as a zero-valued correction term, so the loss reading is
-  # untouched. RELIABILITY-GATED, per anchor row of each term's target distribution (utils.loss.infonce_train_resid):
-  # a two-level row of binary memberships (SP, MP: hard under the linear tsm -- FLYP, SupCon -- or soft under a
-  # softmax tsm past the band, pinned4 or a fixed sm_scale above 2 alpha) is blocked exactly, in closed form; a row
-  # inside the band has nothing to block -- under sm_scale pinned / pinned1 that is every row of every target, by
-  # construction, so blocking is inert there and reads as 100% feasible (a control); any other row -- a graded
-  # target's (tax / phylo) outside the band, under the linear tsm or pinned4 -- is blocked from the projection's
-  # active-set closed form, numerically checked rather than certified (utils.loss.infonce_active_set_resid: its
-  # sets pass their optimality conditions and its residual the sign and magnitude checks; relative precision well
-  # past the band, rounding at it), and a row left unresolved there is SKIPPED, keeping its ordinary, unblocked
-  # gradient; past alpha 340, a conservative cutoff, corrections are skipped as unsupported. What was applied is recorded per batch (dlogscale_correction;
-  # block_coverage: the [applied, feasible, skipped] row fractions per term, a panel of the scale figures;
-  # block_bound: a magnitude bound on any residual and on the correction) and summarized per checkpoint on rank 0.
-  # Requires (loss.crit: infonce) and no class-imbalance or focal weighting. Compatible with loss.unitless: each
-  # term's coefficient scales its correction, in float64
+xnce:  # Inert iff (loss.crit != xnce)
+  block_res: null  # {null, alpha_res, alpha_ires, alpha_ures, full_res, full_ures}; Block the residual component of
+  # the gradient (utils.loss.infonce_block_resid; the res / ures / ires terms of the dscale strips): the pressure a
+  # target puts on the model by being unreachable is dropped, the pressure the model's own geometry puts on it is
+  # kept. The value names WHOSE gradient is blocked and WHICH part of the residual: (alpha_*) The logit scale's
+  # alone, so alpha learns from its structural gradient while every other gradient (the towers' included) is
+  # untouched; (full_*) The whole model's -- the logit scale's and, through the similarities, the towers' -- so the
+  # towers and logit scale receive the gradient they would receive against the current reachable optimum p* in place
+  # of the target; (null) The full gradient, nothing blocked. The residual's scale gradient (p* - y) s splits along
+  # s*, the geometry realizing p*, into the structural-residual interaction (p* - y)(s - s*) -- carried by the
+  # model's geometry standing off the optimal one, vanishing as s approaches s* (the dscale ures strip) -- and the
+  # irreducible residual (p* - y) s*, what the optimal geometry itself still pushes on alpha (the ires strip):
+  # (*_res) Both, the whole residual component; (*_ires) The irreducible residual alone, the interaction still
+  # flows; (*_ures) The structural-residual interaction alone, the irreducible residual still flows. The
+  # similarities' residual gradient, alpha (p* - y) / B per pair, is the interaction's alone: the irreducible
+  # divergence D_KL(y || p*) does not depend on the similarities (its scale gradient IS the ires strip), so full_res
+  # and full_ures block it from the towers, and there is no full_ires -- it would coincide with alpha_ires.
+  # Applied as a zero-valued correction term, so the loss reading is untouched. RELIABILITY-GATED, per anchor row of
+  # each term's target distribution (utils.loss.infonce_train_resid): a two-level row of binary memberships (SP, MP:
+  # hard under the linear tsm -- FLYP, SupCon -- or soft under a softmax tsm past the band, pinned4 or a fixed
+  # sm_scale above 2 alpha) is blocked exactly, in closed form; a row inside the band has nothing to block -- under
+  # sm_scale pinned / pinned1 that is every row of every target, by construction, so blocking is inert there and
+  # reads as 100% feasible (a control); any other row -- a graded target's (tax / phylo) outside the band, under the
+  # linear tsm or pinned4 -- is blocked from the projection's active-set closed form, numerically checked rather than
+  # certified (utils.loss.infonce_active_set_resid: its sets pass their optimality conditions and its residual the
+  # sign and magnitude checks; relative precision well past the band, rounding at it), and a row left unresolved
+  # there is SKIPPED, keeping its ordinary, unblocked gradient; past alpha 340, a conservative cutoff, corrections
+  # are skipped as unsupported. What was applied is recorded per batch (dlogscale_correction; block_coverage: the
+  # [applied, feasible, skipped] row fractions per term, a panel of the scale figures; block_bound: a magnitude bound
+  # on any residual and on the correction) and summarized per checkpoint on rank 0. Requires (loss.crit: xnce) and
+  # no class-imbalance or focal weighting. Compatible with loss.unitless: each term's coefficient scales its
+  # correction, in float64
 bce:  # Inert iff (loss.crit != bif_bce)
   targ_mass_neut: false  # {true, false}; (true) Divide each anchor's row-summed loss by its (blended) target
   # (row) mass; anchor-wise, so bif_bce-only (no-op under sp targets, whose row mass is already 1: inert iff every
@@ -70,7 +79,7 @@ wting:
   focal:  # Focal loss params; Inert if (focal.gamma: 0.0)
     gamma: 0.0  # [0.0, inf); Down-weights easy samples, larger gamma → stronger focus on hard cases; (0.0) Disable
     # focal loss (FL --> CE iff gamma = 0.0); Recommended: 1-2 for InfoNCE, 2 for BCE; (<1.0 | >3.0) May be unstable
-  bce:  # BCE-specific weighting params; Inert iff (loss.crit: infonce)
+  bce:  # BCE-specific weighting params; Inert iff (loss.crit: xnce)
     dsmr: false  # {true, false}; Dynamic similarity mass rebalancing
 logits:
   shared: true  # {true, false}; (true) Both loss terms of a loss blend run on one set of logit scalars (scale +
@@ -91,7 +100,7 @@ logits:
     clamp: false  # {true, false}; (true) Cap logit scale at ln(100) before exp() so scale multiplier stays <= 100
     # (CLIP's stability cap; guards exp() overflow + bf16 quantization blowup) -- a held cap passes no gradient to
     # the log-scale (the scale curve then sits at 100, the dlogscale strips at zero); (false) Unbounded
-  bce:  # Sigmoid/BCE-path logit params; Inert iff (loss.crit: infonce)
+  bce:  # Sigmoid/BCE-path logit params; Inert iff (loss.crit: xnce)
     center: null  # {null, sim, grad_proj, grad_proj2}; Make dL/dsim zero-sum; (null) Disabled; (sim) Center
     # scaled sims about their mean before bias -- changes the forward (batch-dependent operating-point shift);
     # (grad_proj) Forward untouched, backward-only global-mean projection of the gradient entering sim (scale AND bias
@@ -109,7 +118,7 @@ logits:
 
 loss1:  # Primary target params; Inert iff (loss.blend.lambda: 1.0)
   targ: mp  # {sp, mp, tax, phylo}
-  infonce:  # Inert iff (loss.crit != infonce)
+  xnce:  # Inert iff (loss.crit != xnce)
     tsm:  # Target Simplex Mapping
       type: linear  # {linear, softmax}
       # (linear) Linear mapping (intended for MP + HCon, linear mapping operation is a no-op for SP (applied regardless))
@@ -121,11 +130,11 @@ loss1:  # Primary target params; Inert iff (loss.blend.lambda: 1.0)
       # (pinned4) Same as pinned but with x4 target scaling: softmax(4 alpha Q)
       # ([float]) Fixed scale c (non-learnable), the literal multiplier on Q with no x2: softmax(c Q); c = 1.0 is the
       # unscaled memberships, c = 2 alpha matches pinned
-      # Inert if (loss.loss1.infonce.tsm.type: linear)
+      # Inert if (loss.loss1.xnce.tsm.type: linear)
 
 loss2:  # Secondary target params; Inert iff (loss.blend.lambda: 0.0)
   targ: phylo  # {sp, mp, tax, phylo}
-  infonce:
+  xnce:
     tsm:
       type: softmax  # {linear, softmax}
       sm_scale: pinned  # {pinned, pinned1, pinned4, [float]}

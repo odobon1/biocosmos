@@ -69,7 +69,7 @@ def _cfg(crit="bce", lambda_=0.0, dsmr=True, focal_gamma=2.0, sim="cos", cls_imb
 
 def _targ(targ):
     """A target spec (train.yaml's loss1 / loss2 block); the tsm is read by InfoNCE only."""
-    return {"targ": targ, "infonce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": "linear", "sm_scale": "pinned"}}}
 
 
 CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion}

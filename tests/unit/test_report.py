@@ -2585,7 +2585,7 @@ def _scale_data_epoch(n, **series):
 
 
 def test_scale_figure_draws_a_coverage_panel_per_term_beside_the_correction(tmp_path, monkeypatch):
-    # loss.infonce.block_residuals' coverage (block_coverage: per batch, one [applied, feasible, skipped] triple per
+    # loss.xnce.block_res' coverage (block_coverage: per batch, one [applied, feasible, skipped] triple per
     # loss term) gets a panel per term right under the gradient panels, so a zero correction reads as no residual
     # or as an intervention skipped; a trial without the series gets no such panel
     n = 4
@@ -2627,7 +2627,7 @@ def _plot_scale(data_epoch, n, tmp_path, monkeypatch, scale_key, prefix, sym):
 
 def test_logscale_figure_draws_the_scale_parameters_grad_with_the_correction(tmp_path, monkeypatch) -> None:
     # what the scale actually received, measured: model.logit_scale.grad (read post-backward, pre-step) gets
-    # its own panel directly under the log alpha it belongs to, with loss.infonce.block_residuals' correction
+    # its own panel directly under the log alpha it belongs to, with loss.xnce.block_res' correction
     # drawn on it -- so the gradient without the intervention is the one line minus the other. Captioned
     # (actual) because the analytical dlogscale full-term panel further down carries the same nabla, and the
     # two need not agree (blend coefficients, loss.unitless)

@@ -277,8 +277,8 @@ class TrainConfig:
             if self.seed is None:
                 raise ValueError("htarg.shuffle=True requires a non-null seed (the shuffle permutation is derived from it and must match across DDP ranks)")
 
-        if self.loss["crit"] not in ("infonce", "bce", "bif_bce"):
-            raise ValueError(f"Unknown loss.crit: '{self.loss['crit']}', must be one of {{infonce, bce, bif_bce}}")
+        if self.loss["crit"] not in ("xnce", "bce", "bif_bce"):
+            raise ValueError(f"Unknown loss.crit: '{self.loss['crit']}', must be one of {{xnce, bce, bif_bce}}")
 
         if self.loss["sim"] not in ("cos", "geo"):
             raise ValueError(f"Unknown loss.sim: '{self.loss['sim']}', must be one of {{cos, geo}}")
@@ -290,7 +290,7 @@ class TrainConfig:
         # a blend of two identical target distributions is that distribution: lambda would do nothing. Under InfoNCE
         # the same targ type still blends two distributions when the specs' tsm differ
         if 0.0 < lambda_ < 1.0 and self.loss["loss1"]["targ"] == self.loss["loss2"]["targ"] and (
-            self.loss["crit"] != "infonce" or self.loss["loss1"]["infonce"]["tsm"] == self.loss["loss2"]["infonce"]["tsm"]
+            self.loss["crit"] != "xnce" or self.loss["loss1"]["xnce"]["tsm"] == self.loss["loss2"]["xnce"]["tsm"]
         ):
             raise ValueError(
                 f"loss.loss1 and loss.loss2 specify the same target distribution (targ '{self.loss['loss1']['targ']}') under loss.blend.lambda "
@@ -314,9 +314,11 @@ class TrainConfig:
         elif bias_init is not None and (isinstance(bias_init, bool) or not isinstance(bias_init, (int, float))):
             raise ValueError(f"Unknown loss.logits.bce.bias.init: {bias_init!r}, must be one of {{null, pos_prevalence, [float]}}")
 
-        block_resid = self.loss["infonce"]["block_residuals"]
-        if block_resid not in (None, "alpha", "full"):
-            raise ValueError(f"loss.infonce.block_residuals must be one of {{null, alpha, full}}, got {block_resid!r}")
+        block_resid = self.loss["xnce"]["block_res"]
+        if block_resid not in (None, "alpha_res", "alpha_ires", "alpha_ures", "full_res", "full_ures"):
+            raise ValueError(
+                f"loss.xnce.block_res must be one of {{null, alpha_res, alpha_ires, alpha_ures, full_res, full_ures}}, got {block_resid!r}"
+            )
         if block_resid is not None:
             # utils.loss.infonce_block_resid removes each loss term's residual from the plain cross-entropy's
             # gradient (the scale's alone, or the whole model's) where it is reliably known -- a two-level row's
@@ -324,11 +326,11 @@ class TrainConfig:
             # its ordinary gradient (utils.loss.infonce_train_resid): the terms must carry no weight the residual's derivation
             # doesn't account for. A target that never leaves the band (softmax-mapped under sm_scale pinned /
             # pinned1) is accepted: every row then reports feasible and nothing is applied, a control
-            if self.loss["crit"] != "infonce":
-                raise ValueError(f"loss.infonce.block_residuals requires loss.crit: infonce, got '{self.loss['crit']}'")
+            if self.loss["crit"] != "xnce":
+                raise ValueError(f"loss.xnce.block_res requires loss.crit: xnce, got '{self.loss['crit']}'")
             if self.loss["wting"]["cls_imb"]["type"] is not None or self.loss["wting"]["focal"]["gamma"] != 0.0:
                 raise ValueError(
-                    "loss.infonce.block_residuals is not implemented alongside class-imbalance weighting "
+                    "loss.xnce.block_res is not implemented alongside class-imbalance weighting "
                     f"(loss.wting.cls_imb.type: {self.loss['wting']['cls_imb']['type']!r}) or focal loss "
                     f"(loss.wting.focal.gamma: {self.loss['wting']['focal']['gamma']}): the residual it removes is the "
                     "unweighted cross-entropy's"
@@ -367,9 +369,9 @@ class TrainConfig:
         self.n_cpus = slurm_alloc["n_cpus"]
         self.ram = slurm_alloc["ram"]
 
-        # the tiled loss's row-block height for this trial's criterion (hardware.loss_chunk_size.{bce, infonce}; bce
+        # the tiled loss's row-block height for this trial's criterion (hardware.loss_chunk_size.{bce, xnce}; bce
         # covers the BCE family, bce / bif_bce); None -> the full BxB path
-        crit_family = "infonce" if self.loss["crit"] == "infonce" else "bce"
+        crit_family = "xnce" if self.loss["crit"] == "xnce" else "bce"
         self.loss_chunk_size = self.hw.loss_chunk_size[crit_family]
         if self.loss_chunk_size is not None:
             # center: sim needs the full-batch sim mean IN-GRAPH per tile; the tiled path recovers it
@@ -409,17 +411,17 @@ def targ_dependent_loss(loss: dict) -> bool:
     Shared by inert_params and the config.json metadata cleaning (utils.train.ArtifactManager
     .save_metadata_coord), which have to agree: the first decides whether a campaign may override
     loss.blend.type, the second whether the trial's recorded config keeps it. Each factor is gated on the
-    criterion that reads it -- DSMR is BCE-only, targ_mass_neut bifurcated-only, block_residuals
+    criterion that reads it -- DSMR is BCE-only, targ_mass_neut bifurcated-only, block_res
     InfoNCE-only -- since a criterion's own toggle sets nothing apart where it is never read.
     """
     crit = loss["crit"]
     return (
         loss["unitless"] or "focal" in loss["wting"] or not loss["logits"]["shared"]
-        or (crit != "infonce" and loss["wting"]["bce"]["dsmr"])
+        or (crit != "xnce" and loss["wting"]["bce"]["dsmr"])
         or (crit == "bif_bce" and loss["bce"]["targ_mass_neut"])
         # the residual blocked per term is its own target's (utils.loss.infonce_block_resid), and p* is not
         # linear in the target: a loss blend blocks two residuals where its target blend blocks one
-        or (crit == "infonce" and loss["infonce"]["block_residuals"] is not None)
+        or (crit == "xnce" and loss["xnce"]["block_res"] is not None)
     )
 
 def inert_params(cfg: TrainConfig) -> dict[str, str]:
@@ -444,19 +446,19 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
         ("loss.loss2", lambda_ == 0.0, "loss.blend.lambda is 0.0"),
         ("loss.blend.type", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
         ("loss.blend.type", not targ_dep,
-         "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut, block_residuals) on "
+         "no target-dependent loss factor is live (loss.unitless, focal, DSMR, targ_mass_neut, block_res) on "
          "shared logit scalars: the blend types coincide"),
         ("loss.logits.shared", lambda_ in (0.0, 1.0), f"loss.blend.lambda is {lambda_} (a lone target)"),
         ("loss.logits.shared", cfg.loss["blend"]["type"] == "targ", "loss.blend.type is targ (one loss on one set of logits)"),
-        ("loss.infonce", crit != "infonce", f"loss.crit is {crit}"),
+        ("loss.xnce", crit != "xnce", f"loss.crit is {crit}"),
         ("loss.bce", crit != "bif_bce", f"loss.crit is {crit}"),
         ("loss.bce", all(targ == "sp" for targ in live_targs), "every live target is sp (row mass already 1)"),
-        ("loss.wting.bce", crit == "infonce", "loss.crit is infonce"),
+        ("loss.wting.bce", crit == "xnce", "loss.crit is xnce"),
         ("loss.wting.cls_imb.inv_freq", cls_imb_type != "inv_freq", f"loss.wting.cls_imb.type is {cls_imb_type}"),
         ("loss.wting.cls_imb.class_bal", cls_imb_type != "class_bal", f"loss.wting.cls_imb.type is {cls_imb_type}"),
         ("loss.wting.cls_imb.norm", cls_imb_type is None, f"loss.wting.cls_imb.type is {cls_imb_type}"),
         ("loss.wting.cls_imb.norm", cfg.loss["unitless"], "loss.unitless is true (its rescale cancels the per-batch normalizer)"),
-        ("loss.logits.bce", crit == "infonce", "loss.crit is infonce (sigmoid/BCE-path logit params)"),
+        ("loss.logits.bce", crit == "xnce", "loss.crit is xnce (sigmoid/BCE-path logit params)"),
         # CLIP + bias.init null: logit_bias is a fixed 0.0 buffer (models.py), never learnable
         ("loss.logits.bce.bias.freeze", not is_siglip and cfg.loss["logits"]["bce"]["bias"]["init"] is None,
          "the CLIP logit bias is a fixed 0.0 buffer under loss.logits.bce.bias.init: null"),
@@ -464,9 +466,9 @@ def inert_params(cfg: TrainConfig) -> dict[str, str]:
     for key in ("loss1", "loss2"):
         cfg_targ = cfg.loss[key]
         rules += [
-            (f"loss.{key}.infonce", crit != "infonce", f"loss.crit is {crit}"),
-            (f"loss.{key}.infonce.tsm.sm_scale", cfg_targ["infonce"]["tsm"]["type"] == "linear",
-             f"loss.{key}.infonce.tsm.type is linear"),
+            (f"loss.{key}.xnce", crit != "xnce", f"loss.crit is {crit}"),
+            (f"loss.{key}.xnce.tsm.sm_scale", cfg_targ["xnce"]["tsm"]["type"] == "linear",
+             f"loss.{key}.xnce.tsm.type is linear"),
         ]
 
     inert = {}
@@ -666,7 +668,7 @@ class HardwareConfig:
 
     mixed_prec: bool  # bf16 autocast mixed precision for training and validation (bf16 needs no GradScaler)
     act_chkpt: bool
-    loss_chunk_size: dict  # {bce, infonce: int | None}; row-block height for the global-batch (BxB) loss per criterion family (bce: bce / bif_bce), row-band-sharded across ranks; None -> full BxB (no tiling/sharding). TrainConfig.loss_chunk_size is the trial's criterion's. See config/trial/hardware.yaml.
+    loss_chunk_size: dict  # {bce, xnce: int | None}; row-block height for the global-batch (BxB) loss per criterion family (bce: bce / bif_bce), row-band-sharded across ranks; None -> full BxB (no tiling/sharding). TrainConfig.loss_chunk_size is the trial's criterion's. See config/trial/hardware.yaml.
     cudnn_benchmark: bool  # torch.backends.cudnn.benchmark
     prefetch_factor: int
     max_n_workers_gpu: int | None
@@ -679,7 +681,7 @@ class HardwareConfig:
     max_retries: int  # campaign runner: consecutive no-progress trial retries before giving up
 
     def __post_init__(self):
-        for crit_family in ("bce", "infonce"):
+        for crit_family in ("bce", "xnce"):
             c = self.loss_chunk_size[crit_family]
             if c is not None and not (isinstance(c, int) and c > 0 and (c & (c - 1)) == 0):
                 raise ValueError(f"hardware.loss_chunk_size.{crit_family} must be null or a positive power of 2; got {c!r}")

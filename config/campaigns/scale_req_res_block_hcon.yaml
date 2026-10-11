@@ -6,14 +6,14 @@ trainval: false  # {true, false}; (true) after the refine phase, retrain each pi
 
 baseline_overrides:
   loss.loss1.targ: phylo
-  loss.loss1.infonce.tsm.type: softmax
-  loss.loss1.infonce.tsm.sm_scale: pinned4
+  loss.loss1.xnce.tsm.type: softmax
+  loss.loss1.xnce.tsm.sm_scale: pinned4
 
 ablation_arms:
-  - - {loss.logits.scale.freeze: false, loss.infonce.block_residuals: alpha, name: LearnedScale-ScaleResBlock}
-    - {loss.logits.scale.freeze: false, loss.infonce.block_residuals: full, name: LearnedScale-ModelResBlock}
-    - {loss.logits.scale.freeze: true, loss.infonce.block_residuals: full, name: FrozenScale-ModelResBlock}
-    - {loss.logits.scale.freeze: true, loss.infonce.block_residuals: null, name: FrozenScale-ResFul}
+  - - {loss.logits.scale.freeze: false, loss.xnce.block_res: alpha_res, name: LearnedScale-ScaleResBlock}
+    - {loss.logits.scale.freeze: false, loss.xnce.block_res: full_res, name: LearnedScale-ModelResBlock}
+    - {loss.logits.scale.freeze: true, loss.xnce.block_res: full_res, name: FrozenScale-ModelResBlock}
+    - {loss.logits.scale.freeze: true, loss.xnce.block_res: null, name: FrozenScale-ResFul}
 
 hpo_coords:
   - - {lr.init: [2.0e-5, 6.0e-5, 2.0e-4]}

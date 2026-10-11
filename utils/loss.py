@@ -111,8 +111,8 @@ class Criterion(abc.ABC):
     wting_dim: int
     bifurcated = False  # True -> consumes the (i2t, t2i) branch logits pair (see BifurcatedBCECriterion)
     lambda_eff = None  # the last training batch's effective lambda (term_coeffs), or None
-    dlogscale_correction = None  # this forward's block_residuals correction to logit_scale's gradient, or None
-    block_stats = None  # this forward's block_residuals batch record (the correction(s) applied, per-term coverage), or None
+    dlogscale_correction = None  # this forward's block_res correction to logit_scale's gradient, or None
+    block_stats = None  # this forward's block_res batch record (the correction(s) applied, per-term coverage), or None
 
     def __init__(self, cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         self.cfg = cfg_loss
@@ -125,7 +125,7 @@ class Criterion(abc.ABC):
     @staticmethod
     def build(cfg_loss, cfg_loss1, cfg_loss2, dataset, split, train_pt, device, batch_size):
         crit_cls = {
-            "infonce": InfoNCECriterion,
+            "xnce": InfoNCECriterion,
             "bce":     BCECriterion,
             "bif_bce": BifurcatedBCECriterion,
         }[cfg_loss["crit"]]
@@ -405,12 +405,13 @@ def infonce_train_resid(Y, alpha, s, binary, inside):
     feasible = feasible & ~applied
     return R, applied, feasible, ~(applied | feasible)
 
-def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
+def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None, type_res="res"):
     """
     The zero-valued loss term that blocks the residual part of one InfoNCE term's gradient
-    (loss.infonce.block_residuals) -- the logit scale's alone (alpha), or the whole model's: the
-    scale's and, through the similarities, the towers' (full) -- leaving its structural part to flow alone,
-    on the anchor rows whose residual is reliably known (infonce_train_resid) and nowhere else.
+    (loss.xnce.block_res) -- the logit scale's alone (alpha_*), or the whole model's: the scale's and,
+    through the similarities, the towers' (full_*) -- leaving its structural part to flow alone, on the
+    anchor rows whose residual is reliably known (infonce_train_resid) and nowhere else; the whole
+    residual, or one of its two parts along s* (*_res, *_ires, *_ures: `type_res`).
 
     Per pair and anchor direction the term's gradient at the logits z = alpha * s splits as
 
@@ -426,7 +427,28 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
     the similarities' as dL/ds = alpha (p - y) / B. Blocked, a target the logits cannot reach stops
     pushing on the scale by being unreachable (alpha), or on the model at all (full): its towers then
     receive the gradient the loss would send them against p* in place of y, the reachable optimum,
-    while the loss reading keeps scoring y. The residual is infonce_train_resid's: resolved on every row it
+    while the loss reading keeps scoring y.
+
+    The residual's scale gradient splits once more along s* = infonce_s_opt(p*, alpha), the geometry
+    realizing p* (the dscale strips' ures / ires):
+
+        (p* - y) s = (p* - y)(s - s*) + (p* - y) s*    (ures + ires),
+
+    the structural-residual interaction, carried by the model's geometry standing off the optimal one and
+    vanishing as s approaches s*, and the irreducible residual, what the optimal geometry itself still
+    pushes on alpha. type_res blocks both (res), the irreducible part alone (ires) or the interaction alone
+    (ures). The similarities' residual gradient alpha (p* - y) / B belongs to the interaction: the
+    irreducible divergence E_ir = D_KL(y || p*) does not depend on the similarities, and its scale gradient
+    is the ires strip itself (by the envelope theorem over the minimizer s*; on a hard row both read
+    -2 M lam), so the three variants are the gradients of the potentials alpha <R, s> / B, alpha <R, s*> / B
+    and alpha <R, s - s*> / B with R and s* held fixed -- and under full the towers' residual is blocked
+    under res and ures, never under ires, where full would coincide with alpha (so there is no full_ires
+    value). s* is taken off the residual
+    the correction uses, p* = y + R on the applied rows (the closed forms', the active sets'), so the
+    blocked quantity is the strip the correction removes where it is applied; the diagnostics' strips
+    read infonce_s_opt off the solve's p* on the rows this one leaves to the subtraction, as their R does.
+
+    The residual is infonce_train_resid's: resolved on every row it
     is applied to (a two-level row's closed form, exact; the projection's checked active sets', to relative
     precision well past the band and to rounding at it), zero on feasible
     rows, and zero on SKIPPED rows -- those left unresolved -- which keep their ordinary, unblocked gradient. Rows are selected per anchor
@@ -458,21 +480,23 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
     - logit_scale -- the term's raw log logit-scale parameter (model.logit_scale)
     - clamp -------- logits.scale.clamp, so the term takes compute_logits' clamp-then-exp path and is
                      held at zero with the parameter once the cap holds
-    - full --------- block the residual from the similarities' gradient too (block_residuals: full),
-                     not the scale's alone (alpha)
+    - full --------- block the residual from the similarities' gradient too (full_*), not the scale's
+                     alone (alpha_*); nothing to block there under type_res ires
     - coeff -------- the term's detached loss coefficient c_k (Criterion.term_coeffs): its blend weight, or
                      under loss.unitless that weight over its detached loss; applied here, once, and not by
                      the caller
-    - spec --------- the term's target spec (loss1 / loss2: targ + infonce.tsm), from which
+    - spec --------- the term's target spec (loss1 / loss2: targ + xnce.tsm), from which
                      infonce_train_resid takes the tsm's target scale, whether the memberships are binary
                      and whether the mapping keeps every row inside the band (a fixed sm_scale c decides
                      that against alpha's value: one device sync, that configuration alone); None for a
                      term that blends two specs (loss.blend.type targ), which says nothing about its rows
+    - type_res ----- which part of the residual is blocked (loss.xnce.block_res' second half): res (the whole),
+                     ires (the irreducible part, (p* - y) s*) or ures (the interaction, (p* - y)(s - s*))
 
     Returns (term, correction, coverage, bound):
-    - term -------- a scalar of value exactly 0 whose gradient is minus the residual part of the term's
-                    d(loss)/d(log logit scale) -- and, under full, of its d(loss)/d(sim) -- over the applied
-                    rows, times coeff; added to the loss it leaves the loss reading untouched
+    - term -------- a scalar of value exactly 0 whose gradient is minus the (type_res) residual part of the
+                    term's d(loss)/d(log logit scale) -- and, under full, of its d(loss)/d(sim) -- over the
+                    applied rows, times coeff; added to the loss it leaves the loss reading untouched
     - correction -- the gradient `term` ADDS to the raw log-scale parameter, detached: signed as a delta,
                     so grad_after = grad_before + correction, and it is MINUS the blocked residual (a
                     residual pushing alpha up is negative, its correction positive); skipped rows add zero.
@@ -492,26 +516,56 @@ def infonce_block_resid(Y, sim, logit_scale, clamp, full, coeff, spec=None):
                     attains it: with F floor and C >= 1 cap entries, mass balance gives
                     lam <= 1 / (|F| + e^{2 alpha}) and |R|_1 = 2 sum_F R_j <= 2 |F| lam), and the
                     correction's bound after the coefficient and the reduction, |coeff| d(alpha)/d(log
-                    alpha_raw) U, since |0.5 mean_i sum_j R_ij T_ij| <= U with |T_ij| <= 2
+                    alpha_raw) t U, since |0.5 mean_i sum_j R_ij T_ij| <= t U with |T_ij| <= 2 t: t = 1
+                    under res / ires (each direction's |s|, |s*| <= 1), t = 2 under ures (|s - s*| <= 2)
     """
     alpha = (logit_scale.clamp(max=math.log(100)) if clamp else logit_scale).exp()
-    R, applied, feasible, skipped = _block_resid_rows(Y, alpha.detach().double(), spec)
+    alpha64 = alpha.detach().double()
+    R, applied, feasible, skipped = _block_resid_rows(Y, alpha64, spec)
     coeff = torch.as_tensor(coeff, dtype=torch.float64, device=R.device).detach()
-    T = sim.detach().double()
-    T = T + T.T  # both anchor directions contracted at once
+    S = sim.detach().double()
+    S_opt = _block_resid_s_opt(Y, R, applied, alpha64) if type_res != "res" else None
+    T = _resid_contract(S, S_opt, type_res) + _resid_contract(S.T, S_opt, type_res)  # both anchor directions contracted at once
     resid = coeff * 0.5 * (R * T).sum(dim=1).mean()  # float64 through the coefficient
     resid = resid.to(alpha.dtype)  # the one cast, of the finished product
-    correction, bound = _block_resid_record(logit_scale, clamp, alpha, resid, coeff, Y.size(1))
+    correction, bound = _block_resid_record(logit_scale, clamp, alpha, resid, coeff, Y.size(1), type_res)
     term = -(alpha - alpha.detach()) * resid
-    if full:
+    if full and type_res != "ires":
         # the residual's part of dL/dsim: per pair alpha (p* - y) / B, the two anchor directions folded
         # (R_ij scores z_ij, R_ji scores z_ji, and both are alpha * s_ij) AFTER the per-anchor selection,
         # so cell (i, j) keeps anchor j's half where anchor i is skipped. Off the live sim, so the gradient
-        # reaches the towers; alpha detached, the scale's own part being the term above
-        G = coeff * 0.5 * alpha.detach().double() * (R + R.T) / Y.size(0)
+        # reaches the towers; alpha detached, the scale's own part being the term above. The interaction's
+        # alone (docstring): nothing under ires
+        G = coeff * 0.5 * alpha64 * (R + R.T) / Y.size(0)
         term = term - ((sim - sim.detach()) * G).sum().to(term.dtype)
     coverage = torch.stack([applied, feasible, skipped]).double().mean(dim=1)
     return term, correction, coverage, bound
+
+def _block_resid_s_opt(Y, R, applied, alpha64):
+    """
+    The geometry s* realizing the reachable optimum p* = Y + R of a term's APPLIED rows (infonce_s_opt, off the
+    residual the correction uses rather than the solve's p*), and exactly zero on every other row (their p* is
+    replaced by a constant row, whose recentered log is zero -- so no log of a target's zero is ever taken, and
+    the rows the correction skips contract to nothing by selection, as their R already does). `Y`, `R`, `applied`
+    as infonce_train_resid returns them for a term's target distribution or a row tile of it ([R, B], float64),
+    `alpha64` the term's post-clamp logit scale, detached float64. What type_res ires / ures contract the
+    residual against (_resid_contract); shared by the full-batch term (infonce_block_resid) and the tiled one
+    (chunked_infonce_loss_backward).
+    """
+    P_opt = torch.where(applied[:, None], Y + R, torch.ones_like(Y))
+    return infonce_s_opt(P_opt, alpha64)
+
+def _resid_contract(S, S_opt, type_res):
+    """
+    What one anchor direction's residual rows are contracted against for the scale's part of the correction
+    (loss.xnce.block_res' second half, `type_res`): the direction's own sims (res: the whole residual strip (p* - y) s), the
+    optimal geometry (ires: (p* - y) s*) or the model's geometry standing off it (ures: (p* - y)(s - s*)). `S` the
+    direction's detached float64 sims ([R, B]: sim's rows for image anchors, sim.T's for text anchors), `S_opt`
+    _block_resid_s_opt's for the same anchor rows (one geometry for both directions, as p* is), None under res.
+    """
+    if type_res == "res":
+        return S
+    return S_opt if type_res == "ires" else S - S_opt
 
 def _block_resid_rows(Y, alpha64, spec):
     """
@@ -525,7 +579,7 @@ def _block_resid_rows(Y, alpha64, spec):
     if spec is None:
         s, binary, inside = None, False, False
     else:
-        tsm = spec["infonce"]["tsm"]
+        tsm = spec["xnce"]["tsm"]
         s, binary = tsm_target_scale(tsm, alpha64), spec["targ"] in ("sp", "mp")
         if tsm["type"] == "linear" or tsm["sm_scale"] == "pinned4":
             inside = False
@@ -535,14 +589,16 @@ def _block_resid_rows(Y, alpha64, spec):
             inside = bool(s <= 2 * alpha64)  # a fixed c: inside iff c <= 2 alpha
     return infonce_train_resid(Y, alpha64, s, binary, inside)
 
-def _block_resid_record(logit_scale, clamp, alpha, resid, coeff, B):
+def _block_resid_record(logit_scale, clamp, alpha, resid, coeff, B, type_res):
     """
     infonce_block_resid's (correction, bound) for one term, from its finished contraction `resid` (the
     coefficient applied, cast to the parameter's dtype): the delta the term adds to the raw log-scale
     parameter's gradient, through the clamp-then-exp Jacobian d(alpha)/d(log alpha_raw) -- zero where the
     parameter takes no gradient -- and the magnitude bounds [U, the correction's]. `alpha` the term's post-clamp
-    scale, `coeff` its float64 coefficient, `B` the batch size (a target row's length). Shared by the
-    full-batch term and the tiled one (chunked_infonce_loss_backward), whose contraction is summed over tiles.
+    scale, `coeff` its float64 coefficient, `B` the batch size (a target row's length), `type_res` what the
+    residual was contracted against (the correction's bound doubles under ures: |s - s*| <= 2 where |s|, |s*| <= 1).
+    Shared by the full-batch term and the tiled one (chunked_infonce_loss_backward), whose contraction is summed
+    over tiles.
     """
     if logit_scale.requires_grad:
         log_alpha = logit_scale.detach().requires_grad_(True)
@@ -554,7 +610,8 @@ def _block_resid_record(logit_scale, clamp, alpha, resid, coeff, B):
     alpha64 = alpha.detach().double()
     n_minus = B - 1
     U = 2 * n_minus * torch.exp(-2 * alpha64) / (1 + n_minus * torch.exp(-2 * alpha64))
-    bound = torch.stack([U, coeff.abs() * dscale_dlog.detach().double().abs() * U])
+    t = 2.0 if type_res == "ures" else 1.0
+    bound = torch.stack([U, coeff.abs() * dscale_dlog.detach().double().abs() * t * U])
     return correction, bound
 
 class InfoNCECriterion(Criterion):
@@ -606,11 +663,11 @@ class InfoNCECriterion(Criterion):
         return Y
 
     def targ_dists(self, Qs, logit_scales):
-        return [self._tsm(Q, cfg_targ["infonce"]["tsm"], logit_scale) for (_, cfg_targ), Q, logit_scale in zip(self.targ_specs, Qs, logit_scales)]
+        return [self._tsm(Q, cfg_targ["xnce"]["tsm"], logit_scale) for (_, cfg_targ), Q, logit_scale in zip(self.targ_specs, Qs, logit_scales)]
 
     def _set_block_stats(self, corrections, coverages, bounds):
         """
-        The batch's record of loss.infonce.block_residuals' intervention (block_stats;
+        The batch's record of loss.xnce.block_res' intervention (block_stats;
         TrainPipeline._record_train_batch reads it whether or not the sim_targ_stats diagnostics are on), from
         the terms' (correction, coverage, bound) as infonce_block_resid returns them: the delta it made to each
         logit-scale parameter's gradient (grad_after = grad_before + it) -- every term's on logit_scale under
@@ -681,18 +738,19 @@ class InfoNCECriterion(Criterion):
         coeffs = self.term_coeffs([w for w, _ in terms], losses)
         loss = sum(c * L for c, L in zip(coeffs, losses))
 
-        block = self.cfg["infonce"]["block_residuals"]
+        block = self.cfg["xnce"]["block_res"]
         if block is not None:
             # each term's residual is its own target's, the float64 distribution it scores against: the
             # blend's under blend.type targ, spec k's under blend.type loss. The one sim matrix serves
             # every term -- it is the terms' logit scalars that differ, not it. Each term carries its own
             # coefficient (a unitless one included), applied inside the term in float64
             clamp = self.cfg["logits"]["scale"]["clamp"]
+            type_block, type_res = block.split("_")  # {alpha, full}_{res, ires, ures} (infonce_block_resid)
             log_scales = self._per_term(lambda t: t, logit_scale, len(terms))
             # each term's spec: its own under blend.type loss or a lone target; none for the one term of a
             # target blend, whose rows no spec describes
             term_specs = [cfg_targ for _, cfg_targ in self.targ_specs] if len(terms) == len(self.targ_specs) else [None]
-            blocks = [infonce_block_resid(Y_k, sim, log_scale, clamp, block == "full", c, spec)
+            blocks = [infonce_block_resid(Y_k, sim, log_scale, clamp, type_block == "full", c, spec, type_res)
                       for (_, Y_k), log_scale, c, spec in zip(terms64, log_scales, coeffs, term_specs)]
             loss = loss + sum(term for term, *_ in blocks)
             self._set_block_stats(*zip(*((g, cov, bound) for _, g, cov, bound in blocks)))
@@ -1457,7 +1515,7 @@ def sim_grad_entropies_actual(grad_sim):
     infonce_sim_grad_entropies' pair / anchor / active trio off the similarity gradient the towers ACTUALLY
     received: the retained sims' .grad after the backward (batch_diagnostics.sim_grad_sums; bf16 under mixed
     precision, read as it is), which carries every weight the loss does -- class-imbalance, focal, the blend
-    coefficients, loss.unitless, block_residuals' correction -- where the analytic family reads the unweighted
+    coefficients, loss.unitless, block_res' correction -- where the analytic family reads the unweighted
     loss_raw gradient off the blended target distribution. The measurement beside the decomposition, as the scale
     figures' (actual) panel is beside their dscale ones.
 
@@ -1552,7 +1610,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       compute_logits applies, so exactly at the cap it goes whichever way the running torch's clamp
       backward breaks the tie (the gradient passes in 2.5 / 2.7, is blocked in 2.14).
 
-      Under loss.infonce.block_residuals the loss carries a term cancelling the residual, which
+      Under loss.xnce.block_res the loss carries a term cancelling the residual, which
       changes what the optimizer sees, not the decomposition reported here. On a LONE target the
       parameter then follows the struct entry exactly. On a loss blend of two it does NOT: this whole
       family is built from the blended distribution Y, while the loss blocks each term's own residual
@@ -1560,7 +1618,7 @@ def infonce_batch_stats(sim, targs, y, logits, logit_scale, clamp):
       sum_k w_k p*(Y_k) -- struct came out 0.69% off the parameter's gradient on an sp + mp blend at
       alpha 1. (The full entry stays exact there, the loss being affine in the target; under
       loss.unitless neither is, the coefficients then not summing to 1 while Y is renormalized -- a
-      scale this family has never carried, block_residuals or not.) The exact reading of the
+      scale this family has never carried, block_res or not.) The exact reading of the
       intervention is dlogscale_correction, logged separately: the delta the parameter's gradient
       actually received (grad_after = grad_before + dlogscale_correction; zero under a held clamp or a
       frozen scale, as the parameter's own gradient is).
@@ -2234,7 +2292,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
     return loss, loss_raw, batch_stats, grad_sum_sim
 
 # ------------------------------------------------------------------------------------------------
-# Tiled / chunked global-batch InfoNCE loss (hardware.loss_chunk_size.infonce)
+# Tiled / chunked global-batch InfoNCE loss (hardware.loss_chunk_size.xnce)
 #
 # InfoNCE's softmax couples every pair of an anchor's row, and its two anchor directions normalize along
 # different axes of the one BxB logit matrix -- image anchors along its rows, text anchors along its columns --
@@ -2251,7 +2309,7 @@ def chunked_bce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, compute
 #
 # What couples across tiles is precomputed, or folded after the sweep, as there: the cls_imb.norm normalizer is
 # the mean of the O(B) per-anchor weight vector (built outright), loss.unitless' term magnitudes take a no_grad
-# pre-sweep, and loss.infonce.block_residuals -- row-wise in the target, contracted against the anchor's sims
+# pre-sweep, and loss.xnce.block_res -- row-wise in the target, contracted against the anchor's sims
 # in both frames -- is applied per tile on the sims (full) and once after the sweep on the scale, its
 # contraction summed over the tiles in float64 (infonce_block_resid).
 #
@@ -2523,7 +2581,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
     the anchors split into world_size equal bands, this rank sweeps its band [rank*b, (rank+1)*b) in blocks of
     C = chunk_size anchors, and each block as two C x B tiles, one per anchor direction in the direction's own
     frame (module header), each backpropagated into the embedding leaves as computed -- peak VRAM O(C*B),
-    per-rank compute O(B^2/world_size). The loss/raw totals, batch stats and block_residuals record are
+    per-rank compute O(B^2/world_size). The loss/raw totals, batch stats and block_res record are
     all-reduced, so every rank returns identical full-batch values; the leaves' .grad hold this band's PARTIAL
     dL/dembs, which sum to the full gradient across ranks (the caller completes them -- see
     batch_step_chunked). Exact up to floating-point summation order.
@@ -2531,7 +2589,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
     Covers InfoNCECriterion's whole config space: every target and tsm, the blend under either
     loss.blend.type, loss.unitless (a no_grad pre-sweep of the terms' magnitudes), separate logit scalars
     (each term on its own pair's logits tile), class-imbalance + focal weighting, and
-    loss.infonce.block_residuals, whose record lands on the criterion as the full-batch call leaves it
+    loss.xnce.block_res, whose record lands on the criterion as the full-batch call leaves it
     (crit.block_stats / dlogscale_correction, lambda_eff).
 
     - img, txt --------- detached [B, D] embedding leaves (requires_grad); receive band-partial dL/dembs
@@ -2563,7 +2621,9 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
 
     cfg = crit.cfg
     clamp = cfg["logits"]["scale"]["clamp"]
-    block = cfg["infonce"]["block_residuals"]
+    block = cfg["xnce"]["block_res"]
+    type_block, type_res = block.split("_") if block is not None else (None, None)  # {alpha, full}_{res, ires, ures}
+    block_sims = type_block == "full" and type_res != "ires"  # the irreducible part has no similarity gradient (infonce_block_resid)
     n_pairs = n_scalar_pairs(crit)
     frames = ((img, txt), (txt, img))  # (anchors, candidates) per direction: i2t, t2i
     spec_fns = make_targ_block_fns(crit, class_encs_b, targ_data_b, B, device)
@@ -2648,7 +2708,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
         stats = _SimTargStatsAccum(device, hpsm_kappas, hist_bins, B, p_hist=False)
         nce_stats = _InfoNCEStatsAccum(device, B, term_scales[0].detach(), clamp)  # the primary pair's scale, as the full-batch stats read
         # each live spec's tsm, its scale (at the spec's own post-clamp alpha) and every anchor's normalizer
-        tsm_cfgs = [cfg_targ["infonce"]["tsm"] for _, cfg_targ in crit.targ_specs]
+        tsm_cfgs = [cfg_targ["xnce"]["tsm"] for _, cfg_targ in crit.targ_specs]
         tsm_scales = [tsm_target_scale(cfg_tsm, (t.detach().clamp(max=math.log(100)) if clamp else t.detach()).exp().double())
                       for cfg_tsm, t in zip(tsm_cfgs, spec_scales)]
         tsm_norms = torch.zeros(len(spec_fns), B, dtype=torch.float64, device=device)
@@ -2657,7 +2717,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
         # per scalar pair, every text anchor's softmax normalizer and its adjoint dL/d(lse) (module header)
         lse_vals = torch.zeros(n_pairs, B, dtype=torch.float64, device=device)
         lse_adjs = torch.zeros(n_pairs, B, dtype=torch.float64, device=device)
-        if block == "full":
+        if block_sims:
             resid_prms = torch.zeros(n_terms, B, 9, dtype=torch.float64, device=device)
 
     for rs in range(lo, hi, chunk_size):
@@ -2666,12 +2726,13 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
             Qs, terms64, Y64 = targ_tiles(rs, re)
             Ys = [Y_k.float() for _, Y_k in terms64]
             if block is not None:
-                Rs = []
+                Rs, S_opts = [], []
                 for k, ((_, Y_k), alpha64, spec) in enumerate(zip(terms64, alphas64, term_specs)):
                     R, applied, feasible, skipped = _block_resid_rows(Y_k, alpha64, spec)
                     cov_sums[k] += torch.stack([applied, feasible, skipped]).double().sum(dim=1)
                     Rs.append(R)
-                    if fold_actual and block == "full":
+                    S_opts.append(_block_resid_s_opt(Y_k, R, applied, alpha64) if type_res != "res" else None)
+                    if fold_actual and block_sims:
                         resid_prms[k, rs:re] = _train_resid_params(Y_k, R, applied)
         tiles_stat = []
         for f, (rows, cols) in enumerate(frames):
@@ -2691,11 +2752,12 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
                 loss_tot += frame_loss.detach().double()
                 raw_tot += 0.5 * sum(w * raw for w, raw in zip(term_ws, raws))
                 if block is not None:
-                    # the anchors' residual rows against their sims in this frame: R_i. against sim_i. (i2t) and
-                    # sim_.i (t2i), the two halves of infonce_block_resid's contraction with sim + sim.T
+                    # the anchors' residual rows against their sims in this frame -- R_i. against sim_i. (i2t) and
+                    # sim_.i (t2i), the two halves of infonce_block_resid's contraction with sim + sim.T -- or
+                    # against s* / the sims standing off it (type_res; _resid_contract)
                     S = sim_tile.detach().double()
-                    resid_sums += torch.stack([(R * S).sum() for R in Rs])
-                    if block == "full":
+                    resid_sums += torch.stack([(R * _resid_contract(S, S_opt, type_res)).sum() for R, S_opt in zip(Rs, S_opts)])
+                    if block_sims:
                         # ... and of its dL/dsim part, R + R.T against the live sim
                         G = sum(c64 * 0.5 * alpha64 * R for c64, alpha64, R in zip(coeffs64, alphas64, Rs)) / B
                         frame_loss = frame_loss - ((sim_tile - sim_tile.detach()) * G).sum().to(frame_loss.dtype)
@@ -2725,7 +2787,7 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
             resid_sums, cov_sums = block_parts
 
     if block is not None:
-        records = [_block_resid_record(t, clamp, alpha, (c64 * 0.5 * resid_sum / B).to(alpha.dtype), c64, B)
+        records = [_block_resid_record(t, clamp, alpha, (c64 * 0.5 * resid_sum / B).to(alpha.dtype), c64, B, type_res)
                    for t, alpha, c64, resid_sum in zip(term_scales, alphas, coeffs64, resid_sums)]
         crit._set_block_stats([correction for correction, _ in records], list(cov_sums / B), [bound for _, bound in records])
 
@@ -2735,11 +2797,11 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
         # the i2t frame with the text anchors' half rebuilt on every tile's cells
         if world_size > 1:
             bufs = [tsm_norms, nce_stats.rows, nce_stats.lse] + ([lse_vals, lse_adjs] if fold_actual else []) \
-                + ([resid_prms] if fold_actual and block == "full" else [])
+                + ([resid_prms] if fold_actual and block_sims else [])
             tsm_norms, nce_stats.rows, nce_stats.lse, *bufs = _all_reduce_sum(bufs)
             if fold_actual:
                 lse_vals, lse_adjs, *bufs = bufs
-                if block == "full":
+                if block_sims:
                     (resid_prms,) = bufs
         for rs in range(lo, hi, chunk_size):
             re = rs + chunk_size
@@ -2765,8 +2827,8 @@ def chunked_infonce_loss_backward(img, txt, class_encs_b, targ_data_b, crit, com
                     tile_loss = tile_loss + sum((lse_adjs[g].to(log_p.dtype) * log_p.exp()).sum() for g, log_p in enumerate(log_ps_cols))
             if fold_actual:
                 (G,) = torch.autograd.grad(tile_loss, sim_leaf)
-                if block == "full":
-                    # block_residuals' own dL/dsim, -coeff * 0.5 * alpha * (R + R.T) / B per term, both halves
+                if block_sims:
+                    # block_res' own dL/dsim, -coeff * 0.5 * alpha * (R + R.T) / B per term, both halves
                     # off the anchors' row parameters
                     G_block = sum(
                         c64 * 0.5 * alpha64 * (_train_resid_from_params(Y_k, *prm[rs:re].T.unsqueeze(2))

@@ -21,10 +21,10 @@ from models import VLMWrapper
 
 
 def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr=False, neut=False, shared=True,
-         block_residuals=None):
+         block_res=None):
     return {
         "crit": crit, "sim": "cos", "blend": {"lambda": lambda_, "type": blend_type}, "unitless": unitless,
-        "infonce": {"block_residuals": block_residuals},
+        "xnce": {"block_res": None if block_res is None else f"{block_res}_res"},
         "bce": {"targ_mass_neut": neut},
         "wting": {
             "cls_imb": {"type": "inv_freq", "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
@@ -36,10 +36,10 @@ def _cfg(crit, lambda_, focal_gamma=0.0, blend_type="targ", unitless=False, dsmr
 
 
 def _targ(targ, tsm_type):
-    return {"targ": targ, "infonce": {"tsm": {"type": tsm_type, "sm_scale": 3.0}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": tsm_type, "sm_scale": 3.0}}}
 
 
-CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "infonce": L.InfoNCECriterion}
+CRIT_CLS = {"bce": L.BCECriterion, "bif_bce": L.BifurcatedBCECriterion, "xnce": L.InfoNCECriterion}
 
 
 def _make_crit(cfg, specs, K, B):
@@ -99,9 +99,9 @@ CASES = [
     # (crit, tsm1, tsm2)
     ("bce", "linear", "linear"),
     ("bif_bce", "linear", "linear"),
-    ("infonce", "linear", "linear"),
-    ("infonce", "linear", "softmax"),
-    ("infonce", "softmax", "softmax"),
+    ("xnce", "linear", "linear"),
+    ("xnce", "linear", "softmax"),
+    ("xnce", "softmax", "softmax"),
 ]
 
 
@@ -125,7 +125,7 @@ def test_target_blend_equals_loss_blend(crit, tsm1, tsm2, targ1, targ2, blend_ty
         torch.testing.assert_close(g_b, (1.0 - lambda_) * g_1 + lambda_ * g_2, rtol=1e-5, atol=1e-7)
 
 
-@pytest.mark.parametrize("crit", ["bce", "infonce"])
+@pytest.mark.parametrize("crit", ["bce", "xnce"])
 def test_focal_breaks_the_loss_blend_identity(crit):
     # focal weights |Y - p|^gamma read the target, so the single weight on the blended Y is not the
     # blend of the two per-target weights: the identity above holds only for target-independent weighting
@@ -146,7 +146,7 @@ TARG_DEP = [
     ("bce", {"focal_gamma": 2.0}),
     ("bce", {"dsmr": True}),
     ("bif_bce", {"focal_gamma": 2.0, "dsmr": True, "neut": True}),
-    ("infonce", {"focal_gamma": 2.0}),
+    ("xnce", {"focal_gamma": 2.0}),
 ]
 
 
@@ -173,7 +173,7 @@ def test_loss_blend_is_the_blend_of_the_single_target_losses(crit, wting):
     assert abs(loss_b.item() - _run(blend_targ)[0].item()) > 1e-4
 
 
-@pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
+@pytest.mark.parametrize("crit", ["bce", "bif_bce", "xnce"])
 def test_unitless_loss_blend_enters_each_term_at_unit_magnitude(crit):
     # L_k / n_k with n_k = L_k.detach() (a bifurcated L_k reads 2x its gradient scale, so n_k = L_k / 2): the
     # loss reads the weights' sum -- 1.0, bif 2.0 -- and every gradient is the blend of the single-target
@@ -195,7 +195,7 @@ def test_unitless_loss_blend_enters_each_term_at_unit_magnitude(crit):
         torch.testing.assert_close(g_b, (1.0 - lambda_) * g_1 / (loss_1 / bif) + lambda_ * g_2 / (loss_2 / bif), rtol=1e-5, atol=1e-7)
 
 
-@pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
+@pytest.mark.parametrize("crit", ["bce", "bif_bce", "xnce"])
 def test_unitless_target_blend_rescales_the_one_loss(crit):
     # blend.type targ has one term, the loss against the blended Y: unitless divides it by its own magnitude
     lambda_, K, B = 0.3, 6, 24
@@ -210,7 +210,7 @@ def test_unitless_target_blend_rescales_the_one_loss(crit):
         torch.testing.assert_close(g_u, g_p / (loss_p / bif), rtol=1e-5, atol=1e-7)
 
 
-@pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
+@pytest.mark.parametrize("crit", ["bce", "bif_bce", "xnce"])
 def test_unitless_loss_blend_is_a_target_blend_under_lambda_eff(crit):
     # with target-independent weights sum_k c_k L(Y_k) = s * L(Y_eff) (the loss is affine in the target): every
     # gradient is s = sum_k c_k times the target blend's at lambda_eff = lambda L1 / (lambda L1 + (1 - lambda) L2)
@@ -274,11 +274,11 @@ def test_separate_logit_scalars_infonce_returns_the_primary_distribution():
     # two sets of logits train against no one distribution: the batch stats read the primary term's (with its
     # logits and scale), each spec's pinned softmax tsm following its own term's scale
     lambda_, K, B = 0.3, 6, 24
-    pinned = {"targ": "tax", "infonce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}}
+    pinned = {"targ": "tax", "xnce": {"tsm": {"type": "softmax", "sm_scale": "pinned"}}}
     specs = L.targ_specs(lambda_, pinned, _targ("mp", "linear"))
-    cfg = _cfg("infonce", lambda_, blend_type="loss", shared=False)
+    cfg = _cfg("xnce", lambda_, blend_type="loss", shared=False)
     _, _, y, _ = _forward(_make_crit(cfg, specs, K, B), toy=Toy((1.7, -0.9)))
-    _, _, y_1, _ = _forward(_make_crit(_cfg("infonce", 0.0), [(1.0, pinned)], K, B))
+    _, _, y_1, _ = _forward(_make_crit(_cfg("xnce", 0.0), [(1.0, pinned)], K, B))
     torch.testing.assert_close(y, y_1)
 
     specs = L.targ_specs(lambda_, _targ("mp", "linear"), pinned)  # pinned on loss2's term: its own scale, 1.7
@@ -288,7 +288,7 @@ def test_separate_logit_scalars_infonce_returns_the_primary_distribution():
     torch.testing.assert_close(Y_2, torch.softmax(2 * Q.double() * torch.tensor(1.7).exp(), dim=1))
 
 
-@pytest.mark.parametrize("crit", ["bce", "bif_bce", "infonce"])
+@pytest.mark.parametrize("crit", ["bce", "bif_bce", "xnce"])
 def test_unitless_loss_blend_records_lambda_eff(crit):
     # the batch stats' lambda_eff (the learning-curve strip): loss2's term's share of the unitless blend
     # coefficients, lambda L1 / (lambda L1 + (1 - lambda) L2) -- bif_bce's L/2 normalizers cancel in the ratio.
@@ -321,13 +321,13 @@ def test_unitless_infonce_returns_the_distribution_its_gradient_follows():
     lambda_, K, B = 0.3, 6, 24
     spec1, spec2 = _targ("mp", "linear"), _targ("tax", "softmax")
     specs = L.targ_specs(lambda_, spec1, spec2)
-    loss_1, _, y_1, _ = _forward(_make_crit(_cfg("infonce", 0.0), [(1.0, spec1)], K, B))
-    loss_2, _, y_2, _ = _forward(_make_crit(_cfg("infonce", 0.0), [(1.0, spec2)], K, B))
+    loss_1, _, y_1, _ = _forward(_make_crit(_cfg("xnce", 0.0), [(1.0, spec1)], K, B))
+    loss_2, _, y_2, _ = _forward(_make_crit(_cfg("xnce", 0.0), [(1.0, spec2)], K, B))
 
-    _, _, y, _ = _forward(_make_crit(_cfg("infonce", lambda_, blend_type="loss"), specs, K, B))
+    _, _, y, _ = _forward(_make_crit(_cfg("xnce", lambda_, blend_type="loss"), specs, K, B))
     torch.testing.assert_close(y, (1.0 - lambda_) * y_1 + lambda_ * y_2)
 
-    _, _, y_u, _ = _forward(_make_crit(_cfg("infonce", lambda_, blend_type="loss", unitless=True), specs, K, B))
+    _, _, y_u, _ = _forward(_make_crit(_cfg("xnce", lambda_, blend_type="loss", unitless=True), specs, K, B))
     c_1, c_2 = (1.0 - lambda_) / loss_1.detach(), lambda_ / loss_2.detach()
     torch.testing.assert_close(y_u, (c_1 * y_1 + c_2 * y_2) / (c_1 + c_2))
     torch.testing.assert_close(y_u.sum(dim=1), torch.ones(B, dtype=torch.float64))  # InfoNCE's y is float64
@@ -340,8 +340,8 @@ def test_lambda_endpoints_are_the_single_targets():
     for lambda_, spec in ((0.0, spec1), (1.0, spec2)):
         specs = L.targ_specs(lambda_, spec1, spec2)
         assert specs == [(1.0, spec)]
-        loss_b, raw_b, grads_b = _run(_make_crit(_cfg("infonce", lambda_), specs, K, B))
-        loss_s, raw_s, grads_s = _run(_make_crit(_cfg("infonce", 0.0), [(1.0, spec)], K, B))
+        loss_b, raw_b, grads_b = _run(_make_crit(_cfg("xnce", lambda_), specs, K, B))
+        loss_s, raw_s, grads_s = _run(_make_crit(_cfg("xnce", 0.0), [(1.0, spec)], K, B))
         assert loss_b.item() == loss_s.item() and raw_b.item() == raw_s.item()
         for g_b, g_s in zip(grads_b, grads_s):
             torch.testing.assert_close(g_b, g_s, rtol=0, atol=0)

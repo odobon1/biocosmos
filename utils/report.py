@@ -2341,7 +2341,7 @@ def plot_scale_curves(
     # It is the measurement; the dscale / dlogscale panels further down are an analytical
     # decomposition off the blended target distribution, which carries neither a term's blend coefficient nor
     # loss.unitless' 1 / L and so need not agree with it. Each scale panel also draws
-    # loss.infonce.block_residuals' correction where recorded (dlogscale_correction, dlogscale_correction2 for
+    # loss.xnce.block_res' correction where recorded (dlogscale_correction, dlogscale_correction2 for
     # logit_scale2: the delta it made, so the gradient without it is the black line minus the orange one), in
     # the figure's units alike
     # The caption says actual because the first dscale panel below is captioned with the same nabla: that
@@ -2385,7 +2385,7 @@ def plot_scale_curves(
     # the residual terms' mark, on all five of a term's aggs -- where the magnitudes are unvalidated, so are the
     # signed sum and the coherence ratios taken over them
     unvalidated = _resid_unvalidated(data_epoch) if len(data_epoch["resid_paths"]) == len(x_train) else None
-    # loss.infonce.block_residuals' coverage, one panel per loss term beside the correction the scale panels draw:
+    # loss.xnce.block_res' coverage, one panel per loss term beside the correction the scale panels draw:
     # the anchor-row fractions the correction was applied to / found feasible / skipped, so a zero correction
     # reads as no residual or as an intervention that did not happen (utils.loss.infonce_train_resid)
     coverage_panels = (list(range(len(data_epoch["block_coverage"][0])))

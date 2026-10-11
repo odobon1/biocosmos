@@ -1,6 +1,6 @@
 """
 DDP equivalence tests for the InfoNCE global-batch paths -- the full-batch one and the tiled one
-(hardware.loss_chunk_size.infonce) -- in particular loss.infonce.block_residuals and the actual sim-grad
+(hardware.loss_chunk_size.xnce) -- in particular loss.xnce.block_res and the actual sim-grad
 diagnostics.
 
 The single-process tests in test_infonce_scale_grad.py pin down the residual/blocking math; the 2-rank
@@ -16,7 +16,7 @@ wraps a toy dual encoder in DDP, and per case compares four paths on every rank:
 
   (GT)    single-process full-batch batch_step + backward on the full global batch  -- ground truth
   (REF)   production DDP path: per-rank slice -> batch_step (gather) + loss.backward()
-  (CTRL)  REF's weights and data with block_residuals: None  -- for the correction-semantics check
+  (CTRL)  REF's weights and data with block_res: None  -- for the correction-semantics check
   (CHUNK) batch_step_chunked: no_sync + the tiled InfoNCE loss + manual all-reduce, multi- and single-tile bands
 
 asserting: the full-batch loss reading and every DDP-synced param grad match GT; block_stats identical
@@ -53,14 +53,14 @@ import torch.multiprocessing as mp
 from tests.unit.test_chunked_loss_ddp import _free_port
 
 
-def cfg_infonce(lambda_=0.0, blend_type="targ", block=None, unitless=False, shared=True, clamp=False):
-    """The loss-level config (train.yaml's `loss` block, as InfoNCECriterion reads it); block_residuals
+def cfg_infonce(lambda_=0.0, blend_type="targ", block=None, type_res="res", unitless=False, shared=True, clamp=False):
+    """The loss-level config (train.yaml's `loss` block, as InfoNCECriterion reads it); block_res
     forbids class-imbalance and focal weighting (utils.config), so those sit at their off values."""
     return {
-        "crit": "infonce", "sim": "cos",
+        "crit": "xnce", "sim": "cos",
         "blend": {"lambda": lambda_, "type": blend_type},
         "unitless": unitless,
-        "infonce": {"block_residuals": block},
+        "xnce": {"block_res": None if block is None else f"{block}_{type_res}"},
         "wting": {
             "cls_imb": {"type": None, "inv_freq": {"gamma": 0.5}, "class_bal": {"beta": 0.9999}, "norm": False},
             "focal": {"gamma": 0.0},
@@ -70,7 +70,7 @@ def cfg_infonce(lambda_=0.0, blend_type="targ", block=None, unitless=False, shar
 
 
 def spec(targ, tsm_type="linear", sm_scale="pinned"):
-    return {"targ": targ, "infonce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
+    return {"targ": targ, "xnce": {"tsm": {"type": tsm_type, "sm_scale": sm_scale}}}
 
 
 # (name, cfg, spec1, spec2, log_scale_init, expect) -- expect: term-0 coverage expectation
@@ -94,6 +94,11 @@ CASES = [
     # separate logit scalars: per-term corrections on logit_scale / logit_scale2
     ("full_sep_scalars", cfg_infonce(lambda_=0.3, blend_type="loss", block="full", shared=False),
      spec("mp"), spec("tax"), 0.5, "some_applied"),
+    # block_res *_ires / *_ures: the scale's correction against s* (ires) / the sims standing off it (ures), s* off each
+    # rank's tiles; under full the sims' residual goes with ures and stays under ires
+    ("alpha_ires_hard_mp", cfg_infonce(block="alpha", type_res="ires"), spec("mp"), spec("sp"), 0.5, "all_applied"),
+    ("full_ures_tax_active_sets", cfg_infonce(block="full", type_res="ures"), spec("tax"), spec("sp"), 0.5, "some_applied"),
+    ("full_ires_targ_blend", cfg_infonce(lambda_=0.3, block="full", type_res="ires"), spec("mp"), spec("tax"), 0.5, "some_applied"),
 ]
 
 
@@ -197,7 +202,8 @@ def run(rank, world_size, port):
     fi, ft, fc = full_imgs.to(device), full_txts.to(device), full_cls.to(device)
 
     for name, cfg, spec1, spec2, log_scale, expect in CASES:
-        block = cfg["infonce"]["block_residuals"]
+        block_res = cfg["xnce"]["block_res"]
+        block, type_res = block_res.split("_") if block_res is not None else (None, None)
         sep = not cfg["logits"]["shared"]
         torch.manual_seed(0)
         base = ToyInfoNCE(d_in, D, log_scale, sep_scalars=sep)
@@ -326,7 +332,7 @@ def run(rank, world_size, port):
 
         # (CTRL) same weights and data, blocking off
         cfg_off = copy.deepcopy(cfg)
-        cfg_off["infonce"]["block_residuals"] = None
+        cfg_off["xnce"]["block_res"] = None
         toy_ctrl = copy.deepcopy(base).to(device).train()
         ddp_ctrl = nn.parallel.DistributedDataParallel(toy_ctrl, device_ids=[rank])
         crit_ctrl = make_crit(L, cfg_off, spec1, spec2, K, B, device)
@@ -348,12 +354,14 @@ def run(rank, world_size, port):
             assert abs(delta - corr) < 1e-5 * (abs(corr) + 1e-4), \
                 f"{tag} {pname} post-sync grad delta {delta} != recorded correction {corr}"
 
-        # `full` reaches the towers where rows were applied; `alpha` must not touch them
+        # `full` reaches the towers where rows were applied -- except under type_res ires, whose part of the
+        # residual has no similarity gradient; `alpha` must not touch them
+        block_sims = block == "full" and type_res != "ires"
         tower_delta = max(rel(g_ref[n], g_ctrl[n]) for n in g_ref if n.startswith(("img_enc", "txt_enc")))
-        if block == "full" and cov[0][0] > 0.0:
+        if block_sims and cov[0][0] > 0.0:
             assert tower_delta > 1e-6, f"{tag} full blocking left the tower grads untouched"
-        if block == "alpha":
-            assert tower_delta < 1e-6, f"{tag} alpha blocking moved the tower grads: rel={tower_delta:.2e}"
+        if not block_sims:
+            assert tower_delta < 1e-6, f"{tag} blocking moved the tower grads: rel={tower_delta:.2e}"
 
     dist.destroy_process_group()
 

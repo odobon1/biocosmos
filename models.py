@@ -298,7 +298,7 @@ class VLMWrapper(abc.ABC):
                     with torch.no_grad():
                         self.model.logit_scale.fill_(math.log(cfg_logits["scale"]["init"]))  # alpha -> log(alpha)
             # the logit bias is the sigmoid / BCE path's, so it goes with the CRITERION, not the model family
-            # (either family may train under either: a CLIP model under bce, a SigLIP model under infonce):
+            # (either family may train under either: a CLIP model under bce, a SigLIP model under xnce):
             # - InfoNCE carries none, whichever the family -- logit_bias = None, as open_clip itself spells a
             #   bias-free model, and compute_logits then adds nothing. A shared scalar bias cannot move a row
             #   softmax, so nothing is lost; and it is dropped outright rather than left in unused, which
@@ -306,7 +306,7 @@ class VLMWrapper(abc.ABC):
             #   find_unused_parameters)
             # - a BCE-family loss always carries one: a SigLIP model's own, and for a CLIP model (none of its
             #   own) a fixed 0.0 buffer under bias.init: null, a learnable parameter under a set one
-            if config.loss["crit"] == "infonce":
+            if config.loss["crit"] == "xnce":
                 self.model.logit_bias = None
             else:
                 bias_init = resolve_bias_init(config)
@@ -596,7 +596,7 @@ class VLMWrapper(abc.ABC):
         # dL/dsim has zero row (i2t) and column (t2i) sums under any weighting that reads the logits through p:
         # grad_proj* would subtract a mean that is zero, `sim` shift every logit alike -- but not a BIT-exact one
         # (the mean comes out ~1e-8), and an inert setting should leave a run bit-identical
-        center = crit.cfg["logits"]["bce"]["center"] if crit.cfg["crit"] != "infonce" else None
+        center = crit.cfg["logits"]["bce"]["center"] if crit.cfg["crit"] != "xnce" else None
         secondaries = (False, True) if crit.sep_scalars else (False,)
 
         if crit.bifurcated:
@@ -641,7 +641,7 @@ class VLMWrapper(abc.ABC):
         cfg_curves = self.cfg.reporting["learning_curves"]
         stats = sim_targ_batch_stats(sims[0], targs, cfg_curves["hpsm"]["kappas"], cfg_curves["hist_bins"],
                                      logits=stat_logits(logits, cfg_loss))
-        if cfg_loss["crit"] == "infonce":
+        if cfg_loss["crit"] == "xnce":
             logit_scale = self._unwrapped_model.logit_scale
             stats.update(infonce_batch_stats(sims[0], targs, y, logits[0], logit_scale.detach(), cfg_loss["logits"]["scale"]["clamp"]))
         if self.crit.lambda_eff is not None:  # a unitless loss blend's effective lambda (Criterion.term_coeffs)
@@ -859,7 +859,7 @@ class VLMWrapper(abc.ABC):
             rank = dist.get_rank() if self.world_size > 1 else 0
             diag_kwargs = dict(sim_grad_sums=diag["sim_grad_sums"], sim_targ_stats=diag["sim_targ_stats"],
                                hpsm_kappas=cfg_curves["hpsm"]["kappas"], hist_bins=cfg_curves["hist_bins"])
-            if self.cfg.loss["crit"] == "infonce":
+            if self.cfg.loss["crit"] == "xnce":
                 model = self._unwrapped_model
                 # the log-scale parameter(s) the criterion takes, as _loss_full_batch hands them over
                 logit_scale = (model.logit_scale, model.logit_scale2) if self.crit.sep_scalars else model.logit_scale

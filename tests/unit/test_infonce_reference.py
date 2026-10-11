@@ -1,7 +1,7 @@
 """
 The independent adaptive-precision reference (tests/unit/infonce_reference.py) and, against it, the residual
 calculations that already exist: the hard-binary-target closed forms (utils.loss.infonce_hard_resid /
-infonce_hard_kl_ir -- the form the loss.infonce.block_residuals TRAINING correction is built on, so this is
+infonce_hard_kl_ir -- the form the loss.xnce.block_res TRAINING correction is built on, so this is
 its validation at scale too) and infonce_p_opt's feasibility branch.
 
 The reference comes first: it has to be shown to resolve what it claims (an exp(-2 alpha)-sized residual, where
@@ -117,7 +117,7 @@ HARD = [(K, B, alpha) for K, B in ((1, 8), (3, 8), (4, 16), (7, 16))
 
 @pytest.mark.parametrize("K,B,alpha", HARD)
 def test_hard_closed_forms_match_the_reference_across_scale_and_class_ratio(K, B, alpha):
-    # the closed forms the block_residuals training correction and the hard-row diagnostics share, against the
+    # the closed forms the block_res training correction and the hard-row diagnostics share, against the
     # reference from alpha 0.5 to 300 -- residuals from 1e-1 down to 1e-261 -- at class ratios whose 1/K is and
     # is not representable. Two readings of "the target", kept apart:
     #   STORED   -- the float64 row production holds, fl(1/K) renormalized: the reference's own input

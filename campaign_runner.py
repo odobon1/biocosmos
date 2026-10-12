@@ -1032,6 +1032,11 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
             if plans is None:  # phase entry
                 dpath_phase.mkdir(parents=True, exist_ok=True)
                 save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
+            # the last trial's render reads and writes its trial dir, which a plan that drops that trial (its seed, coord,
+            # arm or dataset) is about to delete (_prune_removed): let it finish first, or its mkdirs resurrect a
+            # metadata-less stub of the dir that trips every _trial_dpaths sweep after
+            if render_proc is not None and render_proc.poll() is None:
+                render_proc.wait()
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
                 _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix, groups)
             plans = plans_new

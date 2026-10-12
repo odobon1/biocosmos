@@ -2319,6 +2319,46 @@ def test_run_campaign_live_edit_removes_items_between_trials(tmp_path, monkeypat
     assert "geo" not in (tmp_path / "cmp_live_rm" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8")
 
 
+def test_run_campaign_live_edit_waits_on_the_render_before_pruning(tmp_path, monkeypatch) -> None:
+    # the render of the trial that just finished overlaps the next round's re-plan: an edit that drops that trial (here
+    # its seed) would delete the dir it is rendering from, so the runner waits for the render before applying the plan
+    scheduled = _setup_completing_campaign(tmp_path, monkeypatch)
+    camp = dict(n_trials_refine=None, trainval=False, datasets=("cub",),
+                ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]], hpo_coords=_BASE_COORD)
+    _set_camp(monkeypatch, n_trials_screen=2, **camp)
+    monkeypatch.setattr(cr, "_trial_has_manif_cache", lambda dpath_trial: True)
+
+    waited = []  # (rendered trial, whether its dir still stood) at the first wait on each render
+
+    class _Render:
+        pid = 1234
+        def __init__(self, trial_rel): self.trial_rel, self.running = trial_rel, True
+        def poll(self): return None if self.running else 0
+        def wait(self):
+            if self.running:
+                waited.append((self.trial_rel, (tmp_path / self.trial_rel).exists()))
+            self.running = False
+            return 0
+        def terminate(self): pass
+    monkeypatch.setattr(cr, "_spawn_render", lambda trial_rel: _Render(trial_rel))
+
+    fake_ok = cr._run_trial_subprocess
+
+    def _drop_seed_during_second(cfg_dict, spare_render_pid=None):
+        fake_ok(cfg_dict, spare_render_pid)
+        if cfg_dict["seed"] == 43:  # saved while the seed-43 trial runs
+            _set_camp(monkeypatch, n_trials_screen=1, **camp)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _drop_seed_during_second)
+    assert cr.run_campaign("cmp_live_wait", "camp")
+
+    assert scheduled == [("sp", "base", "cub", 42), ("sp", "base", "cub", 43)]
+    rel = "cmp_live_wait/_phase/screen/_dataset/cub/_arm/sp/_coord/base/_trial/"
+    assert waited == [(rel + "1", True), (rel + "2", True)]
+    assert not (tmp_path / rel / "2").exists()
+    assert (tmp_path / rel / "1" / "trial_metadata.json").exists()
+
+
 def test_run_campaign_live_edit_during_refine_screens_added_arm_first(tmp_path, monkeypatch) -> None:
     # an arm added while the refine phase runs needs screening before it can be picked: the refine phase hands back, the
     # screening phase runs the new arm's trials (the old ones are complete), then refine resumes with the new arm's

@@ -11,7 +11,7 @@ mAP / Acc / scale / logscale (split alike) / HW sheets; arms/ only in the refine
 workbooks (artifacts/<campaign>/_phase/test/phase_summary/arms/<campaign>_test-arms.xlsx + secondary/<campaign>_test-arms_<group>.xlsx
 + per-dataset score tables
 _dataset/<dataset>/dataset_summary/arms/performance/{scores,secondary/scores_<group>}.png, from the score files test.py writes), per-trial
-learning-curve plots, each arm's coords' logit-scale panels stacked into strip figures
+learning-curve plots, each arm's coords' logit-scale and pair-entropy panels stacked into strip figures
 (_arm/<arm>/arm_summary/coord_strips/) and each finished arm's best coord's copy of its
 learning curves + eval/{best,sel}/ (_arm/<arm>/arm_summary/best_coord/) -- all
 under one phase dir of the campaign (artifacts/<campaign>/_phase/<phase>/,
@@ -935,10 +935,15 @@ def update_test_best_coord(dataset, arm):
         shutil.copytree(dpath_trial / "eval" / "sel", dpath_best / dpath_trial.name / "eval" / "sel",
                         ignore=shutil.ignore_patterns("cache"))
 
-# the learning-curve strip figures (update_coord_strips), one per parameterization of the logit scale:
-# (the series it plots, its target-implied bound trio, its symbol, the figure's name)
-_STRIP_FIGURES = (("scale", "scale_req", r"\alpha", "scale"),
-                  ("logit_scale", "log_scale_req", r"\log \alpha", "logscale"))
+# the learning-curve strip figures (update_coord_strips): (the series it plots, its target-implied bound trio --
+# None where the series has none -- and the symbol those bound lines are labelled by, the series' legend label,
+# its line colour, whether it is a fraction on [0, 1] -- pinned there as the trial figure's panel is, else
+# autoscaled -- and the figure's name). The logit scale in both parameterizations, and the pair-level entropy of
+# the similarity gradient the towers received (the sim_grad_entropy figure's top panel)
+_STRIP_FIGURES = (("scale", "scale_req", r"\alpha", r"$\alpha$", "tab:purple", False, "scale"),
+                  ("logit_scale", "log_scale_req", r"\log \alpha", r"$\log \alpha$", "tab:purple", False, "logscale"),
+                  ("sim_grad_entropy_pair_actual", None, None, r"$\tilde{H}_{S,\text{pair}}$ (actual)", "red", True,
+                   "sim_grad_entropy_pair_actual"))
 
 def _req_labels(reqs, sym):
     """{stat: legend label} for a scale panel's target-implied bound trio (`reqs`: {stat: values}),
@@ -975,37 +980,40 @@ def _pin_flat_yaxis(ax):
         ax.set_ylim(vals[0] - 1.0, vals[0] + 1.0)
         ax.set_yticks([vals[0]], [f"{vals[0]:.4g}"])
 
-def _strip_data(panels, scale_key, req_key, spread_type):
-    """One coord's strip, off its `panels` [(x_train, data_epoch)] -- (x, scale, reqs): `scale` the
-    (values, spread) of the logit-scale series and `reqs` {stat: values} its target-implied bound
-    trio. With `spread_type` None (the per-trial figures, one trial apiece) the spread is None and
-    the values are that trial's own; otherwise (the agg figure) the scale is the mean over the
-    coord's trials and its spread their _spread band, flat for a lone trial as the chkpt-mean
-    curves' is. The trio is the per-trial figures' alone (and empty where the trial doesn't record
-    it -- a BCE-family loss): the agg figure draws the scale by itself. Series are truncated to the
-    shortest, so a trial the kill threshold stopped early shortens its coord's strip rather than
+def _strip_data(panels, key, req_key, spread_type):
+    """One coord's strip, off its `panels` [(x_train, data_epoch)] -- (x, series, reqs): `series` the
+    (values, spread) of the `key` series and `reqs` {stat: values} its target-implied bound trio
+    (`req_key`; None for a series with none). With `spread_type` None (the per-trial figures, one trial
+    apiece) the spread is None and the values are that trial's own; otherwise (the agg figure) the series
+    is the mean over the coord's trials and its spread their _spread band, flat for a lone trial as the
+    chkpt-mean curves' is. The trio is the per-trial figures' alone (and empty where the trial doesn't
+    record it -- a BCE-family loss): the agg figure draws the series by itself. Series are truncated to
+    the shortest, so a trial the kill threshold stopped early shortens its coord's strip rather than
     dropping out of it."""
     n = min(len(x) for x, _ in panels)
 
-    def agg(key):
-        vals = np.array([np.asarray(data[key], dtype=float)[:n] for _, data in panels])
+    def agg(k):
+        vals = np.array([np.asarray(data[k], dtype=float)[:n] for _, data in panels])
         if spread_type is None:
             return vals[0], None
         spread = np.zeros(n) if len(vals) == 1 else np.array([_spread(col, spread_type) for col in vals.T])
         return vals.mean(axis=0), spread
 
     reqs = {}
-    if spread_type is None and all(len(data[f"{req_key}_max"]) == len(data[scale_key]) for _, data in panels):
+    if req_key is not None and spread_type is None and all(len(data[f"{req_key}_max"]) == len(data[key]) for _, data in panels):
         reqs = {stat: agg(f"{req_key}_{stat}")[0] for stat in ("min", "mean", "max")}
-    return panels[0][0][:n], agg(scale_key), reqs
+    return panels[0][0][:n], agg(key), reqs
 
-def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_axes, fontsize_ticks,
+def _render_strips(strips, fpath_plot, label, sym, color, unit, plot_title, spread_type, fontsize_axes, fontsize_ticks,
                    fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel, dpi):
-    """One figure of scale strips, `strips` [(coord, x, scale, reqs)] top to bottom (_strip_data): the
-    scale panel plot_scale_curves gives each trial -- the scale in purple, on the per-trial figures over
-    its bound trio in red, the min and max solid and the mean dashed (the agg figure's reqs are empty) --
-    one per coord of an arm, over one shared epoch axis. A scale spread (the agg figure's) shades its
-    across-trial '± <spread_type>' band around the scale line.
+    """One figure of strips, `strips` [(coord, x, series, reqs)] top to bottom (_strip_data): the panel
+    the trial's own figure gives one series (_STRIP_FIGURES: `label` its legend entry, `color` its line) --
+    a logit scale in purple, on the per-trial figures over its bound trio in red, the min and max solid and
+    the mean dashed (the agg figure's reqs are empty; `sym` names them), or the pair entropy in red -- one
+    per coord of an arm, over one shared epoch axis. A spread (the agg figure's) shades its across-trial
+    '± <spread_type>' band around the line. A `unit` series -- a fraction on [0, 1] -- is pinned there,
+    the limits padded past the ends as the trial figure's panel is; any other autoscales, a flat one ticked
+    at its value (_pin_flat_yaxis).
 
     Each strip is named by its coord in bold, the names alternating left / right down the figure with each
     strip's y ticks on its name's side, so neither margin carries every label; the names on a side start
@@ -1019,21 +1027,24 @@ def _render_strips(strips, fpath_plot, sym, plot_title, spread_type, fontsize_ax
     gs = gridspec.GridSpec(len(strips), 1, hspace=0)
     axes = []
 
-    for coord, x, (vals_scale, spread_scale), reqs in strips:
+    for coord, x, (vals, spread), reqs in strips:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         # the scale rides above its bound lines (zorder): a softmax target mapping pinned to the scale
         # (utils.loss.InfoNCECriterion._tsm) makes the bound the scale itself wherever a row's targets
         # span the full similarity range, and the panel is about the scale -- drawn under, it would
         # vanish beneath the trio exactly where they coincide
-        ax.plot(x, vals_scale, color="tab:purple", label=rf"${sym}$", zorder=3)
-        if spread_scale is not None:
-            ax.fill_between(x, vals_scale - spread_scale, vals_scale + spread_scale, color="tab:purple",
-                            alpha=0.2, label=f"± {spread_type}")
+        ax.plot(x, vals, color=color, label=label, zorder=3)
+        if spread is not None:
+            ax.fill_between(x, vals - spread, vals + spread, color=color, alpha=0.2, label=f"± {spread_type}")
         labels_req = _req_labels(reqs, sym)
         for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
             if stat in reqs:
                 ax.plot(x, reqs[stat], color="red", linestyle=linestyle, linewidth=1.0, label=labels_req.get(stat))
-        _pin_flat_yaxis(ax)  # a frozen scale with no bound beside it: one tick, at its value
+        if unit:  # both ends readings in their own right: at exactly (0, 1) the curve lies under the border
+            ax.set_ylim(-0.05, 1.05)
+            ax.set_yticks([0.0, 0.5, 1.0])
+        else:
+            _pin_flat_yaxis(ax)  # a frozen scale with no bound beside it: one tick, at its value
         # the coord names the strip, horizontal (a coord name reads badly rotated) and bold, on the side
         # its y ticks take -- alternating down the figure, so one margin doesn't carry every label
         side = "left" if len(axes) % 2 == 0 else "right"
@@ -1090,14 +1101,17 @@ def _strip_blocks(strips, axes):
 @rank0
 def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
                       subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
-    """Render `arm`'s logit-scale strips for `dataset` --
-    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale}.png:
-    the scale panel of every planned coord of the arm (the phase's matrix) with a completed trial there,
-    stacked into one figure per parameterization (_STRIP_FIGURES: scale, the alpha the logits carry;
-    logscale, the log-scale parameter the model learns), so an arm's coords read against each other on one
-    epoch axis instead of one figure apiece. trials/<n>/ draws trial n per coord over its target-implied
-    bound trio, agg/ the scale alone -- no trio -- as the mean over the coord's trials with a spread band
-    (_strip_data, _render_strips). The style
+    """Render `arm`'s strip figures for `dataset` --
+    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale,sim_grad_entropy_pair_actual}.png:
+    one panel of every planned coord of the arm (the phase's matrix) with a completed trial there, stacked
+    into one figure per series (_STRIP_FIGURES: scale, the alpha the logits carry; logscale, the log-scale
+    parameter the model learns; sim_grad_entropy_pair_actual, the pair-level entropy of the similarity
+    gradient the towers received -- the sim_grad_entropy figure's top panel), so an arm's coords read
+    against each other on one epoch axis instead of one figure apiece. trials/<n>/ draws trial n per coord
+    (a scale over its target-implied bound trio), agg/ the series alone -- no trio -- as the mean over the
+    coord's trials with a spread band (_strip_data, _render_strips). A coord whose trials don't record a
+    series (the pair entropy is an InfoNCE trial's with sim_grad_sums on) drops out of that figure, and an
+    arm with none gets no such figure. The style
     defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
 
     The epoch axis is rebuilt the way the trial figures' is (n_samps_seen / samps_per_epoch), reading
@@ -1126,17 +1140,24 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
 
     if not panels:  # no completed trial on this dataset yet
         return
-    for scale_key, req_key, sym, name in _STRIP_FIGURES:
+    for key, req_key, sym, label, color, unit, name in _STRIP_FIGURES:
+        # the trials recording the series, per batch (every trial its logit scale; the pair entropy an InfoNCE
+        # trial's with sim_grad_sums on, empty otherwise): a coord without it drops out of this figure
+        recorded = {coord: {trial_num: panel for trial_num, panel in by_trial.items() if len(panel[1][key]) == len(panel[0])}
+                    for coord, by_trial in panels.items()}
+        recorded = {coord: by_trial for coord, by_trial in recorded.items() if by_trial}
+        if not recorded:
+            continue
         plot_title = f"{arm}\n{DATASET_ALIAS2NAME[dataset]}"
-        style = (fontsize_axes, fontsize_ticks, fontsize_legend, subplot_border_width, fig_width, height_fixed,
-                 height_panel, dpi)
-        for trial_num in sorted({trial_num for by_trial in panels.values() for trial_num in by_trial}, key=int):
-            strips = [(coord, *_strip_data([by_trial[trial_num]], scale_key, req_key, None))
-                      for coord, by_trial in panels.items() if trial_num in by_trial]
-            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", sym, plot_title, spread_type, *style)
-        strips = [(coord, *_strip_data(list(by_trial.values()), scale_key, req_key, spread_type))
-                  for coord, by_trial in panels.items()]
-        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", sym, plot_title, spread_type, *style)
+        style = (label, sym, color, unit, plot_title, spread_type, fontsize_axes, fontsize_ticks, fontsize_legend,
+                 subplot_border_width, fig_width, height_fixed, height_panel, dpi)
+        for trial_num in sorted({trial_num for by_trial in recorded.values() for trial_num in by_trial}, key=int):
+            strips = [(coord, *_strip_data([by_trial[trial_num]], key, req_key, None))
+                      for coord, by_trial in recorded.items() if trial_num in by_trial]
+            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", *style)
+        strips = [(coord, *_strip_data(list(by_trial.values()), key, req_key, spread_type))
+                  for coord, by_trial in recorded.items()]
+        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", *style)
 
 @rank0
 def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):

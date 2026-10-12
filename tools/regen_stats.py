@@ -14,7 +14,7 @@ _dataset/<dataset>/dataset_summary/{armcoords,arms}/performance/ (arms/ only in 
 {scores,convergence}.png + secondary/{scores,convergence}_<group>.png) and
 phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx (+ secondary/<campaign>_<phase>-<kind>_<group>.xlsx; arms/ only in refine/).
 (Native, the primary eval group, takes the plain name; every other group sits under secondary/.) Each
-arm's _arm/<arm>/arm_summary/coord_strips/ (its coords' logit-scale panels stacked) and, when the arm is
+arm's _arm/<arm>/arm_summary/coord_strips/ (its coords' logit-scale and pair-entropy panels stacked) and, when the arm is
 complete, its arm_summary/best_coord/ copy of the best coord's learning curves + eval/{best,sel}/ are rebuilt with its arm_summary/. All using
 the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides/dpi), so edits to any
 of them take effect for an already-run campaign,  Each trial's cached per-checkpoint

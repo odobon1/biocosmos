@@ -459,6 +459,7 @@ def _write_group_metrics(dpath_selected, scores_grp: dict, macro: dict | None = 
     save_pickle({"epoch": {
         "n_samps_seen": [100, 200], "scale": [10.0, 10.0], "logit_scale": [2.3, 2.3], "scale2": [], "logit_scale2": [],
         **{f"{p}scale_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")},
+        "sim_grad_entropy_pair_actual": [],
     }, "eval": {"n_samps_seen": [0, 200]}}, dpath_trial / "data_trial.pkl")
     fpath_meta_coord = dpath_coord / "coord_metadata.json"
     if not fpath_meta_coord.exists():
@@ -597,7 +598,8 @@ def _write_scale_series(dpath_trial, scale, scale2=()) -> None:
     `scale2` is loss2's term's own scale under separate logit scalars, empty (unrecorded) otherwise."""
     save_pickle({"epoch": {"n_samps_seen": [100, 200], "scale": list(scale), "logit_scale": [-v for v in scale],
                            "scale2": list(scale2), "logit_scale2": [-v for v in scale2],
-                           **{f"{p}scale_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")}},
+                           **{f"{p}scale_req_{stat}": [] for p in ("", "log_") for stat in ("min", "mean", "max")},
+                           "sim_grad_entropy_pair_actual": []},
                  "eval": {"n_samps_seen": [0, 200]}}, dpath_trial / "data_trial.pkl")
 
 
@@ -835,11 +837,12 @@ def test_best_coord_curves_skip_trainval(tmp_path, monkeypatch) -> None:
 
 
 def _write_strip_trial(dpath_phase, dataset, arm, coord, trial, scale, n_epochs=2, samps_per_epoch=100,
-                       reqs=True) -> None:
+                       reqs=True, entropy=None) -> None:
     """A completed trial carrying what the strip figures read: its evals (so it reads as complete), the
     samps_per_epoch the epoch axis is rebuilt from (coord_metadata.json's horizon), and a data_trial.pkl whose `scale` series is given, its logscale counterpart the same
     values negated so the two figures are told apart. reqs=False leaves the target-implied bound trio
-    empty, as a BCE-family loss does."""
+    empty, as a BCE-family loss does. `entropy` is the pair-level (actual) similarity-gradient entropy
+    series, left unrecorded (empty) when not given, as a trial without sim_grad_sums leaves it."""
     dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
     dpath_trial = dpath_coord / "_trial" / str(trial)
     _write_trial_evals(dpath_trial, (("0.10", "0.10"), ("0.20", "0.20")))
@@ -856,16 +859,18 @@ def _write_strip_trial(dpath_phase, dataset, arm, coord, trial, scale, n_epochs=
         "logit_scale": [-v for v in scale],
         **{f"scale_req_{stat}": vals for stat, vals in req.items()},
         **{f"log_scale_req_{stat}": vals for stat, vals in req.items()},
+        "sim_grad_entropy_pair_actual": list(entropy) if entropy is not None else [],
     }}, dpath_trial / "data_trial.pkl")
 
 
 def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypatch) -> None:
-    # the arm's logit-scale strips: one figure per trial plus the agg one, each in both parameterizations
-    # (scale, logscale), under arm_summary/coord_strips/
+    # the arm's strips: one figure per trial plus the agg one, each in both parameterizations of the logit
+    # scale (scale, logscale) and for the pair-level (actual) similarity-gradient entropy, under
+    # arm_summary/coord_strips/
     dpath_phase = tmp_path / "screen"
     for coord in ("a", "b"):
         for trial in (1, 2):
-            _write_strip_trial(dpath_phase, "cub", "hp", coord, trial, [10.0, 11.0, 12.0, 13.0])
+            _write_strip_trial(dpath_phase, "cub", "hp", coord, trial, [10.0, 11.0, 12.0, 13.0], entropy=[0.9, 0.8, 0.7, 0.6])
     _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"], seeds=[42, 43])
 
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
@@ -873,10 +878,42 @@ def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypat
     report.update_coord_strips("cub", "hp", "std", 150)
 
     dpath_strips = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "coord_strips"
-    for name in ("scale", "logscale"):
+    for name in ("scale", "logscale", "sim_grad_entropy_pair_actual"):
         assert (dpath_strips / "agg" / f"{name}.png").exists()
         assert (dpath_strips / "trials" / "1" / f"{name}.png").exists()
         assert (dpath_strips / "trials" / "2" / f"{name}.png").exists()
+
+
+def test_update_coord_strips_pair_entropy_only_where_recorded(tmp_path, monkeypatch) -> None:
+    # the pair-entropy figures hold the coords whose trials record the series (an InfoNCE trial with
+    # sim_grad_sums on): one that doesn't drops out of them -- not of the scale figures -- with no bound trio on
+    # any strip, the agg one meaned and banded like the scale's. An arm with no coord recording it gets no
+    # such figure, its scale figures unaffected.
+    dpath_phase = tmp_path / "screen"
+    _write_strip_trial(dpath_phase, "cub", "hp", "a", 1, [10.0, 20.0], entropy=[0.2, 0.4])
+    _write_strip_trial(dpath_phase, "cub", "hp", "a", 2, [30.0, 40.0], entropy=[0.6, 0.8])
+    _write_strip_trial(dpath_phase, "cub", "hp", "b", 1, [1.0, 2.0])  # a BCE coord, say: no entropy series
+    _write_strip_trial(dpath_phase, "cub", "mp", "a", 1, [1.0, 2.0])
+    _write_meta(dpath_phase, ["hp", "mp"], ["a", "b"], ["cub"], seeds=[42, 43])
+
+    calls = []
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
+    monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, *args: calls.append((fpath, strips)))
+
+    report.update_coord_strips("cub", "hp", "std", 150)
+
+    figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips in calls}
+    assert [coord for coord, *_ in figures[("1", "scale")]] == ["a", "b"]
+    assert [coord for coord, *_ in figures[("1", "sim_grad_entropy_pair_actual")]] == ["a"]
+    assert [coord for coord, *_ in figures[("agg", "sim_grad_entropy_pair_actual")]] == ["a"]
+    _, x, (vals, spread), reqs = figures[("1", "sim_grad_entropy_pair_actual")][0]
+    assert x == pytest.approx([0.0, 1.0]) and vals == pytest.approx([0.2, 0.4]) and spread is None and reqs == {}
+    _, _, (vals, spread), reqs = figures[("agg", "sim_grad_entropy_pair_actual")][0]
+    assert vals == pytest.approx([0.4, 0.6]) and spread == pytest.approx([np.std([0.2, 0.6], ddof=1)] * 2) and reqs == {}
+
+    calls.clear()
+    report.update_coord_strips("cub", "mp", "std", 150)
+    assert sorted(fpath.stem for fpath, _ in calls) == ["logscale", "logscale", "scale", "scale"]
 
 
 def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None:
@@ -915,7 +952,8 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
 def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypatch) -> None:
     # a coord with a frozen logit scale keeps its strip -- the series is recorded frozen or not, a flat line
     # there -- as does one whose loss records no target-implied bounds (BCE family), with no bound lines on
-    # it. An arm with no completed trial at all gets no figure.
+    # it (the four figures are the scale pair's: no coord records the pair entropy). An arm with no
+    # completed trial at all gets no figure.
     dpath_phase = tmp_path / "screen"
     _write_strip_trial(dpath_phase, "cub", "hp", "a", 1, [14.0, 14.0], reqs=False)  # frozen
     _write_strip_trial(dpath_phase, "cub", "hp", "b", 1, [1.0, 2.0], reqs=False)
@@ -953,7 +991,8 @@ def test_render_strips_tick_a_flat_strip_at_its_value(tmp_path, monkeypatch) -> 
     reqs = {stat: np.array([3.0, 4.0, 5.0]) + off for stat, off in (("min", 0.0), ("mean", 1.0), ("max", 2.0))}
     strips = [("frozen", x, flat, {}), ("frozen_bounded", x, flat, reqs), ("learnable", x, (np.array([1.0, 2.0, 3.0]), None), {})]
 
-    report._render_strips(strips, tmp_path / "x.png", r"\alpha", "t", "std", 12, 8, 8, 1, 10, 1.8, 0.8, 150)
+    report._render_strips(strips, tmp_path / "x.png", r"$\alpha$", r"\alpha", "tab:purple", False, "t", "std",
+                          12, 8, 8, 1, 10, 1.8, 0.8, 150)
 
     assert seen["yticks"][0] == ["14.29"]
     lo, hi = seen["ylims"][0]
@@ -962,6 +1001,31 @@ def test_render_strips_tick_a_flat_strip_at_its_value(tmp_path, monkeypatch) -> 
         assert len(seen["yticks"][idx]) > 1
         assert seen["ylims"][idx][0] <= lowest
     assert seen["ylims"][1][1] >= 14.2857
+
+
+def test_render_strips_pin_a_unit_strip(tmp_path, monkeypatch) -> None:
+    # a unit series (the pair entropy) draws as the trial figure's panel does: in its colour, pinned to [0, 1]
+    # with the limits padded past the ends and ticked at 0 / 0.5 / 1, a flat strip included (no one-tick
+    # pinning), the spread band in the same colour; the legend names the series as _STRIP_FIGURES labels it
+    seen = {}
+
+    def finish(fig, axes, *args, **kwargs):
+        seen["yticks"] = [[t.get_text() for t in ax.get_yticklabels()] for ax in axes]
+        seen["ylims"] = [ax.get_ylim() for ax in axes]
+        seen["colors"] = [ax.get_lines()[0].get_color() for ax in axes]
+        seen["legend"] = [t.get_text() for t in axes[0].get_legend().get_texts()]
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    x = np.array([0.0, 1.0, 2.0])
+    strips = [("flat", x, (np.full(3, 0.5), None), {}), ("banded", x, (np.array([0.2, 0.5, 0.9]), np.full(3, 0.1)), {})]
+
+    report._render_strips(strips, tmp_path / "x.png", r"$\tilde{H}_{S,\text{pair}}$ (actual)", None, "red", True, "t",
+                          "std", 12, 8, 8, 1, 10, 1.8, 0.8, 150)
+
+    assert seen["ylims"] == [(-0.05, 1.05)] * 2 and seen["yticks"] == [["0.0", "0.5", "1.0"]] * 2
+    assert seen["colors"] == ["red", "red"]
+    assert seen["legend"] == [r"$\tilde{H}_{S,\text{pair}}$ (actual)", "± std"]
 
 
 def test_strip_blocks_group_by_the_coords_top_level_dimension() -> None:

@@ -321,6 +321,14 @@ def test_run_campaign_writes_split_overrides(tmp_path, monkeypatch) -> None:
     assert scheduled == [{"loss.loss1.targ": "sp", "lr.init": 2.0e-5}]
 
 
+def test_write_overrides_keeps_declaration_order(tmp_path) -> None:
+    # each side's keys land in the order the camp yaml declares them (the payload order _expand_combo_groups builds,
+    # combo groups first to last), not sorted: the arm's hpo2d tables take their axes off the coord side's two keys
+    cr._write_overrides(tmp_path, {"loss.loss1.targ": "sp"}, {"lr.init": 2.0e-5, "loss.logits.scale.init": 4}, {})
+
+    assert list(json.loads((tmp_path / "overrides.json").read_text())["coord"]) == ["lr.init", "loss.logits.scale.init"]
+
+
 def test_run_campaign_defers_coord_dir_until_trial_launch(tmp_path, monkeypatch) -> None:
     # a coord's dir (_dataset/<dataset>/_arm/<arm>/_coord/<coord>/, holding overrides.json) is created at
     # its first trial's launch, not at campaign kickoff -- a planned arm whose trials never start leaves
@@ -775,18 +783,18 @@ def test_fmt_name_value_floats_read_like_yaml() -> None:
     # kept, the exponent unpadded) -- including the 1e-4 .. 1e-2 band Python itself renders as decimals
     # (0.0002 -> '0.0002'), so an LR sweep reads uniformly; larger floats, zero, ints and strings pass
     # through str()
-    assert cr._fmt_name_value(2.0e-4) == "2.0e-4"
-    assert cr._fmt_name_value(7e-06) == "7.0e-6"
-    assert cr._fmt_name_value(1.131e-4) == "1.131e-4"
-    assert cr._fmt_name_value(2.828e-5) == "2.828e-5"
-    assert cr._fmt_name_value(1.0e-3) == "1.0e-3"
-    assert cr._fmt_name_value(-2.0e-4) == "-2.0e-4"
-    assert cr._fmt_name_value(0.01) == "0.01"
-    assert cr._fmt_name_value(0.05) == "0.05"
-    assert cr._fmt_name_value(0.3) == "0.3"
-    assert cr._fmt_name_value(0.0) == "0.0"
-    assert cr._fmt_name_value(2048) == "2048"
-    assert cr._fmt_name_value("sp") == "sp"
+    assert cr.fmt_name_value(2.0e-4) == "2.0e-4"
+    assert cr.fmt_name_value(7e-06) == "7.0e-6"
+    assert cr.fmt_name_value(1.131e-4) == "1.131e-4"
+    assert cr.fmt_name_value(2.828e-5) == "2.828e-5"
+    assert cr.fmt_name_value(1.0e-3) == "1.0e-3"
+    assert cr.fmt_name_value(-2.0e-4) == "-2.0e-4"
+    assert cr.fmt_name_value(0.01) == "0.01"
+    assert cr.fmt_name_value(0.05) == "0.05"
+    assert cr.fmt_name_value(0.3) == "0.3"
+    assert cr.fmt_name_value(0.0) == "0.0"
+    assert cr.fmt_name_value(2048) == "2048"
+    assert cr.fmt_name_value("sp") == "sp"
 
 
 def test_expand_combo_groups_multiple_combo_lists_cross_within_item() -> None:

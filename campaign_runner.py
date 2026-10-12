@@ -16,7 +16,6 @@ from pathlib import Path
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import NamedTuple
-from decimal import Decimal
 from zoneinfo import ZoneInfo
 import ctypes
 import itertools
@@ -42,6 +41,7 @@ from utils.config import (
     apply_dev_overrides,
     inject_snapshots,
     eval_groups,
+    fmt_name_value,
     get_config_stats,
     get_config_train, 
     load_train_config_dict, 
@@ -298,20 +298,6 @@ def _load_or_create_campaign_config(campaign: str) -> dict:
     save_json({**cfg_snapshot, "aliases": _freeze_aliases(cfg_snapshot["aliases"])}, fpath)
     return cfg_snapshot
 
-def _fmt_name_value(v) -> str:
-    """Format an override value for use in an arm / coord name. Floats read like the YAML that declares
-    them: any nonzero float below 1e-2 in magnitude (or one Python itself renders in scientific notation)
-    is written '<shortest mantissa, with a decimal point>e<exponent, no zero-padding>' -- 0.0002 -> '2.0e-4',
-    7e-06 -> '7.0e-6', 1.131e-4 -> '1.131e-4'. Python alone switches to scientific notation only below
-    1e-4, which would put '0.0002' next to '2.0e-5' in a sweep of one param; larger floats keep their
-    plain rendering ('0.3', '0.05'). A value with a CFG_PARAM_VALUE_ALIASES entry never reaches this --
-    _alias_pair substitutes the alias string first, which passes through unchanged."""
-    if isinstance(v, float) and v != 0.0 and (abs(v) < 1e-2 or "e" in repr(v)):
-        sign, digits, exp = Decimal(repr(v)).as_tuple()  # repr: the shortest round-trip digits
-        mant = f"{digits[0]}.{''.join(map(str, digits[1:])) or '0'}"
-        return f"{'-' if sign else ''}{mant}e{exp + len(digits) - 1}"
-    return str(v)
-
 def _alias_tables(aliases: dict | None):
     """The three name-alias tables: a campaign's FROZEN aliases when one is supplied (so its arm / coord
     names can never shift mid-campaign), else the live ones loaded at import."""
@@ -333,7 +319,7 @@ def _alias_pair(k: str, v, aliases: dict | None = None) -> str:
         v_aliased = universal[v]
     else:
         v_aliased = v
-    return f"{param.get(k, k)}-{_fmt_name_value(v_aliased)}"
+    return f"{param.get(k, k)}-{fmt_name_value(v_aliased)}"
 
 def _derive_item_name(item: dict, aliases: dict | None = None) -> str:
     """Name an unnamed `ablation_arms` / `hpo_coords` item by its overrides: _alias_pair components
@@ -457,10 +443,12 @@ def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict, 
     """The coord dir's overrides.json: the declared overrides kept apart under 'arm' / 'coord' / 'baseline'
     (the stats overrides bands read the arm and coord sides separately; the campaign-wide baseline side is
     uniform across every row, so it names nothing -- it is recorded so test.py and tools.regen_learning_curves
-    can rebuild a trial's effective config from this file alone)."""
+    can rebuild a trial's effective config from this file alone), each side's keys in declaration order -- the camp
+    yaml's, combo groups first to last (_expand_combo_groups' payload order): the arm's hpo2d tables take their axes off
+    the coord side's two keys (report._render_hpo2d_tables)."""
     dpath_coord.mkdir(parents=True, exist_ok=True)
     with open(dpath_coord / "overrides.json", "w") as f:
-        json.dump({"arm": arm_payload, "coord": coord_payload, "baseline": baseline_payload}, f, indent=2, sort_keys=True)
+        json.dump({"arm": arm_payload, "coord": coord_payload, "baseline": baseline_payload}, f, indent=2)
 
 def _iter_seeds(n_trials: int) -> list[int]:
     return list(range(SEED0, SEED0 + n_trials))

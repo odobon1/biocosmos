@@ -3,7 +3,8 @@ Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint
 (_dataset/<dataset>/_arm/<arm>/_coord/<coord>/coord_summary/), the per-eval-group composite-score summary
 tables + convergence plots at every cross-coord level -- per arm (_arm/<arm>/arm_summary/performance/), per dataset
 (_dataset/<dataset>/dataset_summary/performance/, each arm at its best coord) -- each
-{scores,convergence}.png + secondary/{scores,convergence}_<group>.png, beside each level's logit-scale tables
+{scores,convergence}.png + secondary/{scores,convergence}_<group>.png (a screening arm's also scores_hpo2d.png: its
+coords' composite mAP All gridded over the two hpo_coords params), beside each level's logit-scale tables
 ({scale,logscale}.png one dir up over the 1-loss rows, {scale1,scale2,logscale1,logscale2}.png over the rows
 under separate logit scalars: the trials' scale at its init / selected / best / final checkpoints), the phase
 workbooks (phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx + secondary/<campaign>_<phase>-<kind>_<group>.xlsx,
@@ -46,7 +47,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from utils.config import group_path
+from utils.config import fmt_name_value, group_path
 from utils.ddp import rank0
 from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, fpath_eval_scores
 from utils.utils import (
@@ -704,7 +705,11 @@ def _heat_hex(mean):
     frac = max(0.0, min(1.0, mean / 100.0))
     return "".join(f"{round(255 - (255 - channel) * frac):02X}" for channel in (0x4C, 0xAF, 0x50))
 
-def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi):
+def _draw_table(grid, n_keys, title, fpath, means, winners, killed, heatmap, dpi):
+    """Draw one table png: `grid`'s header row and first n_keys columns bold on grey (the row keys left-aligned), every
+    other cell styled by its (row, col): means[(row, col)] its numeric value (no entry for a '-' / 'X' cell), bold where
+    in `winners`, and under `heatmap` shaded white -> #4caf50 by that value (_heat_hex) -- the cells in `killed` (a
+    killed trial's, kill_thresh) in the killed yellow instead."""
     # matplotlib lays table rows out at a fixed 10pt * 1.2 = 1/6in apiece whatever the figure size
     # (1/4in after the 1.5x scale below), so the axes is made exactly that tall and fills the
     # figure: the table then spans it edge to edge for any row count and the title's pad is the
@@ -718,19 +723,25 @@ def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_r
     table.set_fontsize(9)
     table.scale(1, 1.5)
     table.auto_set_column_width(list(range(len(grid[0]))))
-    styles = _col_styles(grid, bold_high, n_keys)
     for (row, col), cell in table.get_celld().items():
         if row == 0 or col < n_keys:
             cell.set_text_props(fontweight="bold", ha="left" if col < n_keys and row > 0 else "center")  # row keys left-aligned
             cell.set_facecolor("#eaeaea")
             continue
-        means, winners = styles[col]
-        if row in winners:
+        if (row, col) in winners:
             cell.set_text_props(fontweight="bold")
-        if heatmap and row in means:
-            cell.set_facecolor(f"#{_KILLED_HEX if row in killed_rows else _heat_hex(means[row])}")
+        if heatmap and (row, col) in means:
+            cell.set_facecolor(f"#{_KILLED_HEX if (row, col) in killed else _heat_hex(means[(row, col)])}")
     fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
+
+def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi):
+    """A stats table png (_draw_table) styled per column (_col_styles): under bold_high each score column's
+    highest-mean cell bold (ties included), the grid rows in `killed_rows` in the killed yellow across."""
+    styles = _col_styles(grid, bold_high, n_keys)
+    means = {(row, col): mean for col, (col_means, _) in styles.items() for row, mean in col_means.items()}
+    winners = {(row, col) for col, (_, col_winners) in styles.items() for row in col_winners}
+    _draw_table(grid, n_keys, title, fpath, means, winners, {rc for rc in means if rc[0] in killed_rows}, heatmap, dpi)
 
 def _plot_convergence(curves, idx_win, score_name, title, fpath, dpi):
     """[(row key, mean curve, its selected index), ...] overlaid on one log-x axes: every row grey,
@@ -832,13 +843,57 @@ def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset,
             _render_stats_table(grid, len(headers), f"Logit Scale {sym} -- {subject}", dpath / f"{name}.png", False,
                                 False, killed_rows, dpi)
 
+def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_groups, subject, spread_type, bold_high,
+                         heatmap, dpi):
+    """Render the arm's coords' composite mAP All on `dataset` as one 2-D grid per eval group -- dpath_stats/scores_hpo2d.png
+    for native, dpath_stats/secondary/scores_hpo2d_<group>.png for the rest -- over the two params hpo_coords sweeps:
+    the earlier-declared down the rows, the later across the columns (the coord side of the coords' overrides.json,
+    whose keys keep the camp yaml's order), each axis's values in first-seen order along `coords` (the matrix's: the
+    first combo group varying slowest, so the yaml's order again) and spelled as the coord names spell them
+    (fmt_name_value). Each cell is the coord at that (row, column)'s _score_cells cell over its completed trials -- '-'
+    with none, or where no coord has launched yet (a coord's params are read off its dir, written at its first trial's
+    launch) -- heatmap-shaded like the scores tables (a killed trial's cell in the killed yellow) with, under bold_high,
+    the highest mean of the WHOLE grid in bold (ties included), not one per column as the scores tables bold. Screening
+    phase only (the refine phase has one coord per arm: nothing to grid), and only for a sweep of exactly two params --
+    every launched coord declaring the same two keys: a one-param sweep is scores.png's All column already, and three
+    or more have no single 2-D layout."""
+    if ArtifactManager.dpath_phase.name != "screen":
+        return
+    payloads = {coord: load_json(_dpath_coord(dataset, arm, coord) / "overrides.json")["coord"]
+                for coord in coords if _dpath_coord(dataset, arm, coord).exists()}
+    key_sets = {tuple(payload) for payload in payloads.values()}
+    if len(key_sets) != 1 or len(next(iter(key_sets))) != 2:
+        return
+    key_v, key_h = next(iter(key_sets))
+    vals_v = list(dict.fromkeys(payload[key_v] for payload in payloads.values()))
+    vals_h = list(dict.fromkeys(payload[key_h] for payload in payloads.values()))
+    coord_at = {(payload[key_v], payload[key_h]): coord for coord, payload in payloads.items()}
+    for group_key, group_name in eval_groups.items():
+        grid, killed = [[f"{key_v} \\ {key_h}", *map(fmt_name_value, vals_h)]], set()
+        for r, val_v in enumerate(vals_v, 1):
+            grid.append([fmt_name_value(val_v)])
+            for c, val_h in enumerate(vals_h, 1):
+                comps = (list(comps_all[group_key][((arm, coord_at[(val_v, val_h)]), dataset)].values())
+                         if (val_v, val_h) in coord_at else [])
+                grid[r].append(_score_cells([comp["map"] for comp in comps], ("All",), spread_type)[0])
+                if any(comp["killed"] for comp in comps):
+                    killed.add((r, c))
+        means = {(r, c): mean for c, (col_means, _) in _col_styles(grid, False, 1).items() for r, mean in col_means.items()}
+        top = max(means.values(), default=None)
+        winners = {rc for rc, mean in means.items() if bold_high and mean == top}
+        fpath = group_path(dpath_stats, group_key, "scores_hpo2d", ".png")
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        _draw_table(grid, 1, f"Composite mAP All -- {subject} ({group_name})", fpath, means, winners, killed, heatmap, dpi)
+
 @rank0
 def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
     _dataset/<dataset>/_arm/<arm>/arm_summary/performance/{scores,convergence}.png (+ secondary/, see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
     completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
-    '<score name> -- <arm>, <dataset> (<group>)' -- and, over the same rows, the logit-scale tables
+    '<score name> -- <arm>, <dataset> (<group>)' -- in the screening phase the coords' composite mAP All gridded over
+    the two hpo_coords params as well, performance/scores_hpo2d.png (+ secondary/, _render_hpo2d_tables) -- and, over
+    the same rows, the logit-scale tables
     arm_summary/{scale,logscale}.png (_render_scale_tables). An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at every completion of a trial of the arm on this dataset (train.py) --
     over whatever trials are in, so mid-sweep the rows carry different trial counts -- and by the runner on exit /
@@ -862,6 +917,8 @@ def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordere
     subject = f"{arm}, {DATASET_ALIAS2NAME[dataset]}"
     _render_stats_pngs(dpath_arm / "arm_summary" / "performance", ("Coord",), rowset, dataset, subject, eval_groups,
                        _score_labels(supp_scores, _nshot_names(comps_all))[0], spread_type, bold_high, ordered, heatmap, dpi)
+    _render_hpo2d_tables(dpath_arm / "arm_summary" / "performance", dataset, arm, coords, comps_all, eval_groups, subject,
+                         spread_type, bold_high, heatmap, dpi)
     scales_by = _collect_scales(arm_coords, (dataset,))
     _render_scale_tables(dpath_arm / "arm_summary", ("Coord",), rows,
                          {((coord,), dataset): comps_all["native"][((arm, coord), dataset)] for (coord,) in rows},

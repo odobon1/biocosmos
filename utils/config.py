@@ -3,6 +3,7 @@ from dataclasses import dataclass, field, asdict
 from copy import deepcopy
 import math
 import yaml
+from decimal import Decimal
 
 from utils.utils import PrintLog, load_split, paths
 from utils.hardware import compute_dataloader_workers_prefetch
@@ -48,6 +49,21 @@ def eval_groups(cfg_reporting: dict) -> dict:
         for key in EVAL_GROUPS
         if key == "native" or cfg_reporting["eval"][key]
     }
+
+def fmt_name_value(v) -> str:
+    """Format an override value for an arm / coord name (campaign_runner._alias_pair) and for the axis labels of the
+    arm's hpo2d tables (utils.report._render_hpo2d_tables). Floats read like the YAML that declares
+    them: any nonzero float below 1e-2 in magnitude (or one Python itself renders in scientific notation)
+    is written '<shortest mantissa, with a decimal point>e<exponent, no zero-padding>' -- 0.0002 -> '2.0e-4',
+    7e-06 -> '7.0e-6', 1.131e-4 -> '1.131e-4'. Python alone switches to scientific notation only below
+    1e-4, which would put '0.0002' next to '2.0e-5' in a sweep of one param; larger floats keep their
+    plain rendering ('0.3', '0.05'). A value with a CFG_PARAM_VALUE_ALIASES entry never reaches a name --
+    _alias_pair substitutes the alias string first, which passes through unchanged."""
+    if isinstance(v, float) and v != 0.0 and (abs(v) < 1e-2 or "e" in repr(v)):
+        sign, digits, exp = Decimal(repr(v)).as_tuple()  # repr: the shortest round-trip digits
+        mant = f"{digits[0]}.{''.join(map(str, digits[1:])) or '0'}"
+        return f"{'-' if sign else ''}{mant}e{exp + len(digits) - 1}"
+    return str(v)
 
 def group_path(dpath, group_key: str, stem: str, suffix: str):
     """Where eval group `group_key`'s artifact file `stem` + `suffix` lives under `dpath`: native, the

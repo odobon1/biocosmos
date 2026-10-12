@@ -591,6 +591,81 @@ def test_update_arm_metrics_rows_and_curves(tmp_path, monkeypatch) -> None:
     assert curves[idx_win][0] == ("b",)
 
 
+def _write_coord_overrides(dpath_phase, dataset, arm, coord, coord_payload) -> None:
+    """The coord dir's overrides.json as the runner writes it at the coord's first trial launch
+    (campaign_runner._write_overrides): its coord side the declared hpo_coords overrides, keys in the yaml's order."""
+    dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
+    dpath_coord.mkdir(parents=True, exist_ok=True)
+    (dpath_coord / "overrides.json").write_text(json.dumps({"arm": {}, "coord": coord_payload, "baseline": {}}))
+
+
+def test_update_arm_metrics_hpo2d_table(tmp_path, monkeypatch) -> None:
+    # the screening arm's arm_summary/performance/scores_hpo2d.png (+ secondary/): the coords' composite mAP All
+    # gridded over the two hpo_coords params -- the earlier-declared (overrides.json's coord side keeps the yaml's
+    # key order) down the rows, the later across the columns, each axis's values in first-seen order along the
+    # matrix (the yaml's) and spelled as the coord names spell them (2.0e-5, not 2e-05). A coord with a dir but no
+    # completed trial reads '-' (hi_s4), as does a (row, column) no coord has launched at yet (hi_s16: planned, no
+    # dir -- its column exists through lo_s16); a killed trial's cell is flagged; the one bold cell is the grid's
+    # highest mean (lo_s4) -- the per-column winner hi_s1 (column 1) is not bolded
+    dpath_phase = tmp_path / "screen"
+    coords = {"lo_s1": (2.0e-5, 1), "lo_s4": (2.0e-5, 4), "lo_s16": (2.0e-5, 16),
+              "hi_s1": (2.0e-4, 1), "hi_s4": (2.0e-4, 4), "hi_s16": (2.0e-4, 16)}
+    scores = {"lo_s1": 0.40, "lo_s4": 0.60, "lo_s16": 0.50, "hi_s1": 0.55}
+    for coord, (lr, scale) in coords.items():
+        if coord != "hi_s16":
+            _write_coord_overrides(dpath_phase, "cub", "hp", coord, {"lr.init": lr, "loss.logits.scale.init": scale})
+        if coord in scores:
+            dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", coord) / "_trial" / "1" / "eval" / "sel"
+            dpath_selected.mkdir(parents=True)
+            _write_group_metrics(dpath_selected, _scores_grp(_comp(scores[coord])), killed=coord == "hi_s1")
+    _write_meta(dpath_phase, ["hp"], list(coords), ["cub"])
+
+    drawn = []
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
+    monkeypatch.setattr(report, "_draw_table", lambda grid, n_keys, title, fpath, means, winners, killed, heatmap, dpi: drawn.append((fpath, title, grid, winners, killed)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
+
+    report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
+
+    drawn = [d for d in drawn if d[0].name.startswith("scores_hpo2d")]
+    assert len(drawn) == 4  # one per eval group
+    fpath, title, grid, winners, killed = next(d for d in drawn if d[0].name == "scores_hpo2d.png")
+    assert fpath.parent.parts[-2:] == ("arm_summary", "performance")
+    assert title == "Composite mAP All -- hp, CUB (Native)"
+    assert grid == [
+        ["lr.init \\ loss.logits.scale.init", "1", "4", "16"],
+        ["2.0e-5", "40.00", "60.00", "50.00"],
+        ["2.0e-4", "55.00", "-", "-"],
+    ]
+    assert winners == {(1, 2)} and killed == {(2, 1)}
+    assert sorted(d[0].name for d in drawn) == ["scores_hpo2d.png", "scores_hpo2d_joint-macro.png", "scores_hpo2d_joint.png",
+                                                "scores_hpo2d_native-macro.png"]
+
+
+def test_update_arm_metrics_hpo2d_table_screen_two_param_sweeps_only(tmp_path, monkeypatch) -> None:
+    # scores_hpo2d.png is rendered (every group's, through the real renderer) in the screening phase of a sweep of
+    # exactly two params; not outside screening (the refine phase has one coord per arm: nothing to grid), nor for a
+    # sweep of one param (scores.png's All column already) or of three (no single 2-D layout)
+    monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
+    two = {"lr.init": 2.0e-5, "loss.logits.scale.init": 4}
+    for phase, payload, rendered in (("screen", two, True), ("refine", two, False), ("screen", {"lr.init": 2.0e-5}, False),
+                                     ("screen", {**two, "opt.wd": 0.1}, False)):
+        dpath_phase = tmp_path / str(len(payload)) / phase
+        _write_coord_overrides(dpath_phase, "cub", "hp", "c0", payload)
+        dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", "c0") / "_trial" / "1" / "eval" / "sel"
+        dpath_selected.mkdir(parents=True)
+        _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))
+        _write_meta(dpath_phase, ["hp"], ["c0"], ["cub"])
+        monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
+
+        report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
+
+        dpath_stats = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "performance"
+        assert (dpath_stats / "scores.png").exists()
+        for group_key in _GROUP_KEYS:
+            assert group_path(dpath_stats, group_key, "scores_hpo2d", ".png").exists() == rendered
+
+
 def _write_scale_series(dpath_trial, scale, scale2=()) -> None:
     """Overwrite a completed trial's (_write_group_metrics) data_trial.pkl with a two-batch `scale` series, its
     log-scale counterpart the same values negated so the two tables are told apart; the fixture's evals (base at
@@ -714,8 +789,10 @@ def test_update_dataset_metrics_writes_scale_tables(tmp_path, monkeypatch) -> No
 def _write_complete_trial(dpath_phase, dataset, arm, coord, trial, base) -> None:
     """A completed trial of (arm, coord) on `dataset` as trial `trial`: its per-checkpoint evals (peaking at `base`,
     so it reads as complete), its selected- and own-best-checkpoint metrics, and the learning_curves/ dir the best_coord/
-    mirror copies -- each png's bytes naming the trial it came from."""
+    mirror copies -- each png's bytes naming the trial it came from -- under the coord's overrides.json (an unswept
+    coord's: no hpo2d table)."""
     dpath_trial = _dpath_coord(dpath_phase, dataset, arm, coord) / "_trial" / str(trial)
+    _write_coord_overrides(dpath_phase, dataset, arm, coord, {})
     _write_trial_evals(dpath_trial, (("0.10", "0.10"), (f"{base:.4f}", f"{base:.4f}")))
     _write_group_metrics(dpath_trial / "eval" / "sel", _scores_grp(_comp(base)))
     _write_group_metrics(dpath_trial / "eval" / "best", _scores_grp(_comp(base)))

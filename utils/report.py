@@ -1004,21 +1004,23 @@ def _strip_data(panels, key, req_key, spread_type):
         reqs = {stat: agg(f"{req_key}_{stat}")[0] for stat in ("min", "mean", "max")}
     return panels[0][0][:n], agg(key), reqs
 
-def _render_strips(strips, fpath_plot, label, sym, color, unit, plot_title, spread_type, fontsize_axes, fontsize_ticks,
-                   fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel, dpi):
-    """One figure of strips, `strips` [(coord, x, series, reqs)] top to bottom (_strip_data): the panel
-    the trial's own figure gives one series (_STRIP_FIGURES: `label` its legend entry, `color` its line) --
-    a logit scale in purple, on the per-trial figures over its bound trio in red, the min and max solid and
-    the mean dashed (the agg figure's reqs are empty; `sym` names them), or the pair entropy in red -- one
-    per coord of an arm, over one shared epoch axis. A spread (the agg figure's) shades its across-trial
-    '± <spread_type>' band around the line. A `unit` series -- a fraction on [0, 1] -- is pinned there,
-    the limits padded past the ends as the trial figure's panel is; any other autoscales, a flat one ticked
-    at its value (_pin_flat_yaxis).
+def _render_strips(strips, fpath_plot, best, label, sym, color, unit, plot_title, spread_type, fontsize_axes,
+                   fontsize_ticks, fontsize_legend, subplot_border_width, fig_width, height_fixed, height_panel, dpi):
+    """One figure of strips, `strips` [(coord, score, x, series, reqs)] top to bottom (_strip_data): the
+    panel the trial's own figure gives one series (_STRIP_FIGURES: `label` its legend entry, `color` its
+    line) -- a logit scale in purple, on the per-trial figures over its bound trio in red, the min and max
+    solid and the mean dashed (the agg figure's reqs are empty; `sym` names them), or the pair entropy in
+    red -- one per coord of an arm, over one shared epoch axis. A spread (the agg figure's) shades its
+    across-trial '± <spread_type>' band around the line. A `unit` series -- a fraction on [0, 1] -- is
+    pinned there, the limits padded past the ends as the trial figure's panel is; any other autoscales, a
+    flat one ticked at its value (_pin_flat_yaxis).
 
-    Each strip is named by its coord in bold, the names alternating left / right down the figure with each
-    strip's y ticks on its name's side, so neither margin carries every label; the names on a side start
-    at a common x (their pads make up the difference between each strip's tick labels and the widest
-    block that side has to clear). The coords' top-level dimension -- combo-group names join with '_' and
+    Each strip is captioned by its coord's name over its `score` -- the strip's Native mAP composite All in
+    parentheses, left-aligned under the name -- the figure's `best` coord's caption in bold, the captions
+    alternating left / right down the figure with each strip's y ticks on its caption's side, so neither
+    margin carries every label; the captions on a side start at a common x (their pads make up the
+    difference between each strip's tick labels and the widest block that side has to clear). The
+    coords' top-level dimension -- combo-group names join with '_' and
     the first group varies slowest, so LR-5.0e-6_Alpha-{100,10,1} groups under its LR -- boxes each run of
     strips sharing it in a double-width border (_finish_curves' axes_blocks). The legend is the figure's,
     not a panel's (the strips draw the same series), pooled by label and laid out in one row above the top
@@ -1027,7 +1029,7 @@ def _render_strips(strips, fpath_plot, label, sym, color, unit, plot_title, spre
     gs = gridspec.GridSpec(len(strips), 1, hspace=0)
     axes = []
 
-    for coord, x, (vals, spread), reqs in strips:
+    for coord, score, x, (vals, spread), reqs in strips:
         ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         # the scale rides above its bound lines (zorder): a softmax target mapping pinned to the scale
         # (utils.loss.InfoNCECriterion._tsm) makes the bound the scale itself wherever a row's targets
@@ -1045,12 +1047,15 @@ def _render_strips(strips, fpath_plot, label, sym, color, unit, plot_title, spre
             ax.set_yticks([0.0, 0.5, 1.0])
         else:
             _pin_flat_yaxis(ax)  # a frozen scale with no bound beside it: one tick, at its value
-        # the coord names the strip, horizontal (a coord name reads badly rotated) and bold, on the side
-        # its y ticks take -- alternating down the figure, so one margin doesn't carry every label
+        # the coord names the strip, horizontal (a coord name reads badly rotated) over its score, bold for
+        # the arm's best coord, on the side its y ticks take -- alternating down the figure, so one margin
+        # doesn't carry every label. Sided first: positioning a y label sets its vertical alignment for the
+        # rotated one (bottom / top), and this one is centred on its strip
         side = "left" if len(axes) % 2 == 0 else "right"
-        ax.set_ylabel(coord, rotation=0, ha="left", va="center", fontsize=fontsize_axes, fontweight="bold")
         ax.yaxis.set_label_position(side)
         ax.yaxis.set_ticks_position(side)
+        ax.set_ylabel(f"{coord}\n({score})", rotation=0, ha="left", va="center", ma="left", fontsize=fontsize_axes,
+                      fontweight="bold" if coord == best else "normal")
         ax.grid(True)
         ax.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax)
@@ -1111,7 +1116,11 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
     (a scale over its target-implied bound trio), agg/ the series alone -- no trio -- as the mean over the
     coord's trials with a spread band (_strip_data, _render_strips). A coord whose trials don't record a
     series (the pair entropy is an InfoNCE trial's with sim_grad_sums on) drops out of that figure, and an
-    arm with none gets no such figure. The style
+    arm with none gets no such figure. Each strip's caption carries its Native mAP composite All at the
+    selected checkpoint under the coord's name -- on trials/<n>/ the trial's own, on agg/ the mean ± spread
+    over the strip's trials, the cell the arm's scores table prints (_score_cells) -- and one caption is
+    bold: on agg/ the arm's best coord's by the across-trial mean (_best_coords, as best_coord/ picks it), on
+    trials/<n>/ that of the coord scoring highest in trial n, which need not be the same coord. The style
     defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
 
     The epoch axis is rebuilt the way the trial figures' is (n_samps_seen / samps_per_epoch), reading
@@ -1121,8 +1130,9 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
     ticked at its one value (_pin_flat_yaxis). Rendered with the arm's tables (update_arm_metrics)."""
     dpath_strips = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm / "arm_summary"
                     / "coord_strips")
+    coords = _matrix()[dataset][arm]
     panels = {}  # coord -> {trial_num: (x_train, data_epoch)}, completed trials only, campaign coord order
-    for coord in _matrix()[dataset][arm]:
+    for coord in coords:
         dpath_coord = _dpath_coord(dataset, arm, coord)
         if not (dpath_coord / "_trial").exists():
             continue
@@ -1140,6 +1150,21 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
 
     if not panels:  # no completed trial on this dataset yet
         return
+    # the captions' scores -- each trial's Native mAP composite All at the selected checkpoint, as the arm's
+    # scores table reads them -- and the bold caption: the agg figure's is the arm's best coord by their
+    # across-trial mean (best_coord/'s pick), a trial's figure's the coord scoring highest in that trial
+    arm_coords = [(arm, coord) for coord in coords]
+    comps_by = _collect_comps(("native",), arm_coords, (dataset,))["native"]
+    best_agg = _best_coords(arm_coords, (dataset,), comps_by)[(arm, dataset)]
+
+    def score(coord, trial_nums):
+        return _score_cells([comps_by[((arm, coord), dataset)][t]["map"] for t in trial_nums], ("All",), spread_type)[0]
+
+    def best_at(trial_num):  # ties to the first in campaign order, as _best_coords breaks them
+        scores = {coord: float(comps_by[((arm, coord), dataset)][trial_num]["map"]["all"])
+                  for coord in coords if trial_num in comps_by[((arm, coord), dataset)]}
+        return max(scores, key=scores.get)
+
     for key, req_key, sym, label, color, unit, name in _STRIP_FIGURES:
         # the trials recording the series, per batch (every trial its logit scale; the pair entropy an InfoNCE
         # trial's with sim_grad_sums on, empty otherwise): a coord without it drops out of this figure
@@ -1152,12 +1177,12 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
         style = (label, sym, color, unit, plot_title, spread_type, fontsize_axes, fontsize_ticks, fontsize_legend,
                  subplot_border_width, fig_width, height_fixed, height_panel, dpi)
         for trial_num in sorted({trial_num for by_trial in recorded.values() for trial_num in by_trial}, key=int):
-            strips = [(coord, *_strip_data([by_trial[trial_num]], key, req_key, None))
+            strips = [(coord, score(coord, [trial_num]), *_strip_data([by_trial[trial_num]], key, req_key, None))
                       for coord, by_trial in recorded.items() if trial_num in by_trial]
-            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", *style)
-        strips = [(coord, *_strip_data(list(by_trial.values()), key, req_key, spread_type))
+            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", best_at(trial_num), *style)
+        strips = [(coord, score(coord, by_trial), *_strip_data(list(by_trial.values()), key, req_key, spread_type))
                   for coord, by_trial in recorded.items()]
-        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", *style)
+        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", best_agg, *style)
 
 @rank0
 def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):

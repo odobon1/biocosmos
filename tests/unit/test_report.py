@@ -837,8 +837,10 @@ def test_best_coord_curves_skip_trainval(tmp_path, monkeypatch) -> None:
 
 
 def _write_strip_trial(dpath_phase, dataset, arm, coord, trial, scale, n_epochs=2, samps_per_epoch=100,
-                       reqs=True, entropy=None) -> None:
-    """A completed trial carrying what the strip figures read: its evals (so it reads as complete), the
+                       reqs=True, entropy=None, score="0.50") -> None:
+    """A completed trial carrying what the strip figures read: its evals (so it reads as complete) and its
+    selected-checkpoint native score file with `score` as its mAP composite All (the captions' score, the best
+    coord's pick), the
     samps_per_epoch the epoch axis is rebuilt from (coord_metadata.json's horizon), and a data_trial.pkl whose `scale` series is given, its logscale counterpart the same
     values negated so the two figures are told apart. reqs=False leaves the target-implied bound trio
     empty, as a BCE-family loss does. `entropy` is the pair-level (actual) similarity-gradient entropy
@@ -846,6 +848,7 @@ def _write_strip_trial(dpath_phase, dataset, arm, coord, trial, scale, n_epochs=
     dpath_coord = _dpath_coord(dpath_phase, dataset, arm, coord)
     dpath_trial = dpath_coord / "_trial" / str(trial)
     _write_trial_evals(dpath_trial, (("0.10", "0.10"), ("0.20", "0.20")))
+    _scores_file(dpath_trial / "eval" / "sel", "native").write_text(json.dumps(_scores_grp(_comp(float(score)))))
     fpath_meta = dpath_trial / "trial_metadata.json"  # n_chkpts/killed/chkpt as _write_trial_evals recorded them
     fpath_meta.write_text(json.dumps({**json.loads(fpath_meta.read_text()),
                                       "progress": {"epoch": n_epochs, "n_epochs": n_epochs, "n_samps_seen": n_epochs * samps_per_epoch}}))
@@ -906,9 +909,9 @@ def test_update_coord_strips_pair_entropy_only_where_recorded(tmp_path, monkeypa
     assert [coord for coord, *_ in figures[("1", "scale")]] == ["a", "b"]
     assert [coord for coord, *_ in figures[("1", "sim_grad_entropy_pair_actual")]] == ["a"]
     assert [coord for coord, *_ in figures[("agg", "sim_grad_entropy_pair_actual")]] == ["a"]
-    _, x, (vals, spread), reqs = figures[("1", "sim_grad_entropy_pair_actual")][0]
+    _, _, x, (vals, spread), reqs = figures[("1", "sim_grad_entropy_pair_actual")][0]
     assert x == pytest.approx([0.0, 1.0]) and vals == pytest.approx([0.2, 0.4]) and spread is None and reqs == {}
-    _, _, (vals, spread), reqs = figures[("agg", "sim_grad_entropy_pair_actual")][0]
+    _, _, _, (vals, spread), reqs = figures[("agg", "sim_grad_entropy_pair_actual")][0]
     assert vals == pytest.approx([0.4, 0.6]) and spread == pytest.approx([np.std([0.2, 0.6], ddof=1)] * 2) and reqs == {}
 
     calls.clear()
@@ -920,32 +923,41 @@ def test_update_coord_strips_rows_and_aggregation(tmp_path, monkeypatch) -> None
     # a trial's figure draws that trial per coord, unbanded, over its bound trio, on an epoch axis rebuilt
     # from the recorded sample volume / n_epochs; the agg one draws the mean over the coord's trials with a
     # spread band on the scale line and no bound trio at all. A coord with no completed trial at a trial
-    # number is left out of that trial's figure; the strips keep campaign coord order.
+    # number is left out of that trial's figure; the strips keep campaign coord order. Each strip's caption
+    # score is its Native mAP composite All as the scores table prints it: the trial's own on a trial's
+    # figure, the mean ± spread over the coord's trials on the agg one. The bold coord is the agg figure's
+    # best by that mean and a trial figure's best in that trial -- not necessarily the same coord
     dpath_phase = tmp_path / "screen"
-    _write_strip_trial(dpath_phase, "cub", "hp", "a", 1, [10.0, 20.0])
-    _write_strip_trial(dpath_phase, "cub", "hp", "a", 2, [30.0, 40.0])
-    _write_strip_trial(dpath_phase, "cub", "hp", "b", 1, [1.0, 2.0])  # b never ran trial 2
+    _write_strip_trial(dpath_phase, "cub", "hp", "a", 1, [10.0, 20.0], score="0.50")
+    _write_strip_trial(dpath_phase, "cub", "hp", "a", 2, [30.0, 40.0], score="0.90")
+    _write_strip_trial(dpath_phase, "cub", "hp", "b", 1, [1.0, 2.0], score="0.65")  # b never ran trial 2
     _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"], seeds=[42, 43])
 
     calls = []
     monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-    monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, *args: calls.append((fpath, strips)))
+    monkeypatch.setattr(report, "_render_strips", lambda strips, fpath, best, *args: calls.append((fpath, strips, best)))
 
     report.update_coord_strips("cub", "hp", "std", 150)
 
-    figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips in calls}
+    figures = {(fpath.parent.name, fpath.stem): strips for fpath, strips, _ in calls}
+    bests = {(fpath.parent.name, fpath.stem): best for fpath, _, best in calls}
+    assert (bests[("1", "scale")], bests[("2", "scale")], bests[("agg", "scale")]) == ("b", "a", "a")  # 65 > 50; a alone; 70 > 65
+    assert (bests[("1", "logscale")], bests[("agg", "logscale")]) == ("b", "a")
     assert [coord for coord, *_ in figures[("1", "scale")]] == ["a", "b"]
     assert [coord for coord, *_ in figures[("2", "scale")]] == ["a"]
-    _, x, (vals, spread), reqs = figures[("1", "scale")][0]
+    assert [score for _, score, *_ in figures[("1", "scale")]] == ["50.00", "65.00"]
+    assert [score for _, score, *_ in figures[("2", "scale")]] == ["90.00"]
+    assert [score for _, score, *_ in figures[("agg", "scale")]] == [f"70.00 ± {np.std([50.0, 90.0], ddof=1):.2f}", "65.00"]
+    _, _, x, (vals, spread), reqs = figures[("1", "scale")][0]
     assert x == pytest.approx([0.0, 1.0])  # epochs: n_samps_seen / samps_per_epoch, anchored at 0
     assert vals == pytest.approx([10.0, 20.0]) and spread is None
     assert {stat: list(v) for stat, v in reqs.items()} == {"min": [0.0, 1.0], "mean": [1.0, 2.0], "max": [2.0, 3.0]}
-    _, _, (vals, spread), reqs = figures[("agg", "scale")][0]
+    _, _, _, (vals, spread), reqs = figures[("agg", "scale")][0]
     assert vals == pytest.approx([20.0, 30.0])  # a's two trials, meaned
     assert spread == pytest.approx([np.std([10.0, 30.0], ddof=1)] * 2)
     assert reqs == {}  # the bound trio is the per-trial figures' alone
     # the logscale figure reads the log-scale series (negated here), not the scale one
-    _, _, (vals, _), _ = figures[("agg", "logscale")][0]
+    _, _, _, (vals, _), _ = figures[("agg", "logscale")][0]
     assert vals == pytest.approx([-20.0, -30.0])
 
 
@@ -967,7 +979,7 @@ def test_update_coord_strips_keep_frozen_and_boundless_coords(tmp_path, monkeypa
 
     assert [[coord for coord, *_ in strips] for _, strips in calls] == [["a", "b"]] * 4
     assert all(reqs == {} for _, strips in calls for *_, reqs in strips)
-    _, _, (vals, _), _ = calls[0][1][0]
+    _, _, _, (vals, _), _ = calls[0][1][0]
     assert vals == pytest.approx([14.0, 14.0])
 
     calls.clear()
@@ -989,9 +1001,10 @@ def test_render_strips_tick_a_flat_strip_at_its_value(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(report, "_finish_curves", finish)
     x, flat = np.array([0.0, 1.0, 2.0]), (np.full(3, 14.2857), None)
     reqs = {stat: np.array([3.0, 4.0, 5.0]) + off for stat, off in (("min", 0.0), ("mean", 1.0), ("max", 2.0))}
-    strips = [("frozen", x, flat, {}), ("frozen_bounded", x, flat, reqs), ("learnable", x, (np.array([1.0, 2.0, 3.0]), None), {})]
+    strips = [("frozen", "50.00", x, flat, {}), ("frozen_bounded", "50.00", x, flat, reqs),
+              ("learnable", "50.00", x, (np.array([1.0, 2.0, 3.0]), None), {})]
 
-    report._render_strips(strips, tmp_path / "x.png", r"$\alpha$", r"\alpha", "tab:purple", False, "t", "std",
+    report._render_strips(strips, tmp_path / "x.png", "frozen", r"$\alpha$", r"\alpha", "tab:purple", False, "t", "std",
                           12, 8, 8, 1, 10, 1.8, 0.8, 150)
 
     assert seen["yticks"][0] == ["14.29"]
@@ -1018,14 +1031,43 @@ def test_render_strips_pin_a_unit_strip(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(report, "_finish_curves", finish)
     x = np.array([0.0, 1.0, 2.0])
-    strips = [("flat", x, (np.full(3, 0.5), None), {}), ("banded", x, (np.array([0.2, 0.5, 0.9]), np.full(3, 0.1)), {})]
+    strips = [("flat", "50.00", x, (np.full(3, 0.5), None), {}),
+              ("banded", "50.00", x, (np.array([0.2, 0.5, 0.9]), np.full(3, 0.1)), {})]
 
-    report._render_strips(strips, tmp_path / "x.png", r"$\tilde{H}_{S,\text{pair}}$ (actual)", None, "red", True, "t",
-                          "std", 12, 8, 8, 1, 10, 1.8, 0.8, 150)
+    report._render_strips(strips, tmp_path / "x.png", "flat", r"$\tilde{H}_{S,\text{pair}}$ (actual)", None, "red", True,
+                          "t", "std", 12, 8, 8, 1, 10, 1.8, 0.8, 150)
 
     assert seen["ylims"] == [(-0.05, 1.05)] * 2 and seen["yticks"] == [["0.0", "0.5", "1.0"]] * 2
     assert seen["colors"] == ["red", "red"]
     assert seen["legend"] == [r"$\tilde{H}_{S,\text{pair}}$ (actual)", "± std"]
+
+
+def test_render_strips_caption_names_score_and_bolds_the_best(tmp_path, monkeypatch) -> None:
+    # each strip's caption is its coord's name over its score in parentheses, the lines left-aligned, in bold
+    # for the arm's best coord alone; the captions alternate left / right down the figure, each centred on its
+    # strip whichever side it takes
+    seen = {}
+
+    def finish(fig, axes, *args, **kwargs):
+        seen["captions"] = [ax.yaxis.label for ax in axes]
+        seen["text"] = [label.get_text() for label in seen["captions"]]
+        seen["weight"] = [label.get_fontweight() for label in seen["captions"]]
+        seen["align"] = [(label.get_ha(), label.get_va(), label._get_multialignment()) for label in seen["captions"]]
+        seen["side"] = [ax.yaxis.get_label_position() for ax in axes]
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    x = np.array([0.0, 1.0, 2.0])
+    strips = [(coord, score, x, (np.array([1.0, 2.0, 3.0]), None), {})
+              for coord, score in (("a", "50.00"), ("b", "60.00 ± 1.00"), ("c", "55.00"))]
+
+    report._render_strips(strips, tmp_path / "x.png", "b", r"$\alpha$", r"\alpha", "tab:purple", False, "t", "std",
+                          12, 8, 8, 1, 10, 1.8, 0.8, 150)
+
+    assert seen["text"] == ["a\n(50.00)", "b\n(60.00 ± 1.00)", "c\n(55.00)"]
+    assert seen["weight"] == ["normal", "bold", "normal"]
+    assert seen["align"] == [("left", "center", "left")] * 3
+    assert seen["side"] == ["left", "right", "left"]
 
 
 def test_strip_blocks_group_by_the_coords_top_level_dimension() -> None:

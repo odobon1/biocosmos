@@ -411,8 +411,8 @@ def _campaign_table_fpaths(dpath_phase: Path, dataset: str, arm: str, groups=_GR
     fpaths = []
     for group in groups:
         fpaths.append(group_path(dpath_dataset / "_arm" / arm / "arm_summary" / "performance", group, "scores", ".png"))
+        fpaths.append(group_path(dpath_dataset / "dataset_summary" / "performance", group, "scores", ".png"))
         for kind in ("armcoords", "arms"):
-            fpaths.append(group_path(dpath_dataset / "dataset_summary" / kind / "performance", group, "scores", ".png"))
             fpaths.append(fpath_workbook(dpath_phase, kind, group))
     return fpaths
 
@@ -2089,12 +2089,11 @@ def test_run_campaign_refine_copies_picks_and_tops_up_seeds(tmp_path, monkeypatc
     # the refine manifest: the copied trial counts as completed there, the unpicked coords are not planned
     text = (dpath_refine / "manifest.log").read_text(encoding="utf-8")
     assert "cub/sp/loss.sim-geo/42 ---" in text and "cub/sp/loss.sim-cos" not in text
-    # the refine phase's own stats tree renders on the way out, both kinds (phase_summary workbooks and
-    # dataset_summary pngs): arms/ only -- each arm has its single pick there, so no armcoords/
+    # the refine phase's own stats tree renders on the way out (phase_summary workbooks and dataset_summary
+    # pngs): the arms/ workbooks only -- each arm has its single pick there, so no armcoords/
     assert fpath_workbook(dpath_refine, "arms", "native").exists()
-    assert (dpath_refine / "_dataset" / "cub" / "dataset_summary" / "arms").exists()
+    assert (dpath_refine / "_dataset" / "cub" / "dataset_summary" / "performance").exists()
     assert not (dpath_refine / "phase_summary" / "armcoords").exists()
-    assert not (dpath_refine / "_dataset" / "cub" / "dataset_summary" / "armcoords").exists()
     # screening: both coords, still just seed 42
     dpath_screen = tmp_path / "cmp_refine" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord"
     assert (dpath_screen / "loss.sim-cos" / "_trial" / "1").exists() and (dpath_screen / "loss.sim-geo" / "_trial" / "1").exists()

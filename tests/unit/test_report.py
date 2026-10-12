@@ -49,7 +49,7 @@ def _write_meta(dpath_phase, arms, coords, datasets, matrix=None, seeds=(42,)) -
 
 
 def _captured(grids, *tail):
-    """The captured table grid whose scores.png sits under the dir sequence `tail` (e.g. 'arms', 'performance': native's; a secondary group's sits one secondary/ deeper)."""
+    """The captured table grid whose scores.png sits under the dir sequence `tail` (e.g. 'dataset_summary', 'performance': native's; a secondary group's sits one secondary/ deeper)."""
     return next(grid for fpath, grid in grids if fpath.parent.parts[-len(tail):] == tail)
 
 
@@ -690,31 +690,25 @@ def test_update_arm_metrics_writes_scale_tables(tmp_path, monkeypatch) -> None:
 
 
 def test_update_dataset_metrics_writes_scale_tables(tmp_path, monkeypatch) -> None:
-    # dataset_summary/{armcoords,arms}/{scale,logscale}.png over each view's rows -- every (arm, coord) with trials,
-    # and each arm at native's best coord (b: 0.60 over a's 0.40); the refine phase writes arms/ only
-    for phase in ("screen", "refine"):
-        dpath_phase = tmp_path / phase
-        for coord, base, scale in (("a", 0.40, [10.0, 12.0]), ("b", 0.60, [10.0, 20.0])):
-            dpath_selected = _dpath_coord(dpath_phase, "cub", "hp", coord) / "_trial" / "1" / "eval" / "sel"
-            dpath_selected.mkdir(parents=True)
-            _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
-            _write_scale_series(dpath_selected.parent.parent, scale)
-        _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"])
+    # dataset_summary/{scale,logscale}.png over the score tables' rows -- each arm at native's best coord (b: 0.60
+    # over a's 0.40)
+    for coord, base, scale in (("a", 0.40, [10.0, 12.0]), ("b", 0.60, [10.0, 20.0])):
+        dpath_selected = _dpath_coord(tmp_path, "cub", "hp", coord) / "_trial" / "1" / "eval" / "sel"
+        dpath_selected.mkdir(parents=True)
+        _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
+        _write_scale_series(dpath_selected.parent.parent, scale)
+    _write_meta(tmp_path, ["hp"], ["a", "b"], ["cub"])
 
-        tables = []
-        monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-        monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: tables.append((fpath, grid)))
-        monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
+    tables = []
+    monkeypatch.setattr(ArtifactManager, "dpath_phase", tmp_path)
+    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: tables.append((fpath, grid)))
+    monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
 
-        report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
-        scale_tables = {fpath.parent.name: grid for fpath, grid in tables if fpath.name == "scale.png"}
-        assert set(scale_tables) == ({"armcoords", "arms"} if phase == "screen" else {"arms"})
-        if phase == "screen":
-            assert scale_tables["armcoords"] == [["Arm", "Coord", "Init", "Sel", "Best", "Final"],
-                                                 ["hp", "a (1)", "10.00", "12.00", "12.00", "12.00"],
-                                                 ["hp", "b (1)", "10.00", "20.00", "20.00", "20.00"]]
-        assert scale_tables["arms"] == [["Arm", "Coord", "Init", "Sel", "Best", "Final"],
-                                        ["hp", "b (1)", "10.00", "20.00", "20.00", "20.00"]]
+    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
+    scale_tables = [(fpath, grid) for fpath, grid in tables if fpath.name == "scale.png"]
+    assert [fpath for fpath, _ in scale_tables] == [tmp_path / "_dataset" / "cub" / "dataset_summary" / "scale.png"]
+    assert scale_tables[0][1] == [["Arm", "Coord", "Init", "Sel", "Best", "Final"],
+                                  ["hp", "b (1)", "10.00", "20.00", "20.00", "20.00"]]
 
 
 def _write_complete_trial(dpath_phase, dataset, arm, coord, trial, base) -> None:
@@ -1141,9 +1135,9 @@ def _write_chkpt_means(dpath_phase, dataset, arm, coord, means, idx_best) -> Non
 
 
 def test_update_dataset_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
-    # the dataset's dataset_summary/ tables + convergence plots, both kinds: armcoords/ ('Arm' + 'Coord'
-    # rows) and arms/ ('Arm' + 'Coord' rows at each arm's best coord). "mp" is planned but has no completed trials
-    # in this dataset -> no row in either; a dataset with no dir (planned "bryo", never launched) is skipped.
+    # the dataset's dataset_summary/ tables + convergence plots: 'Arm' + 'Coord' rows at each arm's best coord. "mp"
+    # is planned but has no completed trials in this dataset -> no row; a dataset with no dir (planned "bryo", never
+    # launched) is skipped.
     dpath_selected = _dpath_coord(tmp_path, "cub", "hp", "c0") / "_trial" / "1" / "eval" / "sel"
     dpath_selected.mkdir(parents=True)
     _write_group_metrics(dpath_selected, _scores_grp(_comp(0.50)))
@@ -1161,44 +1155,21 @@ def test_update_dataset_metrics_writes_pngs(tmp_path, monkeypatch) -> None:
 
     report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
     report.update_dataset_metrics("bryo", _EVAL_GROUPS, "std", True, False, True, _SUPP_OFF, 150)
-    dpath_stats = tmp_path / "_dataset" / "cub" / "dataset_summary"
-    for kind in ("armcoords", "arms"):
-        for group_key in _GROUP_KEYS:
-            assert (group_path(dpath_stats / kind / "performance", group_key, "scores", ".png")).exists()
-            assert (group_path(dpath_stats / kind / "performance", group_key, "convergence", ".png")).exists()
+    dpath_perf = tmp_path / "_dataset" / "cub" / "dataset_summary" / "performance"
+    for group_key in _GROUP_KEYS:
+        assert (group_path(dpath_perf, group_key, "scores", ".png")).exists()
+        assert (group_path(dpath_perf, group_key, "convergence", ".png")).exists()
     assert not (tmp_path / "_dataset" / "bryo").exists()
-    assert _captured(grids, "armcoords", "performance") == [
+    assert _captured(grids, "dataset_summary", "performance") == [
         ["Arm", "Coord", *_MAP_LABELS],
         ["hp", "c0 (1)", "50.00", "52.00", "51.00", "53.00", "54.00", "55.00"],
     ]
 
 
-def test_update_dataset_metrics_refine_phase_arms_only(tmp_path, monkeypatch) -> None:
-    # refine: arms/ only, each arm at its single screening pick keyed 'Arm' + 'Coord' -- no armcoords/ view,
-    # which would repeat it row for row
-    dpath_phase = tmp_path / "refine"
-    for arm, coord, base in (("hp", "c1", 0.60), ("sp", "c0", 0.40)):
-        dpath_selected = _dpath_coord(dpath_phase, "cub", arm, coord) / "_trial" / "1" / "eval" / "sel"
-        dpath_selected.mkdir(parents=True)
-        _write_group_metrics(dpath_selected, _scores_grp(_comp(base)))
-    _write_meta(dpath_phase, ["hp", "sp"], ["c0", "c1"], ["cub"], {"cub": {"hp": ["c1"], "sp": ["c0"]}})
-
-    grids = []
-    monkeypatch.setattr(ArtifactManager, "dpath_phase", dpath_phase)
-    monkeypatch.setattr(report, "_render_stats_table", lambda grid, n_keys, title, fpath, bold_high, heatmap, killed_rows, dpi: grids.append((fpath, grid)))
-    monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
-
-    report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
-    assert not any("armcoords" in fpath.parts for fpath, _ in grids)
-    assert [r[:3] for r in _captured(grids, "arms", "performance")] == [
-        ["Arm", "Coord", "All"], ["hp", "c1 (1)", "60.00"], ["sp", "c0 (1)", "40.00"]]
-
-
 def test_update_dataset_metrics_arms_use_best_coord_per_arm(tmp_path, monkeypatch) -> None:
-    # arms/: each arm at its best coord for THIS dataset, per group -- the coord with the highest mean
+    # each arm at its best coord for THIS dataset, per group -- the coord with the highest mean
     # comp.map.all (a: c0 60 > c1 40; b: c1 50 > c0 30), whatever its comp.acc.i2t (a's c1 and b's c0 lead
-    # there) -- ties to the first coord in campaign order (c: both 0.50 -> c0). The arms convergence plot overlays those picks' curves; armcoords/ keeps
-    # every (arm, coord) as its own row, campaign order.
+    # there) -- ties to the first coord in campaign order (c: both 0.50 -> c0). The convergence plot overlays those picks' curves.
     vals = {  # (arm, coord) -> (map all, acc i2t)
         ("a", "c0"): (0.60, "0.20"), ("a", "c1"): (0.40, "0.80"),
         ("b", "c0"): (0.30, "0.70"), ("b", "c1"): (0.50, "0.10"),
@@ -1216,20 +1187,12 @@ def test_update_dataset_metrics_arms_use_best_coord_per_arm(tmp_path, monkeypatc
     monkeypatch.setattr(report, "_plot_convergence", lambda curves, idx_win, score_name, title, fpath, dpi: plotted.append((fpath, curves, idx_win)))
 
     report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, 150)
-    assert [r[:3] for r in _captured(grids, "arms", "performance")] == [
+    assert [r[:3] for r in _captured(grids, "dataset_summary", "performance")] == [
         ["Arm", "Coord", "All"], ["a", "c0 (1)", "60.00"], ["b", "c1 (1)", "50.00"], ["c", "c0 (1)", "50.00"]]
-    assert [r[:3] for r in _captured(grids, "armcoords", "performance")] == [
-        ["Arm", "Coord", "All"],
-        ["a", "c0 (1)", "60.00"], ["a", "c1 (1)", "40.00"],
-        ["b", "c0 (1)", "30.00"], ["b", "c1 (1)", "50.00"],
-        ["c", "c0 (1)", "50.00"], ["c", "c1 (1)", "50.00"],
-    ]
-    # the arms convergence curves are the picked coords' (placeholder curves: [0, score], selected at 1)
-    _, curves, idx_win = next(p for p in plotted if p[0].parent.parts[-2:] == ("arms", "performance"))
+    # the convergence curves are the picked coords' (placeholder curves: [0, score], selected at 1)
+    _, curves, idx_win = next(p for p in plotted if p[0].parent.parts[-2:] == ("dataset_summary", "performance"))
     assert [(row, float(means[idx_best])) for row, means, idx_best in curves] == [(("a", "c0"), 0.60), (("b", "c1"), 0.50), (("c", "c0"), 0.50)]
     assert curves[idx_win][0] == ("a", "c0")
-    _, curves, _ = next(p for p in plotted if p[0].parent.parts[-2:] == ("armcoords", "performance"))
-    assert [row for row, _, _ in curves] == [("a", "c0"), ("a", "c1"), ("b", "c0"), ("b", "c1"), ("c", "c0"), ("c", "c1")]
 
 
 def test_pick_best_coords_by_native_map_all(tmp_path, monkeypatch) -> None:
@@ -1280,8 +1243,7 @@ def test_phase_matrix_drives_sweeps_and_rows(tmp_path, monkeypatch) -> None:
     report.update_phase_metrics(_EVAL_GROUPS, "std", False, False, False, _SUPP_OFF, False)
 
     assert [r[0] for r in _captured(grids, "arm_summary", "performance")] == ["Coord", "c0 (1)"]
-    assert [r[:2] for r in _captured(grids, "armcoords", "performance")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
-    assert [r[:2] for r in _captured(grids, "arms", "performance")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
+    assert [r[:2] for r in _captured(grids, "dataset_summary", "performance")] == [["Arm", "Coord"], ["sp", "c0 (1)"], ["mp", "c1 (1)"]]
     grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "armcoords")).active.iter_rows()]
     assert grid[4][:3] == ["sp", "c0 (1)", "50.00"] and grid[5][:3] == ["mp", "c1 (1)", "40.00"]
     grid = [[c.value for c in r] for r in load_workbook(_fpath_wb(tmp_path, "arms")).active.iter_rows()]
@@ -1310,14 +1272,12 @@ def test_update_dataset_metrics_ordered_localized_per_metric(tmp_path, monkeypat
 
     report.update_dataset_metrics("cub", _EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, 150)
     grids = [(fpath, grid) for fpath, grid in grids if fpath.name.startswith("scores")]  # the scale tables aside
-    assert len(grids) == 8  # one per eval group, both kinds
-    grid_map = _captured(grids, "armcoords", "performance")
+    assert len(grids) == 4  # one per eval group
+    grid_map = _captured(grids, "dataset_summary", "performance")
     assert grid_map[0] == ["Arm", "Coord", *_MAP_LABELS]
     assert [r[:2] for r in grid_map[1:]] == [["a", "c0 (1)"], ["b", "c0 (1)"]]  # cub-local mAP order; no "c" row
     assert grid_map[1][2] == "60.00"
     assert grid_map[2][2] == "40.00"
-    # the arms tables (each arm at its only coord) order the same way
-    assert [r[:2] for r in _captured(grids, "arms", "performance")[1:]] == [["a", "c0 (1)"], ["b", "c0 (1)"]]
 
 
 def test_update_phase_metrics_refine_phase_arms_only(tmp_path, monkeypatch) -> None:
@@ -2346,7 +2306,7 @@ def test_update_test_stats_writes_stacked_tables_with_chkpt_column(tmp_path, mon
 
 
 def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
-    # alongside the workbooks, per-dataset score tables like the phase's dataset_summary/arms/ ones: one
+    # alongside the workbooks, per-dataset score tables like the phase's dataset_summary/ ones: one
     # ('Arm', 'Coord') row per arm with scored trials in the dataset, no convergence plot (test scores one
     # checkpoint); a dataset with no scored trials (bryo) gets none
     for trial, base in (("1", 0.50), ("2", 0.60)):
@@ -2361,10 +2321,10 @@ def test_update_test_stats_writes_dataset_pngs(tmp_path, monkeypatch) -> None:
 
     report.update_test_stats(_EVAL_GROUPS, "std", False, True, False, _SUPP_OFF, False, 150)
 
-    dpath_perf = tmp_path / "_dataset" / "cub" / "dataset_summary" / "arms" / "performance"
+    dpath_perf = tmp_path / "_dataset" / "cub" / "dataset_summary" / "performance"
     assert sorted(fpath for fpath, _ in grids) == sorted(group_path(dpath_perf, group_key, "scores", ".png")
                                                           for group_key in _GROUP_KEYS)
-    assert _captured(grids, "arms", "performance") == [
+    assert _captured(grids, "dataset_summary", "performance") == [
         ["Arm", "Coord", *_MAP_LABELS],
         ["hp", "c0 (2)", "55.00 ± 7.07", "57.00 ± 7.07", "56.00 ± 7.07", "58.00 ± 7.07", "59.00 ± 7.07", "60.00 ± 7.07"],
         ["mp", "c1 (1)", "40.00", "42.00", "41.00", "43.00", "44.00", "45.00"],

@@ -15,7 +15,7 @@ sharded t-SNE in the eval loop (collective), cached with the raw embeddings unde
 then -- once every eval is done, on rank 0 -- the UMAP fits and the stills under eval/sel/viz/vanilla/
 (tools.regen_manifold_viz.render_test_trial; a relaunch renders whichever trials still lack stills). The run ends with the test workbooks, one per eval group at artifacts/<campaign>/_phase/test/
 phase_summary/arms/<campaign>_test-arms.xlsx (+ secondary/<campaign>_test-arms_<group>.xlsx), plus per-dataset score tables at
-_dataset/<dataset>/dataset_summary/arms/performance/{scores,secondary/scores_<group>}.png
+_dataset/<dataset>/dataset_summary/performance/{scores,secondary/scores_<group>}.png
 (report.update_test_stats), styled per the live config/render/stats.yaml, and each arm's
 _dataset/<dataset>/_arm/<arm>/arm_summary/best_coord/<n>/eval/sel/ mirror of its trials' score files + stills
 (report.update_test_best_coord).

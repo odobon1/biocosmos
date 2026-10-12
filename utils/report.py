@@ -2,7 +2,7 @@
 Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint selection
 (_dataset/<dataset>/_arm/<arm>/_coord/<coord>/coord_summary/), the per-eval-group composite-score summary
 tables + convergence plots at every cross-coord level -- per arm (_arm/<arm>/arm_summary/performance/), per dataset
-(_dataset/<dataset>/dataset_summary/{armcoords,arms}/performance/; arms/ only in the refine phase) -- each
+(_dataset/<dataset>/dataset_summary/performance/, each arm at its best coord) -- each
 {scores,convergence}.png + secondary/{scores,convergence}_<group>.png, beside each level's logit-scale tables
 ({scale,logscale}.png one dir up over the 1-loss rows, {scale1,scale2,logscale1,logscale2}.png over the rows
 under separate logit scalars: the trials' scale at its init / selected / best / final checkpoints), the phase
@@ -10,7 +10,7 @@ workbooks (phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx + secon
 mAP / Acc / scale / logscale (split alike) / HW sheets; arms/ only in the refine phase), the test
 workbooks (artifacts/<campaign>/_phase/test/phase_summary/arms/<campaign>_test-arms.xlsx + secondary/<campaign>_test-arms_<group>.xlsx
 + per-dataset score tables
-_dataset/<dataset>/dataset_summary/arms/performance/{scores,secondary/scores_<group>}.png, from the score files test.py writes), per-trial
+_dataset/<dataset>/dataset_summary/performance/{scores,secondary/scores_<group>}.png, from the score files test.py writes), per-trial
 learning-curve plots, each arm's coords' logit-scale and pair-entropy panels stacked into strip figures
 (_arm/<arm>/arm_summary/coord_strips/) and each finished arm's best coord's copy of its
 learning curves + eval/{best,sel}/ (_arm/<arm>/arm_summary/best_coord/) -- all
@@ -1187,16 +1187,13 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
 @rank0
 def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
     """Render `dataset`'s cross-arm tables/plots:
-    _dataset/<dataset>/dataset_summary/{armcoords,arms}/performance/{scores,convergence}.png (+ secondary/, see
-    _render_stats_pngs). armcoords/ has one ('Arm', 'Coord') row per planned (arm, coord) (the phase's
-    matrix) with >= 1 completed trial in this dataset. arms/ has one ('Arm', 'Coord') row per arm, each at its BEST coord for
-    this dataset, named in the row's Coord cell -- per group, the coord with the highest across-trial mean comp mAP All
-    among the arm's coords with completed trials here, ties to the first in campaign order
-    (_best_coords) -- so both its table row and its convergence curve are that coord's; arms with no
-    completed trial here are omitted. Beside each, over its rows (arms/: native's picks), the logit-scale tables
-    dataset_summary/{armcoords,arms}/{scale,logscale}.png (_render_scale_tables). The refine phase renders arms/
-    only: each arm there has the single coord screening picked for it, so an armcoords/ view would repeat arms/
-    row for row. A dataset with no dir (no trial launched on it) is skipped.
+    _dataset/<dataset>/dataset_summary/performance/{scores,convergence}.png (+ secondary/, see _render_stats_pngs):
+    one ('Arm', 'Coord') row per planned arm (the phase's matrix), each at its BEST coord for this dataset, named in
+    the row's Coord cell -- per group, the coord with the highest across-trial mean comp mAP All among the arm's
+    coords with completed trials here, ties to the first in campaign order (_best_coords) -- so both its table row
+    and its convergence curve are that coord's; arms with no completed trial here are omitted. Beside them, over the
+    same rows (native's picks), the logit-scale tables dataset_summary/{scale,logscale}.png (_render_scale_tables).
+    A dataset with no dir (no trial launched on it) is skipped.
     Rendered at every completion of a trial on this dataset (train.py) -- over whatever trials are in, so
     mid-sweep the rows carry different trial counts -- and by the runner on exit / tools.regen_stats."""
     dpath_dataset = ArtifactManager.dpath_phase / "_dataset" / dataset
@@ -1206,17 +1203,9 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
     arms = list(matrix[dataset])
     arm_coords = _matrix_arm_coords(matrix, (dataset,))
     comps_all = _collect_comps(eval_groups, arm_coords, (dataset,))
-    # update_chkpt_selection materializes every completed trial's sel/ files, all groups
-    # together, so row presence is group-independent
-    comps_ref = next(iter(comps_all.values()))
-    rows_ac = [row for row in arm_coords if comps_ref[(row, dataset)]]
     labels = _score_labels(supp_scores, _nshot_names(comps_all))[0]
     subject = DATASET_ALIAS2NAME[dataset]
     dpath_stats = dpath_dataset / "dataset_summary"
-
-    def rowset_arm_coords(group_key):
-        curves = [(row, *_curve(dataset, *row, group_key)) for row in rows_ac]
-        return rows_ac, comps_all[group_key], curves
 
     def rowset_arms(group_key):
         best = _best_coords(arm_coords, (dataset,), comps_all[group_key])
@@ -1225,14 +1214,9 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
         return rows, comps_all[group_key], curves
 
     scales_by = _collect_scales(arm_coords, (dataset,))
-    if ArtifactManager.dpath_phase.name != "refine":
-        _render_stats_pngs(dpath_stats / "armcoords" / "performance", ("Arm", "Coord"), rowset_arm_coords, dataset,
-                           subject, eval_groups, labels, spread_type, bold_high, ordered, heatmap, dpi)
-        _render_scale_tables(dpath_stats / "armcoords", ("Arm", "Coord"), rows_ac, comps_all["native"], scales_by,
-                             dataset, subject, spread_type, ordered, dpi)
-    _render_stats_pngs(dpath_stats / "arms" / "performance", ("Arm", "Coord"), rowset_arms, dataset, subject, eval_groups,
+    _render_stats_pngs(dpath_stats / "performance", ("Arm", "Coord"), rowset_arms, dataset, subject, eval_groups,
                        labels, spread_type, bold_high, ordered, heatmap, dpi)
-    _render_scale_tables(dpath_stats / "arms", ("Arm", "Coord"), rowset_arms("native")[0], comps_all["native"], scales_by,
+    _render_scale_tables(dpath_stats, ("Arm", "Coord"), rowset_arms("native")[0], comps_all["native"], scales_by,
                          dataset, subject, spread_type, ordered, dpi)
 
 def _override_value(config, key):
@@ -1775,8 +1759,8 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
     training trials; test runs none). Rows and scores come from the test tree's per-trial score
     files (_collect_test_scores) over the recorded matrix, same row-presence rule as the phase
     workbooks: a planned (arm, coord) appears once it has >= 1 scored trial in some dataset.
-    Alongside, each dataset's score tables, like the phase's dataset_summary/arms/ ones:
-    _dataset/<dataset>/dataset_summary/arms/performance/{scores,secondary/scores_<group>}.png (_render_stats_pngs), one
+    Alongside, each dataset's score tables, like the phase's dataset_summary/ ones:
+    _dataset/<dataset>/dataset_summary/performance/{scores,secondary/scores_<group>}.png (_render_stats_pngs), one
     ('Arm', 'Coord') row per row with >= 1 scored trial in the dataset -- trainval runs each arm at its one
     refine pick, so no best-coord selection -- and no convergence.png (test scores a single checkpoint)."""
     matrix = _matrix()
@@ -1822,7 +1806,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
     for dataset in datasets:
         rows_dataset = [row for row in rows if comps_ref[(row, dataset)]]
         if rows_dataset:
-            _render_stats_pngs(ArtifactManager.dpath_phase / "_dataset" / dataset / "dataset_summary" / "arms" / "performance",
+            _render_stats_pngs(ArtifactManager.dpath_phase / "_dataset" / dataset / "dataset_summary" / "performance",
                                ("Arm", "Coord"), lambda group_key, rows=rows_dataset: (rows, comps_all[group_key], []),
                                dataset, DATASET_ALIAS2NAME[dataset], eval_groups, map_labels, spread_type, bold_high,
                                ordered, heatmap, dpi)

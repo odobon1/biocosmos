@@ -89,7 +89,7 @@ def test_render_manifold_viz_renders_trials_lacking_stills(tmp_path, monkeypatch
     combos = [("cub", "a1", "c1")]
     dpath_trials = test_script._dpath_coord(dpath_test, "cub", "a1", "c1") / "_trial"
     for trial_num, subs in ((1, ("viz/cache/projections.npz",)),
-                            (2, ("viz/cache/projections.npz", "viz/vanilla/8panel/joint.png"))):
+                            (2, ("viz/cache/projections.npz", "viz/vanilla/6panel/joint.png"))):
         for sub in ("scores.json", *subs):
             fpath = dpath_trials / str(trial_num) / "eval" / "sel" / sub
             fpath.parent.mkdir(parents=True, exist_ok=True)

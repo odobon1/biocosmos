@@ -29,7 +29,7 @@ def test_render_trial_copies_viz_to_selected_and_best(tmp_path, monkeypatch) -> 
 
     dpath_evals = dpath_trial / "eval" / "all"
     for idx in ("1", "2"):
-        for sub in ("vanilla/8panel/joint.png", "cache/projections.npz"):
+        for sub in ("vanilla/6panel/joint.png", "cache/projections.npz"):
             fpath = dpath_evals / idx / "viz" / sub
             fpath.parent.mkdir(parents=True)
             fpath.write_text(f"eval{idx}")
@@ -37,8 +37,8 @@ def test_render_trial_copies_viz_to_selected_and_best(tmp_path, monkeypatch) -> 
 
     rmv.render_trial(dpath_trial, cfg_manifold_viz=cfg)
 
-    assert (dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "eval2"
-    assert (dpath_trial / "eval" / "best" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "eval1"
+    assert (dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "6panel" / "joint.png").read_text() == "eval2"
+    assert (dpath_trial / "eval" / "best" / "viz" / "vanilla" / "6panel" / "joint.png").read_text() == "eval1"
     assert not (dpath_trial / "eval" / "sel" / "viz" / "cache").exists()
     assert not (dpath_trial / "eval" / "best" / "viz" / "cache").exists()
     assert (dpath_evals / "1" / "viz" / "cache" / "projections.npz").exists()  # store_cache: the source cache stays
@@ -88,7 +88,7 @@ def test_render_trial_full_render_drops_the_caches_when_not_stored(tmp_path, mon
 
     dpath_evals = dpath_trial / "eval" / "all"
     for idx in ("1", "2"):
-        for sub in ("vanilla/8panel/joint.png", "cache/projections.npz"):
+        for sub in ("vanilla/6panel/joint.png", "cache/projections.npz"):
             fpath = dpath_evals / idx / "viz" / sub
             fpath.parent.mkdir(parents=True)
             fpath.write_text(f"eval{idx}")
@@ -100,12 +100,12 @@ def test_render_trial_full_render_drops_the_caches_when_not_stored(tmp_path, mon
     rmv.render_trial(dpath_trial, cfg_manifold_viz=cfg)
     assert not (dpath_evals / "1" / "viz" / "cache").exists()
     assert not (dpath_evals / "2" / "viz" / "cache").exists()
-    assert (dpath_evals / "2" / "viz" / "vanilla" / "8panel" / "joint.png").exists()
-    assert (dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "eval2"
+    assert (dpath_evals / "2" / "viz" / "vanilla" / "6panel" / "joint.png").exists()
+    assert (dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "6panel" / "joint.png").read_text() == "eval2"
 
 
 def test_render_test_trial_renders_the_lone_eval_and_rebuilds_the_mirror(tmp_path, monkeypatch) -> None:
-    # a test trial's one eval (eval/sel/) gets its UMAPs fit and its stills drawn in place -- the context off the
+    # a test trial's one eval (eval/sel/) gets its UMAP fit and its stills drawn in place -- the context off the
     # path + the phase's config snapshot (split; the coord's config.json copy prunes it) + the coord's config.json
     # copy (chkpt_stop names the eval in the titles), the partition tier 'test' -- then the arm's test best_coord/
     # mirror, which copies the stills, is rebuilt

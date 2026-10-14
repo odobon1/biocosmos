@@ -2,19 +2,19 @@
 Re-render a campaign's (or one trial's) manifold-viz plots from cached projections -- no train/eval rerun.
 Reads each eval's projections.npz under <trial_dir>/eval/all/ and regenerates the plots using the
 CURRENT config/{trial,render}/manifold_viz.yaml (so edits to colors/bg_color/gif.frame_dur/orient.ema_tau
-and to the plot_2panel/plot_7panel/plot_8panel group toggles take effect; the cached PCA/t-SNE/UMAP/UMAP-sphere
+and to the plot_2panel/plot_7panel/plot_6panel group toggles take effect; the cached PCA/t-SNE/UMAP
 coords are reused, so tsne.* / umap.* cannot change here -- delete the cached coords to refit).
 
-This is also where BOTH UMAP variants are FIT (flat + spherical, from each eval's cached embs.npz) on
-the first pass, since they have no sharded GPU implementation and this process is CPU-only; PCA and
-t-SNE are computed in the training loop. The fits are skipped once their coords are cached.
+This is also where UMAP is FIT (from each eval's cached embs.npz) on the first pass, since it has no
+sharded GPU implementation and this process is CPU-only; PCA and t-SNE are computed in the training
+loop. The fits are skipped once their coords are cached.
 
 And it is where `manifold_viz.store_cache: false` takes effect: a FULL render's last step deletes the
 trial's viz/cache/ dirs (a partial render -- evo_only/no_evo -- leaves them for the half it skipped),
 so such a trial cannot be re-rendered or refit afterwards -- the caches it would read are gone.
 
-A test trial (test.py's, under _phase/test/) has one eval, its eval/sel/, cached under eval/sel/viz/cache/: its UMAPs
-are fit and its stills drawn there (render_test_trial) -- no evolving GIFs and no pooled frame, a single eval having
+A test trial (test.py's, under _phase/test/) has one eval, its eval/sel/, cached under eval/sel/viz/cache/: its UMAP
+is fit and its stills drawn there (render_test_trial) -- no evolving GIFs and no pooled frame, a single eval having
 no sequence -- and the arm's test best_coord/ mirror, which copies the stills, is rebuilt. test.py runs this itself at
 the end of a run for the trials it scored; re-running it by hand re-renders under edited render settings.
 
@@ -67,7 +67,7 @@ def trial_viz_cached(dpath_trial):
     return (dpath_viz_cache(dpath_trial / "eval" / "sel") / "projections.npz").exists()
 
 def render_test_trial(dpath_trial, cfg_manifold_viz=None):
-    """A test trial (<campaign>/_phase/test/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_trial/<n>): fit the UMAPs
+    """A test trial (<campaign>/_phase/test/_dataset/<dataset>/_arm/<arm>/_coord/<coord>/_trial/<n>): fit the UMAP
     of its one eval (eval/sel/, from its cached embs.npz -- idempotent, as render_trial's fits) and draw its stills
     under eval/sel/viz/vanilla/, titled by the trainval checkpoint the model was saved at (the coord's chkpt_stop).
     No evolving GIFs or pooled frame: a single eval has no sequence. The arm's test best_coord/ mirror copies the
@@ -113,9 +113,9 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     if not coord_complete(dpath_trial.parents[5].name, dpath_trial.parents[3].name, dpath_trial.parents[1].name):
         chkpt = {**chkpt, "sel": None}
 
-    # Both UMAP variants are fit here, on CPU, rather than in the training loop: neither has a sharded
-    # GPU implementation, and this process is CUDA-free (detached, when the render worker spawns it).
-    # Idempotent, so a re-render reuses the cached layouts instead of refitting.
+    # UMAP is fit here, on CPU, rather than in the training loop: it has no sharded GPU implementation,
+    # and this process is CUDA-free (detached, when the render worker spawns it). Idempotent, so a
+    # re-render reuses the cached layouts instead of refitting.
     compute_umap_projections(dpath_evals, cfg_manifold_viz)
     if cfg_manifold_viz["pooled"]["enabled"]:
         compute_umap_pooled(dpath_evals, cfg_manifold_viz)

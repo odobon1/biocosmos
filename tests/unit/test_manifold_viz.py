@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 
 from utils.manifold_viz import (_eval_label, _hbeta_search, _knn, _orient, _save_gif_stream, _sparse_joint_p, _tsne_torch,
-                            compute_pca, compute_umap, orient_pca, orient_proj, orient_sphere)
+                            compute_pca, compute_umap, orient_pca, orient_proj)
 
 
 def _blob(n=300, d=16, seed=0):
@@ -60,7 +60,7 @@ def test_tsne_separates_gaussian_clusters() -> None:
     assert inter > 3 * intra, f"clusters not separated: inter={inter:.2f} intra={intra:.2f}"
 
 
-_UMAP_CFG = {"n_neighbors": 15, "min_dist": 0.1, "n_iter": 200, "n_iter_sphere": 100}
+_UMAP_CFG = {"n_neighbors": 15, "min_dist": 0.1, "n_iter": 200}
 
 
 def test_umap_separates_gaussian_clusters() -> None:
@@ -170,75 +170,6 @@ def test_orient_is_idempotent_on_an_already_aligned_layout() -> None:
         oriented, ref = _orient(method, proj, labels, None, 1.0)
         again, _ = _orient(method, oriented, labels, ref, 1.0)
         assert np.allclose(again, oriented, atol=1e-6), method
-
-
-def _sphere_layout(seed=0):
-    """Clustered unit vectors with strictly ranked class sizes: c0 is the pole anchor, c1 the meridian one."""
-    rng = np.random.default_rng(seed)
-    sizes = [60, 40, 25, 15]
-    centers = rng.normal(size=(4, 3))
-    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
-    xyz = np.concatenate([c + rng.normal(scale=0.12, size=(n, 3)) for c, n in zip(centers, sizes)])
-    xyz /= np.linalg.norm(xyz, axis=1, keepdims=True)
-    return xyz, [f"c{i}" for i, n in enumerate(sizes) for _ in range(n)]
-
-
-def _sphere_azimuth(o, labels, cls):
-    v = o[np.asarray(labels) == cls].mean(axis=0)
-    return math.degrees(math.atan2(v[1], v[0]))
-
-
-def _sphere_polar(o, labels, cls):
-    v = o[np.asarray(labels) == cls].mean(axis=0)
-    return math.degrees(math.acos(v[2] / np.linalg.norm(v)))
-
-
-def test_orient_sphere_bootstrap_anchors_pole_and_central_meridian() -> None:
-    xyz, labels = _sphere_layout()
-    o, _ = orient_sphere(xyz, labels)
-    assert _sphere_polar(o, labels, "c0") < 1e-9          # largest class exactly at the north pole
-    assert abs(_sphere_azimuth(o, labels, "c1")) < 1e-9   # second exactly on the central meridian
-
-
-def test_orient_sphere_recovers_rotations_and_reflections() -> None:
-    # aligned evals are one SO(3) Procrustes to the reference -- the minimal rigid motion of the whole
-    # ball, with nothing pinned after the bootstrap. So an arbitrarily rotated (or mirrored) copy of the
-    # SAME layout must come back exactly to the reference frame: zero genuine layout change means zero
-    # residual motion.
-    xyz, labels = _sphere_layout()
-    o0, ref = orient_sphere(xyz, labels)
-    rng = np.random.default_rng(3)
-    for _ in range(4):
-        Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]  # orthogonal; det may be -1 (a mirror) -- both recover
-        o, _ = orient_sphere(xyz @ Q, labels, dict(ref), tau=0.5)
-        assert np.allclose(o, o0, atol=1e-6)
-
-
-def test_orient_sphere_moves_only_the_reorganized_cluster() -> None:
-    # minimal-rotation gliding: when ONE cluster genuinely moves, the alignment must not spin the whole
-    # ball to re-pin an anchor on it. Weighted Procrustes does split the move between the frame and the
-    # cluster (the frame chases it in proportion to its weight), so the robust claim is the ordering:
-    # the reorganized cluster displaces MORE than every untouched one, and no untouched cluster is
-    # dragged more than half the perturbation.
-    xyz, labels = _sphere_layout()
-    o0, ref = orient_sphere(xyz, labels)
-    lab = np.asarray(labels)
-    a = math.radians(40.0)
-    spin = np.array([[math.cos(a), math.sin(a), 0.0], [-math.sin(a), math.cos(a), 0.0], [0.0, 0.0, 1.0]])
-    pert = o0.copy()
-    pert[lab == "c1"] = pert[lab == "c1"] @ spin  # one cluster reorganizes by 40 deg
-    rng = np.random.default_rng(4)
-    o, _ = orient_sphere(pert @ np.linalg.qr(rng.normal(size=(3, 3)))[0], labels, dict(ref), tau=0.5)
-
-    def com_shift(c):
-        u = o[lab == c].mean(0); u = u / np.linalg.norm(u)
-        v = o0[lab == c].mean(0); v = v / np.linalg.norm(v)
-        return math.degrees(math.acos(min(1.0, max(-1.0, float(u @ v)))))
-
-    untouched = {c: com_shift(c) for c in ("c0", "c2", "c3")}
-    moved = com_shift("c1")
-    assert all(d < 20.0 for d in untouched.values()), untouched  # dragged less than half the 40 deg move
-    assert moved > max(untouched.values())                       # the reorganized cluster glides the most
 
 
 def test_eval_label_marks_base_best_and_selected() -> None:

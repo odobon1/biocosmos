@@ -4,7 +4,7 @@ import torch.distributed as dist
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import to_rgb
-from matplotlib.patches import Circle, Patch
+from matplotlib.patches import Patch
 from sklearn.decomposition import PCA
 import math
 import os
@@ -77,25 +77,12 @@ _OOD_LABEL = "__OOD__"  # sentinel label for OOD points in the n-shot panel (alw
 # UMAP produce layouts whose axes and handedness are arbitrary (_RIGID): square origin-centered axes, and
 # cross-eval alignment by full rotation + reflection. PCA's axes are the principal directions and must not be
 # rotated, so it keeps its data bounding box and only has its per-component SIGN aligned across evals.
-_METHODS = ["PCA", "t-SNE", "UMAP", "UMAP-sphere"]
-_METHOD_DIR = {"PCA": "pca", "t-SNE": "tsne", "UMAP": "umap", "UMAP-sphere": "umap_sphere"}
+_METHODS = ["PCA", "t-SNE", "UMAP"]
+_METHOD_DIR = {"PCA": "pca", "t-SNE": "tsne", "UMAP": "umap"}
 _RIGID = {"t-SNE", "UMAP"}        # arbitrary planar frame: square origin-centered axes, 2D Procrustes
-_SPHERICAL = {"UMAP-sphere"}      # layout lives ON a 2-sphere: 3D cell + opaque ball, 3D Procrustes
 _PROJ_KEYS = ("id", "ood", "joint")  # the projection subjects every method is fit for
 
-# The embeddings are L2-normalized (models.py), so they already lie on a unit hypersphere and cosine is
-# the distance the loss actually uses. Both UMAP variants therefore run on the same cosine kNN graph --
-# which is what lets them share one neighbor search (see `_umap_knn`). On normalized vectors cosine and
-# euclidean induce the SAME neighbor sets anyway, so this is a free change of units for the flat fit.
-_UMAP_METRIC = "cosine"
-# (elev, azim) of the single viewpoint every sphere panel is drawn from. elev=0 puts the camera in the
-# equatorial plane, which is what makes the north pole land dead top of the disc and the equator run
-# horizontally through its center; azim=0 then faces the zero azimuth the bootstrap frame assigns to the
-# second-largest class (see `orient_sphere`).
-_SPHERE_VIEW = (0.0, 0.0)
 _DRAW_ORDER_SEED = 0          # fixed: the draw order is shuffled, but reproducibly
-_SPHERE_MARGIN = 1.05         # axes bound: the unit ball plus room for rim markers, which sit at r == 1
-_SPHERE_GRID_STEP = 30        # degrees between parallels and between meridians
 
 def _log(msg):
     """Print only on rank 0 (or when not under DDP). The projection compute now runs on every rank, so
@@ -347,15 +334,12 @@ def _pca_init(pca_2d):
     as the t-SNE `init` rather than having TSNE recompute the same PCA internally."""
     return (pca_2d / np.std(pca_2d[:, 0]) * 1e-4).astype(np.float32)
 
-def compute_umap(embeddings, cfg_umap, init, spherical=False, knn=None):
+def compute_umap(embeddings, cfg_umap, init):
     """
     Reduce embedding dimensionality to 2D via UMAP. Runs on CPU -- it is fit in the post-trial render
     worker off the collective GPU path (see `compute_umap_projections`), never in the training loop.
 
-    `spherical` swaps the output space for a 2-sphere and returns (N, 3) UNIT VECTORS instead of an
-    (N, 2) plane; `knn` is a precomputed neighbor graph from `_umap_knn`, shared between the two variants.
-
-    `init` is the starting layout (None -> UMAP's spectral init). Sweeping an eval sequence, each eval is initialized from the
+    `init` is the starting layout. Sweeping an eval sequence, each eval is initialized from the
     PREVIOUS eval's layout so consecutive fits settle in the same basin instead of each landing in an
     arbitrary one -- continuity at the source, which cross-eval orientation alone cannot supply (it can
     only remove residual rigid motion, not a genuinely reorganized layout).
@@ -368,60 +352,22 @@ def compute_umap(embeddings, cfg_umap, init, spherical=False, knn=None):
     off-center cloud would sit in a corner of a mostly-empty panel.
     """
     import umap  # heavy (numba JIT) import, paid only in the render worker
-    # each variant has its own epoch count: a spherical epoch costs ~30x a flat one (haversine
-    # gradients), so the sphere runs fewer of them (umap.n_iter_sphere) than the flat fit (umap.n_iter)
-    n_iter = cfg_umap["n_iter_sphere" if spherical else "n_iter"]
-    kwargs = {} if n_iter is None else {"n_epochs": n_iter}
-    if spherical:
-        kwargs["output_metric"] = "haversine"  # optimize great-circle distance on S^2, not in a plane
     reducer = umap.UMAP(
         n_components=2,
-        metric=_UMAP_METRIC,
-        n_neighbors=_umap_k(embeddings.shape[0], cfg_umap),
+        # the embeddings are L2-normalized (models.py), so cosine is the distance the loss actually uses; on
+        # normalized vectors cosine and euclidean induce the SAME neighbor sets, so this is a free change of units
+        metric="cosine",
+        n_neighbors=min(cfg_umap["n_neighbors"], embeddings.shape[0] - 1),  # UMAP requires n_neighbors < n_samples
         min_dist=cfg_umap["min_dist"],
-        init="spectral" if init is None else np.ascontiguousarray(init, dtype=np.float32),
-        precomputed_knn=(None, None, None) if knn is None else knn,
+        n_epochs=cfg_umap["n_iter"],  # None -> UMAP's own default schedule
+        init=np.ascontiguousarray(init, dtype=np.float32),
+        # low_memory=False: the faster NN-descent mode -- RAM is not the constraint on these nodes, and the
+        # pooled fits (up to pooled.budget points) are where the slow low-memory path actually costs minutes
+        low_memory=False,
         verbose=False,
-        **kwargs,
     )
     out = np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
-    if not spherical:
-        return out - out.mean(axis=0, keepdims=True)
-    # haversine output is a pair of ANGLES, and unbounded -- nothing wraps them, so they routinely land
-    # many turns outside [0, pi] x [0, 2pi). Mapping through sin/cos wraps them exactly, and the unit
-    # vector is what everything downstream (orientation, culling, plotting) actually wants.
-    theta, phi = out.T
-    return np.stack([np.sin(theta) * np.cos(phi),
-                     np.sin(theta) * np.sin(phi),
-                     np.cos(theta)], axis=1).astype(np.float32)
-
-def _umap_k(n, cfg_umap):
-    """n_neighbors, clamped below the sample count (UMAP requires n_neighbors < n_samples)."""
-    return min(cfg_umap["n_neighbors"], n - 1)
-
-def _umap_knn(embeddings, cfg_umap):
-    """The cosine kNN graph, computed ONCE and handed to both UMAP variants via `precomputed_knn`.
-
-    The two fits differ only in their OUTPUT space -- same metric, same n_neighbors -- so they describe
-    the same input graph, and building it twice is duplicated work. Note the saving is small in wall
-    clock: measured on 6k x 512 the search is ~0.1s against ~0.5s for the flat layout and ~16s for the
-    spherical one, so the haversine layout optimization, not the neighbor search, is what a spherical
-    fit actually costs. Sharing is kept for the guarantee rather than the seconds: both variants are
-    provably fit from an identical graph, so any difference between their plots is output-space only."""
-    from umap.umap_ import nearest_neighbors
-
-    # low_memory=False: the faster NN-descent mode -- RAM is not the constraint on these nodes, and the
-    # pooled fits (up to pooled.budget points) are where the slow low-memory path actually costs minutes
-    return nearest_neighbors(embeddings, n_neighbors=_umap_k(embeddings.shape[0], cfg_umap),
-                             metric=_UMAP_METRIC, metric_kwds={}, angular=True, random_state=None,
-                             low_memory=False, verbose=False)
-
-def _xyz_to_angles(xyz):
-    """Unit vectors -> the (polar, azimuth) pair UMAP's haversine output space works in, so a previous
-    eval's sphere layout can seed the next eval's fit."""
-    theta = np.arccos(np.clip(xyz[:, 2], -1.0, 1.0))
-    phi = np.arctan2(xyz[:, 1], xyz[:, 0]) % (2 * np.pi)
-    return np.stack([theta, phi], axis=1).astype(np.float32)
+    return out - out.mean(axis=0, keepdims=True)
 
 def orient_proj(proj, labels, ref=None, tau=1.0):
     """
@@ -515,90 +461,9 @@ def orient_pca(proj, labels, ref=None, tau=1.0):
         ref = {v: (1.0 - tau) * ref.get(v, coms_oriented[v]) + tau * coms_oriented[v] for v in vals}
     return proj, ref
 
-def _rot_to_pole(v):
-    """Row-vector rotation (`xyz @ R`) taking `v`'s direction onto +z, the north pole. Rodrigues about
-    the axis perpendicular to both; identity when `v` already points at a pole."""
-    n = np.linalg.norm(v)
-    if n < 1e-12:
-        return np.eye(3)
-    v = v / n
-    axis = np.cross(v, [0.0, 0.0, 1.0])
-    sin_a = np.linalg.norm(axis)
-    if sin_a < 1e-12:  # already on the z axis: identity if north, a half-turn if south
-        return np.eye(3) if v[2] > 0 else np.diag([1.0, -1.0, -1.0])
-    axis = axis / sin_a
-    K = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
-    R = np.eye(3) + sin_a * K + (1.0 - v[2]) * (K @ K)  # cos_a == v[2]
-    return R.T  # column-vector Rodrigues -> row-vector convention
-
-def _spin_z(Q2):
-    """Embed a 2x2 transform of the xy plane into 3x3, leaving z (and so the poles) untouched."""
-    Q = np.eye(3)
-    Q[:2, :2] = Q2
-    return Q
-
-def orient_sphere(xyz, labels, ref=None, tau=1.0):
-    """
-    Pin a canonical orientation for a layout on the 2-sphere -- the planar scheme one dimension up.
-
-    Every aligned eval gets ONE count-weighted orthogonal Procrustes solved in SO(3) (reflection
-    allowed, as in the planar case) against the running reference of per-class CoMs: the single rigid
-    motion of the whole ball that moves the cluster constellation -- seen and unseen clusters alike --
-    the least. Nothing is pinned after the first eval, so nothing can force a large rotation: the ball
-    and its gridlines stay fixed from the viewer's standpoint while the clusters glide across them
-    between evals, the way the planar t-SNE evolutions behave. (The CoMs sit inside the ball, which is
-    fine -- only their directions drive the fit.) Minimal rotation also keeps the same side of the ball
-    facing the camera from eval to eval, which matters because only ONE hemisphere is ever drawn
-    (see `_SPHERE_VIEW`).
-
-    The first eval (`ref=None`) bootstraps a canonical frame the way `orient_proj` does: the
-    highest-cardinality class starts at the north pole, the second-largest on the central meridian
-    (zero azimuth), and the third-largest fixes the handedness. Those are starting landmarks, not
-    constraints -- later evals drift off them only as much as the layout genuinely moves.
-
-    Same (ref, tau) contract as `orient_proj`. Returns (oriented unit vectors, ref).
-    """
-    labels = np.asarray(labels)
-    vals, counts = np.unique(labels, return_counts=True)  # vals sorted -> deterministic tie-break
-    coms = lambda pts: {v: pts[labels == v].mean(axis=0) for v in vals}
-
-    if ref is None:  # bootstrap the canonical frame (see docstring)
-        rank = sorted(range(len(vals)), key=lambda i: (-counts[i], vals[i]))  # classes, most populous first
-        xyz = xyz @ _rot_to_pole(coms(xyz)[vals[rank[0]]])  # top class -> north pole
-        com = coms(xyz)
-        Q2 = np.eye(2)
-        if len(rank) >= 2:  # second class defines the zero azimuth (the central meridian)
-            a = com[vals[rank[1]]][:2]
-            if np.linalg.norm(a) > 1e-12:
-                c, sn = a / np.linalg.norm(a)
-                Q2 = np.array([[c, -sn], [sn, c]])
-        if len(rank) >= 3 and (com[vals[rank[2]]][:2] @ Q2)[1] < 0:  # third fixes the handedness
-            Q2 = Q2 @ np.diag([1.0, -1.0])
-        xyz = xyz @ _spin_z(Q2)
-    else:  # the rigid motion of the WHOLE ball that best matches the reference constellation
-        com = coms(xyz)
-        shared = [v for v in vals if v in ref]
-        count_of = dict(zip(vals, counts))
-        w = np.array([count_of[v] for v in shared], dtype=float)
-        C = np.array([com[v] for v in shared])
-        R = np.array([ref[v] for v in shared])
-        U, _, Vt = np.linalg.svd(C.T @ (w[:, None] * R))
-        xyz = xyz @ (U @ Vt)
-    xyz /= np.linalg.norm(xyz, axis=1, keepdims=True)  # rigid in exact arithmetic; renormalize for drift
-
-    coms_oriented = coms(xyz)
-    if ref is None:
-        ref = coms_oriented
-    else:
-        ref = {v: (1.0 - tau) * ref.get(v, coms_oriented[v]) + tau * coms_oriented[v] for v in vals}
-    return xyz, ref
-
 def _orient(method, proj, labels, ref, tau):
-    """Cross-eval orientation for one method's projection: rigid 2D for the arbitrary-frame planar
-    methods (_RIGID), rigid 3D for the spherical one (_SPHERICAL), sign-only for PCA. Returns
-    (oriented_proj, updated_ref)."""
-    if method in _SPHERICAL:
-        return orient_sphere(proj, labels, ref, tau)
+    """Cross-eval orientation for one method's projection: rigid 2D for the arbitrary-frame methods
+    (_RIGID), sign-only for PCA. Returns (oriented_proj, updated_ref)."""
     return (orient_proj if method in _RIGID else orient_pca)(proj, labels, ref, tau)
 
 _HUE_STRIDE = (math.sqrt(5) - 1) / 2  # 1/phi; golden-ratio low-discrepancy hue stride
@@ -655,75 +520,10 @@ def _square_limits(projs, margin=0.05):
     bound = np.abs(allp).max() * (1 + margin)
     return (-bound, bound), (-bound, bound)
 
-_SPHERE_LIMITS = ((-1.0, 1.0), (-1.0, 1.0))  # the ball is unit-radius; nothing to fit (see _setup_sphere_ax)
-
 def _limits_for(method, projs):
-    """Axis limits for a panel: fixed for the spherical method (the ball never changes size), square
-    origin-centered bounds for the arbitrary-frame planar methods (_RIGID, plotted equal-aspect about
-    the origin), the data bounding box for PCA."""
-    if method in _SPHERICAL:
-        return _SPHERE_LIMITS
+    """Axis limits for a panel: square origin-centered bounds for the arbitrary-frame methods (_RIGID,
+    plotted equal-aspect about the origin), the data bounding box for PCA."""
     return _square_limits(projs) if method in _RIGID else _common_limits(projs)
-
-def _cam_dir(elev, azim):
-    """Unit vector from the origin toward the camera, for matplotlib's (elev, azim) in degrees."""
-    e, a = np.radians(elev), np.radians(azim)
-    return np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])
-
-_SPHERE_CAM = _cam_dir(*_SPHERE_VIEW)
-
-def _sphere_basis():
-    """Orthonormal (right, up) spanning the image plane of a camera at `_SPHERE_VIEW` looking at the
-    origin -- the basis `_sphere_to_screen` projects onto."""
-    right = np.cross([0.0, 0.0, 1.0], _SPHERE_CAM)
-    right /= np.linalg.norm(right)
-    return right, np.cross(_SPHERE_CAM, right)
-
-def _sphere_to_screen(xyz):
-    """Orthographic projection of unit vectors onto the fixed viewpoint's image plane. Points on the unit
-    sphere land inside the unit disc, so a sphere panel is just a 2D scatter over a unit circle."""
-    right, up = _SPHERE_BASIS
-    return np.stack([xyz @ right, xyz @ up], axis=1)
-
-_SPHERE_BASIS = _sphere_basis()
-
-def _sphere_gridlines(ax):
-    """Draw the visible hemisphere's parallels and meridians onto the ball. They give the layout a frame
-    of reference that stays fixed for the viewer while the clusters glide across it (`orient_sphere`
-    aligns evals by minimal rotation; its bootstrap starts the largest class at the pole). Each arc is sampled in 3D, culled to the camera-facing side and
-    projected; culled samples become NaN, which breaks the polyline rather than chording it straight
-    across the back of the ball."""
-    step = np.radians(_SPHERE_GRID_STEP)
-    t = np.linspace(0.0, 2 * np.pi, 361)
-    u = np.linspace(0.0, np.pi, 181)
-    arcs = [np.stack([np.sin(th) * np.cos(t), np.sin(th) * np.sin(t), np.full_like(t, np.cos(th))], axis=1)
-            for th in np.arange(step, np.pi - 1e-9, step)]                    # parallels
-    arcs += [np.stack([np.sin(u) * np.cos(ph), np.sin(u) * np.sin(ph), np.cos(u)], axis=1)
-             for ph in np.arange(0.0, 2 * np.pi - 1e-9, step)]                # meridians
-    for pts in arcs:
-        xy = _sphere_to_screen(pts)
-        xy[pts @ _SPHERE_CAM <= 0] = np.nan  # hide the far side; NaN breaks the line instead of chording it
-        ax.plot(xy[:, 0], xy[:, 1], color="0.55", linewidth=0.6, linestyle="--", alpha=0.5, zorder=1)
-
-def _setup_sphere_ax(ax, bg_color):
-    """Turn a plain 2D axes into one opaque ball seen from `_SPHERE_VIEW`: a filled unit circle in the
-    manifold-viz panel color on a WHITE background, with the camera-facing hemisphere's points scattered
-    over it (`_composite_frame` culls the far side and projects the near side with `_sphere_to_screen`)
-    and spherical gridlines for reference.
-
-    Deliberately NOT a 3D axes. The viewpoint is fixed and the far hemisphere is never drawn, so nothing
-    here needs real 3D -- and mpl3d actively gets in the way: `Path3DCollection` re-sorts its points by
-    depth on every draw (`argsort(vzs)`), which silently discards the shuffled draw order every other
-    panel gets. Projecting by hand keeps that order, and drops the occlusion, z-fighting and zorder
-    workarounds a 3D ball needed."""
-    ax.add_patch(Circle((0.0, 0.0), 1.0, facecolor=bg_color or "white", edgecolor="none", zorder=0))
-    _sphere_gridlines(ax)  # zorder 1: over the ball, under the points
-    ax.set_xlim(-_SPHERE_MARGIN, _SPHERE_MARGIN)
-    ax.set_ylim(-_SPHERE_MARGIN, _SPHERE_MARGIN)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_axis_off()
-    ax.set_facecolor("white")  # behind the ball, deliberately NOT the panel color
-    return ax.scatter([], [], zorder=2)
 
 def _rgba(colors, alpha):
     """Stack per-point RGB (N,3) + alpha (scalar or (N,)) into an (N,4) RGBA array."""
@@ -856,16 +656,16 @@ _COMPOSITE_COL_TITLES = ["OOD", "ID", "ID + OOD", "n-shot"]  # column headers fo
 def _grid_group(out_name):
     """(panel-group subdir, output file stem) for a grid: the 2x4 joint composite lands under 7panel/
     renamed to 'joint', every leaf/penult stacked pair under 2panel/ keeping its grid name. The group
-    dir nests above the method dir -> viz/<group>/{pca,tsne,umap,umap_sphere}/<stem>.png."""
+    dir nests above the method dir -> viz/<group>/{pca,tsne,umap}/<stem>.png."""
     return ("7panel", "joint") if out_name == "joint_panel" else ("2panel", out_name)
 
 # (out_name, suptitle-subject, leaf_stem, penult_stem) for the cross-method grids: one per 2panel
 # subject (the single-row leaf/penult grids), excluding the 7panel composite. A cross-method stack tiles
 # EVERY projection method into one figure (one column per method, `_METHODS` order left -> right) for a
-# subject, so -- unlike 2panel/7panel -- it has no per-method subdir: viz/8panel/<out_name>.png. The
-# group is named for its cell count (len(_METHODS) x 2 colorings), matching 2panel/7panel; adding a
-# projection method changes that count, so the name has to move with it.
-_8PANEL_SUBJECTS = [(out_name, subject, grid[0][0], grid[0][1])
+# subject, so -- unlike 2panel/7panel -- it has no per-method subdir: viz/6panel/<out_name>.png. The
+# group is named for its cell count (len(_METHODS) x 2 colorings), matching 2panel/7panel; adding or
+# removing a projection method changes that count, so the name has to move with it.
+_6PANEL_SUBJECTS = [(out_name, subject, grid[0][0], grid[0][1])
                     for out_name, subject, grid in _GRIDS if out_name != "joint_panel"]
 
 _CELL = 6.58  # square plotting-cell size (in)
@@ -900,7 +700,6 @@ def _composite_canvas(grid, limits, suptitle, dpi, style):
     scatter}); callers push per-frame data (offsets/colors/marker size) onto the scatters via
     _composite_frame."""
     method, legend_by_role, col_titles, bg_color = style.method, style.legend_by_role, style.col_titles, style.bg_color
-    spherical = method in _SPHERICAL  # a composite grid is one method throughout, so this is grid-wide
     nrows, ncols = len(grid), max(len(row) for row in grid)
     figsize, adjust = _grid_layout(nrows, ncols, header=col_titles is not None)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=dpi, squeeze=False)
@@ -916,10 +715,6 @@ def _composite_canvas(grid, limits, suptitle, dpi, style):
             stem = row[c] if c < len(row) else None
             if stem is None:
                 ax.axis("off")
-                continue
-            if spherical:  # one opaque ball per cell; no axes, ticks or limits to manage
-                sc_by[stem] = _setup_sphere_ax(ax, bg_color)
-                _apply_legend(ax, legend_by_role[_STEM_COLOR_ROLE[stem]], fontsize=13)
                 continue
             xlim, ylim = limits[stem]  # square origin-centered for t-SNE/UMAP, data bbox for PCA (_limits_for)
             sc = ax.scatter([], [])  # marker size is set per frame (_composite_frame)
@@ -963,20 +758,12 @@ def _composite_frame(sc_by, data, marker_size):
     Fully-transparent points (the partition a masked panel hides) are dropped from the draw rather than
     painted invisibly -- the survivors keep their relative draw order (the shuffle restricted to them) and
     axes are frozen independently of the plotted subset (see _evolution_limits/_limits_for), so geometry and
-    ordering are unchanged; only the wasted per-point rasterization goes away.
-
-    A (N, 3) projection is a layout on the sphere: those panels additionally drop the hemisphere facing
-    away from the camera -- which is what makes the ball opaque -- and project the survivors onto the
-    fixed viewpoint's image plane. They are ordinary 2D scatters from there on, shuffle included."""
+    ordering are unchanged; only the wasted per-point rasterization goes away."""
     for stem, sc in sc_by.items():
         proj, rgba = data[stem]
         order = np.random.default_rng(_DRAW_ORDER_SEED).permutation(len(rgba))
-        vis = rgba[order, 3] > 0  # masked-out partitions are dropped, not painted invisibly
-        spherical = proj.shape[1] == 3
-        if spherical:
-            vis &= proj[order] @ _SPHERE_CAM > 0  # near hemisphere only
-        order = order[vis]  # survivors keep the shuffle's relative order
-        sc.set_offsets(_sphere_to_screen(proj[order]) if spherical else proj[order])
+        order = order[rgba[order, 3] > 0]  # masked-out partitions are dropped, not painted invisibly; survivors keep the shuffle's order
+        sc.set_offsets(proj[order])
         sc.set_facecolors(rgba[order])
         sc.set_sizes(np.full(len(order), marker_size))
 
@@ -1047,17 +834,14 @@ def composite_evolving_gif(grid, subject, viz_context, evals, names, frame_ms, c
     _save_gif_stream(_frames(), fpath_gif, frame_ms)
     plt.close(fig)
 
-def _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
+def _6panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
     """Build the cross-method figure: one COLUMN per method (`_METHODS` order, left -> right) and two
     rows -- leaf coloring on top, penult coloring underneath -- of the same subject. Cells are flush
     (wspace=hspace=0). The method names ride as column headers rather than as axis labels, since a
     column is a method and the two rows share it; ticks appear only on the grid's outer boundary (x on
-    the bottom row, y on the left and right columns) and inner shared edges stay bare.
-
-    The spherical method's cells are opaque balls with no axes at all -- still ordinary 2D axes, just
-    set up differently (`_setup_sphere_ax`). `limits` maps (method, stem) -> (xlim, ylim) and is ignored
-    for the spherical column. Returns (fig, {(method,
-    stem): scatter}); callers push per-frame data via _composite_frame, keyed by the same tuples."""
+    the bottom row, y on the left and right columns) and inner shared edges stay bare. `limits` maps
+    (method, stem) -> (xlim, ylim). Returns (fig, {(method, stem): scatter}); callers push per-frame data
+    via _composite_frame, keyed by the same tuples."""
     rows = [leaf_stem, penult_stem]
     ncols = len(_METHODS)
     # inch insets: l/r reserve the left/right y axes, b the bottom x axis, t the suptitle + column headers
@@ -1068,14 +852,9 @@ def _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
     sc_by = {}
     for ri, stem in enumerate(rows):
         for ci, method in enumerate(_METHODS):
-            spherical = method in _SPHERICAL
             ax = fig.add_subplot(2, ncols, ri * ncols + ci + 1)
             if ri == 0:
                 ax.set_title(method, fontsize=16, fontweight="bold")
-            if spherical:
-                sc_by[(method, stem)] = _setup_sphere_ax(ax, style.bg_color)
-                _apply_legend(ax, style.legend_by_role[_STEM_COLOR_ROLE[stem]], fontsize=13)
-                continue
             if style.bg_color is not None:
                 ax.set_facecolor(style.bg_color)
             if method in _RIGID:
@@ -1099,18 +878,18 @@ def _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, dpi, style):
                         wspace=0, hspace=0)
     return fig, sc_by
 
-def _8panel_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=None):
+def _6panel_render(leaf_stem, penult_stem, data, fpath, suptitle, style, limits=None):
     """Static PNG of the cross-method grid.
     `data` maps (method, stem) -> (proj, rgba). Per-cell axis limits come from each cell's own method,
     except cells whose (method, stem) is in `limits` -- the pooled pca_bounds='final' frame overriding the
     PCA row; the _RIGID methods' cells always auto-fit."""
     limits = {**{k: _limits_for(k[0], [data[k][0]]) for k in data}, **(limits or {})}  # k = (method, stem)
-    fig, sc_by = _8panel_canvas(leaf_stem, penult_stem, limits, suptitle, _GIF_DPI, style)
+    fig, sc_by = _6panel_canvas(leaf_stem, penult_stem, limits, suptitle, _GIF_DPI, style)
     _composite_frame(sc_by, data, style.marker_size)
     fig.savefig(fpath, dpi=300)  # no bbox_inches="tight" -- double-rasterizes; margins already exact
     plt.close(fig)
 
-def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, frame_ms, cmaps, ema_tau,
+def _6panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, names, frame_ms, cmaps, ema_tau,
                          limits, fpath_gif, style, orient=True, fname="projections.npz"):
     """Cross-method (one column per method) training-evolving GIF for one subject's leaf/penult pair, one frame
     per eval (shown for its `frame_ms` entry).
@@ -1120,7 +899,7 @@ def _8panel_evolving_gif(leaf_stem, penult_stem, subject, viz_context, evals, na
     (oriented) vs pooled (shared-frame, `orient=False`) sources."""
     stems = {leaf_stem, penult_stem}
     supt = lambda name: _manifold_title(None, viz_context, subject, name)
-    fig, sc_by = _8panel_canvas(leaf_stem, penult_stem, limits, supt(names[0]), _GIF_DPI, style)
+    fig, sc_by = _6panel_canvas(leaf_stem, penult_stem, limits, supt(names[0]), _GIF_DPI, style)
     def _frames():  # generator: one cache load per eval, resolved for every method, streamed to disk
         for name, resolved in _resolved_evals(evals, names, stems, _METHODS, cmaps, ema_tau, orient, fname):
             _set_suptitle(fig, supt(name), fig.subplotpars.left)
@@ -1139,7 +918,7 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
     dpath_vis/: the per-method stacked leaf(top)/penult(bottom) pairs (ID-only, OOD-only, the combined
     ID+OOD projection and its two partition-masked variants) under 2panel/<method>/, the 2x4 joint
     composite under 7panel/<method>/, and the cross-method grids (one column per method, one output per
-    2panel subject) under 8panel/. `cfg_manifold_viz`'s plot_2panel/plot_7panel/plot_8panel flags gate
+    2panel subject) under 6panel/. `cfg_manifold_viz`'s plot_2panel/plot_7panel/plot_6panel flags gate
     which groups are emitted. Each output is a static PNG.
     `pca_limits` (proj key -> (xlim, ylim)) freezes every PCA panel to that box instead of auto-fitting to
     this eval's points -- the pooled pca_bounds='final' frame (the _RIGID methods always auto-fit). Pure
@@ -1166,16 +945,16 @@ def _render_grids(projs_by_method, cids_id, cids_ood, penults_id, penults_ood,
             fpath = dpath_vis / group / _METHOD_DIR[method] / f"{stem}.png"
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((composite_plot, (grid, sub, fpath, suptitle, style, limits)))
-    # cross-method grids (one column per method, _METHODS order left -> right): under viz/8panel/
-    if cfg_manifold_viz["plot_8panel"]:
-        style_8panel = RenderStyle(None, marker_size, legend_by_role, bg_color)
-        for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
+    # cross-method grids (one column per method, _METHODS order left -> right): under viz/6panel/
+    if cfg_manifold_viz["plot_6panel"]:
+        style_6panel = RenderStyle(None, marker_size, legend_by_role, bg_color)
+        for out_name, subject, leaf_stem, penult_stem in _6PANEL_SUBJECTS:
             suptitle = _manifold_title(None, viz_context, subject, tag)
             data = {(m, s): comp[m][s] for m in _METHODS for s in (leaf_stem, penult_stem)}
             limits = {("PCA", s): pca_limits[_STEM_PROJKEY[s]] for s in (leaf_stem, penult_stem)} if pca_limits else None
-            fpath = dpath_vis / "8panel" / f"{out_name}.png"
+            fpath = dpath_vis / "6panel" / f"{out_name}.png"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((_8panel_render, (leaf_stem, penult_stem, data, fpath, suptitle, style_8panel, limits)))
+            jobs.append((_6panel_render, (leaf_stem, penult_stem, data, fpath, suptitle, style_6panel, limits)))
     _parallel_render(jobs)
 
 def _compute_projections(embs_id, embs_ood, cfg_tsne, chunk_elems):
@@ -1300,29 +1079,22 @@ def compute_umap_projections(dpath_evals, cfg_manifold_viz):
         prev = compute_umap_eval(d, cfg_manifold_viz["umap"], prev)
 
 def compute_umap_eval(dpath_eval, cfg_umap, prev=None):
-    """Fit ONE eval's UMAPs (flat + spherical, each subject) from its cached embs.npz and append them to its
-    projections.npz, both initialized from `prev` -- the previous eval's {method: {proj key: layout}}, the
-    chained init of compute_umap_projections' sweep -- or, without one (the first eval of a sequence, or a test
-    trial's lone eval), the flat fit from the eval's own cached PCA and the spherical one from umap-learn's
-    default. Returns this eval's layouts in `prev`'s shape; an eval that already carries UMAP is not refit,
-    its cached layouts returned instead."""
+    """Fit ONE eval's UMAP (each subject) from its cached embs.npz and append it to its projections.npz,
+    initialized from `prev` -- the previous eval's {proj key: layout}, the chained init of
+    compute_umap_projections' sweep -- or, without one (the first eval of a sequence, or a test trial's
+    lone eval), from the eval's own cached PCA. Returns this eval's layouts in `prev`'s shape; an eval that
+    already carries UMAP is not refit, its cached layouts returned instead."""
     with np.load(dpath_viz_cache(dpath_eval) / "projections.npz") as npz:
         cache = dict(npz)  # materialize: the same path is rewritten below with UMAP appended
-    if "umap_sphere_joint" in cache:  # already fit -- reuse as the next eval's init rather than refitting
-        return {m: {k: cache[f"{m}_{k}"] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
+    if "umap_joint" in cache:  # already fit -- reuse as the next eval's init rather than refitting
+        return {k: cache[f"umap_{k}"] for k in _PROJ_KEYS}
     with np.load(dpath_viz_cache(dpath_eval) / "embs.npz") as e:
         embs_id, embs_ood = e["embs_id"].astype(np.float32), e["embs_ood"].astype(np.float32)
     by_key = {"id": embs_id, "ood": embs_ood, "joint": np.concatenate([embs_id, embs_ood], axis=0)}
-    projs = {}
-    for k in _PROJ_KEYS:
-        knn = _umap_knn(by_key[k], cfg_umap)  # one neighbor search, both fits
-        flat_init = cache[f"pca_{k}"] if prev is None else prev["umap"][k]
-        sph_init = None if prev is None else _xyz_to_angles(prev["umap_sphere"][k])
-        projs[("umap", k)] = compute_umap(by_key[k], cfg_umap, flat_init, knn=knn)
-        projs[("umap_sphere", k)] = compute_umap(by_key[k], cfg_umap, sph_init, spherical=True, knn=knn)
-    cache.update({f"{m}_{k}": projs[(m, k)] for m, k in projs})
+    projs = {k: compute_umap(by_key[k], cfg_umap, cache[f"pca_{k}"] if prev is None else prev[k]) for k in _PROJ_KEYS}
+    cache.update({f"umap_{k}": proj for k, proj in projs.items()})
     np.savez(dpath_viz_cache(dpath_eval) / "projections.npz", **cache)
-    return {m: {k: projs[(m, k)] for k in _PROJ_KEYS} for m in ("umap", "umap_sphere")}
+    return projs
 
 def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     """CPU, single process. Fit ONE shared UMAP over all eval thresholds' pooled embeddings and append the
@@ -1341,7 +1113,7 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     # mid-write (threshold 0 written, the rest not) as complete and strand the tail without UMAP blocks;
     # probing before loading also makes the already-done path free.
     with np.load(dpath_viz_cache(dirs[-1]) / "projections_pooled.npz") as npz:
-        if "umap_sphere_joint" in npz:
+        if "umap_joint" in npz:
             return
     caches = []
     for d in dirs:
@@ -1351,18 +1123,12 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     m_id, m_ood = len(idx_id), len(idx_ood)
     pools = _pooled_pools(dirs, idx_id, idx_ood)
     cfg_umap = cfg_manifold_viz["umap"]
-    projs = {}
-    for k in _PROJ_KEYS:
-        knn = _umap_knn(pools[k], cfg_umap)  # one neighbor search, both fits
-        # PCA over the same pool seeds the flat fit, mirroring the pooled t-SNE's init; the spherical
-        # fit has no planar init to inherit, so it takes UMAP's own spectral one
-        projs[("umap", k)] = compute_umap(pools[k], cfg_umap, _pca_2d(pools[k]), knn=knn)
-        projs[("umap_sphere", k)] = compute_umap(pools[k], cfg_umap, None, spherical=True, knn=knn)
+    # PCA over the same pool seeds the fit, mirroring the pooled t-SNE's init
+    projs = {k: compute_umap(pools[k], cfg_umap, _pca_2d(pools[k])) for k in _PROJ_KEYS}
     del pools
     for t, (d, cache) in enumerate(zip(dirs, caches)):
         for k, blk in _pooled_block_sizes(m_id, m_ood):
-            for m in ("umap", "umap_sphere"):
-                cache[f"{m}_{k}"] = projs[(m, k)][t * blk:(t + 1) * blk]
+            cache[f"umap_{k}"] = projs[k][t * blk:(t + 1) * blk]
         np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
 
 def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
@@ -1483,9 +1249,9 @@ def _incoming_ref(dpath_evals, eval_name, ema_tau):
 
 def _no_panels_enabled(cfg_manifold_viz):
     """True when every manifold-viz panel group is toggled off (manifold_viz.plot_2panel/plot_7panel/
-    plot_8panel) -- the render passes then short-circuit, doing no setup/render and writing no (empty)
+    plot_6panel) -- the render passes then short-circuit, doing no setup/render and writing no (empty)
     viz dirs."""
-    return not (cfg_manifold_viz["plot_2panel"] or cfg_manifold_viz["plot_7panel"] or cfg_manifold_viz["plot_8panel"])
+    return not (cfg_manifold_viz["plot_2panel"] or cfg_manifold_viz["plot_7panel"] or cfg_manifold_viz["plot_6panel"])
 
 def _final_pca_limits(dpath_final, fname):
     """PCA axis limits per proj key frozen to the FINAL eval's pooled projection (id/ood/joint each its
@@ -1580,11 +1346,9 @@ def _eval_marks(name, chkpt):
 def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
     """One streaming pass over the caches accumulating the cross-eval axis bounds per (method, proj key)
     while holding only one eval at a time: a bounding box (running min/max) for the bbox methods and a
-    square bound (running max |coord|) for the _RIGID ones. The spherical method needs neither -- its
-    ball is always unit-radius -- but is still swept so its orientation reference advances in lockstep
-    with the render's. The accumulated bounds are taken over ORIENTED projections --
-    orientation moves points (rigidly about the origin for t-SNE/UMAP, a sign flip for PCA), so the bound
-    must follow the same orientation sweep as the render. Reuses _common_limits/_square_limits on the
+    square bound (running max |coord|) for the _RIGID ones. The accumulated bounds are taken over ORIENTED
+    projections -- orientation moves points (rigidly about the origin for t-SNE/UMAP, a sign flip for PCA),
+    so the bound must follow the same orientation sweep as the render. Reuses _common_limits/_square_limits on the
     accumulated extremes so the frozen axes are identical to materializing every eval. `orient=False`/
     `fname` (pooled mode) take the bound over the raw pooled projections (already one shared frame).
     Returns {(method, proj key): (xlim, ylim)} for every method x id/ood/joint."""
@@ -1600,8 +1364,6 @@ def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
             proj = projs_by_method[m][k]
             if orient:  # pooled projections already share one frame -> bound the raw projection
                 proj, ref[(m, k)] = _orient(m, proj, cids_by[k], ref.get((m, k)), ema_tau)
-            if m in _SPHERICAL:
-                continue  # the ball is fixed at unit radius -- nothing to accumulate (but still oriented above)
             if m in _RIGID:
                 absmax[(m, k)] = max(absmax[(m, k)], float(np.abs(proj).max()))
             else:
@@ -1610,8 +1372,6 @@ def _evolution_limits(evals, ema_tau, orient=True, fname="projections.npz"):
                 hi[(m, k)] = p_hi if hi[(m, k)] is None else np.maximum(hi[(m, k)], p_hi)
 
     def _bound(p):
-        if p[0] in _SPHERICAL:
-            return _SPHERE_LIMITS
         if p[0] in _RIGID:
             return _square_limits([np.array([[absmax[p], absmax[p]]])])
         return _common_limits([np.stack([lo[p], hi[p]])])
@@ -1624,7 +1384,7 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, chkp
     the trial's sel/best evals): each eval contributes one frame, then the GIF hard-cuts
     to the next eval, axes/gridlines frozen across evals so only the points move. Reads each eval's
     cached <fname> and writes the per-method grids under dpath_out/{2panel,7panel}/<method>/ plus
-    the cross-method grids (one column per method) under dpath_out/8panel/.
+    the cross-method grids (one column per method) under dpath_out/6panel/.
 
     Default (per-eval, projections.npz) orients every method by aligning each eval to a running reference
     swept across evals -- the same orientation `render_eval` reproduces per eval. Pooled (`orient=False`,
@@ -1673,13 +1433,13 @@ def render_evolution(dpath_evals, dpath_out, cfg_manifold_viz, viz_context, chkp
             fpath.parent.mkdir(parents=True, exist_ok=True)
             jobs.append((composite_evolving_gif, (grid, subject, viz_context, evals, names, frame_ms, cmaps,
                                                    ema_tau, limits, fpath, style, orient, fname)))
-    # cross-method evolving GIFs (one column per method): under <dpath_out>/8panel/
-    if cfg_manifold_viz["plot_8panel"]:
-        style_8panel = RenderStyle(None, marker_size, legends, bg_color)
-        for out_name, subject, leaf_stem, penult_stem in _8PANEL_SUBJECTS:
+    # cross-method evolving GIFs (one column per method): under <dpath_out>/6panel/
+    if cfg_manifold_viz["plot_6panel"]:
+        style_6panel = RenderStyle(None, marker_size, legends, bg_color)
+        for out_name, subject, leaf_stem, penult_stem in _6PANEL_SUBJECTS:
             limits = {(m, s): limits_by[(m, _STEM_PROJKEY[s])] for m in _METHODS for s in (leaf_stem, penult_stem)}
-            fpath = dpath_out / "8panel" / f"{out_name}.gif"
+            fpath = dpath_out / "6panel" / f"{out_name}.gif"
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            jobs.append((_8panel_evolving_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
-                                                frame_ms, cmaps, ema_tau, limits, fpath, style_8panel, orient, fname)))
+            jobs.append((_6panel_evolving_gif, (leaf_stem, penult_stem, subject, viz_context, evals, names,
+                                                frame_ms, cmaps, ema_tau, limits, fpath, style_6panel, orient, fname)))
     _parallel_render(jobs)

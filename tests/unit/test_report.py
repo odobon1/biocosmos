@@ -233,7 +233,7 @@ def test_update_chkpt_selection_copies_viz(tmp_path, monkeypatch) -> None:
     (tmp_path / "coord_metadata.json").write_text(json.dumps({"n_crashes": {}, "sel_chkpt": {}}))
     for idx in ("1", "2"):
         dpath_viz = tmp_path / "_trial" / "1" / "eval" / "all" / idx / "viz"
-        for sub in ("vanilla/8panel/joint.png", "pooled/8panel/joint.png", "cache/embs.npz"):
+        for sub in ("vanilla/6panel/joint.png", "pooled/6panel/joint.png", "cache/embs.npz"):
             (dpath_viz / sub).parent.mkdir(parents=True, exist_ok=True)
             (dpath_viz / sub).write_text(f"eval{idx}")
     fpath_stale = tmp_path / "_trial" / "1" / "eval" / "sel" / "viz" / "vanilla" / "stale.png"
@@ -247,7 +247,7 @@ def test_update_chkpt_selection_copies_viz(tmp_path, monkeypatch) -> None:
 
     dpath_evals = tmp_path / "_trial" / "1" / "eval"
     for name, idx in (("sel", "2"), ("best", "1")):
-        for sub in ("vanilla/8panel/joint.png", "pooled/8panel/joint.png"):
+        for sub in ("vanilla/6panel/joint.png", "pooled/6panel/joint.png"):
             assert (dpath_evals / name / "viz" / sub).read_text() == f"eval{idx}"
         assert not (dpath_evals / name / "viz" / "cache").exists()
     assert not fpath_stale.exists()
@@ -812,9 +812,9 @@ def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, mo
             _write_complete_trial(dpath_phase, "cub", "hp", coord, trial, base)
     _write_meta(dpath_phase, ["hp"], ["a", "b"], ["cub"], seeds=[42, 43])
     dpath_trial = _dpath_coord(dpath_phase, "cub", "hp", "b") / "_trial" / "2"
-    fpath = dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "8panel" / "joint.png"
+    fpath = dpath_trial / "eval" / "sel" / "viz" / "vanilla" / "6panel" / "joint.png"
     fpath.parent.mkdir(parents=True)
-    fpath.write_text("hp/b/2 vanilla/8panel/joint.png")
+    fpath.write_text("hp/b/2 vanilla/6panel/joint.png")
     dpath_stray = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord.tmp" / "9"
     dpath_stray.mkdir(parents=True)
 
@@ -830,7 +830,7 @@ def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, mo
     for name in ("best", "sel"):
         assert ((dpath_best / "2" / "eval" / name / "scores.json").read_text()
                 == (dpath_trial / "eval" / name / "scores.json").read_text())
-    assert (dpath_best / "2" / "eval" / "sel" / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == "hp/b/2 vanilla/8panel/joint.png"
+    assert (dpath_best / "2" / "eval" / "sel" / "viz" / "vanilla" / "6panel" / "joint.png").read_text() == "hp/b/2 vanilla/6panel/joint.png"
     assert not dpath_stray.parent.exists()
 
 
@@ -3033,7 +3033,7 @@ def test_update_test_best_coord_mirrors_the_picks_test_evals(tmp_path, monkeypat
     dpath_coord = _dpath_coord(dpath_phase, "cub", "hp", "c1")
     for trial in (1, 2):
         dpath_sel = dpath_coord / "_trial" / str(trial) / "eval" / "sel"
-        for sub in ("scores.json", "secondary/scores_joint-macro.json", "viz/vanilla/8panel/joint.png", "viz/cache/embs.npz"):
+        for sub in ("scores.json", "secondary/scores_joint-macro.json", "viz/vanilla/6panel/joint.png", "viz/cache/embs.npz"):
             (dpath_sel / sub).parent.mkdir(parents=True, exist_ok=True)
             (dpath_sel / sub).write_text(f"hp/c1/{trial} {sub}")
     dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord"
@@ -3047,5 +3047,5 @@ def test_update_test_best_coord_mirrors_the_picks_test_evals(tmp_path, monkeypat
         dpath_mirror = dpath_best / str(trial) / "eval" / "sel"
         assert (dpath_mirror / "scores.json").read_text() == f"hp/c1/{trial} scores.json"
         assert (dpath_mirror / "secondary" / "scores_joint-macro.json").read_text() == f"hp/c1/{trial} secondary/scores_joint-macro.json"
-        assert (dpath_mirror / "viz" / "vanilla" / "8panel" / "joint.png").read_text() == f"hp/c1/{trial} viz/vanilla/8panel/joint.png"
+        assert (dpath_mirror / "viz" / "vanilla" / "6panel" / "joint.png").read_text() == f"hp/c1/{trial} viz/vanilla/6panel/joint.png"
         assert not (dpath_mirror / "viz" / "cache").exists()

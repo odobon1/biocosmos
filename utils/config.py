@@ -734,7 +734,7 @@ class ManifoldVizConfig:
     bg_color: str | None
     plot_2panel: bool
     plot_7panel: bool
-    plot_8panel: bool
+    plot_6panel: bool
     pooled: dict
     
     tsne: dict = field(default_factory=dict)

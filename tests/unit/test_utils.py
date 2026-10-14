@@ -1,4 +1,7 @@
-from utils.utils import RunningMean, PrintLog, get_text_template, shuffle_list
+import numpy as np
+import pytest
+
+from utils.utils import RunningMean, PrintLog, get_text_template, save_npz, shuffle_list
 
 
 def test_running_mean_tracks_average() -> None:
@@ -78,3 +81,32 @@ def test_printlog_eval_blocks_follow_the_eval_groups_in_play(capsys) -> None:
     assert "Standard Composite mAP" in printout
     assert "GZSL Composite mAP" in printout
     assert "Native" not in printout and "Joint" not in printout
+
+
+def test_save_npz_round_trips_and_leaves_no_tmp(tmp_path) -> None:
+    fpath = tmp_path / "projections.npz"
+
+    save_npz(fpath, a=np.arange(3), b=np.ones((2, 2)))
+
+    with np.load(fpath) as npz:
+        assert npz["a"].tolist() == [0, 1, 2]
+        assert npz["b"].shape == (2, 2)
+    assert list(tmp_path.iterdir()) == [fpath]  # the tmp file was renamed away, not left behind
+
+
+def test_save_npz_killed_mid_write_leaves_the_existing_file_intact(tmp_path, monkeypatch) -> None:
+    # the atomicity save_npz exists for: a render worker terminated mid-rewrite (campaign runner replan,
+    # watchdog cancellation) must leave the previously-good cache in place, never a torn npz
+    fpath = tmp_path / "projections.npz"
+    save_npz(fpath, a=np.arange(3))
+
+    def torn_savez(f, **arrays):
+        f.write(b"PK\x03\x04 torn")  # a few bytes land, then the kill
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("utils.utils.np.savez", torn_savez)
+    with pytest.raises(KeyboardInterrupt):
+        save_npz(fpath, a=np.arange(5))
+
+    with np.load(fpath) as npz:
+        assert npz["a"].tolist() == [0, 1, 2]  # the pre-rewrite cache, readable

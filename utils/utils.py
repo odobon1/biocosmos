@@ -174,6 +174,16 @@ def load_pickle(picklepath):
         obj = pickle.load(f)
     return obj
 
+def save_npz(fpath, **arrays):
+    # written to a sibling temp file and renamed over fpath (save_json's scheme), so a process killed
+    # mid-write (the render worker, terminated by the runner or the job's cancellation) can never leave
+    # a torn npz behind for the resume probes to crash on. np.savez appends ".npz" to any filename not
+    # already carrying it, so the tmp file is written through an open handle to keep its exact name.
+    fpath_tmp = Path(f"{fpath}.{os.getpid()}.tmp")
+    with open(fpath_tmp, "wb") as f:
+        np.savez(f, **arrays)
+    os.replace(fpath_tmp, fpath)
+
 DATASET_ALIAS2NAME = {
     "bryo": "Bryozoa",
     "cub": "CUB",

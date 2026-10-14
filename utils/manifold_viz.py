@@ -18,7 +18,7 @@ from PIL.GifImagePlugin import getheader, getdata
 
 from utils.data import load_cid_2_penult, load_cid_2_nshot
 from utils.ddp import rank0
-from utils.utils import DATASET_ALIAS2NAME, save_pickle, load_pickle
+from utils.utils import DATASET_ALIAS2NAME, save_npz, save_pickle, load_pickle
 from utils.config import DATASET2MARKER_SIZE
 from utils.train import dpath_viz_cache, dpath_viz_plots
 
@@ -1005,9 +1005,9 @@ def compute_projections(eval_bundle_id, eval_bundle_ood, dpath_cache, cfg_manifo
         cache[f"pca_{k}"] = pca_projs[k]
     for k in tsne_projs:
         cache[f"tsne_{k}"] = tsne_projs[k]
-    np.savez(dpath_cache / "projections.npz", **cache)
+    save_npz(dpath_cache / "projections.npz", **cache)
     # raw embeddings (float16) for the post-trial UMAP fits + the end-of-trial pooled projection
-    np.savez(dpath_cache / "embs.npz",
+    save_npz(dpath_cache / "embs.npz",
              embs_id=eval_bundle_id["embs_img"].detach().cpu().to(torch.float16).numpy(),
              embs_ood=eval_bundle_ood["embs_img"].detach().cpu().to(torch.float16).numpy(),
              cids_id=np.asarray(eval_bundle_id["cids_img"]),
@@ -1093,7 +1093,7 @@ def compute_umap_eval(dpath_eval, cfg_umap, prev=None):
     by_key = {"id": embs_id, "ood": embs_ood, "joint": np.concatenate([embs_id, embs_ood], axis=0)}
     projs = {k: compute_umap(by_key[k], cfg_umap, cache[f"pca_{k}"] if prev is None else prev[k]) for k in _PROJ_KEYS}
     cache.update({f"umap_{k}": proj for k, proj in projs.items()})
-    np.savez(dpath_viz_cache(dpath_eval) / "projections.npz", **cache)
+    save_npz(dpath_viz_cache(dpath_eval) / "projections.npz", **cache)
     return projs
 
 def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
@@ -1129,7 +1129,7 @@ def compute_umap_pooled(dpath_evals, cfg_manifold_viz):
     for t, (d, cache) in enumerate(zip(dirs, caches)):
         for k, blk in _pooled_block_sizes(m_id, m_ood):
             cache[f"umap_{k}"] = projs[k][t * blk:(t + 1) * blk]
-        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
+        save_npz(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
 
 def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elems):
     """COLLECTIVE -- every rank must enter. Fit ONE shared PCA + t-SNE over ALL eval thresholds'
@@ -1180,7 +1180,7 @@ def compute_pooled_projections(dpath_evals, cfg_manifold_viz, budget, chunk_elem
             sl = slice(t * blk, (t + 1) * blk)
             cache[f"pca_{k}"] = pca_projs[k][sl]
             cache[f"tsne_{k}"] = tsne_projs[k][sl]
-        np.savez(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
+        save_npz(dpath_viz_cache(d) / "projections_pooled.npz", **cache)
     _log("pooled projections complete")
 
 def _load_projections(dpath_eval, fname="projections.npz"):

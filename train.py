@@ -21,6 +21,7 @@ from utils.utils import (
     TimeTracker,
     PrintLog,
     model_grad_l2_norm,
+    save_npz,
 )
 from models import VLMWrapper
 from utils.config import eval_groups, get_config_stats, load_learning_curves_config_dict
@@ -380,9 +381,9 @@ class TrainPipeline:
         if self._manifold_viz:
             dpath_cache.mkdir(parents=True, exist_ok=True)
         if self._manifold_viz and not (dpath_cache / "projections.npz").exists():
-            np.savez(dpath_cache / "projections.npz", **entry["projections"])
+            save_npz(dpath_cache / "projections.npz", **entry["projections"])
         if self._manifold_viz and not (dpath_cache / "embs.npz").exists():
-            np.savez(dpath_cache / "embs.npz", **entry["embs"])
+            save_npz(dpath_cache / "embs.npz", **entry["embs"])
 
     def _compute_projections_timed(self, eval_bundles, dpath_cache):
         # COLLECTIVE (sharded t-SNE) -- every rank enters; elapsed folds into the viz_compute mean.

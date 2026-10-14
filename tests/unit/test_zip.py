@@ -16,7 +16,6 @@ CORE = {  # always included, whatever the toggles
     "artifacts/camp/_phase/screen/phase_metadata.json",
     "artifacts/camp/_phase/screen/_dataset/cub/_arm/mp/_coord/LR-1e-5/config.json",
     f"{TRIAL}/trial_metadata.json",
-    f"{TRIAL}/data_trial.pkl",
     f"{TRIAL}/eval/all/1/scores.json",
     f"{TRIAL}/eval/sel/scores.json",
     f"{TRIAL}/learning_curves/scores.png",
@@ -44,12 +43,15 @@ BULKY = {  # toggle -> the files it governs
         f"{TRIAL}/eval/all/1/viz/cache/embs.npz",
         f"{TRIAL}/eval/all/1/viz/cache/projections.npz",
         f"{TRIAL}/eval/all/1/viz/cache/projections_pooled.npz",
-        f"{TRIAL}/eval/all/1/viz/cache/orient_ref.pkl",
         f"{TEST}/eval/sel/viz/cache/embs.npz",
         f"{TEST}/eval/sel/viz/cache/projections.npz",
-        f"{TEST}/eval/sel/viz/cache/orient_ref.pkl",
     },
     "batch_logs": {f"{TRIAL}/logs/batch/grad_norm.log", f"{TRIAL}/logs/batch/sim_targ.log"},
+}
+PKL = {  # .pkl files are never included, toggles (manifold_viz_cache incl.) notwithstanding
+    f"{TRIAL}/data_trial.pkl",
+    f"{TRIAL}/eval/all/1/viz/cache/orient_ref.pkl",
+    f"{TEST}/eval/sel/viz/cache/orient_ref.pkl",
 }
 
 
@@ -66,7 +68,7 @@ def _set_cfg(root: Path, **toggles) -> None:
 
 
 def _make_campaign(root: Path, campaign: str = "camp") -> None:
-    for rel in CORE | set().union(*BULKY.values()):
+    for rel in CORE | PKL | set().union(*BULKY.values()):
         _write(root / rel.replace("artifacts/camp/", f"artifacts/{campaign}/"))
 
 
@@ -118,6 +120,7 @@ def test_campaign_core_ships_with_every_toggle_off(root: Path) -> None:
     assert fpath_zip.name.endswith("_camp.zip")
     assert {f"biocosmos/{rel}" for rel in CORE} <= names
     assert not {f"biocosmos/{rel}" for files in BULKY.values() for rel in files} & names
+    assert not {f"biocosmos/{rel}" for rel in PKL} & names
 
 
 @pytest.mark.parametrize("toggle", sorted(BULKY))
@@ -130,6 +133,7 @@ def test_each_toggle_admits_only_its_files(root: Path, toggle: str) -> None:
     for kind, files in BULKY.items():
         for rel in files:
             assert (f"biocosmos/{rel}" in names) == (kind == toggle), rel
+    assert not {f"biocosmos/{rel}" for rel in PKL} & names
 
 
 def test_multiple_campaigns(root: Path) -> None:

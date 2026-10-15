@@ -593,15 +593,16 @@ class PrintLog:
         lines_loss = (f"{' Loss ':-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(loss_pairs) + "\n") if loss_pairs else ""
 
         lines_sim_targ = ""
-        if eval_metrics["sim"]["mean"] is not None:
-            def _fmt_stats(stats):
+        if eval_metrics["sim_targ"]["comb"] is not None:  # the point stats over every partition's chunks together
+            def _fmt_stats(prefix):
+                stats = eval_metrics["sim_targ"]["comb"]
                 return (
-                    f"min={stats['min']: .4f} max={stats['max']: .4f} "
-                    f"med={stats['median']: .4f} mean={stats['mean']: .4f}"
+                    f"min={stats[f'{prefix}_min']: .4f} max={stats[f'{prefix}_max']: .4f} "
+                    f"med={stats[f'{prefix}_median']: .4f} mean={stats[f'{prefix}_mean']: .4f}"
                 )
             sim_targ_pairs = [
-                ("Sim", _fmt_stats(eval_metrics["sim"])),
-                ("Targ", _fmt_stats(eval_metrics["targ"])),
+                ("Sim", _fmt_stats("sim")),
+                ("Targ", _fmt_stats("targ")),
             ]
             lines_sim_targ = f"{' Sim/Targ ':-^{SECTION_WIDTH}}\n" + PrintLog._dash_aligned_lines(sim_targ_pairs) + "\n"
 

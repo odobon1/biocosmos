@@ -1,7 +1,7 @@
 """
 python -m tools.regen_learning_curves <campaign>
 
-Re-render every trial's learning-curve plots (learning_curves/scores.png for the native eval group + learning_curves/secondary/scores_<group>.png, one per other eval group the campaign has in play + learning_curves/{general,scale,logscale,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores.png / secondary/), in
+Re-render every trial's learning-curve plots (learning_curves/scores.png for the native eval group + learning_curves/secondary/scores_<group>.png, one per other eval group the campaign has in play + learning_curves/{optim,sim_targ_train,sim_targ_val_{id,ood,comb},scale,logscale,KL,bias,unitless_loss_blend}.png, each where the trial records its series; the trainval phase has no scores.png / secondary/), in
 every phase of the campaign (screen/, and refine/ + trainval/ when they exist), from its persisted data_trial.pkl using the
 CURRENT utils/report.py plotting code and config/render/learning_curves.yaml settings (dpi) -- no train/eval rerun -- so
 styling/layout edits take effect for an
@@ -86,7 +86,6 @@ def regen_learning_curves(campaign):
         for dataset, arms in metadata["matrix"].items():
             for arm in arms:
                 update_best_coord(dataset, arm)
-
 
 def main():
     args = sys.argv[1:]

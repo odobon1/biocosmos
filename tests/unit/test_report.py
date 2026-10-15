@@ -610,7 +610,7 @@ def _write_coord_overrides(dpath_phase, dataset, arm, coord, coord_payload) -> N
 
 
 def test_update_arm_metrics_hpo2d_table(tmp_path, monkeypatch) -> None:
-    # the screening arm's arm_summary/performance/scores_hpo2d.png (+ secondary/): the coords' composite mAP All
+    # the screening arm's arm_summary/performance/scores-hpo2d.png (+ secondary/): the coords' composite mAP All
     # gridded over the two hpo_coords params -- the earlier-declared (overrides.json's coord side keeps the yaml's
     # key order) down the rows, the later across the columns, each axis's values in first-seen order along the
     # matrix (the yaml's) and spelled as the coord names spell them (2.0e-5, not 2e-05). A coord with a dir but no
@@ -637,9 +637,9 @@ def test_update_arm_metrics_hpo2d_table(tmp_path, monkeypatch) -> None:
 
     report.update_arm_metrics("cub", "hp", _EVAL_GROUPS, _stats(bold_high=True, heatmap=True))
 
-    drawn = [d for d in drawn if d[0].name.startswith("scores_hpo2d")]
+    drawn = [d for d in drawn if d[0].name.startswith("scores-hpo2d")]
     assert len(drawn) == 4  # one per eval group
-    fpath, title, grid, winners, killed = next(d for d in drawn if d[0].name == "scores_hpo2d.png")
+    fpath, title, grid, winners, killed = next(d for d in drawn if d[0].name == "scores-hpo2d.png")
     assert fpath.parent.parts[-2:] == ("arm_summary", "performance")
     assert title == "Composite mAP (Native; mean ± STD)\nhp\nCUB"
     assert grid == [
@@ -648,12 +648,12 @@ def test_update_arm_metrics_hpo2d_table(tmp_path, monkeypatch) -> None:
         ["2.0e-4", "55.00", "-", "-"],
     ]
     assert winners == {(1, 2)} and killed == {(2, 1)}
-    assert sorted(d[0].name for d in drawn) == ["scores_hpo2d.png", "scores_hpo2d_joint-macro.png", "scores_hpo2d_joint.png",
-                                                "scores_hpo2d_native-macro.png"]
+    assert sorted(d[0].name for d in drawn) == ["scores-hpo2d.png", "scores-hpo2d_joint-macro.png", "scores-hpo2d_joint.png",
+                                                "scores-hpo2d_native-macro.png"]
 
 
 def test_update_arm_metrics_hpo2d_table_screen_two_param_sweeps_only(tmp_path, monkeypatch) -> None:
-    # scores_hpo2d.png is rendered (every group's, through the real renderer) in the screening phase of a sweep of
+    # scores-hpo2d.png is rendered (every group's, through the real renderer) in the screening phase of a sweep of
     # exactly two params; not outside screening (the refine phase has one coord per arm: nothing to grid), nor for a
     # sweep of one param (scores.png's All column already) or of three (no single 2-D layout)
     monkeypatch.setattr(report, "_plot_convergence", lambda *a: None)
@@ -673,7 +673,7 @@ def test_update_arm_metrics_hpo2d_table_screen_two_param_sweeps_only(tmp_path, m
         dpath_stats = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "performance"
         assert (dpath_stats / "scores.png").exists()
         for group_key in _GROUP_KEYS:
-            assert group_path(dpath_stats, group_key, "scores_hpo2d", ".png").exists() == rendered
+            assert group_path(dpath_stats, group_key, "scores-hpo2d", ".png").exists() == rendered
 
 
 def _write_scale_series(dpath_trial, scale, scale2=()) -> None:
@@ -811,7 +811,7 @@ def _write_complete_trial(dpath_phase, dataset, arm, coord, trial, base) -> None
     _write_group_metrics(dpath_trial / "eval" / "best", _scores_grp(_comp(base)))
     dpath_curves = dpath_trial / "learning_curves"
     dpath_curves.mkdir(parents=True)
-    (dpath_curves / "general.png").write_text(f"{arm}/{coord}/{trial} general")
+    (dpath_curves / "optim.png").write_text(f"{arm}/{coord}/{trial} optim")
     (dpath_curves / "scores.png").write_text(f"{arm}/{coord}/{trial} scores")
 
 
@@ -837,8 +837,8 @@ def test_update_arm_metrics_mirrors_the_best_coords_learning_curves(tmp_path, mo
 
     dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord"
     assert sorted(p.name for p in dpath_best.iterdir()) == ["1", "2"]
-    assert (dpath_best / "1" / "learning_curves" / "general.png").read_text() == "hp/b/1 general"
-    assert (dpath_best / "2" / "learning_curves" / "general.png").read_text() == "hp/b/2 general"
+    assert (dpath_best / "1" / "learning_curves" / "optim.png").read_text() == "hp/b/1 optim"
+    assert (dpath_best / "2" / "learning_curves" / "optim.png").read_text() == "hp/b/2 optim"
     assert (dpath_best / "2" / "learning_curves" / "scores.png").read_text() == "hp/b/2 scores"
     for name in ("best", "sel"):
         assert ((dpath_best / "2" / "eval" / name / "scores.json").read_text()
@@ -882,7 +882,7 @@ def test_best_coord_curves_are_dropped_when_the_arm_grows(tmp_path, monkeypatch)
     dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord"
 
     report.update_best_coord("cub", "hp")
-    assert (dpath_best / "1" / "learning_curves" / "general.png").read_text() == "hp/b/1 general"
+    assert (dpath_best / "1" / "learning_curves" / "optim.png").read_text() == "hp/b/1 optim"
 
     _write_meta(dpath_phase, ["hp"], ["a", "b", "c"], ["cub"])  # "c" added, no trials of it yet
     report.update_best_coord("cub", "hp")
@@ -890,7 +890,7 @@ def test_best_coord_curves_are_dropped_when_the_arm_grows(tmp_path, monkeypatch)
 
     _write_complete_trial(dpath_phase, "cub", "hp", "c", 1, 0.90)
     report.update_best_coord("cub", "hp")
-    assert (dpath_best / "1" / "learning_curves" / "general.png").read_text() == "hp/c/1 general"
+    assert (dpath_best / "1" / "learning_curves" / "optim.png").read_text() == "hp/c/1 optim"
 
 
 def test_best_coord_curves_in_refine_mirror_the_pick(tmp_path, monkeypatch) -> None:
@@ -904,7 +904,7 @@ def test_best_coord_curves_in_refine_mirror_the_pick(tmp_path, monkeypatch) -> N
     report.update_best_coord("cub", "hp")
 
     dpath_best = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "best_coord"
-    assert (dpath_best / "1" / "learning_curves" / "general.png").read_text() == "hp/c1/1 general"
+    assert (dpath_best / "1" / "learning_curves" / "optim.png").read_text() == "hp/c1/1 optim"
 
 
 def test_best_coord_curves_skip_trainval(tmp_path, monkeypatch) -> None:
@@ -1034,7 +1034,7 @@ def test_update_coord_strips_writes_per_seed_and_agg_figures(tmp_path, monkeypat
     report.update_coord_strips("cub", "hp", _stats())
 
     dpath_strips = dpath_phase / "_dataset" / "cub" / "_arm" / "hp" / "arm_summary" / "coord_strips"
-    for name in ("scale", "logscale", "sim_grad_entropy_pair_actual"):
+    for name in ("scale", "logscale", "sim_grad_ent"):
         assert (dpath_strips / "agg" / f"{name}.png").exists()
         assert (dpath_strips / "trials" / "1" / f"{name}.png").exists()
         assert (dpath_strips / "trials" / "2" / f"{name}.png").exists()
@@ -1064,13 +1064,13 @@ def test_update_coord_strips_pair_entropy_only_where_recorded(tmp_path, monkeypa
     titles = {(fpath.parent.name, fpath.stem): plot_title for fpath, _, plot_title in calls}
     assert titles[("1", "scale")] == "Logit Scale α (trial 1)\nhp\nCUB"
     assert titles[("agg", "logscale")] == "Logit Log-Scale log α\nhp\nCUB"
-    assert titles[("agg", "sim_grad_entropy_pair_actual")] == "Similarity-Gradient Entropy (pair, actual)\nhp\nCUB"
+    assert titles[("agg", "sim_grad_ent")] == "Similarity-Gradient Entropy (pair, actual)\nhp\nCUB"
     assert [coord for coord, *_ in figures[("1", "scale")]] == ["a", "b"]
-    assert [coord for coord, *_ in figures[("1", "sim_grad_entropy_pair_actual")]] == ["a"]
-    assert [coord for coord, *_ in figures[("agg", "sim_grad_entropy_pair_actual")]] == ["a"]
-    _, _, x, (vals, spread), reqs = figures[("1", "sim_grad_entropy_pair_actual")][0]
+    assert [coord for coord, *_ in figures[("1", "sim_grad_ent")]] == ["a"]
+    assert [coord for coord, *_ in figures[("agg", "sim_grad_ent")]] == ["a"]
+    _, _, x, (vals, spread), reqs = figures[("1", "sim_grad_ent")][0]
     assert x == pytest.approx([0.0, 1.0]) and vals == pytest.approx([0.2, 0.4]) and spread is None and reqs == {}
-    _, _, _, (vals, spread), reqs = figures[("agg", "sim_grad_entropy_pair_actual")][0]
+    _, _, _, (vals, spread), reqs = figures[("agg", "sim_grad_ent")][0]
     assert vals == pytest.approx([0.4, 0.6]) and spread == pytest.approx([np.std([0.2, 0.6], ddof=1)] * 2) and reqs == {}
 
     calls.clear()
@@ -2607,44 +2607,118 @@ def test_fold_hist_columns_stride_is_smallest_power_of_two_that_fits() -> None:
         assert grid.shape[1] == 10  # bins preserved
 
 
-def test_general_figure_closes_on_the_margin_and_s_q_panels_above_lr(tmp_path, monkeypatch) -> None:
-    # the similarity / target block closes the figure: the mean hard-pair margins, then S Stats over the S Hist.
-    # strip filling its point stats in, then Q Hist., then LR. S Hist. bins the cosine's [-1, 1] (S Stats' own
-    # axis), Q Hist. the targets' [0, 1] -- drawn for a hard 0/1 target like any other
+def test_optim_figure_stacks_the_loss_grad_and_step_norms_over_lr(tmp_path, monkeypatch) -> None:
+    # optim.png: the loss and LR panels always, the whole-model gradient norm and ||delta theta|| between them
+    # where their batch_diagnostics components recorded a series
+    n = 4
+    keys = ["grad_norm_model", "delta_norm_model", "loss_train", "loss_raw_train", "lr"]
+    data_epoch = {**{key: [] for key in keys}, "loss_train": [1.0] * n, "lr": [1e-4] * n}
+    seen = {}
+
+    def finish(fig, axes, axes_hist, *args, **kwargs):
+        seen["panels"] = [ax.get_ylabel() for ax in axes]
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    plot = lambda: report.plot_optim_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
+                                            plot_title="t", output_filename="x.png")
+    plot()
+    assert seen["panels"] == [r"$\mathcal{L}$", "η"]
+    data_epoch["grad_norm_model"] = [0.5] * n
+    data_epoch["delta_norm_model"] = [0.1] * n
+    plot()
+    assert seen["panels"] == [r"$\mathcal{L}$", r"$\|\nabla_{\theta}\mathcal{L}\|$", r"$\|\Delta\theta\|$", "η"]
+
+
+def test_sim_targ_figure_closes_on_the_s_q_panels_and_skips_an_unrecorded_trial(tmp_path, monkeypatch) -> None:
+    # sim_targ_train.png: the mean hard-pair margins, then S Stats over the S Hist. strip filling its point stats
+    # in, then Q Hist. closing the figure (the bottom panel carrying the epoch axis). S Hist. bins the cosine's
+    # [-1, 1] (S Stats' own axis), Q Hist. the targets' [0, 1] -- drawn for a hard 0/1 target like any other
     n, bins = 4, 8
-    keys = ["grad_norm_model", "delta_norm_model", "grad_sum_sim", "sim_hist", "targ_hist", "p_hist",
-            "sim_margin_i2t", "sim_margin_t2i", "sim_margin", "loss_train", "loss_raw_train", "lr",
+    keys = ["grad_sum_sim", "sim_hist", "targ_hist", "p_hist", "sim_margin_i2t", "sim_margin_t2i", "sim_margin",
             *(f"sim_{stat}" for stat in ("min", "max", "mean", "median"))]
     hard = [[0.9] + [0.0] * (bins - 2) + [0.1]] * n  # an sp / mp indicator: the two end bins
-    data_epoch = {**{key: [] for key in keys}, "loss_train": [1.0] * n, "lr": [1e-4] * n,
-                  "sim_margin": [[0.1]] * n, "sim_hist": [[1.0 / bins] * bins] * n, "targ_hist": hard,
+    data_epoch = {**{key: [] for key in keys}, "sim_margin": [[0.1]] * n, "sim_hist": [[1.0 / bins] * bins] * n,
+                  "targ_hist": hard,
                   **{f"sim_{stat}": [val] * n for stat, val in (("min", -0.4), ("max", 0.9), ("mean", 0.1), ("median", 0.0))}}
     seen = {}
 
     def finish(fig, axes, axes_hist, *args, **kwargs):
         seen["panels"] = [(ax.get_ylabel(), ax.get_ylim(), ax in axes_hist) for ax in axes]
         seen["mesh"] = {ax.get_ylabel(): ax.collections[0].get_array().reshape(bins, n) for ax in axes_hist}
+        seen["xlabel"] = axes[-1].get_xlabel()
         plt.close(fig)
 
     monkeypatch.setattr(report, "_finish_curves", finish)
-    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
-                               {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
-
-    assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-4:] == [
-        ("S Stats", False), ("S Hist.", True), ("Q Hist.", True), ("η", False)]
-    assert seen["panels"][-5][0] == r"$\overline{\Delta S}_{\kappa}$"
+    x = list(range(n))
+    plot = lambda data: report.plot_sim_targ_curves(data, x, lambda cols: report._train_hist_columns(cols, x), {}, tmp_path,
+                                                    10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150, {"kappas": [0.0], "multimodal": False},
+                                                    plot_title="t", output_filename="x.png")
+    plot(data_epoch)
+    assert [(label, is_hist) for label, _, is_hist in seen["panels"]] == [
+        (r"$\overline{\Delta S}_{\kappa}$", False), ("S Stats", False), ("S Hist.", True), ("Q Hist.", True)]
+    assert seen["xlabel"] == "Epochs"
     ylims = {label: ylim for label, ylim, _ in seen["panels"]}
     assert ylims["S Stats"] == ylims["S Hist."] == (-1.0, 1.0) and ylims["Q Hist."] == (0.0, 1.0)
     assert seen["mesh"]["Q Hist."][:, 0].tolist() == hard[0]  # bottom bin to top, one column per batch
 
     # a BCE-family loss records the predicted pair probabilities too: P Hist., directly above the Q Hist. it
-    # reads against, on the same [0, 1] axis
+    # reads against, on the same [0, 1] axis; the sim-grad sums (sim_grad_sums) open the figure
     data_epoch["p_hist"] = [[1.0 / bins] * bins] * n
-    report.plot_general_curves(data_epoch, {}, list(range(n)), [], tmp_path, False, 10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150,
-                               {"kappas": [0.0], "multimodal": False}, plot_title="t", output_filename="x.png")
-    assert [(label, is_hist) for label, _, is_hist in seen["panels"]][-5:] == [
-        ("S Stats", False), ("S Hist.", True), ("P Hist.", True), ("Q Hist.", True), ("η", False)]
+    data_epoch["grad_sum_sim"] = [0.0] * n
+    plot(data_epoch)
+    assert [(label, is_hist) for label, _, is_hist in seen["panels"]] == [
+        (r"$\sum \nabla_S \mathcal{L}$", False), (r"$\overline{\Delta S}_{\kappa}$", False), ("S Stats", False),
+        ("S Hist.", True), ("P Hist.", True), ("Q Hist.", True)]
     assert {label: ylim for label, ylim, _ in seen["panels"]}["P Hist."] == (0.0, 1.0)
+
+    # a trial recording none of the series (the diagnostics off) gets no figure at all
+    seen.clear()
+    plot({key: [] for key in keys})
+    assert not seen and not (tmp_path / "x.png").exists()
+
+
+def test_sim_targ_val_figure_centres_each_eval_in_its_own_column(tmp_path, monkeypatch) -> None:
+    # sim_targ_val_<partition>.png: the evals' chunk-averaged stats (an InfoNCE trial's: no p_hist key at all), one
+    # point per eval with a marker, the strips one column per eval spanning the midpoints to its neighbours -- the
+    # end columns half-width, so the strip runs from the base eval's epoch 0 to the final eval's epoch like the train
+    # strips; an unrecorded partition (None at every eval) is the caller's to skip
+    n, bins = 3, 4
+    x = [0.0, 1.0, 2.0]
+    data = {"grad_sum_sim": [0.0] * n, "sim_margin_i2t": [[0.1]] * n, "sim_margin_t2i": [[0.1]] * n, "sim_margin": [[0.1]] * n,
+            "sim_hist": [[0.25] * bins] * n, "targ_hist": [[0.5, 0.0, 0.0, 0.5]] * n,
+            **{f"{prefix}_{stat}": [0.1] * n for prefix in ("sim", "targ") for stat in ("min", "max", "mean", "median")}}
+    seen = {}
+
+    def finish(fig, axes, axes_hist, *args, **kwargs):
+        seen["panels"] = [(ax.get_ylabel(), ax in axes_hist) for ax in axes]
+        seen["edges"] = {ax.get_ylabel(): ax.collections[0].get_coordinates()[0, :, 0].tolist() for ax in axes_hist}
+        seen["markers"] = {ax.get_ylabel(): {line.get_marker() for line in ax.lines} for ax in axes if ax not in axes_hist}
+        plt.close(fig)
+
+    monkeypatch.setattr(report, "_finish_curves", finish)
+    report.plot_sim_targ_curves(data, x, lambda cols: report._eval_hist_columns(cols, x), dict(marker="o", markersize=3), tmp_path,
+                                10, 8, 8, 1.0, 8.0, 1.0, 1.0, 150, {"kappas": [0.0], "multimodal": False},
+                                plot_title="t", output_filename="x.png")
+
+    assert seen["panels"] == [(r"$\sum \nabla_S \mathcal{L}$", False), (r"$\overline{\Delta S}_{\kappa}$", False),
+                              ("S Stats", False), ("S Hist.", True), ("Q Hist.", True)]
+    assert seen["edges"]["S Hist."] == seen["edges"]["Q Hist."] == [0.0, 0.5, 1.5, 2.0]
+    assert seen["markers"]["S Stats"] == {"o"}
+    assert "o" in seen["markers"][r"$\overline{\Delta S}_{\kappa}$"]  # the zero reference line carries none
+
+
+def test_eval_hist_columns_fold_past_the_threshold_keeping_the_final_eval() -> None:
+    # past the column budget, evals fold into power-of-two groups like the train strips' batches, but the trailing
+    # partial group -- the final eval's -- is kept as its own (narrower) column rather than dropped
+    n = report.P_HEATMAP_HORIZONTAL_THRESHOLD + 3  # odd: a lone final eval past the pairs
+    cols = [[float(i)] * 3 for i in range(n)]
+    x = list(range(n))
+    grid, edges = report._eval_hist_columns(cols, x)
+    assert grid.shape == (n // 2 + 1, 3)
+    assert grid[0].tolist() == [0.5] * 3 and grid[-1].tolist() == [float(n - 1)] * 3  # pairs, then the lone final eval
+    assert len(edges) == len(grid) + 1
+    assert edges[0] == 0.0 and edges[1] == 1.5 and edges[-2] == n - 1.5 and edges[-1] == n - 1
 
 
 def test_scalar_figures_materialize_only_where_their_series_are_recorded(tmp_path, monkeypatch) -> None:

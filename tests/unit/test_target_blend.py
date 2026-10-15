@@ -84,7 +84,7 @@ def _forward(crit, seed=0, B=24, K=6, D=8, toy=None):
     toy = (toy or Toy()).train()
     h = Harness()
     h.model, h.crit = toy, crit
-    loss, loss_raw, _, _, _, y = h._loss_full_batch(img, txt, class_encs_b, targ_data_b)
+    loss, loss_raw, _, _, _, y = h._loss_full_batch(img, txt, class_encs_b, targ_data_b, True)
     return loss, loss_raw, y, (img, txt, toy.logit_scale, toy.logit_bias)
 
 

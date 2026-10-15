@@ -102,7 +102,7 @@ def _data(B, K, D, seed=0):
 def _run_full(crit, img, txt, class_encs_b, train=True):
     toy = Toy().train(train)
     h = _make_harness(toy, crit)
-    loss, loss_raw, logits, sims, targs, _ = h._loss_full_batch(img, txt, class_encs_b, [None] * img.size(0))
+    loss, loss_raw, logits, sims, targs, _ = h._loss_full_batch(img, txt, class_encs_b, [None] * img.size(0), train)
     return toy, loss, loss_raw, logits, sims, targs
 
 
@@ -277,7 +277,7 @@ def test_bce_centering_is_not_read_under_infonce(center, focal_gamma):
         txt = F.normalize(torch.randn(B, 8, generator=g), dim=1).requires_grad_(True)
         class_encs_b = torch.randint(0, K, (B,), generator=g)
         h = _make_harness(Toy().train(), crit)
-        loss, *_ = h._loss_full_batch(img, txt, class_encs_b, [None] * B)
+        loss, *_ = h._loss_full_batch(img, txt, class_encs_b, [None] * B, True)
         loss.backward()
         return loss.detach(), img.grad, txt.grad, h.model.logit_scale.grad
 

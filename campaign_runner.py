@@ -1351,7 +1351,7 @@ def main() -> None:
             return
     print(f"campaign_queue: drained -- {len(runs)} campaign(s) run", flush=True)
     print(f"campaign_queue: {datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
-    print(f"campaign_queue: total time {timedelta(seconds=int(time.time() - time_start))}", flush=True)
+    print(f"campaign_queue: total time {timedelta(seconds=int(time.time() - time_start))}\n", flush=True)
 
 
 if __name__ == "__main__":

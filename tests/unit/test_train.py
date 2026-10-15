@@ -264,29 +264,23 @@ def test_update_campaign_time_stamps_phase_and_campaign_last_seen(tmp_path, monk
     assert meta_phase["datetime_last_seen"] == meta_camp["datetime_last_seen"] != "2020-01-01T00:00:00Z"
 
 
-def test_update_eval_appends_none_leaves_from_base_eval(tmp_path) -> None:
-    # base eval computes no loss -> loss_raw/sim/targ carry None leaves; update_eval must append
-    # them as placeholders (not crash on a bare None) so eval curves stay index-aligned across evals
+def test_update_eval_appends_none_leaves_for_a_partition_without_a_loss_chunk(tmp_path) -> None:
+    # a partition with fewer samples than one loss chunk (the global batch) reads None in loss_raw and sim_targ at
+    # every eval (EvaluationPipeline.loss_metrics); update_eval must append the bare None as a placeholder (not
+    # crash on it) so the eval curves stay index-aligned, while a partition with chunks nests its stats' series
     data = TrialData(tmp_path)
-    data.eval_metrics = {
-        "scores": {"comp": {"map": {"all": 0.5}}},
-        "loss_raw": {"id": None},
-        "sim": {"min": None, "max": None, "median": None, "mean": None},
-        "targ": {"min": None, "max": None, "median": None, "mean": None},
-    }
+    stats = lambda mean: {"sim_mean": mean, "sim_hist": [0.5, 0.5], "sim_margin": [0.1]}
+    data.eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None},
+                         "sim_targ": {"id": stats(0.09), "ood": None, "comb": stats(0.09)}}
     data.update_eval(0)
-    data.eval_metrics = {
-        "scores": {"comp": {"map": {"all": 0.6}}},
-        "loss_raw": {"id": 0.7},
-        "sim": {"min": -0.02, "max": 0.16, "median": 0.09, "mean": 0.09},
-        "targ": {"min": -1.0, "max": 1.0, "median": -1.0, "mean": -0.99},
-    }
+    data.eval_metrics = {"scores": {"comp": {"map": {"all": 0.6}}}, "loss_raw": {"id": 0.6, "ood": None},
+                         "sim_targ": {"id": stats(0.11), "ood": None, "comb": stats(0.11)}}
     data.update_eval(1000)
 
     assert data.data_eval["n_samps_seen"] == [0, 1000]
-    assert data.data_eval["loss_raw"]["id"] == [None, 0.7]
-    assert data.data_eval["sim"]["mean"] == [None, 0.09]
-    assert data.data_eval["targ"]["min"] == [None, -1.0]
+    assert data.data_eval["loss_raw"] == {"id": [0.7, 0.6], "ood": [None, None]}
+    assert data.data_eval["sim_targ"]["id"] == {"sim_mean": [0.09, 0.11], "sim_hist": [[0.5, 0.5]] * 2, "sim_margin": [[0.1]] * 2}
+    assert data.data_eval["sim_targ"]["ood"] == [None, None]
 
 
 def _cfg_eval_groups(**toggles):
@@ -348,19 +342,24 @@ def test_save_base_eval_cache_writes_per_combo_file(tmp_path, monkeypatch) -> No
     dpath_base = tmp_path / "trial" / "eval" / "all" / "0" / "viz" / "cache"
     dpath_base.mkdir(parents=True)
     np.savez(dpath_base / "projections.npz", pca_id=np.arange(3))
-    eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None}}
+    eval_metrics = {"scores": {"comp": {"map": {"all": 0.5}}}, "loss_raw": {"id": 0.7, "ood": None},
+                    "sim_targ": {"id": {"sim_mean": 0.1}, "ood": None, "comb": {"sim_mean": 0.1}}}
+    loss_inputs = {"id": {"embs_img": torch.zeros(2, 3), "embs_txt": torch.ones(2, 3), "class_encs": torch.tensor([0, 1]),
+                          "targ_data": [{"cid": "a"}, {"cid": "b"}]}}
 
-    ArtifactManager.save_base_eval_cache(None, eval_metrics)
+    ArtifactManager.save_base_eval_cache(None, eval_metrics, loss_inputs)
 
     entry = load_pickle(dpath_cache / "combo.pkl")
-    assert entry["metrics"] == {"scores": {"comp": {"map": {"all": "0.5000"}}}}  # loss_raw stripped
+    assert entry["metrics"] == {"scores": {"comp": {"map": {"all": "0.5000"}}}}  # loss_raw / sim_targ stripped
+    assert list(entry["loss_inputs"]) == ["id"] and entry["loss_inputs"]["id"]["targ_data"] == [{"cid": "a"}, {"cid": "b"}]
+    assert torch.equal(entry["loss_inputs"]["id"]["embs_txt"], torch.ones(2, 3))  # the loss inputs, as given
     assert list(entry["projections"]) == ["pca_id"]
     assert entry["embs"] is None
 
     monkeypatch.setattr(ArtifactManager, "base_eval_cache_fpath", lambda cfg: dpath_cache / "combo2.pkl")
     monkeypatch.setattr(ArtifactManager, "dpath_trial", tmp_path / "trial2")  # no base npzs -> non-viz trial
 
-    ArtifactManager.save_base_eval_cache(None, eval_metrics)
+    ArtifactManager.save_base_eval_cache(None, eval_metrics, loss_inputs)
 
     assert sorted(p.name for p in dpath_cache.iterdir()) == ["combo.pkl", "combo2.pkl"]
     assert load_pickle(dpath_cache / "combo2.pkl")["projections"] is None
@@ -602,9 +601,9 @@ def test_deliver_base_model_fills_the_trial_dir_with_untrained_weights(tmp_path,
     assert metadata["complete"] is False  # the runner flips it once the subprocess exits cleanly
     assert metadata["progress"] == {"epoch": 0, "n_epochs": 5, "n_samps_seen": 0}
     assert all(not series for series in load_pickle(dpath_trial / "data_trial.pkl")["epoch"].values())
-    # the train-side figure is rendered blank off that empty data; the rest record no series, so -- as
+    # the optim figure is rendered blank off that empty data (its loss and LR panels always draw); the rest record no series, so -- as
     # for any trial not recording them -- they get no figure
-    assert [p.name for p in (dpath_trial / "learning_curves").iterdir()] == ["general.png"]
+    assert [p.name for p in (dpath_trial / "learning_curves").iterdir()] == ["optim.png"]
 
 
 def test_save_model_writes_unwrapped_state_dict(tmp_path, monkeypatch) -> None:

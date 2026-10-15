@@ -1,5 +1,6 @@
 import torch
 from torch.amp import autocast
+import numpy as np
 import torch.distributed as dist
 from tqdm import tqdm
 from typing import Tuple, Any, List, Callable, Dict, Optional
@@ -173,7 +174,7 @@ class PartitionEvaluationPipeline:
         self,
         modelw: Any,
         loss_flag: bool,
-    ) -> Tuple[Dict[str, Any], Optional[float], List[Dict[str, float]]]:
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         
         modelw.model.eval()
 
@@ -223,28 +224,20 @@ class PartitionEvaluationPipeline:
         class_encs_img_all = gather_variable_rows(class_encs_img_local)
         cids_img = gather_object_list(cids_img)
 
-        loss_avg = None
-        chunk_stats = []
+        loss_inputs = None
         if loss_flag:
             if embs_txts:
                 embs_txt_local = torch.cat(embs_txts, dim=0).to(modelw.device)
             else:
                 embs_txt_local = torch.empty((0, modelw.embed_dim), device=modelw.device)
 
-            embs_txt_all = gather_variable_rows(embs_txt_local)
-            targ_data_all = gather_object_list(targ_data_loss)
-
-            # global negative pool: per-rank eval batch x world size (mirrors the global training batch)
-            B = self.subbatch_size * dist.get_world_size()
-            if self.mixed_prec:
-                with autocast(device_type=modelw.device.type, dtype=torch.bfloat16):
-                    loss_avg, chunk_stats = modelw.eval_loss_chunked(
-                        embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
-                    )
-            else:
-                loss_avg, chunk_stats = modelw.eval_loss_chunked(
-                    embs_img_all, embs_txt_all, class_encs_img_all, targ_data_all, B,
-                )
+            # the partition's gathered loss inputs (chunked_loss); a base eval's go to the base-eval cache
+            loss_inputs = {
+                "embs_img": embs_img_all,
+                "embs_txt": gather_variable_rows(embs_txt_local),
+                "class_encs": class_encs_img_all,
+                "targ_data": gather_object_list(targ_data_loss),
+            }
 
         modelw.model.train()
 
@@ -257,7 +250,20 @@ class PartitionEvaluationPipeline:
             "cids_text": list(self.index_text_cids),
         }
 
-        return eval_bundle, loss_avg, chunk_stats
+        return eval_bundle, loss_inputs
+
+    @torch.no_grad()
+    def chunked_loss(self, modelw, loss_inputs):
+        """(mean raw loss, per-chunk stats) over the partition's gathered loss inputs (collect_eval_bundle's, or the
+        base-eval cache's): VLMWrapper.eval_loss_chunked over the global batch size (per-rank eval batch x world
+        size, mirroring the global training batch) as the negative pool, under autocast where the trial trains
+        under it. Collective-free, so a lone rank can run it (a cached base eval's, on rank 0)."""
+        B = self.subbatch_size * dist.get_world_size()
+        args = (loss_inputs["embs_img"], loss_inputs["embs_txt"], loss_inputs["class_encs"], loss_inputs["targ_data"], B)
+        if self.mixed_prec:
+            with autocast(device_type=modelw.device.type, dtype=torch.bfloat16):
+                return modelw.eval_loss_chunked(*args)
+        return modelw.eval_loss_chunked(*args)
 
     def _build_metric_views(
         self,
@@ -669,6 +675,13 @@ def compute_map_cross_modal(
     return scores_cross_modal
 
 
+def _mean_chunk_stats(chunks):
+    """The eval chunk stats averaged over `chunks` (VLMWrapper.eval_loss_chunked's dicts) entry by entry -- a scalar's
+    mean, a histogram's / margin list's bin-wise mean -- or None over no chunk."""
+    if not chunks:
+        return None
+    return {key: np.mean([chunk[key] for chunk in chunks], axis=0).tolist() for key in chunks[0]}
+
 class EvaluationPipeline:
 
     def __init__(
@@ -706,44 +719,54 @@ class EvaluationPipeline:
             for partition in self.partitions
         }
 
+    def loss_metrics(self, modelw, loss_inputs):
+        """The loss-side eval metrics over each partition's gathered loss inputs (collect_eval_bundle's at an eval;
+        the base-eval cache's at a cached base eval, this trial's own loss config reading the cached base
+        embeddings): loss_raw, the mean raw loss per partition, and sim_targ, the chunk stats
+        (VLMWrapper.eval_loss_chunked) averaged over the partition's full chunks per partition and, as comb, over
+        every partition's chunks together -- ID and OOD never share a chunk, and the chunks being equal-size that
+        pools every evaluated pair, each partition weighing in by its chunk count (its sample count, less a
+        sub-chunk remainder). A partition without one full chunk (fewer samples than the global batch) reads
+        None in both."""
+        modelw.model.eval()
+        loss_raw, chunk_stats = {}, {}
+        for partition, inputs in loss_inputs.items():
+            loss_raw[partition], chunk_stats[partition] = self.partition_pipes[partition].chunked_loss(modelw, inputs)
+        modelw.model.train()
+        sim_targ = {partition: _mean_chunk_stats(chunks) for partition, chunks in chunk_stats.items()}
+        sim_targ["comb"] = _mean_chunk_stats([chunk for chunks in chunk_stats.values() for chunk in chunks])
+        return {"loss_raw": loss_raw, "sim_targ": sim_targ}
+
     def evaluate(
         self,
         modelw: Any,
         loss_flag: bool = True,
         collect_eval_bundles: bool = False,
-    ) -> Tuple[Dict[str, Any], float, Optional[Dict[str, Dict[str, Any]]]]:
+        collect_loss_inputs: bool = False,
+    ) -> Tuple[Dict[str, Any], float, Optional[Dict[str, Dict[str, Any]]], Optional[Dict[str, Dict[str, Any]]]]:
 
         timer = Timer()
         timer.start()
 
         eval_metrics: Dict[str, Any] = {
             "scores": {group_key: {} for group_key in self.eval_groups},
-            "loss_raw": {},
-            "sim": {stat: None for stat in ("min", "max", "median", "mean")},
-            "targ": {stat: None for stat in ("min", "max", "median", "mean")},
         }
         accum = {
             group_key: {"all": [], "i2t": [], "i2i": [], "t2i": [], "acc_i2t": []}
             for group_key in self.eval_groups
         }
         eval_bundles: Dict[str, Dict[str, Any]] = {}
-        partition_losses: Dict[str, Optional[float]] = {}
-        chunk_stats_all: List[Dict[str, float]] = []
+        loss_inputs: Dict[str, Optional[Dict[str, Any]]] = {}
 
         for partition in self.partitions:
-            pipe = self.partition_pipes[partition]
-            eval_bundle_partition, loss_avg_partition, chunk_stats_partition = pipe.collect_eval_bundle(modelw, loss_flag)
-            eval_bundles[partition] = eval_bundle_partition
-            partition_losses[partition] = loss_avg_partition
-            chunk_stats_all.extend(chunk_stats_partition)
+            eval_bundles[partition], loss_inputs[partition] = self.partition_pipes[partition].collect_eval_bundle(modelw, loss_flag)
 
-        # per-chunk sim/targ stats averaged across every full chunk over all partitions
-        if chunk_stats_all:
-            for prefix in ("sim", "targ"):
-                eval_metrics[prefix] = {
-                    stat: sum(cs[f"{prefix}_{stat}"] for cs in chunk_stats_all) / len(chunk_stats_all)
-                    for stat in ("min", "max", "median", "mean")
-                }
+        # the loss-side metrics off the partitions' loss inputs, or None leaves where no loss pass ran (test.py's evals)
+        if loss_flag:
+            eval_metrics.update(self.loss_metrics(modelw, loss_inputs))
+        else:
+            eval_metrics["loss_raw"] = {partition: None for partition in self.partitions}
+            eval_metrics["sim_targ"] = {partition: None for partition in (*self.partitions, "comb")}
 
         # the joint gallery is built (and retrieved against) only when a group in play reads it
         if "joint" in self.galleries:
@@ -768,7 +791,6 @@ class EvaluationPipeline:
         for partition in self.partitions:
             pipe = self.partition_pipes[partition]
             eval_bundle_partition = eval_bundles[partition]
-            loss_avg_partition = partition_losses[partition]
 
             nativegall_scores = pipe.compute_map_scores(
                 embs_img_q=eval_bundle_partition["embs_img"],
@@ -818,10 +840,6 @@ class EvaluationPipeline:
                 a["t2i"].append(scores[grp]["map"]["t2i"])
                 a["acc_i2t"].append(scores[grp]["acc"]["i2t"])
                 eval_metrics["scores"][group_key][partition] = scores[grp]
-            if loss_flag and loss_avg_partition is not None:
-                eval_metrics["loss_raw"][partition] = loss_avg_partition
-            else:
-                eval_metrics["loss_raw"][partition] = None
 
         for group_key, a in accum.items():
             eval_metrics["scores"][group_key]["comp"] = {
@@ -838,7 +856,8 @@ class EvaluationPipeline:
         timer.stop()
 
         eval_bundles_out = eval_bundles if collect_eval_bundles else None
-        return eval_metrics, timer.get_elapsed_time(), eval_bundles_out
+        loss_inputs_out = loss_inputs if collect_loss_inputs else None
+        return eval_metrics, timer.get_elapsed_time(), eval_bundles_out, loss_inputs_out
 
 def build_class_enc_to_train_nshot_bucket(
     dataset: str,

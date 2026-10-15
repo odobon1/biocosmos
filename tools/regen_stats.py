@@ -10,7 +10,7 @@ _dataset/<dataset>/_arm/<arm>/_coord/<coord>/coord_summary/{scores_agg.json, sco
 chkpt_means.png} (+ secondary/{scores_agg,scores_trials,chkpt_means}_<group>.*) and coord_metadata.json's sel_chkpt, and re-renders every
 cross-coord level: _dataset/<dataset>/_arm/<arm>/arm_summary/performance/
 ({scores,convergence}.png + secondary/{scores,convergence}_<group>.png; in screen/, a two-param sweep's
-{scores_hpo2d}.png too) and
+{scores-hpo2d}.png too) and
 _dataset/<dataset>/dataset_summary/performance/ ({scores,convergence}.png + secondary/{scores,convergence}_<group>.png) and
 phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx (+ secondary/<campaign>_<phase>-<kind>_<group>.xlsx; arms/ only in refine/).
 (Native, the primary eval group, takes the plain name; every other group sits under secondary/.) Each
@@ -67,7 +67,6 @@ def regen_campaign(campaign, cfg_stats):
                     update_arm_metrics(dataset, arm, groups, cfg_stats)
                 update_dataset_metrics(dataset, groups, cfg_stats)
         update_phase_metrics(groups, cfg_stats)
-
 
 def main():
     args = sys.argv[1:]

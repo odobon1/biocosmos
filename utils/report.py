@@ -3,7 +3,7 @@ Campaign reporting/presentation: per-coord metric-stats aggregation + checkpoint
 (_dataset/<dataset>/_arm/<arm>/_coord/<coord>/coord_summary/), the per-eval-group composite-score summary
 tables + convergence plots at every cross-coord level -- per arm (_arm/<arm>/arm_summary/performance/), per dataset
 (_dataset/<dataset>/dataset_summary/performance/, each arm at its best coord) -- each
-{scores,convergence}.png + secondary/{scores,convergence}_<group>.png (a screening arm's also scores_hpo2d.png: its
+{scores,convergence}.png + secondary/{scores,convergence}_<group>.png (a screening arm's also scores-hpo2d.png: its
 coords' composite mAP All gridded over the two hpo_coords params), beside each level's logit-scale tables
 ({scale,logscale}/table.png one dir up over the 1-loss rows, {scale1,scale2,logscale1,logscale2}/table.png over the
 rows under separate logit scalars: the trials' scale at its init / selected / best / final checkpoints), the phase
@@ -170,6 +170,34 @@ def _fold_hist_columns(cols, threshold):
     n_full = len(cols) // stride
     grid = np.array([cols[i * stride:(i + 1) * stride].mean(axis=0) for i in range(n_full)])
     return grid, stride
+
+
+def _train_hist_columns(cols, x):
+    """A train strip's (columns, x edges): the per-batch histograms folded to at most P_HEATMAP_HORIZONTAL_THRESHOLD
+    columns (_fold_hist_columns), column i spanning batches [i*stride, (i+1)*stride), so its edges sit at those
+    batches' x. The last edge lands one past the final batch only when the groups tile the run exactly; there it
+    extends by one mean batch step."""
+    grid, stride = _fold_hist_columns(cols, P_HEATMAP_HORIZONTAL_THRESHOLD)
+    step = (x[-1] - x[0]) / max(1, len(x) - 1)
+    x_edges = np.array([x[i] if i < len(x) else x[-1] + step for i in (c * stride for c in range(len(grid) + 1))])
+    return grid, x_edges
+
+
+def _eval_hist_columns(cols, x):
+    """A val strip's (columns, x edges): one column per eval, spanning the midpoints to its neighbours -- the evals'
+    [first, last] epoch span tiled with every eval centred in its own column and the two end columns half-width (the
+    base eval's starting at epoch 0, the final eval's ending at the final epoch), so the strip spans the same epochs
+    as the train strips with no eval dropped or merged. Past P_HEATMAP_HORIZONTAL_THRESHOLD evals, consecutive evals
+    fold into power-of-two groups as the train strips do, each column the bin-wise mean over its group and spanning
+    its evals; the trailing partial group is kept (it holds the final eval) rather than dropped."""
+    cols = np.asarray(cols, dtype=float)
+    x = np.asarray(x, dtype=float)
+    stride = 1
+    while -(-len(cols) // stride) > P_HEATMAP_HORIZONTAL_THRESHOLD:  # ceil(n / stride) columns
+        stride *= 2
+    grid = np.array([cols[i:i + stride].mean(axis=0) for i in range(0, len(cols), stride)])
+    edges = np.concatenate(([x[0]], 0.5 * (x[:-1] + x[1:]), [x[-1]]))  # per eval, the midpoints to its neighbours
+    return grid, edges[[*range(0, len(cols), stride), len(cols)]]
 
 
 def _band_label(spread_type):
@@ -900,8 +928,8 @@ def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset,
                                 dpath / name / "table.png", False, False, killed_rows, cfg_stats.dpi)
 
 def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_groups, subject, cfg_stats):
-    """Render the arm's coords' composite mAP All on `dataset` as one 2-D grid per eval group -- dpath_stats/scores_hpo2d.png
-    for native, dpath_stats/secondary/scores_hpo2d_<group>.png for the rest -- over the two params hpo_coords sweeps:
+    """Render the arm's coords' composite mAP All on `dataset` as one 2-D grid per eval group -- dpath_stats/scores-hpo2d.png
+    for native, dpath_stats/secondary/scores-hpo2d_<group>.png for the rest -- over the two params hpo_coords sweeps:
     the earlier-declared down the rows, the later across the columns (the coord side of the coords' overrides.json,
     whose keys keep the camp yaml's order; the corner cell names the two by their aliases, CFG_PARAM_ALIASES -- read
     live, a display label -- or by the key itself where it has none), each axis's values in first-seen order along `coords` (the matrix's: the
@@ -938,7 +966,7 @@ def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_grou
         means = {(r, c): mean for c, (col_means, _) in _col_styles(grid, False, 1).items() for r, mean in col_means.items()}
         top = max(means.values(), default=None)
         winners = {rc for rc, mean in means.items() if cfg_stats.bold_high and mean == top}
-        fpath = group_path(dpath_stats, group_key, "scores_hpo2d", ".png")
+        fpath = group_path(dpath_stats, group_key, "scores-hpo2d", ".png")
         fpath.parent.mkdir(parents=True, exist_ok=True)
         _draw_table(grid, 1, f"Composite mAP ({group_name}; {_agg_label(cfg_stats.spread_type)})\n{subject}", fpath, means,
                     winners, killed, cfg_stats.heatmap, cfg_stats.dpi)
@@ -950,7 +978,7 @@ def update_arm_metrics(dataset, arm, eval_groups, cfg_stats):
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
     completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
     'mAP (<group>; mean ± <SPREAD>)' / <arm> / <dataset>, a line each -- in the screening phase the coords' composite mAP All gridded over
-    the two hpo_coords params as well, performance/scores_hpo2d.png (+ secondary/, _render_hpo2d_tables) -- and, over
+    the two hpo_coords params as well, performance/scores-hpo2d.png (+ secondary/, _render_hpo2d_tables) -- and, over
     the same rows, the logit-scale tables
     arm_summary/{scale,logscale}/table.png (_render_scale_tables). An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at every completion of a trial of the arm on this dataset (train.py) --
@@ -991,7 +1019,7 @@ def update_arm_metrics(dataset, arm, eval_groups, cfg_stats):
 def update_best_coord(dataset, arm):
     """Mirror the learning curves and selected evals of `arm`'s best coord on `dataset` to
     _dataset/<dataset>/_arm/<arm>/arm_summary/best_coord/<n>/{learning_curves,eval/{best,sel}}/ -- every trial of that
-    coord, its learning_curves/ ({general,scale,logscale,KL,scores}.png + secondary/scores_<group>.png) and
+    coord, its learning_curves/ ({optim,sim_targ_train,sim_targ_val_{id,ood,comb},scale,logscale,KL,scores}.png + secondary/scores_<group>.png) and
     eval/{best,sel}/ dirs copied whole -- so the arm's answer reads off one dir without first working out which coord won.
 
     Best is the coord with the highest across-trial mean Native mAP composite All at its selected
@@ -1061,7 +1089,7 @@ def update_test_best_coord(dataset, arm):
 _STRIP_FIGURES = (*((key, req_key, sym, label, "tab:purple", False, name, heading)
                     for key, name, heading, label, req_key, sym in _SCALE_PARAMS),
                   ("sim_grad_entropy_pair_actual", None, None, r"$\tilde{H}_{S,\text{pair}}$ (actual)", "red", True,
-                   "sim_grad_entropy_pair_actual", "Similarity-Gradient Entropy (pair, actual)"))
+                   "sim_grad_ent", "Similarity-Gradient Entropy (pair, actual)"))
 
 def _req_labels(reqs, sym):
     """{stat: legend label} for a scale panel's target-implied bound trio (`reqs`: {stat: values}),
@@ -1308,10 +1336,10 @@ def update_scale_convergence(dataset, arm, cfg_stats):
 def update_coord_strips(dataset, arm, cfg_stats, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
                       subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
     """Render `arm`'s strip figures for `dataset` --
-    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale,sim_grad_entropy_pair_actual}.png:
+    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale,sim_grad_ent}.png:
     one panel of every planned coord of the arm (the phase's matrix) with a completed trial there, stacked
     into one figure per series (_STRIP_FIGURES: scale, the alpha the logits carry; logscale, the log-scale
-    parameter the model learns; sim_grad_entropy_pair_actual, the pair-level entropy of the similarity
+    parameter the model learns; sim_grad_ent, the pair-level entropy of the similarity
     gradient the towers received -- the sim_grad_entropy figure's top panel), so an arm's coords read
     against each other on one epoch axis instead of one figure apiece. trials/<n>/ draws trial n per coord
     (a scale over its target-implied bound trio), agg/ the series alone -- no trio -- as the mean over the
@@ -2039,13 +2067,15 @@ def plot_metrics(
     x_train = [0.0, *(v / epoch_size for v in data_epoch["n_samps_seen"][:-1])]
 
     # under learning_curves/: the five eval-score panels go to scores.png for the native group and to
-    # secondary/scores_<group>.png for each other eval group (a trial with no eval data -- the trainval
-    # phase -- gets none), and the rest, the same for every group,
-    # to general.png (loss, gradients, batch stats, LR), scale.png / logscale.png (the logit scale, as
+    # secondary/scores_<group>.png for each other eval group, and the evals' similarity / target diagnostics
+    # to sim_targ_val_{id,ood,comb}.png (a trial with no eval data -- the trainval phase -- gets none of these),
+    # and the rest, the same for every group,
+    # to optim.png (loss, model gradient and step norms, LR), sim_targ_train.png (the train batches' similarity /
+    # target diagnostics: the sim-grad sums, hard-pair margins and S / P / Q panels), scale.png / logscale.png (the logit scale, as
     # the alpha the logits carry / as the log alpha parameter the model learns, over its InfoNCE
     # gradient decomposition), KL.png (the InfoNCE KL decomposition), sim_grad_entropy.png (the InfoNCE
     # similarity-gradient entropies), bias.png (the learnable logit biases) and unitless_loss_blend.png (a unitless
-    # loss blend's effective lambda) -- the last four only for a trial recording their series. Within a figure every panel is
+    # loss blend's effective lambda) -- every figure but optim.png only for a trial recording its series. Within a figure every panel is
     # the same height (in; height_panel_scores for the scores, height_panel_general for the rest), and
     # the figure is as tall as its panels plus the ~1.8 in its title and x label take -- so a panel is
     # the same size however many the figure holds.
@@ -2068,7 +2098,7 @@ def plot_metrics(
                 plot_title=f"{title_prefix} ({group_name})",
                 fpath_plot=group_path(dpath_trial / "learning_curves", group_key, "scores", ".png"),
             )
-    plot_general_curves(
+    plot_optim_curves(
         data_epoch,
         data_eval,
         x_train,
@@ -2083,10 +2113,53 @@ def plot_metrics(
         height_fixed,
         height_panel_general,
         dpi,
+        plot_title=title_prefix,
+        output_filename="learning_curves/optim.png",
+    )
+    plot_sim_targ_curves(
+        data_epoch,
+        x_train,
+        lambda cols: _train_hist_columns(cols, x_train),
+        {},
+        dpath_trial,
+        fontsize_axes,
+        fontsize_ticks,
+        fontsize_legend,
+        subplot_border_width,
+        fig_width,
+        height_fixed,
+        height_panel_general,
+        dpi,
         hpsm,
         plot_title=title_prefix,
-        output_filename="learning_curves/general.png",
+        output_filename="learning_curves/sim_targ_train.png",
     )
+    if has_eval:
+        # the evals' own, per partition and combined (EvaluationPipeline.loss_metrics' sim_targ): one point per
+        # eval, the base eval included, at its epoch, the strips one column per eval (_eval_hist_columns). A
+        # partition without one full loss chunk reads None at every eval (a list of them here) and gets no figure
+        labels = {"id": "ID Val", "ood": "OOD Val", "comb": "ID+OOD Val"}
+        for partition, stats in data_eval["sim_targ"].items():
+            if not isinstance(stats, dict):
+                continue
+            plot_sim_targ_curves(
+                stats,
+                x_eval,
+                lambda cols: _eval_hist_columns(cols, x_eval),
+                dict(marker="o", markersize=3),
+                dpath_trial,
+                fontsize_axes,
+                fontsize_ticks,
+                fontsize_legend,
+                subplot_border_width,
+                fig_width,
+                height_fixed,
+                height_panel_general,
+                dpi,
+                hpsm,
+                plot_title=f"{title_prefix} ({labels[partition]})",
+                output_filename=f"learning_curves/sim_targ_val_{partition}.png",
+            )
     for scale_key, prefix, sym, name in (("scale", "dscale", r"\alpha", "scale"),
                                          ("logit_scale", "dlogscale", r"\log \alpha", "logscale")):
         plot_scale_curves(
@@ -2273,7 +2346,7 @@ def plot_score_curves(
 
     _finish_curves(fig, [ax0, ax1, ax2, ax3, ax4], [], legend_handles, plot_title, fpath_plot, fontsize_legend, subplot_border_width, dpi)
 
-def plot_general_curves(
+def plot_optim_curves(
     data_epoch,
     data_eval,
     x_train,
@@ -2288,43 +2361,19 @@ def plot_general_curves(
     height_fixed,
     height_panel,
     dpi,
-    hpsm,
     plot_title,
     output_filename,
 ):
-    # a reporting.batch_diagnostics component that was off never recorded its series, and its panel(s)
-    # are omitted outright: model grad norm, ||delta theta||, sim-grad sums, the S / Q panels
+    # the optimizer's own view of the run, batch by batch: the loss (the evals' raw val losses overlaid), the
+    # whole-model gradient it was handed, the step it took and the step size. A reporting.batch_diagnostics
+    # component that was off never recorded its series, and its panel is omitted outright: model grad norm,
+    # ||delta theta||
     has_grad_norm = len(data_epoch["grad_norm_model"]) == len(x_train)
     has_delta_norm = len(data_epoch["delta_norm_model"]) == len(x_train)
-    has_grad_sum_sim = len(data_epoch["grad_sum_sim"]) == len(x_train)
-    has_sim_stats = len(data_epoch["sim_min"]) == len(x_train)
-    # the S Hist. strip, the similarities' per-batch distribution over [-1, 1], directly under the S Stats
-    # panel whose point stats it fills in, in that panel's teal
-    sim_panels = [("sim_hist", "S Hist.")] if len(data_epoch["sim_hist"]) == len(x_train) else []
-    # the Q Hist. strip, the blended targets' per-batch distribution over [0, 1] -- for every target, a lone
-    # sp / mp one included (a 0/1 indicator: its two end bins, the strip reading the batch's positive share)
-    targ_panels = [("targ_hist", "Q Hist.")] if len(data_epoch["targ_hist"]) == len(x_train) else []
-    # the P Hist. strip (sigmoid(logits), the predicted pair probabilities) sits between S Hist. and Q Hist., on
-    # Q's [0, 1] axis so predictions and targets read against each other. Recorded only for a BCE-family loss,
-    # so under InfoNCE there is no series and no panel.
-    p_panels = [("p_hist", "P Hist.")] if len(data_epoch["p_hist"]) == len(x_train) else []
-    # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above the S panels,
-    # each drawing one line per reporting.learning_curves.hpsm.kappas value: with
-    # hpsm.multimodal the I2T and T2I directions and then their mean, else the mean alone
-    hpsm_kappas = hpsm["kappas"]
-    margin_dirs = [("_i2t", "I2T "), ("_t2i", "T2I ")] if hpsm["multimodal"] else []
-    margin_panels = [
-        (f"sim_margin{suffix}", rf"{prefix}$\overline{{\Delta S}}_{{\kappa}}$")
-        for suffix, prefix in (*margin_dirs, ("", ""))
-        if len(data_epoch[f"sim_margin{suffix}"]) == len(x_train)
-    ]
 
     # every panel is the loss panel's height, one grid row each: the loss and LR panels, which are
-    # always drawn, plus the optional ones above
-    n_panels = (
-        2 + has_grad_norm + has_delta_norm + has_grad_sum_sim + has_sim_stats + len(sim_panels) + len(p_panels)
-        + len(targ_panels) + len(margin_panels)
-    )
+    # always drawn, plus the optional ones between them
+    n_panels = 2 + has_grad_norm + has_delta_norm
     fig = plt.figure(figsize=(fig_width, height_fixed + n_panels * height_panel))
     gs = gridspec.GridSpec(n_panels, 1, hspace=0)
     legend_handles = {}  # panel -> its legend's handles, boxed outside the panel once the layout is settled
@@ -2371,9 +2420,89 @@ def plot_general_curves(
         ax6b.tick_params(labelbottom=False, labelsize=fontsize_ticks)
         axes.append(ax6b)
 
+    ax10 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+    if len(data_epoch["lr"]) == len(x_train):
+        ax10.plot(x_train, data_epoch["lr"], color="red")
+    ax10.set_ylabel("η", fontsize=fontsize_axes + 6)
+    ax10.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+    ax10.yaxis.set_offset_position("right")
+    ax10.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+    ax10.yaxis.get_offset_text().set_visible(False)
+    ax10.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    ax10.grid(True)
+    ax10.tick_params(labelsize=fontsize_ticks)
+    axes.append(ax10)
+
+    _finish_curves(fig, axes, [], legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width, dpi)
+
+def plot_sim_targ_curves(
+    data,
+    x,
+    hist_columns,
+    line_style,
+    dpath_trial,
+    fontsize_axes,
+    fontsize_ticks,
+    fontsize_legend,
+    subplot_border_width,
+    fig_width,
+    height_fixed,
+    height_panel,
+    dpi,
+    hpsm,
+    plot_title,
+    output_filename,
+):
+    # the similarity / target diagnostics of one series of batches -- the train batches (sim_targ_train.png: `data`
+    # the TrialData epoch series, `x` the batches' epochs) or the evals' loss chunks (sim_targ_val_<partition>.png:
+    # `data` a partition's chunk-averaged eval stats, EvaluationPipeline.loss_metrics', `x` the evals' epochs) --
+    # top to bottom: the sim-grad sums, the mean hard-pair margin strips, then S Stats over the S Hist. strip
+    # filling its point stats in, P Hist. (a BCE-family loss) and Q Hist. `hist_columns` turns a series of
+    # per-point histograms into a strip's (columns, x edges) (_train_hist_columns / _eval_hist_columns);
+    # `line_style` is the line panels' extra plot kwargs (markers over the evals' few points). A series the source
+    # doesn't hold at every point -- a reporting.batch_diagnostics component that was off, a BCE-only stat under
+    # InfoNCE -- gets no panel, and a source holding none of them gets no figure.
+    def recorded(key):
+        return key in data and len(data[key]) == len(x)
+
+    has_grad_sum_sim = recorded("grad_sum_sim")
+    has_sim_stats = recorded("sim_min")
+    # the S Hist. strip, the similarities' per-batch distribution over [-1, 1], directly under the S Stats
+    # panel whose point stats it fills in, in that panel's teal
+    sim_panels = [("sim_hist", "S Hist.")] if recorded("sim_hist") else []
+    # the Q Hist. strip, the blended targets' per-batch distribution over [0, 1] -- for every target, a lone
+    # sp / mp one included (a 0/1 indicator: its two end bins, the strip reading the batch's positive share)
+    targ_panels = [("targ_hist", "Q Hist.")] if recorded("targ_hist") else []
+    # the P Hist. strip (sigmoid(logits), the predicted pair probabilities) sits between S Hist. and Q Hist., on
+    # Q's [0, 1] axis so predictions and targets read against each other. Recorded only for a BCE-family loss,
+    # so under InfoNCE there is no series and no panel.
+    p_panels = [("p_hist", "P Hist.")] if recorded("p_hist") else []
+    # the mean hard-pair similarity margin strips (sim_targ_stats on) sit directly above the S panels,
+    # each drawing one line per reporting.learning_curves.hpsm.kappas value: with
+    # hpsm.multimodal the I2T and T2I directions and then their mean, else the mean alone
+    hpsm_kappas = hpsm["kappas"]
+    margin_dirs = [("_i2t", "I2T "), ("_t2i", "T2I ")] if hpsm["multimodal"] else []
+    margin_panels = [
+        (f"sim_margin{suffix}", rf"{prefix}$\overline{{\Delta S}}_{{\kappa}}$")
+        for suffix, prefix in (*margin_dirs, ("", ""))
+        if recorded(f"sim_margin{suffix}")
+    ]
+
+    # every panel the same height, one grid row each
+    n_panels = (
+        has_grad_sum_sim + has_sim_stats + len(sim_panels) + len(p_panels) + len(targ_panels) + len(margin_panels)
+    )
+    if n_panels == 0:
+        return
+    fig = plt.figure(figsize=(fig_width, height_fixed + n_panels * height_panel))
+    gs = gridspec.GridSpec(n_panels, 1, hspace=0)
+    legend_handles = {}  # panel -> its legend's handles, boxed outside the panel once the layout is settled
+    axes = []
+    axes_hist = []  # the heatmap strips, which keep the colormap's own background
+
     if has_grad_sum_sim:
-        ax7 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        ax7.plot(x_train, data_epoch["grad_sum_sim"], color="tab:orange", linewidth=1.0)
+        ax7 = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        ax7.plot(x, data["grad_sum_sim"], color="tab:orange", linewidth=1.0, **line_style)
         ax7.axhline(0.0, color="gray", linewidth=0.5)
         ax7.set_ylabel(r"$\sum \nabla_S \mathcal{L}$", fontsize=fontsize_axes - 1)
         ax7.grid(True)
@@ -2384,11 +2513,11 @@ def plot_general_curves(
         # mean hard-pair similarity margin (hard_pair_similarity_margin): per row, the hardness-weighted
         # mean sim of the positives minus that of the negatives, averaged over rows; kappa 0 is the plain
         # mean-separation margin, larger kappas weight each side toward its hard pairs
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-        margins = np.array(data_epoch[key])  # [batch, kappa]
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
+        margins = np.array(data[key])  # [point, kappa]
         colors = plt.cm.viridis(np.linspace(0.0, 0.75, len(hpsm_kappas)))
         for idx_kappa in reversed(range(len(hpsm_kappas))):  # drawn last-to-first, so a smaller kappa sits on top
-            ax.plot(x_train, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {_kappa_label(hpsm_kappas[idx_kappa])}$")
+            ax.plot(x, margins[:, idx_kappa], color=colors[idx_kappa], linewidth=1.0, label=rf"$\kappa = {_kappa_label(hpsm_kappas[idx_kappa])}$", **line_style)
         ax.axhline(0.0, color="gray", linewidth=0.5)
         ax.set_ylabel(label, fontsize=fontsize_axes + 4)
         legend_handles[ax] = ax.get_legend_handles_labels()[0][::-1]  # legend in config order
@@ -2399,18 +2528,17 @@ def plot_general_curves(
     # the S Stats panel: min/max solid,
     # mean dashed, median dotted; teal/rose is a dark, mutually contrasting pair that also stays
     # clear of the orange gradient panels above and the purple scale panels below.
-    axes_hist = []  # the heatmap strips, which keep the colormap's own background
 
     def add_stat_panel(stat_prefix, stat_ylabel, stat_ylim, stat_color):
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         legend_styles = [
             Line2D([0], [0], color=stat_color, lw=1.0, linestyle=stat_linestyle, label=stat_label)
             for stat_linestyle, stat_label in (("-", "Min/Max"), ("--", "Mean"), (":", "Median"))
         ]
         for stat_name, stat_linestyle in (("min", "-"), ("max", "-"), ("mean", "--"), ("median", ":")):
             stat_key = f"{stat_prefix}_{stat_name}"
-            if len(data_epoch[stat_key]) == len(x_train):
-                ax.plot(x_train, data_epoch[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0)
+            if recorded(stat_key):
+                ax.plot(x, data[stat_key], color=stat_color, linestyle=stat_linestyle, linewidth=1.0, **line_style)
         ax.set_ylabel(stat_ylabel, fontsize=fontsize_axes)
         ax.set_ylim(*stat_ylim)
         legend_handles[ax] = legend_styles
@@ -2419,18 +2547,10 @@ def plot_general_curves(
         axes.append(ax)
 
     def add_hist_panel(hist_key, ylabel, ylim, cmap):
-        """The per-batch distribution histograms as a density heatmap strip, their bins spanning `ylim`."""
-        ax = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
+        """The per-point distribution histograms as a density heatmap strip, their bins spanning `ylim`."""
+        ax = fig.add_subplot(gs[len(axes), 0], sharex=axes[0] if axes else None)
         axes_hist.append(ax)
-        grid, stride = _fold_hist_columns(data_epoch[hist_key], P_HEATMAP_HORIZONTAL_THRESHOLD)
-        # column i spans batches [i*stride, (i+1)*stride), so its edges sit at those batches' x. The
-        # last edge lands one past the final batch only when the groups tile the run exactly; there
-        # it extends by one mean batch step.
-        step = (x_train[-1] - x_train[0]) / max(1, len(x_train) - 1)
-        x_edges = np.array([
-            x_train[i] if i < len(x_train) else x_train[-1] + step
-            for i in (c * stride for c in range(len(grid) + 1))
-        ])
+        grid, x_edges = hist_columns(data[hist_key])
         ax.pcolormesh(x_edges, np.linspace(*ylim, grid.shape[1] + 1), grid.T,
                       cmap=cmap, norm=_HIST_NORM, shading="flat")
         ax.set_ylabel(ylabel, fontsize=fontsize_axes)
@@ -2446,19 +2566,8 @@ def plot_general_curves(
         add_hist_panel(hist_key, label, (0.0, 1.0), _P_CMAP)
     for hist_key, label in targ_panels:
         add_hist_panel(hist_key, label, (0.0, 1.0), _Q_CMAP)
-
-    ax10 = fig.add_subplot(gs[len(axes), 0], sharex=ax0)
-    if len(data_epoch["lr"]) == len(x_train):
-        ax10.plot(x_train, data_epoch["lr"], color="red")
-    ax10.set_ylabel("η", fontsize=fontsize_axes + 6)
-    ax10.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax10.yaxis.set_offset_position("right")
-    ax10.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
-    ax10.yaxis.get_offset_text().set_visible(False)
-    ax10.set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
-    ax10.grid(True)
-    ax10.tick_params(labelsize=fontsize_ticks)
-    axes.append(ax10)
+    axes[-1].set_xlabel("Epochs", fontsize=fontsize_axes, fontweight="bold")
+    axes[-1].tick_params(labelbottom=True)
 
     _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, dpath_trial / output_filename, fontsize_legend, subplot_border_width, dpi)
 
@@ -2880,7 +2989,7 @@ def plot_sim_grad_entropy_curves(
 def _finish_curves(fig, axes, axes_hist, legend_handles, plot_title, fpath_plot, fontsize_legend,
                    subplot_border_width, dpi, axes_blocks=(), box_blocks=False, alternate_sides=True):
     """
-    The pass every learning-curve figure (plot_score_curves / plot_general_curves / plot_scalar_curves /
+    The pass every learning-curve figure (plot_score_curves / plot_optim_curves / plot_sim_targ_curves / plot_scalar_curves /
     plot_scale_curves / plot_kl_curves / plot_sim_grad_entropy_curves / _render_strips) ends on, over its top-to-bottom `axes`: panel styling (`axes_hist`,
     the heatmap strips, keep their own background), the title, the layout, the outside legends
     (`legend_handles`: panel -> handles), then the save. `axes_blocks` groups consecutive panels to rule

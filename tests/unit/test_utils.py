@@ -52,11 +52,28 @@ def test_printlog_eval_handles_missing_loss_key() -> None:
             },
         },
         "loss_raw": {"id": None},
-        "sim": {"min": None, "max": None, "median": None, "mean": None},
-        "targ": {"min": None, "max": None, "median": None, "mean": None},
+        "sim_targ": {"id": None, "comb": None},
     }
 
     PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard", "joint_macro": "GZSL"})
+
+
+def test_printlog_eval_prints_the_combined_sim_targ_point_stats(capsys) -> None:
+    # the Sim/Targ block reads the point stats over every partition's chunks together (sim_targ's comb)
+    class _EvalPipe:
+        partitions = ["id"]
+
+    comb = {f"{prefix}_{stat}": val for prefix in ("sim", "targ")
+            for stat, val in (("min", -0.5), ("max", 0.9), ("median", 0.1), ("mean", 0.12))}
+    eval_metrics = {
+        "scores": {"native": {"comp": {"map": {"all": 0.2, "i2i": 0.2, "id": 0.2}}}},
+        "loss_raw": {"id": 0.7},
+        "sim_targ": {"id": comb, "comb": comb},
+    }
+
+    PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard"})
+
+    assert "min=-0.5000 max= 0.9000 med= 0.1000 mean= 0.1200" in capsys.readouterr().out
 
 
 def test_printlog_eval_blocks_follow_the_eval_groups_in_play(capsys) -> None:
@@ -71,8 +88,7 @@ def test_printlog_eval_blocks_follow_the_eval_groups_in_play(capsys) -> None:
             "joint_macro": {"comp": {"map": {"all": 0.23, "i2i": 0.23, "id": 0.23}}},
         },
         "loss_raw": {"id": None},
-        "sim": {"min": None, "max": None, "median": None, "mean": None},
-        "targ": {"min": None, "max": None, "median": None, "mean": None},
+        "sim_targ": {"id": None, "comb": None},
     }
 
     PrintLog.eval(eval_metrics, _EvalPipe(), {"native": "Standard", "joint_macro": "GZSL"})

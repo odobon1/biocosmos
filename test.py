@@ -23,6 +23,9 @@ _dataset/<dataset>/_arm/<arm>/arm_summary/best_coord/<n>/eval/sel/ mirror of its
 
 import shutil
 import sys
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import torch
 import torch.distributed as dist
@@ -120,6 +123,7 @@ def main():
     from models import VLMWrapper  # local: models pulls open_clip/transformers, too heavy for module import
     from utils.loss import configure_phylo_targs  # local: utils.loss pulls torch/biopython (same reason)
 
+    time_start = time.time()
     if len(sys.argv) != 2:
         raise SystemExit("usage: torchrun --standalone --nproc-per-node=auto -m test <campaign>")
     campaign = sys.argv[1]
@@ -158,7 +162,7 @@ def main():
         )
         cfgs[(dataset, arm, coord)] = get_config_train(cfg_dict=cfg_dict)
 
-    _, device = setup_ddp()
+    rank, device = setup_ddp()
     _seed_test_tree(dpath_test, dpath_trainval, metadata, combos)
 
     n_evals = sum(len(combo_seeds) for combo_seeds in pending.values())
@@ -196,7 +200,7 @@ def main():
             # manifold viz for every trial (no seed window, unlike train.py's gate): PCA + the sharded t-SNE here
             # (COLLECTIVE -- every rank enters), cached with the raw embeddings under the trial's eval/sel/viz/cache/;
             # the UMAP fits + stills follow once every eval is done (_render_manifold_viz)
-            eval_metrics, time_eval, eval_bundles = eval_pipe.evaluate(modelw, loss_flag=False, collect_eval_bundles=True)
+            eval_metrics, time_eval, eval_bundles, _ = eval_pipe.evaluate(modelw, loss_flag=False, collect_eval_bundles=True)
             dpath_sel = _dpath_coord(dpath_test, dataset, arm, coord) / "_trial" / str(trial_num) / "eval" / "sel"
             torch.cuda.empty_cache()  # return the eval's reserved-but-unallocated pool before the t-SNE's transient buffers allocate
             compute_projections(eval_bundles["id"], eval_bundles["ood"], dpath_viz_cache(dpath_sel), cfg.manifold_viz,
@@ -218,6 +222,9 @@ def main():
         for arm in arms:
             update_test_best_coord(dataset, arm)
     cleanup_ddp()
+    if rank == 0:
+        print(f"test: {datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
+        print(f"test: total time {timedelta(seconds=int(time.time() - time_start))}\n", flush=True)
 
 
 if __name__ == "__main__":

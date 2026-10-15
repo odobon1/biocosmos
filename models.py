@@ -560,9 +560,12 @@ class VLMWrapper(abc.ABC):
         embs_txt_all: torch.Tensor,
         class_encs_all: torch.Tensor,
         targ_data_all: List[Any],
+        train: bool,
     ) -> torch.Tensor:
         """
-        Computes the loss for the full global batch under the criterion (self.crit).
+        Computes the loss for the full global batch under the criterion (self.crit). `train` is the criterion's
+        flag: the training objective -- the weighted loss, every weight it carries -- or the raw loss alone
+        (Criterion.__call__); a training step passes the model's mode, the eval loss pass True (eval_loss_chunked).
 
         The similarity/logit matrices are returned as branch tuples, every branch [img-row,
         txt-col], so downstream grad logging sums branches elementwise regardless of variant:
@@ -618,7 +621,7 @@ class VLMWrapper(abc.ABC):
             crit_logits, logit_scale = crit_logits[0], model.logit_scale
 
         # sims[0]: branch values are identical, and an InfoNCE loss (the only reader) is never bifurcated
-        loss, loss_raw, targs, y = crit(crit_logits, class_encs_all, targ_data_all, self.model.training, logit_scale, sims[0])
+        loss, loss_raw, targs, y = crit(crit_logits, class_encs_all, targ_data_all, train, logit_scale, sims[0])
 
         return loss, loss_raw, logits, sims, targs, y
 
@@ -680,7 +683,7 @@ class VLMWrapper(abc.ABC):
         if not loss_flag:
             return None, None, embs_img_b, embs_txt_b, None, class_encs_b, None, None
 
-        loss, loss_raw, logits, sims, targs, y = self._loss_full_batch(embs_img_b, embs_txt_b, class_encs_b, targ_data_b)
+        loss, loss_raw, logits, sims, targs, y = self._loss_full_batch(embs_img_b, embs_txt_b, class_encs_b, targ_data_b, self.model.training)
         # retain every branch's grad for the aggregate (branch-summed) grad logging: logits for the
         # logit= log field, sims for the sim-grad-sum curve strip
         for t in (*(logits if diag["emb_logit_grads"] else ()), *(sims if diag["sim_grad_sums"] else ())):
@@ -949,8 +952,12 @@ class VLMWrapper(abc.ABC):
 
         Returns:
         - Mean raw eval loss across full chunks, or None if N < chunk_size_loss
-        - Per-chunk sim/targ distribution stats (sim_targ_batch_stats per full chunk;
-          the dropped partial chunk contributes none), or [] if N < chunk_size_loss
+        - Per-chunk stats (one dict per full chunk; the dropped partial chunk contributes none), or [] if
+          N < chunk_size_loss: sim_targ_batch_stats' (p_hist included for a BCE-family loss, as the train
+          batches record it) plus grad_sum_sim, the chunk's sum(dL/dsim) -- the train strip's Sum dL/dS
+          (TrainPipeline._step_train) read on the chunk: the gradient of the training objective (the
+          criterion's weighted loss, train=True, every weight it carries; the raw loss of a BCE-family
+          criterion is detached and carries no graph), the mean raw loss being the eval loss reported
         """
         N = embs_img.size(0)
         if N < chunk_size_loss:
@@ -968,8 +975,18 @@ class VLMWrapper(abc.ABC):
         cfg_curves = self.cfg.reporting["learning_curves"]
         for i in range(0, N - chunk_size_loss + 1, chunk_size_loss):
             sl = slice(i, i + chunk_size_loss)
-            _, loss_raw, _, sims, targs, _ = self._loss_full_batch(embs_img[sl], embs_txt[sl], class_encs[sl], targ_data[sl])
-            chunk_stats.append(sim_targ_batch_stats(sims[0], targs, cfg_curves["hpsm"]["kappas"], cfg_curves["hist_bins"]))
+            # the chunk's embeddings become leaves so its sims sit in a graph (the caller runs under no_grad), the
+            # criterion builds the training objective (train=True) over them, and autograd.grad reads the sims'
+            # gradient alone: nothing lands in the model's logit scalars' .grad
+            with torch.enable_grad():
+                img = embs_img[sl].detach().requires_grad_(True)
+                txt = embs_txt[sl].detach().requires_grad_(True)
+                loss, loss_raw, logits, sims, targs, _ = self._loss_full_batch(img, txt, class_encs[sl], targ_data[sl], True)
+                grads_sim = torch.autograd.grad(loss, sims)
+            stats = sim_targ_batch_stats(sims[0], targs, cfg_curves["hpsm"]["kappas"], cfg_curves["hist_bins"],
+                                         logits=stat_logits(logits, self.cfg.loss))
+            stats["grad_sum_sim"] = sum(g.float().sum().item() for g in grads_sim)
+            chunk_stats.append(stats)
             loss_total += loss_raw.item()
 
         return loss_total / len(chunk_stats), chunk_stats

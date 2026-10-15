@@ -552,35 +552,39 @@ class TrainPipeline:
                 cached = ArtifactManager.load_base_eval_cache(self.cfg, require_projections=self._manifold_viz, require_embs=self._manifold_viz)  # @rank0; None elsewhere
                 # single-source the hit/miss decision: a concurrent campaign's cache write landing between
                 # independent per-rank reads would split the branch, and the miss branch enters collective
-                # ops (evaluate / sharded t-SNE) that every rank must join. Only the small metrics dict is
-                # broadcast; the bulky projections/embs stay on rank 0, the only rank that writes base/.
-                sync = [cached["metrics"] if cached is not None else None]
-                dist.broadcast_object_list(sync, src=0)
-                metrics_cached = sync[0]
-                if metrics_cached is not None:
-                    scores = parse_scores(metrics_cached["scores"])
-                    eval_metrics = {
-                        "scores": scores,
-                        "loss_raw": {p: None for p in self.eval_pipe.partitions},
-                        "sim": {stat: None for stat in ("min", "max", "median", "mean")},
-                        "targ": {stat: None for stat in ("min", "max", "median", "mean")},
+                # ops (evaluate / sharded t-SNE) that every rank must join. On a hit rank 0 also runs the
+                # loss-side pass over the entry's cached base embeddings (collective-free) -- the base eval's
+                # loss_raw / sim_targ under THIS trial's loss config, which the entry cannot carry (its combo
+                # key excludes the loss) -- and the small eval_metrics dict is broadcast; the bulky
+                # projections/embs stay on rank 0, the only rank that writes base/.
+                sync = [None]
+                if cached is not None:
+                    loss_inputs = {
+                        partition: {k: v.to(self.modelw.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
+                        for partition, inputs in cached["loss_inputs"].items()
                     }
+                    sync[0] = {"scores": parse_scores(cached["metrics"]["scores"]),
+                               **self.eval_pipe.loss_metrics(self.modelw, loss_inputs)}
+                dist.broadcast_object_list(sync, src=0)
+                hit = sync[0] is not None
+                if hit:
+                    eval_metrics = sync[0]
                     time_eval = None  # cached base eval was not run; don't pollute eval-time mean
                     entry = cached
                 else:
-                    eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                    eval_metrics, time_eval, eval_bundles, loss_inputs = self.eval_pipe.evaluate(
                         self.modelw,
-                        loss_flag=False,
                         collect_eval_bundles=self._manifold_viz,
+                        collect_loss_inputs=True,
                     )
                     if self._manifold_viz:
                         self._viz_eval(eval_bundles, 0)  # projections (+ embs if pooled) straight into the base eval dir
-                    entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics)  # rank0 gets the entry back; None elsewhere
+                    entry = ArtifactManager.save_base_eval_cache(self.cfg, eval_metrics, loss_inputs)  # rank0 gets the entry back; None elsewhere
                 self._write_base_eval(entry, eval_metrics)  # base -> eval/all/0 (uniform member of the eval sequence)
                 if time_eval is not None:
                     self.time_tracker.add("eval", time_eval)
                 self._record_eval(eval_metrics, time_eval)
-                header = f"0/{self.cfg.n_chkpts}" + (" - Cached" if metrics_cached is not None else "")
+                header = f"0/{self.cfg.n_chkpts}" + (" - Cached" if hit else "")
                 self._checkpoint(header=header, idx_batch=-1)
                 dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
                 ArtifactManager.save_rng_states(self._local_rank)
@@ -709,7 +713,7 @@ class TrainPipeline:
                         if threshold_hit // self.cfg.chkpt_interval < self.cfg.n_chkpts:
                             # TRAIN-TIME EVAL
                             if self.eval_enabled:
-                                eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                                eval_metrics, time_eval, eval_bundles, _ = self.eval_pipe.evaluate(
                                     self.modelw,
                                     loss_flag=True,
                                     collect_eval_bundles=self._manifold_viz,
@@ -767,7 +771,7 @@ class TrainPipeline:
             # FINAL EVAL -- a killed trial's kill checkpoint was its final one: nothing left to evaluate or write
 
             if self.eval_enabled and not self._killed:
-                eval_metrics, time_eval, eval_bundles = self.eval_pipe.evaluate(
+                eval_metrics, time_eval, eval_bundles, _ = self.eval_pipe.evaluate(
                     self.modelw,
                     loss_flag=True,
                     collect_eval_bundles=self._manifold_viz,

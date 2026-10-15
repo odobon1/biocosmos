@@ -651,7 +651,7 @@ class ArtifactManager:
     @rank0
     def save_eval_data(dpath_model, eval_metrics):
         # one score file per eval group (fpath_eval_scores), holding just that group's scores subtree
-        # ({partition: ..., 'comp': ...}); loss_raw/sim/targ live only in data_trial.pkl
+        # ({partition: ..., 'comp': ...}); loss_raw/sim_targ live only in data_trial.pkl
         for group_key, scores_grp in format_scores(eval_metrics["scores"]).items():
             fpath = fpath_eval_scores(dpath_model, group_key)
             fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -711,14 +711,22 @@ class ArtifactManager:
 
     @staticmethod
     @rank0
-    def save_base_eval_cache(cfg_train, eval_metrics):
-        """Write this combo's entry to its own cache file and return the entry. The npz arrays are
+    def save_base_eval_cache(cfg_train, eval_metrics, loss_inputs):
+        """Write this combo's entry to its own cache file and return the entry. `metrics` carries the scores alone:
+        the loss-side metrics (loss_raw, sim_targ) depend on the loss config, which the combo key excludes, so the
+        entry carries `loss_inputs` instead -- each partition's gathered eval embeddings, paired text embeddings,
+        class encodings and target data (EvaluationPipeline.evaluate's, moved to CPU), from which a cache hit
+        computes its own (EvaluationPipeline.loss_metrics). The npz arrays are
         ingested from this trial's base eval viz cache (eval/all/0/viz/cache/), where compute_projections just wrote them
         (both absent for non-viz trials; UMAP is fit post-trial, so entries never carry it). Written via temp file +
         atomic replace: concurrent same-combo campaigns overwrite each other with equivalent entries,
         and readers never see a torn file; other combos' files are untouched."""
         entry = {
-            "metrics": {k: format_scores(v) for k, v in eval_metrics.items() if k not in ("loss_raw", "sim", "targ")},
+            "metrics": {k: format_scores(v) for k, v in eval_metrics.items() if k not in ("loss_raw", "sim_targ")},
+            "loss_inputs": {
+                partition: {k: v.cpu() if torch.is_tensor(v) else v for k, v in inputs.items()}
+                for partition, inputs in loss_inputs.items()
+            },
             "projections": None,
             "embs": None,
         }

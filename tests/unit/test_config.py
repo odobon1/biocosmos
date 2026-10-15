@@ -123,6 +123,16 @@ def test_train_config_rejects_non_int_n_epochs(monkeypatch: pytest.MonkeyPatch) 
         TrainConfig(**make_train_config_dummy(n_epochs=None))
 
 
+def test_train_config_rejects_chkpts_and_epochs_that_do_not_divide(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the mean-curve plots tick whole epochs, so every epoch is checkpointed or every checkpoint sits on an epoch
+    patch_hw(monkeypatch)
+
+    with pytest.raises(ValueError, match="must divide one another"):
+        TrainConfig(**make_train_config_dummy(n_epochs=3, n_chkpts=2))
+    for n_epochs, n_chkpts in ((3, 6), (6, 3), (5, 5)):
+        TrainConfig(**make_train_config_dummy(n_epochs=n_epochs, n_chkpts=n_chkpts))
+
+
 def test_train_config_rejects_non_int_n_chkpts(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
@@ -663,7 +673,7 @@ def test_train_config_chain_floor_below_train_set_disables_chaining(monkeypatch:
 def test_train_config_chain_floor_chains_permutations(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_hw(monkeypatch)
 
-    cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, n_epochs=202))
+    cfg = TrainConfig(**make_train_config_dummy(chain_floor=100_000, n_epochs=202, n_chkpts=2))  # n_chkpts a divisor of n_epochs
 
     assert cfg.chain_perms == 21  # E_chain_nom = ceil(100_000 / 4_935)
     assert cfg.samps_per_pass == 103_632  # X_chain = 21 x 4_935 batch-aligned (the 3-sample tail carries into the next pass)

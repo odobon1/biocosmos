@@ -14,7 +14,9 @@ cross-coord level: _dataset/<dataset>/_arm/<arm>/arm_summary/performance/
 _dataset/<dataset>/dataset_summary/performance/ ({scores,convergence}.png + secondary/{scores,convergence}_<group>.png) and
 phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx (+ secondary/<campaign>_<phase>-<kind>_<group>.xlsx; arms/ only in refine/).
 (Native, the primary eval group, takes the plain name; every other group sits under secondary/.) Each
-arm's _arm/<arm>/arm_summary/coord_strips/ (its coords' logit-scale and pair-entropy panels stacked) and, when the arm is
+arm's _arm/<arm>/arm_summary/coord_strips/ (its coords' logit-scale and pair-entropy panels stacked), its
+arm_summary/{scale,logscale}/{trials/<n>,agg}/convergence.png (the coords' logit scales overlaid, coloured by lr.init; a
+lr.init x loss.logits.scale.init sweep only) and, when the arm is
 complete, its arm_summary/best_coord/ copy of the best coord's learning curves + eval/{best,sel}/ are rebuilt with its arm_summary/. All using
 the CURRENT config/render/stats.yaml settings (spread_type/bold_high/ordered/heatmap/supp_scores/overrides/dpi), so edits to any
 of them take effect for an already-run campaign,  Each trial's cached per-checkpoint
@@ -41,7 +43,6 @@ from utils.utils import load_json, paths
 
 
 def regen_campaign(campaign, cfg_stats):
-    style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     # the eval groups the campaign has in play, off its frozen snapshot -- the set its trials actually
     # scored, so the live reporting.yaml having moved on can't ask for a group that was never written
     groups = eval_groups(load_json(paths["artifacts"] / campaign / "_phase" / "screen" / "cfg_baseline.json")["reporting"])
@@ -60,12 +61,12 @@ def regen_campaign(campaign, cfg_stats):
                         ArtifactManager.dpath_coord = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
                                                        / "_coord" / coord)
                         if ArtifactManager.dpath_coord.exists():
-                            update_chkpt_selection(groups, cfg_stats.spread_type, cfg_stats.dpi)
-                            update_metric_stats(groups, cfg_stats.spread_type)
+                            update_chkpt_selection(groups, cfg_stats)
+                            update_metric_stats(groups, cfg_stats)
                         pbar.update(1)
-                    update_arm_metrics(dataset, arm, groups, *style, cfg_stats.dpi)
-                update_dataset_metrics(dataset, groups, *style, cfg_stats.dpi)
-        update_phase_metrics(groups, *style, cfg_stats.overrides)
+                    update_arm_metrics(dataset, arm, groups, cfg_stats)
+                update_dataset_metrics(dataset, groups, cfg_stats)
+        update_phase_metrics(groups, cfg_stats)
 
 
 def main():

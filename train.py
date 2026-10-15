@@ -869,17 +869,14 @@ def run_training(cfg):
         groups = eval_groups(cfg.reporting)  # the eval groups the campaign has in play (frozen)
         # reselects this coord/dataset's checkpoint over ALL its completed trials (this one included) and
         # rewrites their eval/sel/, so the aggregates below see the current selection
-        update_chkpt_selection(groups, cfg_stats.spread_type, cfg_stats.dpi)
-        update_metric_stats(groups, cfg_stats.spread_type)
+        update_chkpt_selection(groups, cfg_stats)
+        update_metric_stats(groups, cfg_stats)
         # this trial's arm's (arm_summary) and dataset's (dataset_summary) pngs refresh at every trial completion,
         # over whatever trials are in -- mid-sweep their rows carry different trial counts, each row naming its
         # own; the phase workbooks (phase_summary) alone wait for the seed to complete across the whole matrix
-        update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                           cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.dpi)
-        update_dataset_metrics(cfg.dataset, groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered,
-                               cfg_stats.heatmap, cfg_stats.supp_scores, cfg_stats.dpi)
+        update_arm_metrics(cfg.dataset, cfg.arm, groups, cfg_stats)
+        update_dataset_metrics(cfg.dataset, groups, cfg_stats)
         if seed_sweep_complete(cfg.idx_seed + 1):
-            update_phase_metrics(groups, cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap,
-                                  cfg_stats.supp_scores, cfg_stats.overrides)
+            update_phase_metrics(groups, cfg_stats)
 
     cleanup_ddp()

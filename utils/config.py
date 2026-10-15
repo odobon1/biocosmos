@@ -220,6 +220,10 @@ class TrainConfig:
 
         if self.n_chkpts <= 0:
             raise ValueError(f"n_chkpts must be greater than 0, got {self.n_chkpts}")
+        # the mean-curve plots tick whole epochs, so the checkpoints must land on them: every epoch checkpointed
+        # (n_chkpts a multiple of n_epochs) or every checkpoint on an epoch (n_epochs a multiple of n_chkpts)
+        if self.n_chkpts % self.n_epochs and self.n_epochs % self.n_chkpts:
+            raise ValueError(f"n_chkpts ({self.n_chkpts}) and n_epochs ({self.n_epochs}) must divide one another, got neither")
         if self.chkpt_stop is not None and not 0 <= self.chkpt_stop <= self.n_chkpts:
             raise ValueError(f"chkpt_stop must be a checkpoint index in 0..n_chkpts ({self.n_chkpts}), got {self.chkpt_stop}")
         # sample interval between checkpoint/eval thresholds; sample_volume is data-derived so it need
@@ -795,7 +799,7 @@ class StatsConfig:
     heatmap: bool  # (True) shade score cells by value over a fixed 0 -> 100 range
     supp_scores: dict  # {primitive: bool, n_shot: bool}; supplemental score columns appended right of the composite columns
     overrides: bool  # (True) append the "Arm Overrides" / "Coord Overrides" config tables to each xlsx sheet
-    dpi: int  # raster resolution of every stats png (chkpt_means, the score / convergence / logit-scale tables and plots, the coord strips)
+    dpi: int  # raster resolution of every stats png (chkpt_means, the score / convergence / logit-scale tables and plots, the coord strips, the logit-scale convergence plots)
 
     def __post_init__(self):
 

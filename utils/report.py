@@ -5,15 +5,17 @@ tables + convergence plots at every cross-coord level -- per arm (_arm/<arm>/arm
 (_dataset/<dataset>/dataset_summary/performance/, each arm at its best coord) -- each
 {scores,convergence}.png + secondary/{scores,convergence}_<group>.png (a screening arm's also scores_hpo2d.png: its
 coords' composite mAP All gridded over the two hpo_coords params), beside each level's logit-scale tables
-({scale,logscale}.png one dir up over the 1-loss rows, {scale1,scale2,logscale1,logscale2}.png over the rows
-under separate logit scalars: the trials' scale at its init / selected / best / final checkpoints), the phase
+({scale,logscale}/table.png one dir up over the 1-loss rows, {scale1,scale2,logscale1,logscale2}/table.png over the
+rows under separate logit scalars: the trials' scale at its init / selected / best / final checkpoints), the phase
 workbooks (phase_summary/{armcoords,arms}/<campaign>_<phase>-<kind>.xlsx + secondary/<campaign>_<phase>-<kind>_<group>.xlsx,
 mAP / Acc / scale / logscale (split alike) / HW sheets; arms/ only in the refine phase), the test
 workbooks (artifacts/<campaign>/_phase/test/phase_summary/arms/<campaign>_test-arms.xlsx + secondary/<campaign>_test-arms_<group>.xlsx
 + per-dataset score tables
 _dataset/<dataset>/dataset_summary/performance/{scores,secondary/scores_<group>}.png, from the score files test.py writes), per-trial
 learning-curve plots, each arm's coords' logit-scale and pair-entropy panels stacked into strip figures
-(_arm/<arm>/arm_summary/coord_strips/) and each finished arm's best coord's copy of its
+(_arm/<arm>/arm_summary/coord_strips/) -- and, for an arm sweeping lr.init x loss.logits.scale.init, its coords'
+logit scales overlaid on one axes coloured by lr (_arm/<arm>/arm_summary/{scale,logscale}/{trials/<n>,agg}/convergence.png)
+-- and each finished arm's best coord's copy of its
 learning curves + eval/{best,sel}/ (_arm/<arm>/arm_summary/best_coord/) -- all
 under one phase dir of the campaign (artifacts/<campaign>/_phase/<phase>/,
 ArtifactManager.dpath_phase). The phase's phase_metadata.json 'matrix' ({dataset: {arm: [coords]}}) is the
@@ -32,6 +34,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.ticker import (
     AutoLocator,
     FixedLocator,
@@ -47,7 +50,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from utils.config import fmt_name_value, group_path
+from utils.config import CFG_PARAM_ALIASES, fmt_name_value, group_path
 from utils.ddp import rank0
 from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, fpath_eval_scores
 from utils.utils import (
@@ -79,14 +82,19 @@ _CRASH_KINDS = ("ram", "vram", "other")
 # the logit-scale tables' columns, keying the per-trial readings _trial_scales builds (lowercased): the scale at
 # checkpoint 0, at the coord's selected checkpoint, at the trial's own best and at the last recorded batch
 _SCALE_LABELS = ("Init", "Sel", "Best", "Final")
-# the tables' parameterizations of the logit scale (the TrialData series read, the table's png / sheet name, its
-# title symbol) -- _STRIP_FIGURES' pair, alpha, the scale the logits carry, and log alpha, the parameter -- as two
-# sets: for the rows recording the primary logit scale alone (a 1-loss arm), and for those recording loss2's
-# term's own as well (separate logit scalars, loss.logits.shared false: the scale2 / logit_scale2 series), the two
-# then numbered. A scope mixing both kinds of row renders both sets, each over its own rows (_scale_row_sets)
-_SCALE_TABLES = ((("scale", "scale", "α"), ("logit_scale", "logscale", "log α")),
-                 (("scale", "scale1", "α₁"), ("scale2", "scale2", "α₂"),
-                  ("logit_scale", "logscale1", "log α₁"), ("logit_scale2", "logscale2", "log α₂")))
+# the logit scale's two parameterizations -- alpha, the scale the logits carry, and log alpha, the parameter the
+# model learns -- the one record every table and figure of it keys off: (the TrialData series, the artifact name, the
+# title heading, the y-axis label, the series of its target-implied bound trio, the symbol those bound lines are
+# labelled by)
+_SCALE_PARAMS = (("scale", "scale", "Logit Scale α", r"$\alpha$", "scale_req", r"\alpha"),
+                 ("logit_scale", "logscale", "Logit Log-Scale log α", r"$\log \alpha$", "log_scale_req", r"\log \alpha"))
+# the logit-scale tables (the series read, the png / sheet name, the title heading), as two sets: for the rows
+# recording the primary logit scale alone (a 1-loss arm), and for those recording loss2's term's own as well (separate
+# logit scalars, loss.logits.shared false: the scale2 / logit_scale2 series), the two then numbered. A scope mixing
+# both kinds of row renders both sets, each over its own rows (_scale_row_sets)
+_SCALE_TABLES = (tuple((key, name, heading) for key, name, heading, *_ in _SCALE_PARAMS),
+                 tuple(table for key, name, heading, *_ in _SCALE_PARAMS
+                       for table in ((key, f"{name}1", f"{heading}₁"), (f"{key}2", f"{name}2", f"{heading}₂"))))
 
 # Learning-curve palette for the eval panels. Three visual families, so the two orthogonal rollups
 # of the same quantity don't read as peers: maroon = the composite headline (also _mark_best's star
@@ -164,6 +172,15 @@ def _fold_hist_columns(cols, threshold):
     return grid, stride
 
 
+def _band_label(spread_type):
+    """A spread band's legend entry, the spread type in caps: '± STD' / '± STE'."""
+    return f"± {spread_type.upper()}"
+
+def _agg_label(spread_type):
+    """The aggregation a table's cells carry, named in its title and in the workbook banners: 'mean ± STD' /
+    'mean ± STE'."""
+    return f"mean ± {spread_type.upper()}"
+
 def _spread(nums, spread_type):
     spread = nums.std(ddof=1)
     return spread / np.sqrt(len(nums)) if spread_type == "ste" else spread
@@ -186,7 +203,7 @@ def _listview_metric_stats(values):
     return [f"{float(v) * 100:.2f}" for v in values]
 
 @rank0
-def update_metric_stats(eval_groups, spread_type):
+def update_metric_stats(eval_groups, cfg_stats):
     dpath_coord = ArtifactManager.dpath_coord
     dpath_metrics = dpath_coord / "coord_summary"
     for group_key in eval_groups:
@@ -205,7 +222,7 @@ def update_metric_stats(eval_groups, spread_type):
         n_trials = len(metric_dicts)
         stats = {
             "n_trials": n_trials,
-            **_aggregate_metric_stats(metric_dicts, spread_type),
+            **_aggregate_metric_stats(metric_dicts, cfg_stats.spread_type),
         }
         listview = {
             "n_trials": n_trials,
@@ -220,9 +237,11 @@ def _dpath_coord(dataset, arm, coord):
     """The coord dir holding (arm, coord)'s trials on `dataset`: _dataset/<dataset>/_arm/<arm>/_coord/<coord>."""
     return ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm / "_coord" / coord
 
-def _coord_label(dpath_coord):
-    """'<arm>/<coord>' of a coord dir (_dataset/<dataset>/_arm/<arm>/_coord/<coord>), for plot titles."""
-    return f"{dpath_coord.parent.parent.name}/{dpath_coord.name}"
+def _title_lines(dataset, arm=None, coord=None):
+    """The lines a stacked figure title carries under its heading, one apiece: the arm and the coord where the figure
+    has one, then the dataset's name -- so an arm-level title reads heading / arm / dataset, a coord-level one
+    heading / arm / coord / dataset and a dataset-level one heading / dataset."""
+    return "\n".join([*(line for line in (arm, coord) if line is not None), DATASET_ALIAS2NAME[dataset]])
 
 def _chkpt_dpaths(dpath_trial):
     """[eval/all/0 (the base eval), eval/all/1, .., eval/all/<n_chkpts>] once the trial's FINAL eval is on disk,
@@ -291,26 +310,59 @@ def seed_sweep_complete(trial_num):
         for coord in coords
     )
 
-def _plot_chkpt_means(means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath, dpi):
-    chkpts = np.arange(len(means))
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(chkpts, means, color="blue", label=f"mean (n={n_trials})")
-    ax.fill_between(chkpts, means - spreads, means + spreads, color="blue", alpha=0.2, label=f"± {spread_type}")
-    # diamond + value on the selected point itself, matching the convergence plots' marker
-    ax.plot(idx_best, means[idx_best], marker="D", color="blue", markersize=3, linestyle="none",
-            zorder=5, label=f"selected ({idx_best})")
-    ax.annotate(f"{means[idx_best]:.4f}", (idx_best, means[idx_best]), textcoords="offset points",
-                xytext=(0, 9), ha="center", color="blue", fontsize=9, fontweight="bold")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
-    ax.set_xlabel("Checkpoint", fontsize=10, fontweight="bold")
-    ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
-    ax.set_ylim(0, 1)
-    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curve and the selected-point marker
+def _mark_selected(ax, x, y, idx, color):
+    """The selected checkpoint on a mean curve: a diamond on its point, its score printed above, the legend naming
+    the checkpoint's index."""
+    ax.plot(x, y, marker="D", color=color, markersize=3, linestyle="none", zorder=5, label=f"selected (chkpt {idx})")
+    ax.annotate(f"{y:.4f}", (x, y), textcoords="offset points", xytext=(0, 9), ha="center", color=color, fontsize=9,
+                fontweight="bold")
+
+def _finish_curve_png(fig, ax, title, ylabel, fpath, dpi):
+    """Finish a single-axes curve png the way every epoch-axis curve plot here is styled -- the stacked title bold
+    and flush left, bold axis labels over 'Epochs' -- and save it bbox-tight (a legend hung outside the axes stays
+    in frame)."""
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=12, loc="left")
+    ax.set_xlabel("Epochs", fontsize=10, fontweight="bold")
+    ax.set_ylabel(ylabel, fontsize=10, fontweight="bold")
+    fpath.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
+_N_EPOCH_TICKS = 11  # the most whole-epoch ticks a checkpoint-curve plot's epoch axis carries before thinning
+
+def _epoch_ticks(epochs_by_row, log):
+    """Tick positions for a checkpoint-curve plot's epoch axis, `epochs_by_row` the rows' checkpoint epochs (the base
+    eval's 0 leading each): the whole epochs a checkpoint lands on -- every epoch where n_chkpts is a multiple of
+    n_epochs, every checkpoint where n_epochs is a multiple of n_chkpts (TrainConfig lets nothing else through) --
+    thinned past _N_EPOCH_TICKS of them to multiples of their spacing: on a linear axis a uniform step of 1 / 2 / 5
+    x 10^k times it, on a log axis the 1 / 2 / 5 x 10^k values themselves (the decades' natural ticks), 0 kept at
+    the front and the last epoch at the end."""
+    whole = sorted({float(e) for epochs in epochs_by_row for e in epochs if float(e).is_integer()})
+    if len(whole) <= _N_EPOCH_TICKS:
+        return whole
+    spacing = whole[1] - whole[0]
+    nice = [m * 10 ** k for k in range(10) for m in (1, 2, 5)]
+    if log:
+        ticks = [v for v in nice if v <= whole[-1] and v % spacing == 0]
+        return [0.0, *ticks, *([whole[-1]] if whole[-1] > ticks[-1] else [])]
+    step = next(spacing * m for m in nice if whole[-1] / (spacing * m) < _N_EPOCH_TICKS)
+    return [e for e in whole if e % step == 0]
+
+def _plot_chkpt_means(epochs, means, spreads, idx_best, n_trials, spread_type, score_name, title, fpath, dpi):
+    """The coord's across-trial mean curve -- one point per checkpoint, at its epoch (`epochs`), the axis ticked
+    at whole epochs (_epoch_ticks) -- with its spread band and the group's pick marked, the legend naming the
+    picked checkpoint's index."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_xticks(_epoch_ticks([epochs], log=False))
+    ax.plot(epochs, means, color="blue", label=f"mean (n={n_trials})")
+    ax.fill_between(epochs, means - spreads, means + spreads, color="blue", alpha=0.2, label=_band_label(spread_type))
+    _mark_selected(ax, epochs[idx_best], means[idx_best], idx_best, "blue")
+    ax.set_ylim(0, 1)
+    ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curve and the selected-point marker
+    _finish_curve_png(fig, ax, title, score_name, fpath, dpi)
+
 @rank0
-def update_chkpt_selection(eval_groups, spread_type, dpi):
+def update_chkpt_selection(eval_groups, cfg_stats):
     """Checkpoint selection for this coord/dataset: the ONE checkpoint index every one of its trials is
     scored at, argmaxed over the across-trial MEAN Native curve rather than per trial --
     argmax(mean(...)), not mean(argmax(...)). The curve is native's comp mAP All score
@@ -330,7 +382,9 @@ def update_chkpt_selection(eval_groups, spread_type, dpi):
       - eval/best/ in each trial: the same, at the trial's OWN native argmax (same base and tie
         rules) -- per-trial reference; nothing aggregates it
       - trial_metadata.json's chkpt ({'sel', 'best'}: the eval indices behind the two dirs)
-      - coord_summary/chkpt_means.pkl ({'n_trials', 'chkpts', 'means', 'spreads', 'idx_best'})
+      - coord_summary/chkpt_means.pkl ({'n_trials', 'chkpts', 'epochs', 'means', 'spreads', 'idx_best'}: 'epochs'
+        each checkpoint's epoch, k * n_epochs / n_chkpts -- the eval thresholds' nominal positions, off
+        trial_metadata.json's progress.n_epochs and n_chkpts -- the curve plots' x axis)
         + chkpt_means.png, per group (utils.config.group_path: the plain name for native,
         secondary/chkpt_means_<group>.{pkl,png} for the rest): that group's mean curve, mean +- spread
         band, and that group's own pick marked -- the argmax of its own mean curve (native's is the
@@ -338,7 +392,7 @@ def update_chkpt_selection(eval_groups, spread_type, dpi):
       - coord_metadata.json's sel_chkpt ({'idx', 'n_trials', 'mean_score'}: native's pick and its mean)
     """
     dpath_coord = ArtifactManager.dpath_coord
-    trials = []  # (trial dir, its eval dirs, {group: its comp score at each checkpoint}, killed), completed trials only
+    trials = []  # (trial dir, its eval dirs, {group: its comp score at each checkpoint}, its trial_metadata.json), completed trials only
     for dpath_trial in _trial_dpaths(dpath_coord):
         dpaths_chkpt = _chkpt_dpaths(dpath_trial)
         if dpaths_chkpt is None:
@@ -347,27 +401,31 @@ def update_chkpt_selection(eval_groups, spread_type, dpi):
             group_key: [float(load_json(fpath_eval_scores(dpath, group_key))["comp"]["map"]["all"])
                         for dpath in dpaths_chkpt]
             for group_key in eval_groups
-        }, load_json(dpath_trial / "trial_metadata.json")["killed"]))
+        }, load_json(dpath_trial / "trial_metadata.json")))
 
     if not trials:
         return
 
     # killed trials stopped short, so their curves are shorter than a full run's: they shape the
     # coord's selection only when every trial was killed (then all are equally short)
-    live = [trial for trial in trials if not trial[3]] or trials
+    live = [trial for trial in trials if not trial[3]["killed"]] or trials
     n_trials = len(live)
+    # each checkpoint's epoch, the curve plots' x axis: the eval thresholds sit every n_epochs / n_chkpts epochs with
+    # the final eval at n_epochs (TrainConfig's chkpt_interval) and the base eval leads at 0 -- the nominal
+    # positions, not the stamps of the batches that crossed them
+    epochs = np.arange(len(live[0][2]["native"])) * live[0][3]["progress"]["n_epochs"] / live[0][3]["n_chkpts"]
     means_native = np.array([curves["native"] for _, _, curves, _ in live]).mean(axis=0)
     idx_best = int(np.argmax(means_native))  # the base eval (index 0) competes like any checkpoint; argmax keeps the earliest tie
 
     # the render worker re-copies eval/{sel,best}/viz/ at the chkpt recorded here, and the arm's best_coord/ mirror
     # copies eval/{sel,best}/: both under the arm's lock (arm_lock)
     with arm_lock(dpath_coord.parent.parent):
-        for dpath_trial, dpaths_chkpt, curves, killed in trials:
+        for dpath_trial, dpaths_chkpt, curves, metadata in trials:
             # sel: the trial's eval at the coord's selected checkpoint (what the stats read)
             # -- a killed trial, which may have no eval there, at its own best instead; best: at the
             # trial's OWN argmax, for reading a single trial on its own
             idx_trial_best = int(np.argmax(curves["native"]))  # the base eval competes here too
-            idxs = {"sel": idx_trial_best if killed else idx_best, "best": idx_trial_best}
+            idxs = {"sel": idx_trial_best if metadata["killed"] else idx_best, "best": idx_trial_best}
             for name, idx in idxs.items():
                 dpath_dest = dpath_trial / "eval" / name
                 for group_key in eval_groups:
@@ -375,16 +433,15 @@ def update_chkpt_selection(eval_groups, spread_type, dpi):
                     fpath_dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(fpath_eval_scores(dpaths_chkpt[idx], group_key), fpath_dest)
                 copy_viz(dpaths_chkpt[idx], dpath_dest)
-            fpath_meta_trial = dpath_trial / "trial_metadata.json"
-            metadata_trial = load_json(fpath_meta_trial)
-            metadata_trial["chkpt"] = idxs
-            save_json(metadata_trial, fpath_meta_trial)
+            metadata["chkpt"] = idxs
+            save_json(metadata, dpath_trial / "trial_metadata.json")
 
     dpath_metrics = dpath_coord / "coord_summary"
     for group_key, group_name in eval_groups.items():
         curves = np.array([trial_curves[group_key] for _, _, trial_curves, _ in live])
         # a lone trial has no ddof=1 spread -> flat (invisible) band
-        spreads = np.zeros(curves.shape[1]) if n_trials == 1 else np.array([_spread(col, spread_type) for col in curves.T])
+        spreads = (np.zeros(curves.shape[1]) if n_trials == 1
+                   else np.array([_spread(col, cfg_stats.spread_type) for col in curves.T]))
         means = curves.mean(axis=0)
         idx_group = int(np.argmax(means))  # native's is idx_best itself
         fpath_means = group_path(dpath_metrics, group_key, "chkpt_means", ".pkl")
@@ -393,18 +450,16 @@ def update_chkpt_selection(eval_groups, spread_type, dpi):
             {
                 "n_trials": n_trials,
                 "chkpts": np.arange(curves.shape[1]),
+                "epochs": epochs,
                 "means": means,
                 "spreads": spreads,
                 "idx_best": idx_group,
             },
             fpath_means,
         )
-        title = (
-            f"Composite mAP per Checkpoint -- {_coord_label(dpath_coord)}, "
-            f"{DATASET_ALIAS2NAME[ArtifactManager.dataset]} ({group_name})"
-        )
-        _plot_chkpt_means(means, spreads, idx_group, n_trials, spread_type, "Composite mAP", title,
-                          group_path(dpath_metrics, group_key, "chkpt_means", ".png"), dpi)
+        title = f"Composite mAP ({group_name})\n{_title_lines(ArtifactManager.dataset, dpath_coord.parent.parent.name, dpath_coord.name)}"
+        _plot_chkpt_means(epochs, means, spreads, idx_group, n_trials, cfg_stats.spread_type, "Composite mAP", title,
+                          group_path(dpath_metrics, group_key, "chkpt_means", ".png"), cfg_stats.dpi)
 
     fpath_meta = dpath_coord / "coord_metadata.json"
     metadata = load_json(fpath_meta)
@@ -673,11 +728,11 @@ def pick_best_coords():
     return _best_coords(arm_coords, datasets, comps_by)
 
 def _curve(dataset, arm, coord, group_key):
-    """(means, idx_best) of the coord's across-trial mean curve on `dataset` for one eval
+    """(epochs, means, idx_best) of the coord's across-trial mean curve on `dataset` for one eval
     group -- update_chkpt_selection's coord_summary/{chkpt_means,secondary/chkpt_means_<group>}.pkl, written for
     exactly the coords with completed trials there."""
     chkpt_means = load_pickle(group_path(_dpath_coord(dataset, arm, coord) / "coord_summary", group_key, "chkpt_means", ".pkl"))
-    return chkpt_means["means"], chkpt_means["idx_best"]
+    return chkpt_means["epochs"], chkpt_means["means"], chkpt_means["idx_best"]
 
 def _col_styles(grid, bold_high, n_keys):
     """Per-column data-cell styling for one rendered table, shared by the png and xlsx tables:
@@ -709,15 +764,17 @@ def _draw_table(grid, n_keys, title, fpath, means, winners, killed, heatmap, dpi
     """Draw one table png: `grid`'s header row and first n_keys columns bold on grey (the row keys left-aligned), every
     other cell styled by its (row, col): means[(row, col)] its numeric value (no entry for a '-' / 'X' cell), bold where
     in `winners`, and under `heatmap` shaded white -> #4caf50 by that value (_heat_hex) -- the cells in `killed` (a
-    killed trial's, kill_thresh) in the killed yellow instead."""
+    killed trial's, kill_thresh) in the killed yellow instead. The `title` -- stacked, a heading over the arm and
+    dataset lines (or the dataset's alone) -- sits flush left, its lines left-aligned as a block."""
     # matplotlib lays table rows out at a fixed 10pt * 1.2 = 1/6in apiece whatever the figure size
     # (1/4in after the 1.5x scale below), so the axes is made exactly that tall and fills the
     # figure: the table then spans it edge to edge for any row count and the title's pad is the
-    # whole gap above it, instead of a tall table overflowing the axes and running over the title.
-    fig, ax = plt.subplots(figsize=(1.2 + 1.5 * (len(grid[0]) - 1), 0.25 * len(grid)))
+    # whole gap above it, instead of a tall table overflowing the axes and running over the title. Built at the
+    # save dpi: the auto column widths shift slightly with it, and the title is placed off a draw.
+    fig, ax = plt.subplots(figsize=(1.2 + 1.5 * (len(grid[0]) - 1), 0.25 * len(grid)), dpi=dpi)
     fig.subplots_adjust(bottom=0, top=1)
     ax.axis("off")
-    ax.set_title(title, fontsize=11, pad=12)
+    text_title = ax.set_title(title, fontsize=11, fontweight="bold", pad=12, loc="left")
     table = ax.table(cellText=grid, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
     table.set_fontsize(9)
@@ -732,6 +789,11 @@ def _draw_table(grid, n_keys, title, fpath, means, winners, killed, heatmap, dpi
             cell.set_text_props(fontweight="bold")
         if heatmap and (row, col) in means:
             cell.set_facecolor(f"#{_KILLED_HEX if (row, col) in killed else _heat_hex(means[(row, col)])}")
+    # flush with the table's left edge, where the auto column widths -- the bold cells' included, so measured once
+    # every cell is styled -- place it
+    fig.canvas.draw()
+    x0 = table.get_window_extent(fig.canvas.get_renderer()).x0
+    text_title.set_x(ax.transAxes.inverted().transform((x0, 0))[0])
     fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
@@ -744,41 +806,32 @@ def _render_stats_table(grid, n_keys, title, fpath, bold_high, heatmap, killed_r
     _draw_table(grid, n_keys, title, fpath, means, winners, {rc for rc in means if rc[0] in killed_rows}, heatmap, dpi)
 
 def _plot_convergence(curves, idx_win, score_name, title, fpath, dpi):
-    """[(row key, mean curve, its selected index), ...] overlaid on one log-x axes: every row grey,
+    """[(row key, its checkpoints' epochs, mean curve, its selected index), ...] overlaid on one log-x epoch
+    axes -- one point per checkpoint, at its epoch, the axis ticked at whole epochs (_epoch_ticks): every row grey,
     curves[idx_win] redrawn in black on top (legend: its key's cells joined by '/', e.g. 'hp/LR-1e-5')
     with its selection marked by a diamond and a red dashed line across the plot at its score.
-    Checkpoint 0 (the base eval) is a selection candidate like any other but has no place on a log
-    axis, so the axis is symlog: its linear stretch below 1 holds checkpoint 0, and the curves start
-    there."""
+    Checkpoint 0 (the base eval, epoch 0) is a selection candidate like any other but has no place on a log
+    axis, so the axis is symlog: its linear stretch below the first checkpoint's epoch holds checkpoint 0, and
+    the curves start there."""
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_xscale("symlog", linthresh=1, linscale=0.5, subs=np.arange(2, 10))
-    # plain checkpoint numbers on the log axis, not the default 10^k scientific labels; the minor
-    # ticks carry most of them at these ranges (a campaign's n_chkpts is a couple of decades at most)
+    ax.set_xscale("symlog", linthresh=min(epochs[1] for _, epochs, _, _ in curves), linscale=0.5)
+    # whole-epoch ticks, printed plain -- not the symlog default's decades in 10^k notation and their minor ticks
+    ax.set_xticks(_epoch_ticks([epochs for _, epochs, _, _ in curves], log=True))
+    ax.set_xticks([], minor=True)
     ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
-    ax.xaxis.set_minor_formatter(FormatStrFormatter("%g"))
-    ax.set_xlim(0, max(len(means) - 1 for _, means, _ in curves))  # no margin below checkpoint 0
-    for i, (_, means, _) in enumerate(curves):  # every row grey, one legend entry for the pack
-        ax.plot(np.arange(len(means)), means, color="grey", alpha=0.6, linewidth=1,
-                label=f"all ({len(curves)})" if i == 0 else None)
+    ax.set_xlim(0, max(epochs[-1] for _, epochs, _, _ in curves))  # no margin below epoch 0
+    for i, (_, epochs, means, _) in enumerate(curves):  # every row grey, one legend entry for the pack
+        ax.plot(epochs, means, color="grey", alpha=0.6, linewidth=1, label=f"all ({len(curves)})" if i == 0 else None)
 
-    row, means, idx_best = curves[idx_win]
+    row, epochs, means, idx_best = curves[idx_win]
     ax.axhline(means[idx_best], color="red", linestyle="--", linewidth=1)
-    ax.plot(np.arange(len(means)), means, color="black", linewidth=1, zorder=4, label="/".join(row))
-    # diamond + value on the selected point itself
-    ax.plot(idx_best, means[idx_best], marker="D", color="black", markersize=3, linestyle="none",
-            zorder=5, label=f"selected ({idx_best})")
-    ax.annotate(f"{means[idx_best]:.4f}", (idx_best, means[idx_best]), textcoords="offset points",
-                xytext=(0, 9), ha="center", color="black", fontsize=9, fontweight="bold")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=12)
-    ax.set_xlabel("Checkpoint", fontsize=10, fontweight="bold")
-    ax.set_ylabel(score_name, fontsize=10, fontweight="bold")
+    ax.plot(epochs, means, color="black", linewidth=1, zorder=4, label="/".join(row))
+    _mark_selected(ax, epochs[idx_best], means[idx_best], idx_best, "black")
     ax.set_ylim(0, 1)
     ax.legend(loc="best", fontsize=8)  # 'best' so the box dodges the curves and the selected-point marker
-    fig.savefig(fpath, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
+    _finish_curve_png(fig, ax, title, score_name, fpath, dpi)
 
-def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, spread_type, bold_high,
-                       ordered, heatmap, dpi):
+def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_groups, labels, cfg_stats):
     """Render one score table + one convergence plot per eval group for ONE
     dataset: dpath_stats/scores.png for native, dpath_stats/secondary/scores_<group>.png for
     the rest -- the comp mAP table (All/ID/OOD/I2T/I2I/T2I score columns, plus the enabled
@@ -786,10 +839,12 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
     (eval/sel/) -- and convergence.png (likewise secondary/convergence_<group>.png). rowset_of(group_key) -> (rows, comps_by, curves): the table's row keys
     (tuples of len(headers) cells, e.g. (arm, coord) under headers ('Arm', 'Coord')), comps_by[(row,
     dataset)] their completed-trial score maps by trial number (_collect_comps entries), and curves [(row,
-    means, idx_best)] their across-trial mean curves (_curve) for the convergence plot.
+    epochs, means, idx_best)] their across-trial mean curves (_curve) for the convergence plot.
 
     Tables: one '<key cells> (n_trials)' row per row key, stats aggregated across its completed
-    trials, titled '<score name> -- <subject> (<group name>)'. bold_high bolds each score column's
+    trials, titled 'mAP (<group name>; mean ± <SPREAD>)' -- the spread type in caps -- over `subject`'s lines (the
+    arm and the dataset, or the dataset alone), the convergence plot 'Composite mAP (<group name>) Log-Compute' over
+    the same. cfg_stats (StatsConfig, stats.yaml's) styles them: bold_high bolds each score column's
     highest-mean cell (ties included; '-' cells ignored), ordered orders the rows by their mean mAP
     'All' over THIS dataset's completed trials -- localized per dataset and per group, independent of the cross-dataset
     order used in the workbooks -- heatmap shades score cells white->#4caf50 over a fixed
@@ -800,55 +855,56 @@ def _render_stats_pngs(dpath_stats, headers, rowset_of, dataset, subject, eval_g
     checkpoint 0, the base eval); no plot when there are no curves."""
     for group_key, group_name in eval_groups.items():
         rows, comps_by, curves = rowset_of(group_key)
-        if ordered:
+        if cfg_stats.ordered:
             # localized order: this dataset's per-row trial means (single-dataset degenerate
             # case of _cross_dataset_means), not the cross-dataset means backing the workbook order
             means = _cross_dataset_means(rows, (dataset,), comps_by, "map", (labels[0],))
             rows = _order_rows(rows, means, labels[0])
         fpath_scores = group_path(dpath_stats, group_key, "scores", ".png")
         fpath_scores.parent.mkdir(parents=True, exist_ok=True)
-        title_suffix = f" -- {subject} ({group_name})"
         grid, killed_rows = _stats_table_grid(
             headers,
             labels,
             [(row, list(comps_by[(row, dataset)].values())) for row in rows],
             "map",
-            spread_type,
+            cfg_stats.spread_type,
         )
-        _render_stats_table(grid, len(headers), f"Composite mAP{title_suffix}", fpath_scores, bold_high, heatmap,
-                            killed_rows, dpi)
+        _render_stats_table(grid, len(headers), f"mAP ({group_name}; {_agg_label(cfg_stats.spread_type)})\n{subject}",
+                            fpath_scores, cfg_stats.bold_high, cfg_stats.heatmap, killed_rows, cfg_stats.dpi)
         if curves:
-            idx_win = max(range(len(curves)), key=lambda i: curves[i][1][curves[i][2]])
-            _plot_convergence(curves, idx_win, "Composite mAP", f"Composite mAP Convergence{title_suffix}",
-                              group_path(dpath_stats, group_key, "convergence", ".png"), dpi)
+            idx_win = max(range(len(curves)), key=lambda i: curves[i][2][curves[i][3]])
+            _plot_convergence(curves, idx_win, "Composite mAP", f"Composite mAP ({group_name}) Log-Compute\n{subject}",
+                              group_path(dpath_stats, group_key, "convergence", ".png"), cfg_stats.dpi)
 
-def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset, subject, spread_type, ordered, dpi):
-    """Render the logit-scale tables for ONE dataset beside its score tables: dpath/scale.png, the alpha the
-    logits carry, and dpath/logscale.png, the log alpha parameter the model learns, over the score tables' `rows`
-    recording the primary logit scale alone, and dpath/{scale1,scale2,logscale1,logscale2}.png over those recording
-    loss2's term's own too (separate logit scalars) -- each set only where it has rows (_scale_row_sets) -- one
+def _render_scale_tables(dpath, headers, rows, comps_native, scales_by, dataset, subject, cfg_stats):
+    """Render the logit-scale tables for ONE dataset beside its score tables: dpath/scale/table.png, the alpha the
+    logits carry, and dpath/logscale/table.png, the log alpha parameter the model learns, over the score tables'
+    `rows` recording the primary logit scale alone, and dpath/{scale1,scale2,logscale1,logscale2}/table.png over
+    those recording loss2's term's own too (separate logit scalars) -- each set only where it has rows
+    (_scale_row_sets) -- one
     '<key cells> (n_trials)' row per row key, its trials' readings at the four checkpoints (_SCALE_LABELS,
     _trial_scales; scales_by[(row, dataset)] the _collect_scales entries) aggregated across them like the score
     cells (mean ± spread). One figure, not one per eval group: the readings are the trials', every group being
     scored at native's pick, so the rows are native's -- ordered as native's scores.png orders them (comps_native
-    its score maps) under `ordered`, so the two read row for row. No winner bold and no heatmap: a scale is not a
-    score. Titled 'Logit Scale <symbol> -- <subject>'."""
-    if ordered:
+    its score maps) under cfg_stats.ordered, so the two read row for row. No winner bold and no heatmap: a scale is not a
+    score. Titled '<heading> (mean ± <SPREAD>)' -- the table's _SCALE_TABLES entry ('Logit Scale α', 'Logit Log-Scale
+    log α', the 2-loss ones subscripted) -- over `subject`'s lines (the arm and the dataset, or the dataset alone)."""
+    if cfg_stats.ordered:
         rows = _order_rows(rows, _cross_dataset_means(rows, (dataset,), comps_native, "map", ("All",)), "All")
-    dpath.mkdir(parents=True, exist_ok=True)
     for tables, rows_set in _scale_row_sets(rows, lambda row: scales_by[(row, dataset)].values()):
         entries = [(row, list(scales_by[(row, dataset)].values())) for row in rows_set]
-        for key, name, sym in tables:
-            grid, killed_rows = _stats_table_grid(headers, _SCALE_LABELS, entries, key, spread_type, mult=1.0)
-            _render_stats_table(grid, len(headers), f"Logit Scale {sym} -- {subject}", dpath / f"{name}.png", False,
-                                False, killed_rows, dpi)
+        for key, name, heading in tables:
+            grid, killed_rows = _stats_table_grid(headers, _SCALE_LABELS, entries, key, cfg_stats.spread_type, mult=1.0)
+            (dpath / name).mkdir(parents=True, exist_ok=True)
+            _render_stats_table(grid, len(headers), f"{heading} ({_agg_label(cfg_stats.spread_type)})\n{subject}",
+                                dpath / name / "table.png", False, False, killed_rows, cfg_stats.dpi)
 
-def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_groups, subject, spread_type, bold_high,
-                         heatmap, dpi):
+def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_groups, subject, cfg_stats):
     """Render the arm's coords' composite mAP All on `dataset` as one 2-D grid per eval group -- dpath_stats/scores_hpo2d.png
     for native, dpath_stats/secondary/scores_hpo2d_<group>.png for the rest -- over the two params hpo_coords sweeps:
     the earlier-declared down the rows, the later across the columns (the coord side of the coords' overrides.json,
-    whose keys keep the camp yaml's order), each axis's values in first-seen order along `coords` (the matrix's: the
+    whose keys keep the camp yaml's order; the corner cell names the two by their aliases, CFG_PARAM_ALIASES -- read
+    live, a display label -- or by the key itself where it has none), each axis's values in first-seen order along `coords` (the matrix's: the
     first combo group varying slowest, so the yaml's order again) and spelled as the coord names spell them
     (fmt_name_value). Each cell is the coord at that (row, column)'s _score_cells cell over its completed trials -- '-'
     with none, or where no coord has launched yet (a coord's params are read off its dir, written at its first trial's
@@ -869,35 +925,38 @@ def _render_hpo2d_tables(dpath_stats, dataset, arm, coords, comps_all, eval_grou
     vals_h = list(dict.fromkeys(payload[key_h] for payload in payloads.values()))
     coord_at = {(payload[key_v], payload[key_h]): coord for coord, payload in payloads.items()}
     for group_key, group_name in eval_groups.items():
-        grid, killed = [[f"{key_v} \\ {key_h}", *map(fmt_name_value, vals_h)]], set()
+        grid, killed = [[f"{CFG_PARAM_ALIASES.get(key_v, key_v)} \\ {CFG_PARAM_ALIASES.get(key_h, key_h)}",
+                         *map(fmt_name_value, vals_h)]], set()
         for r, val_v in enumerate(vals_v, 1):
             grid.append([fmt_name_value(val_v)])
             for c, val_h in enumerate(vals_h, 1):
                 comps = (list(comps_all[group_key][((arm, coord_at[(val_v, val_h)]), dataset)].values())
                          if (val_v, val_h) in coord_at else [])
-                grid[r].append(_score_cells([comp["map"] for comp in comps], ("All",), spread_type)[0])
+                grid[r].append(_score_cells([comp["map"] for comp in comps], ("All",), cfg_stats.spread_type)[0])
                 if any(comp["killed"] for comp in comps):
                     killed.add((r, c))
         means = {(r, c): mean for c, (col_means, _) in _col_styles(grid, False, 1).items() for r, mean in col_means.items()}
         top = max(means.values(), default=None)
-        winners = {rc for rc, mean in means.items() if bold_high and mean == top}
+        winners = {rc for rc, mean in means.items() if cfg_stats.bold_high and mean == top}
         fpath = group_path(dpath_stats, group_key, "scores_hpo2d", ".png")
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        _draw_table(grid, 1, f"Composite mAP All -- {subject} ({group_name})", fpath, means, winners, killed, heatmap, dpi)
+        _draw_table(grid, 1, f"Composite mAP ({group_name}; {_agg_label(cfg_stats.spread_type)})\n{subject}", fpath, means,
+                    winners, killed, cfg_stats.heatmap, cfg_stats.dpi)
 
 @rank0
-def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
+def update_arm_metrics(dataset, arm, eval_groups, cfg_stats):
     """Render `arm`'s cross-coord tables/plots for `dataset`:
     _dataset/<dataset>/_arm/<arm>/arm_summary/performance/{scores,convergence}.png (+ secondary/, see
     _render_stats_pngs) -- one 'Coord' row per planned coord of the arm (the phase's matrix) with >= 1
     completed trial in this dataset (coords without local trials are omitted: no blank rows in the pngs), titled
-    '<score name> -- <arm>, <dataset> (<group>)' -- in the screening phase the coords' composite mAP All gridded over
+    'mAP (<group>; mean ± <SPREAD>)' / <arm> / <dataset>, a line each -- in the screening phase the coords' composite mAP All gridded over
     the two hpo_coords params as well, performance/scores_hpo2d.png (+ secondary/, _render_hpo2d_tables) -- and, over
     the same rows, the logit-scale tables
-    arm_summary/{scale,logscale}.png (_render_scale_tables). An arm with no dir on this dataset (no trial of it
+    arm_summary/{scale,logscale}/table.png (_render_scale_tables). An arm with no dir on this dataset (no trial of it
     launched there) is skipped. Rendered at every completion of a trial of the arm on this dataset (train.py) --
     over whatever trials are in, so mid-sweep the rows carry different trial counts -- and by the runner on exit /
-    tools.regen_stats. The arm's arm_summary/best_coord/ mirror rides along on the same calls (update_best_coord)."""
+    tools.regen_stats. The arm's arm_summary/best_coord/ mirror, its coord strips and its logit-scale convergence
+    plots ride along on the same calls (update_best_coord, update_coord_strips, update_scale_convergence)."""
     dpath_arm = ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm
     if not dpath_arm.exists():
         return
@@ -914,18 +973,19 @@ def update_arm_metrics(dataset, arm, eval_groups, spread_type, bold_high, ordere
         curves = [((coord,), *_curve(dataset, arm, coord, group_key)) for (coord,) in rows]
         return rows, comps_by, curves
 
-    subject = f"{arm}, {DATASET_ALIAS2NAME[dataset]}"
+    subject = _title_lines(dataset, arm)  # every title's lines under its heading
     _render_stats_pngs(dpath_arm / "arm_summary" / "performance", ("Coord",), rowset, dataset, subject, eval_groups,
-                       _score_labels(supp_scores, _nshot_names(comps_all))[0], spread_type, bold_high, ordered, heatmap, dpi)
+                       _score_labels(cfg_stats.supp_scores, _nshot_names(comps_all))[0], cfg_stats)
     _render_hpo2d_tables(dpath_arm / "arm_summary" / "performance", dataset, arm, coords, comps_all, eval_groups, subject,
-                         spread_type, bold_high, heatmap, dpi)
+                         cfg_stats)
     scales_by = _collect_scales(arm_coords, (dataset,))
     _render_scale_tables(dpath_arm / "arm_summary", ("Coord",), rows,
                          {((coord,), dataset): comps_all["native"][((arm, coord), dataset)] for (coord,) in rows},
                          {((coord,), dataset): scales_by[((arm, coord), dataset)] for (coord,) in rows},
-                         dataset, subject, spread_type, ordered, dpi)
+                         dataset, subject, cfg_stats)
     update_best_coord(dataset, arm)
-    update_coord_strips(dataset, arm, spread_type, dpi)
+    update_coord_strips(dataset, arm, cfg_stats)
+    update_scale_convergence(dataset, arm, cfg_stats)
 
 @rank0
 def update_best_coord(dataset, arm):
@@ -995,12 +1055,13 @@ def update_test_best_coord(dataset, arm):
 # the learning-curve strip figures (update_coord_strips): (the series it plots, its target-implied bound trio --
 # None where the series has none -- and the symbol those bound lines are labelled by, the series' legend label,
 # its line colour, whether it is a fraction on [0, 1] -- pinned there as the trial figure's panel is, else
-# autoscaled -- and the figure's name). The logit scale in both parameterizations, and the pair-level entropy of
-# the similarity gradient the towers received (the sim_grad_entropy figure's top panel)
-_STRIP_FIGURES = (("scale", "scale_req", r"\alpha", r"$\alpha$", "tab:purple", False, "scale"),
-                  ("logit_scale", "log_scale_req", r"\log \alpha", r"$\log \alpha$", "tab:purple", False, "logscale"),
+# autoscaled -- the figure's name and its title heading). The logit scale in both parameterizations
+# (_SCALE_PARAMS), and the pair-level entropy of the similarity gradient the towers received (the sim_grad_entropy
+# figure's top panel)
+_STRIP_FIGURES = (*((key, req_key, sym, label, "tab:purple", False, name, heading)
+                    for key, name, heading, label, req_key, sym in _SCALE_PARAMS),
                   ("sim_grad_entropy_pair_actual", None, None, r"$\tilde{H}_{S,\text{pair}}$ (actual)", "red", True,
-                   "sim_grad_entropy_pair_actual"))
+                   "sim_grad_entropy_pair_actual", "Similarity-Gradient Entropy (pair, actual)"))
 
 def _req_labels(reqs, sym):
     """{stat: legend label} for a scale panel's target-implied bound trio (`reqs`: {stat: values}),
@@ -1094,7 +1155,7 @@ def _render_strips(strips, fpath_plot, best, label, sym, color, unit, plot_title
         # vanish beneath the trio exactly where they coincide
         ax.plot(x, vals, color=color, label=label, zorder=3)
         if spread is not None:
-            ax.fill_between(x, vals - spread, vals + spread, color=color, alpha=0.2, label=f"± {spread_type}")
+            ax.fill_between(x, vals - spread, vals + spread, color=color, alpha=0.2, label=_band_label(spread_type))
         labels_req = _req_labels(reqs, sym)
         for stat, linestyle in (("min", "-"), ("mean", "--"), ("max", "-")):
             if stat in reqs:
@@ -1160,35 +1221,13 @@ def _strip_blocks(strips, axes):
         blocks[-1].append(ax)
     return [] if len(blocks) == len(axes) else blocks
 
-@rank0
-def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
-                      subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
-    """Render `arm`'s strip figures for `dataset` --
-    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale,sim_grad_entropy_pair_actual}.png:
-    one panel of every planned coord of the arm (the phase's matrix) with a completed trial there, stacked
-    into one figure per series (_STRIP_FIGURES: scale, the alpha the logits carry; logscale, the log-scale
-    parameter the model learns; sim_grad_entropy_pair_actual, the pair-level entropy of the similarity
-    gradient the towers received -- the sim_grad_entropy figure's top panel), so an arm's coords read
-    against each other on one epoch axis instead of one figure apiece. trials/<n>/ draws trial n per coord
-    (a scale over its target-implied bound trio), agg/ the series alone -- no trio -- as the mean over the
-    coord's trials with a spread band (_strip_data, _render_strips). A coord whose trials don't record a
-    series (the pair entropy is an InfoNCE trial's with sim_grad_sums on) drops out of that figure, and an
-    arm with none gets no such figure. Each strip's caption carries its Native mAP composite All at the
-    selected checkpoint under the coord's name -- on trials/<n>/ the trial's own, on agg/ the mean ± spread
-    over the strip's trials, the cell the arm's scores table prints (_score_cells) -- and one caption is
-    bold: on agg/ the arm's best coord's by the across-trial mean (_best_coords, as best_coord/ picks it), on
-    trials/<n>/ that of the coord scoring highest in trial n, which need not be the same coord. The style
-    defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
-
-    The epoch axis is rebuilt the way the trial figures' is (n_samps_seen / samps_per_epoch), reading
-    samps_per_epoch off the recorded artifacts -- coord_metadata.json's horizon -- rather than rebuilding a
-    TrainConfig for it. A coord with a frozen
-    logit scale keeps its strip -- a flat line, read against its bound trio where there is one and otherwise
-    ticked at its one value (_pin_flat_yaxis). Rendered with the arm's tables (update_arm_metrics)."""
-    dpath_strips = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm / "arm_summary"
-                    / "coord_strips")
-    coords = _matrix()[dataset][arm]
-    panels = {}  # coord -> {trial_num: (x_train, data_epoch)}, completed trials only, campaign coord order
+def _coord_panels(dataset, arm, coords):
+    """{coord: {trial_num: (x_train, data_epoch)}} over `coords`' completed trials on `dataset` -- campaign coord
+    order, a coord with none absent: each trial's data_trial.pkl per-batch series under its epoch axis, rebuilt the
+    way the trial figures' is (n_samps_seen / samps_per_epoch), reading samps_per_epoch off the recorded artifacts
+    -- coord_metadata.json's horizon -- rather than rebuilding a TrainConfig for it. What the strip figures and the
+    logit-scale convergence plots draw (update_coord_strips, update_scale_convergence)."""
+    panels = {}
     for coord in coords:
         dpath_coord = _dpath_coord(dataset, arm, coord)
         if not (dpath_coord / "_trial").exists():
@@ -1204,7 +1243,96 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
             # curve anchors at 0 and the last stamp is dropped
             x_train = np.array([0.0, *(v / samps_per_epoch for v in data_epoch["n_samps_seen"][:-1])])
             panels.setdefault(coord, {})[dpath_trial.name] = (x_train, data_epoch)
+    return panels
 
+def _plot_scale_convergence(curves, lrs, label, title, spread_type, fpath, dpi):
+    """`curves` [(coord, x, vals, spread)] -- every coord of an arm's logit scale (`label` names the
+    parameterization on the y axis) over the epoch axis -- on one axes, each line coloured by its coord's lr.init
+    (`lrs` {coord: value}: one colour per distinct value, in `curves`' order, so the yaml's) with the legend naming
+    the values, not the coords, so the sweep's other dimension -- the scale's init -- reads off the lines sharing a
+    colour. A spread (the agg figure's) shades its line's across-trial band, which one grey legend entry names by
+    its type ('± STD' / '± STE', after `spread_type`). The `title` is stacked like the logit-scale tables' --
+    heading / arm / dataset -- and sits flush left."""
+    colors = {lr: f"C{i}" for i, lr in enumerate(dict.fromkeys(lrs[coord] for coord, *_ in curves))}
+    fig, ax = plt.subplots(figsize=(8, 5))
+    labelled = set()
+    for coord, x, vals, spread in curves:
+        lr = lrs[coord]
+        ax.plot(x, vals, color=colors[lr], linewidth=1, label=None if lr in labelled else f"LR {fmt_name_value(lr)}")
+        labelled.add(lr)
+        if spread is not None:
+            ax.fill_between(x, vals - spread, vals + spread, color=colors[lr], alpha=0.2)
+    ax.set_xlim(left=0)
+    ax.grid(True)
+    handles, _ = ax.get_legend_handles_labels()
+    if any(spread is not None for *_, spread in curves):
+        handles.append(Patch(color="grey", alpha=0.2, label=_band_label(spread_type)))
+    # outside the axes, hung off their top-right corner, so no line runs under it (the save is bbox-tight)
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, fontsize=8)
+    _finish_curve_png(fig, ax, title, label, fpath, dpi)
+
+@rank0
+def update_scale_convergence(dataset, arm, cfg_stats):
+    """Render `arm`'s logit-scale convergence plots for `dataset` --
+    _dataset/<dataset>/_arm/<arm>/arm_summary/{scale,logscale}/{trials/<n>,agg}/convergence.png: every planned
+    coord of the arm (the phase's matrix) with a completed trial there as one line -- the alpha the logits carry
+    (scale/) or the log-scale parameter the model learns (logscale/) over the epoch axis (_coord_panels) -- coloured
+    by the coord's lr.init, one legend entry per value (_plot_scale_convergence). trials/<n>/ draws trial n per
+    coord, agg/ the mean over the coord's trials with a '± <spread_type>' band, series truncated to the shortest as
+    the strips' are (_strip_data). Only for an arm sweeping BOTH lr.init and loss.logits.scale.init -- every
+    coord drawn declaring both on the coord side of its overrides.json (a coord's params are read off its dir,
+    written at its first trial's launch): with either fixed there is nothing to colour by, or one line per colour,
+    which the strips draw already. Rendered with the arm's tables (update_arm_metrics)."""
+    panels = _coord_panels(dataset, arm, _matrix()[dataset][arm])
+    payloads = {coord: load_json(_dpath_coord(dataset, arm, coord) / "overrides.json")["coord"] for coord in panels}
+    # no completed trial on this dataset yet, or not the sweep this figure is for
+    if not panels or not all({"lr.init", "loss.logits.scale.init"} <= payload.keys() for payload in payloads.values()):
+        return
+    lrs = {coord: payload["lr.init"] for coord, payload in payloads.items()}
+    dpath_arm = ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm / "arm_summary"
+    subject = _title_lines(dataset, arm)
+    for key, name, heading, label, *_ in _SCALE_PARAMS:
+        def curve(coord, trial_panels, spread_type):
+            x, (vals, spread), _ = _strip_data(trial_panels, key, None, spread_type)
+            return coord, x, vals, spread
+
+        for trial_num in sorted({trial_num for by_trial in panels.values() for trial_num in by_trial}, key=int):
+            curves = [curve(coord, [by_trial[trial_num]], None) for coord, by_trial in panels.items() if trial_num in by_trial]
+            _plot_scale_convergence(curves, lrs, label, f"{heading} (trial {trial_num})\n{subject}", cfg_stats.spread_type,
+                                    dpath_arm / name / "trials" / trial_num / "convergence.png", cfg_stats.dpi)
+        curves = [curve(coord, list(by_trial.values()), cfg_stats.spread_type) for coord, by_trial in panels.items()]
+        _plot_scale_convergence(curves, lrs, label, f"{heading}\n{subject}", cfg_stats.spread_type,
+                                dpath_arm / name / "agg" / "convergence.png", cfg_stats.dpi)
+
+@rank0
+def update_coord_strips(dataset, arm, cfg_stats, fontsize_axes=12, fontsize_ticks=8, fontsize_legend=8,
+                      subplot_border_width=1, fig_width=10, height_fixed=1.8, height_panel=0.8):
+    """Render `arm`'s strip figures for `dataset` --
+    _dataset/<dataset>/_arm/<arm>/arm_summary/coord_strips/{trials/<n>,agg}/{scale,logscale,sim_grad_entropy_pair_actual}.png:
+    one panel of every planned coord of the arm (the phase's matrix) with a completed trial there, stacked
+    into one figure per series (_STRIP_FIGURES: scale, the alpha the logits carry; logscale, the log-scale
+    parameter the model learns; sim_grad_entropy_pair_actual, the pair-level entropy of the similarity
+    gradient the towers received -- the sim_grad_entropy figure's top panel), so an arm's coords read
+    against each other on one epoch axis instead of one figure apiece. trials/<n>/ draws trial n per coord
+    (a scale over its target-implied bound trio), agg/ the series alone -- no trio -- as the mean over the
+    coord's trials with a spread band (_strip_data, _render_strips). A coord whose trials don't record a
+    series (the pair entropy is an InfoNCE trial's with sim_grad_sums on) drops out of that figure, and an
+    arm with none gets no such figure. Each strip's caption carries its Native mAP composite All at the
+    selected checkpoint under the coord's name -- on trials/<n>/ the trial's own, on agg/ the mean ± spread
+    over the strip's trials, the cell the arm's scores table prints (_score_cells) -- and one caption is
+    bold: on agg/ the arm's best coord's by the across-trial mean (_best_coords, as best_coord/ picks it), on
+    trials/<n>/ that of the coord scoring highest in trial n, which need not be the same coord. Each figure is
+    titled '<heading> (trial <n>)' / '<heading>' (_STRIP_FIGURES') over the arm and dataset lines, as the arm's
+    logit-scale convergence plots are. The style
+    defaults match plot_metrics', so a strip is the size its panel has in the trial's own figure.
+
+    The epoch axis is the recorded artifacts' (_coord_panels). A coord with a frozen
+    logit scale keeps its strip -- a flat line, read against its bound trio where there is one and otherwise
+    ticked at its one value (_pin_flat_yaxis). Rendered with the arm's tables (update_arm_metrics)."""
+    dpath_strips = (ArtifactManager.dpath_phase / "_dataset" / dataset / "_arm" / arm / "arm_summary"
+                    / "coord_strips")
+    coords = _matrix()[dataset][arm]
+    panels = _coord_panels(dataset, arm, coords)
     if not panels:  # no completed trial on this dataset yet
         return
     # the captions' scores -- each trial's Native mAP composite All at the selected checkpoint, as the arm's
@@ -1215,14 +1343,14 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
     best_agg = _best_coords(arm_coords, (dataset,), comps_by)[(arm, dataset)]
 
     def score(coord, trial_nums):
-        return _score_cells([comps_by[((arm, coord), dataset)][t]["map"] for t in trial_nums], ("All",), spread_type)[0]
+        return _score_cells([comps_by[((arm, coord), dataset)][t]["map"] for t in trial_nums], ("All",), cfg_stats.spread_type)[0]
 
     def best_at(trial_num):  # ties to the first in campaign order, as _best_coords breaks them
         scores = {coord: float(comps_by[((arm, coord), dataset)][trial_num]["map"]["all"])
                   for coord in coords if trial_num in comps_by[((arm, coord), dataset)]}
         return max(scores, key=scores.get)
 
-    for key, req_key, sym, label, color, unit, name in _STRIP_FIGURES:
+    for key, req_key, sym, label, color, unit, name, heading in _STRIP_FIGURES:
         # the trials recording the series, per batch (every trial its logit scale; the pair entropy an InfoNCE
         # trial's with sim_grad_sums on, empty otherwise): a coord without it drops out of this figure
         recorded = {coord: {trial_num: panel for trial_num, panel in by_trial.items() if len(panel[1][key]) == len(panel[0])}
@@ -1230,26 +1358,28 @@ def update_coord_strips(dataset, arm, spread_type, dpi, fontsize_axes=12, fontsi
         recorded = {coord: by_trial for coord, by_trial in recorded.items() if by_trial}
         if not recorded:
             continue
-        plot_title = f"{arm}\n{DATASET_ALIAS2NAME[dataset]}"
-        style = (label, sym, color, unit, plot_title, spread_type, fontsize_axes, fontsize_ticks, fontsize_legend,
-                 subplot_border_width, fig_width, height_fixed, height_panel, dpi)
+        lines = _title_lines(dataset, arm)
+        style = (cfg_stats.spread_type, fontsize_axes, fontsize_ticks, fontsize_legend, subplot_border_width, fig_width,
+                 height_fixed, height_panel, cfg_stats.dpi)
         for trial_num in sorted({trial_num for by_trial in recorded.values() for trial_num in by_trial}, key=int):
             strips = [(coord, score(coord, [trial_num]), *_strip_data([by_trial[trial_num]], key, req_key, None))
                       for coord, by_trial in recorded.items() if trial_num in by_trial]
-            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", best_at(trial_num), *style)
-        strips = [(coord, score(coord, by_trial), *_strip_data(list(by_trial.values()), key, req_key, spread_type))
+            _render_strips(strips, dpath_strips / "trials" / trial_num / f"{name}.png", best_at(trial_num), label, sym,
+                           color, unit, f"{heading} (trial {trial_num})\n{lines}", *style)
+        strips = [(coord, score(coord, by_trial), *_strip_data(list(by_trial.values()), key, req_key, cfg_stats.spread_type))
                   for coord, by_trial in recorded.items()]
-        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", best_agg, *style)
+        _render_strips(strips, dpath_strips / "agg" / f"{name}.png", best_agg, label, sym, color, unit,
+                       f"{heading}\n{lines}", *style)
 
 @rank0
-def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, dpi):
+def update_dataset_metrics(dataset, eval_groups, cfg_stats):
     """Render `dataset`'s cross-arm tables/plots:
     _dataset/<dataset>/dataset_summary/performance/{scores,convergence}.png (+ secondary/, see _render_stats_pngs):
     one ('Arm', 'Coord') row per planned arm (the phase's matrix), each at its BEST coord for this dataset, named in
     the row's Coord cell -- per group, the coord with the highest across-trial mean comp mAP All among the arm's
     coords with completed trials here, ties to the first in campaign order (_best_coords) -- so both its table row
     and its convergence curve are that coord's; arms with no completed trial here are omitted. Beside them, over the
-    same rows (native's picks), the logit-scale tables dataset_summary/{scale,logscale}.png (_render_scale_tables).
+    same rows (native's picks), the logit-scale tables dataset_summary/{scale,logscale}/table.png (_render_scale_tables).
     A dataset with no dir (no trial launched on it) is skipped.
     Rendered at every completion of a trial on this dataset (train.py) -- over whatever trials are in, so
     mid-sweep the rows carry different trial counts -- and by the runner on exit / tools.regen_stats."""
@@ -1260,8 +1390,8 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
     arms = list(matrix[dataset])
     arm_coords = _matrix_arm_coords(matrix, (dataset,))
     comps_all = _collect_comps(eval_groups, arm_coords, (dataset,))
-    labels = _score_labels(supp_scores, _nshot_names(comps_all))[0]
-    subject = DATASET_ALIAS2NAME[dataset]
+    labels = _score_labels(cfg_stats.supp_scores, _nshot_names(comps_all))[0]
+    subject = _title_lines(dataset)
     dpath_stats = dpath_dataset / "dataset_summary"
 
     def rowset_arms(group_key):
@@ -1272,9 +1402,9 @@ def update_dataset_metrics(dataset, eval_groups, spread_type, bold_high, ordered
 
     scales_by = _collect_scales(arm_coords, (dataset,))
     _render_stats_pngs(dpath_stats / "performance", ("Arm", "Coord"), rowset_arms, dataset, subject, eval_groups,
-                       labels, spread_type, bold_high, ordered, heatmap, dpi)
+                       labels, cfg_stats)
     _render_scale_tables(dpath_stats, ("Arm", "Coord"), rowset_arms("native")[0], comps_all["native"], scales_by,
-                         dataset, subject, spread_type, ordered, dpi)
+                         dataset, subject, cfg_stats)
 
 def _override_value(config, key):
     """Effective value of dot-path `key` in a row's config.json dict; '-' when a segment is absent --
@@ -1438,7 +1568,7 @@ def fpath_workbook(dpath_phase, kind, group_key):
     return dpath / f"{stem}.xlsx" if group_key == "native" else dpath / "secondary" / f"{stem}_{group_key.replace('_', '-')}.xlsx"
 
 @rank0
-def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides):
+def update_phase_metrics(eval_groups, cfg_stats):
     """Write the phase's workbooks, one per eval group under
     artifacts/<campaign>/_phase/<phase>/phase_summary/{armcoords,arms}/: <campaign>_<phase>-<kind>.xlsx for native,
     secondary/<campaign>_<phase>-<kind>_<group>.xlsx for the rest (fpath_workbook). The armcoords/
@@ -1462,8 +1592,8 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     bucket) to the right of both sheets' tables, and splits each mAP-sheet table banner into the
     title (over the key columns) plus grey merged 'Composite Scores' / 'Primitive Scores' / 'N-Shot
     Scores' group headers over their column groups (the accuracy sheet keeps full-width merged title
-    banners). Each sheet opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>)' title
-    cell (e.g. 'bc_dev - dev (Standard)') and a blank row, then
+    banners). Each sheet opens with a bold '<repo-parent-dir> - <campaign> (<eval group name>; mean ± <SPREAD>)'
+    title cell (e.g. 'bc_dev - dev (Standard; mean ± STD)') and a blank row, then
     stacks one table per campaign dataset vertically -- a bold left-aligned title banner, then a
     table of header row (key columns + one column per score label) and one '<key cells> (n_trials)'
     row per row key, then a blank spacer row before the next dataset -- with the always-shown 'Mean'
@@ -1528,6 +1658,9 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
     hug each column's longest header/data cell (banner/label text overflows); blank separator columns
     get a small ~square width. Regenerated at the end of each full seed sweep of the matrix (train.py,
     seed_sweep_complete) and unconditionally by the runner on exit / tools.regen_stats."""
+    spread_type, bold_high, ordered, heatmap, supp_scores, overrides = (
+        cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
+        cfg_stats.overrides)
     matrix = _matrix()
     datasets = list(matrix)
     arms = _matrix_arms(matrix, datasets)
@@ -1694,7 +1827,7 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
         if ArtifactManager.dpath_phase.name != "refine":
             write_workbook(fpath_workbook(ArtifactManager.dpath_phase, "armcoords", group_key),
                            ("Arm", "Coord"), rows_ac, lambda row, dataset: row, comps_by, hw_by, scales_by,
-                           crash_totals_ac, band_specs_ac, config_ac, group_name)
+                           crash_totals_ac, band_specs_ac, config_ac, f"{group_name}; {_agg_label(spread_type)}")
         # arms: each arm at its best coord per dataset under this group, the pick
         # named in the row's Coord cell -- '-' where the arm has no trials in that dataset, and in the
         # Mean table (dataset None: no single pick there)
@@ -1727,8 +1860,8 @@ def update_phase_metrics(eval_groups, spread_type, bold_high, ordered, heatmap, 
             if all(len(picks[row]) == 1 for row in rows):
                 band_specs_arms.append(("Coord Overrides", _band_keys("coord", rows, declared_arms, config_arms)))
         write_workbook(fpath_workbook(ArtifactManager.dpath_phase, "arms", group_key),
-                       ("Arm", "Coord"), rows, key_cells_arms,
-                       comps_arms, hw_arms, scales_arms, crash_totals_arms, band_specs_arms, config_arms, group_name)
+                       ("Arm", "Coord"), rows, key_cells_arms, comps_arms, hw_arms, scales_arms, crash_totals_arms,
+                       band_specs_arms, config_arms, f"{group_name}; {_agg_label(spread_type)}")
 
 
 def _collect_test_scores(group_keys, arm_coords, datasets):
@@ -1802,7 +1935,7 @@ def _build_test_blocks(rows, datasets, trial_nums, comps_by, chkpts, score_key, 
     return blocks, rows
 
 @rank0
-def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, supp_scores, overrides, dpi):
+def update_test_stats(eval_groups, cfg_stats):
     """Write the test workbooks, one per eval group under artifacts/<campaign>/_phase/test/phase_summary/arms/:
     <campaign>_test-arms.xlsx for native, secondary/<campaign>_test-arms_<group>.xlsx for the rest (fpath_workbook)
     (ArtifactManager.dpath_phase = the test dir; every trainval model already sits at its refine-selected
@@ -1820,6 +1953,9 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
     _dataset/<dataset>/dataset_summary/performance/{scores,secondary/scores_<group>}.png (_render_stats_pngs), one
     ('Arm', 'Coord') row per row with >= 1 scored trial in the dataset -- trainval runs each arm at its one
     refine pick, so no best-coord selection -- and no convergence.png (test scores a single checkpoint)."""
+    spread_type, bold_high, ordered, heatmap, supp_scores, overrides, dpi = (
+        cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores,
+        cfg_stats.overrides, cfg_stats.dpi)
     matrix = _matrix()
     datasets = list(matrix)
     arm_coords = _matrix_arm_coords(matrix, datasets)
@@ -1844,7 +1980,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
 
     for group_key, group_name in eval_groups.items():
         comps_by = comps_all[group_key]
-        banner = f"{group_name}; test"
+        banner = f"{group_name}; test; {_agg_label(spread_type)}"
         wb = Workbook()
         ws_map = wb.active
         ws_map.title = "mAP"
@@ -1865,8 +2001,7 @@ def update_test_stats(eval_groups, spread_type, bold_high, ordered, heatmap, sup
         if rows_dataset:
             _render_stats_pngs(ArtifactManager.dpath_phase / "_dataset" / dataset / "dataset_summary" / "performance",
                                ("Arm", "Coord"), lambda group_key, rows=rows_dataset: (rows, comps_all[group_key], []),
-                               dataset, DATASET_ALIAS2NAME[dataset], eval_groups, map_labels, spread_type, bold_high,
-                               ordered, heatmap, dpi)
+                               dataset, _title_lines(dataset), eval_groups, map_labels, cfg_stats)
 
 
 @rank0
@@ -1891,7 +2026,7 @@ def plot_metrics(
     data_eval = data["eval"]
     # three title lines: arm, coord, then the dataset (plus, per eval group, the group's name)
     dpath_coord = ArtifactManager.dpath_coord
-    title_prefix = f"{dpath_coord.parent.parent.name}\n{dpath_coord.name}\n{DATASET_ALIAS2NAME[ArtifactManager.dataset]}"
+    title_prefix = _title_lines(ArtifactManager.dataset, dpath_coord.parent.parent.name, dpath_coord.name)
 
     # eval panels (retrieval / n-shot / accuracy) are drawn only when eval ran;
     # train panels (loss / grad norm / lr) plot whenever train data is present (e.g. train_pt=trainval).

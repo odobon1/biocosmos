@@ -35,8 +35,9 @@ config:
     optimizer: opt
     lr_schedule: lr
   param:  # override key -> name component
-    n_epochs: E
     batch_size: BS
+    n_epochs: E
+    hw.act_chkpt: AC
     loss.blend.lambda: Lambda
     loss.blend.type: Blend
     loss.unitless: Unit

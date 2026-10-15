@@ -162,12 +162,11 @@ def _render_phase_tables(campaign: str, phase: str, groups: dict) -> None:
     cfg_stats = get_config_stats()
     ArtifactManager.dpath_phase = _dpath_phase(campaign, phase)
     matrix = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")["matrix"]
-    style = (cfg_stats.spread_type, cfg_stats.bold_high, cfg_stats.ordered, cfg_stats.heatmap, cfg_stats.supp_scores)
     for dataset, arms in matrix.items():
         for arm in arms:
-            update_arm_metrics(dataset, arm, groups, *style, cfg_stats.dpi)
-        update_dataset_metrics(dataset, groups, *style, cfg_stats.dpi)
-    update_phase_metrics(groups, *style, cfg_stats.overrides)
+            update_arm_metrics(dataset, arm, groups, cfg_stats)
+        update_dataset_metrics(dataset, groups, cfg_stats)
+    update_phase_metrics(groups, cfg_stats)
 
 def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     """Increment n_crashes[kind] ('ram' | 'vram' | 'other', see _classify_crash) at the trial,
@@ -512,8 +511,8 @@ def _prune_removed(campaign: str, phase: str, prev_seeds: list, seeds: list, pre
             if combo in shrunk:
                 ArtifactManager.dataset = combo[0]
                 ArtifactManager.dpath_coord = _dpath_coord(dpath_phase, *combo)
-                update_chkpt_selection(groups, cfg_stats.spread_type, cfg_stats.dpi)
-                update_metric_stats(groups, cfg_stats.spread_type)
+                update_chkpt_selection(groups, cfg_stats)
+                update_metric_stats(groups, cfg_stats)
     return bool(removed or seeds_removed)
 
 def _enable_child_subreaper() -> None:

@@ -17,8 +17,8 @@ orient:  # Cross-eval orientation: every method's layout is aligned to a running
 
 gif:
   frame_dur:
-    short: 1000  # ms each eval is shown in the evolving GIFs (one frame per eval)
     long: 3000  # ms instead for the marked evals: (base), (best), (selected)
+    short: 1000  # ms each eval is shown in the evolving GIFs (one frame per eval)
 
 bg_color: "#F5F5DC"  # Panel background color in hex format; (null) White
 

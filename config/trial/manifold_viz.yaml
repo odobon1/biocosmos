@@ -22,13 +22,13 @@ n_seeds: 1  # [int] >= 0; How many seeds the window spans; (0) Disables the whol
 n_seeds_offset: 0  # [int] >= 0; Where the window starts; (0) The first seed of every arm/coord/dataset group;
 # (1) Skip the first, viz the second; etc.
 
-store_cache: false  # {true, false}; (true) Keep each viz trial's per-eval caches (eval/all/<k>/viz/cache/ --
-# embs.npz, projections.npz, projections_pooled.npz, orient_ref.pkl; the bulk of a viz trial's footprint), the
-# input hand re-rendering / refitting (tools.regen_manifold_viz) reads; (false) The post-trial render worker
-# deletes them as the last step of a trial's FULL render, once the UMAP fits, stills, GIFs and sel/best/mirror
-# copies have consumed them (a partial hand render -- evo_only/no_evo -- never deletes) -- the stills and GIFs
-# survive, but the trial can't be re-rendered or refit without re-running. Test trials' eval/sel/viz/cache/
-# follows the same rule after their stills render
+store_cache: false  # {true, false}; (true) Keep each viz trial's raw per-eval embeddings (eval/all/<k>/viz/cache/
+# embs.npz -- the bulk of a viz trial's footprint), the input a REFIT under new tsne.*/umap.* params
+# (tools.regen_manifold_viz) reads; (false) The post-trial render worker deletes each eval's embs.npz as the last
+# step of a trial's FULL render, once the UMAP fits have consumed it (a partial hand render -- evo_only/no_evo --
+# never deletes). The rest of the cache (projections.npz, projections_pooled.npz, orient_ref.pkl -- the fitted 2D
+# coords) is kept either way, so stills and GIFs can always be RE-RENDERED under edited render settings; only
+# refits need the embeddings. Test trials' eval/sel/viz/cache/ follows the same rule after their stills render
 
 pooled:  # Shared-frame manifold viz: one fit per method on all eval thresholds' embeddings pooled, then each
 # threshold plotted as a masked subset of the shared layout (the plot_* flags select the same groups, rendered

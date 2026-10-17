@@ -727,9 +727,9 @@ DATASET2MARKER_SIZE = {
 @dataclass
 class ManifoldVizConfig:
     """manifold_viz.yaml contents -- the whole manifold-viz subsystem: which trials run it (the
-    n_seeds/n_seeds_offset seed window), whether the per-eval caches outlive the post-trial render
-    (store_cache), which panel groups are emitted, the pooled shared-frame fit, the per-method params,
-    and colors."""
+    n_seeds/n_seeds_offset seed window), whether the raw per-eval embeddings outlive the post-trial render
+    (store_cache), which panel groups are emitted and for which evals (stills), the pooled shared-frame fit,
+    the per-method params, and colors."""
 
     n_seeds: int
     n_seeds_offset: int
@@ -739,6 +739,7 @@ class ManifoldVizConfig:
     plot_2panel: bool
     plot_7panel: bool
     plot_6panel: bool
+    stills: str
     pooled: dict
     
     tsne: dict = field(default_factory=dict)
@@ -755,6 +756,9 @@ class ManifoldVizConfig:
 
         if self.n_seeds_offset < 0:
             raise ValueError(f"n_seeds_offset must be >= 0, got {self.n_seeds_offset}")
+
+        if self.stills not in ("all", "marked"):
+            raise ValueError(f"stills must be 'all' or 'marked', got {self.stills!r}")
 
         if self.pooled["budget"] <= 0:
             raise ValueError(f"pooled.budget must be > 0, got {self.pooled['budget']}")

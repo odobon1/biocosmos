@@ -8,6 +8,11 @@ plot_2panel: false   # {true, false}; (true) Plot the per-method leaf/penult pai
 plot_7panel: false   # {true, false}; (true) Plot the per-method 2x4 composites
 plot_6panel: true  # {true, false}; (true) Plot the cross-method grids (methods across, colorings down)
 
+stills: marked  # {all, marked}; Which evals get per-eval stills (viz/{vanilla,pooled}/): (all) every eval;
+# (marked) only base (eval 0), the trial's own-best, and the coord's selected eval once the pick is final
+# (a pick landing on an unmarked eval later draws it on demand from its cached projections,
+# report.update_chkpt_selection). The evolving GIFs cover every eval either way, as do test trials' lone eval
+
 orient:  # Cross-eval orientation: every method's layout is aligned to a running reference of per-class CoMs so the
 # evolving GIFs don't spin or mirror-flip between evals. t-SNE + UMAP get the full rigid alignment (orthogonal
 # Procrustes, rotation + reflection); PCA keeps its principal axes and only has its per-axis SIGN aligned (the

@@ -50,9 +50,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from utils.config import CFG_PARAM_ALIASES, fmt_name_value, group_path
+from utils.config import CFG_PARAM_ALIASES, fmt_name_value, group_path, load_manifold_viz_render_config_dict
 from utils.ddp import rank0
-from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, fpath_eval_scores
+from utils.manifold_viz import VizContext, render_eval
+from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, dpath_viz_cache, dpath_viz_plots, fpath_eval_scores
 from utils.utils import (
     paths,
     save_json,
@@ -390,6 +391,42 @@ def _plot_chkpt_means(epochs, means, spreads, idx_best, n_trials, spread_type, s
     _finish_curve_png(fig, ax, title, score_name, fpath, dpi)
 
 @rank0
+def _render_missing_stills(dpath_eval, chkpt, metadata):
+    """Draw eval dir `dpath_eval`'s stills from its cached projections when the selection lands on an eval that
+    has none: render/manifold_viz.yaml's `stills: marked` draws only the marked evals at render time, and the
+    coord's pick can move to an unmarked one as later trials land. Deferred until the coord's pick is final, so
+    a moving pick doesn't bake stale (selected) marks into the titles -- mid-coord, copy_viz below simply finds
+    nothing, the transient state this resolves on the coord's last trial's completion. Skipped when the eval's
+    UMAP isn't fit yet (the trial that just finished: its own detached render draws + re-copies,
+    tools.regen_manifold_viz) or when the trial has no viz cache at all (outside the manifold_viz seed window)."""
+    if dpath_viz_plots(dpath_eval, pooled=False).exists():
+        return
+    fpath_projs = dpath_viz_cache(dpath_eval) / "projections.npz"
+    if not fpath_projs.exists():
+        return
+    with np.load(fpath_projs) as npz:
+        if "umap_joint" not in npz:
+            return
+    dpath_coord = ArtifactManager.dpath_coord
+    arm, coord = dpath_coord.parent.parent.name, dpath_coord.name
+    if not coord_complete(ArtifactManager.dataset, arm, coord):
+        return
+    # the render worker's config: the campaign's frozen trial half + the live render half
+    # (tools.regen_manifold_viz's snapshot mode)
+    cfg_manifold_viz = {**load_json(ArtifactManager.dpath_phase / "cfg_baseline.json")["manifold_viz"],
+                        **load_manifold_viz_render_config_dict()}
+    viz_context = VizContext(arm=arm, coord=coord, dataset=metadata["dataset"], split=metadata["split"],
+                             eval_pt="val")
+    dpath_evals = dpath_eval.parent
+    render_eval(dpath_evals, dpath_eval.name, cfg_manifold_viz, viz_context, chkpt)
+    fpath_pooled = dpath_viz_cache(dpath_eval) / "projections_pooled.npz"
+    if cfg_manifold_viz["pooled"]["enabled"] and fpath_pooled.exists():
+        with np.load(fpath_pooled) as npz:
+            pooled_fit = "umap_joint" in npz
+        if pooled_fit:
+            render_eval(dpath_evals, dpath_eval.name, cfg_manifold_viz, viz_context, chkpt, orient=False,
+                        fname="projections_pooled.npz")
+
 def update_chkpt_selection(eval_groups, cfg_stats):
     """Checkpoint selection for this coord/dataset: the ONE checkpoint index every one of its trials is
     scored at, argmaxed over the across-trial MEAN Native curve rather than per trial --
@@ -406,7 +443,8 @@ def update_chkpt_selection(eval_groups, cfg_stats):
       - eval/sel/ in each trial: every group's metrics file of ITS eval/all/<idx_best>/ (a killed
         trial's eval at its own argmax), copied as-is into an eval dir's layout (scores.json,
         secondary/scores_<group>.json: fpath_eval_scores); and that eval's manifold-viz dir
-        stills under viz/ (copy_viz: vanilla/ + pooled/, not cache/)
+        stills under viz/ (copy_viz: vanilla/ + pooled/, not cache/), drawn on demand first when
+        stills: marked left that eval unrendered and the pick is final (_render_missing_stills)
       - eval/best/ in each trial: the same, at the trial's OWN native argmax (same base and tie
         rules) -- per-trial reference; nothing aggregates it
       - trial_metadata.json's chkpt ({'sel', 'best'}: the eval indices behind the two dirs)
@@ -460,6 +498,7 @@ def update_chkpt_selection(eval_groups, cfg_stats):
                     fpath_dest = fpath_eval_scores(dpath_dest, group_key)
                     fpath_dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(fpath_eval_scores(dpaths_chkpt[idx], group_key), fpath_dest)
+                _render_missing_stills(dpaths_chkpt[idx], idxs, metadata)
                 copy_viz(dpaths_chkpt[idx], dpath_dest)
             metadata["chkpt"] = idxs
             save_json(metadata, dpath_trial / "trial_metadata.json")

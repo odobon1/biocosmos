@@ -154,6 +154,7 @@ def make_manifold_viz_config_dummy(**overrides):
         "plot_2panel": True,
         "plot_7panel": True,
         "plot_6panel": True,
+        "stills": "marked",
         "pooled": {"enabled": True, "budget": 1.0, "pca_bounds": None},
         "umap": {"n_neighbors": 15, "min_dist": 0.1, "n_iter": None},
         "orient": {"ema_tau": 0.5},
@@ -176,6 +177,11 @@ def test_manifold_viz_config_rejects_nonpositive_pooled_budget() -> None:
     with pytest.raises(ValueError, match="pooled.budget must be > 0"):
         ManifoldVizConfig(**make_manifold_viz_config_dummy(
             pooled={"enabled": True, "budget": 0.0, "pca_bounds": None}))
+
+
+def test_manifold_viz_config_rejects_invalid_stills() -> None:
+    with pytest.raises(ValueError, match="stills must be 'all' or 'marked'"):
+        ManifoldVizConfig(**make_manifold_viz_config_dummy(stills="best"))
 
 
 def test_manifold_viz_config_rejects_invalid_pca_bounds() -> None:

@@ -1,17 +1,18 @@
 """
 Re-render a campaign's (or one trial's) manifold-viz plots from cached projections -- no train/eval rerun.
 Reads each eval's projections.npz under <trial_dir>/eval/all/ and regenerates the plots using the
-CURRENT config/{trial,render}/manifold_viz.yaml (so edits to colors/bg_color/gif.frame_dur/orient.ema_tau
-and to the plot_2panel/plot_7panel/plot_6panel group toggles take effect; the cached PCA/t-SNE/UMAP
-coords are reused, so tsne.* / umap.* cannot change here -- delete the cached coords to refit).
+CURRENT config/{trial,render}/manifold_viz.yaml (so edits to colors/bg_color/gif.frame_dur/orient.ema_tau,
+to the plot_2panel/plot_7panel/plot_6panel group toggles and to the stills gate (all/marked: which evals get
+per-eval stills) take effect; the cached PCA/t-SNE/UMAP coords are reused, so tsne.* / umap.* cannot change
+here -- a refit needs the raw embeddings (embs.npz), gone under store_cache: false, plus deleting the coords).
 
 This is also where UMAP is FIT (from each eval's cached embs.npz) on the first pass, since it has no
 sharded GPU implementation and this process is CPU-only; PCA and t-SNE are computed in the training
 loop. The fits are skipped once their coords are cached.
 
-And it is where `manifold_viz.store_cache: false` takes effect: a FULL render's last step deletes the
-trial's viz/cache/ dirs (a partial render -- evo_only/no_evo -- leaves them for the half it skipped),
-so such a trial cannot be re-rendered or refit afterwards -- the caches it would read are gone.
+And it is where `manifold_viz.store_cache: false` takes effect: a FULL render's last step deletes each
+eval's embs.npz (a partial render -- evo_only/no_evo -- leaves them for the half it skipped). The fitted
+projections stay, so such a trial can still be RE-RENDERED here -- only refit is off the table.
 
 A test trial (test.py's, under _phase/test/) has one eval, its eval/sel/, cached under eval/sel/viz/cache/: its UMAP
 is fit and its stills drawn there (render_test_trial) -- no evolving GIFs and no pooled frame, a single eval having
@@ -36,12 +37,11 @@ snapshot    use the campaign's frozen config snapshot (cfg_baseline.json under a
 """
 
 from pathlib import Path
-import shutil
 import sys
 
 from utils.config import load_manifold_viz_config_dict, load_manifold_viz_render_config_dict
 from utils.manifold_viz import (compute_umap_eval, compute_umap_projections, compute_umap_pooled, render_eval,
-                             render_evolution, render_test_eval, VizContext, _ordered_eval_dirs)
+                             render_evolution, render_test_eval, VizContext, _eval_marks, _ordered_eval_dirs)
 from utils.report import coord_complete, update_best_coord, update_test_best_coord
 from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, dpath_viz_cache, dpath_viz_dyn, dpath_viz_plots
 from utils.utils import load_json, paths
@@ -62,8 +62,8 @@ def _viz_context(dpath_trial):
 
 def trial_viz_cached(dpath_trial):
     """Whether a test trial ran: test.py caches every trial's projections under eval/sel/viz/cache/ (before its score
-    files, so a scored trial's cache is complete). A store_cache: false trial's cache is deleted after its render, so
-    it reads as un-run here and the campaign sweep skips it -- there is nothing left to re-render from anyway."""
+    files, so a scored trial's cache is complete). The projections outlive a store_cache: false render (only the
+    embeddings are dropped), so a rendered trial stays re-renderable here; only one that never ran is skipped."""
     return (dpath_viz_cache(dpath_trial / "eval" / "sel") / "projections.npz").exists()
 
 def render_test_trial(dpath_trial, cfg_manifold_viz=None):
@@ -92,11 +92,11 @@ def render_test_trial(dpath_trial, cfg_manifold_viz=None):
     ArtifactManager.dpath_phase = dpath_phase
     update_test_best_coord(dpath_trial.parents[5].name, dpath_trial.parents[3].name)
 
-    # delete-after-use, as in render_trial: the stills are drawn and the mirror rebuilt, so the lone
-    # eval's cache has no consumer left (a test trial has no partial-render modes)
-    dpath_cache = dpath_viz_cache(dpath_eval)
-    if not cfg_manifold_viz["store_cache"] and dpath_cache.exists():
-        shutil.rmtree(dpath_cache)
+    # delete-after-use, as in render_trial: the UMAP is fit, so the lone eval's raw embeddings have no
+    # consumer left (a test trial has no partial-render modes); the projections stay re-renderable
+    fpath_embs = dpath_viz_cache(dpath_eval) / "embs.npz"
+    if not cfg_manifold_viz["store_cache"] and fpath_embs.exists():
+        fpath_embs.unlink()
 
 def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=None):
     dpath_evals = dpath_eval_seq(dpath_trial)
@@ -120,9 +120,14 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     if cfg_manifold_viz["pooled"]["enabled"]:
         compute_umap_pooled(dpath_evals, cfg_manifold_viz)
 
+    # stills: marked draws only the marked evals (base / the trial's own best / the coord's selected once final --
+    # _eval_marks); a pick that later lands on an unmarked eval is drawn on demand (report.update_chkpt_selection).
+    # The evolving GIFs below sweep every eval regardless -- they render their own frames from the caches.
+    stills_all = cfg_manifold_viz["stills"] == "all"
     if not evo_only:
         for d in _ordered_eval_dirs(dpath_evals):
-            render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, chkpt)
+            if stills_all or _eval_marks(d.name, chkpt):
+                render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, chkpt)
     if not skip_evo:
         render_evolution(dpath_evals, dpath_viz_dyn(dpath_trial, pooled=False), cfg_manifold_viz, viz_context, chkpt)
 
@@ -132,7 +137,8 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     if cfg_manifold_viz["pooled"]["enabled"]:
         if not evo_only:
             for d in _ordered_eval_dirs(dpath_evals, "projections_pooled.npz"):
-                render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, chkpt, orient=False, fname="projections_pooled.npz")
+                if stills_all or _eval_marks(d.name, chkpt):
+                    render_eval(dpath_evals, d.name, cfg_manifold_viz, viz_context, chkpt, orient=False, fname="projections_pooled.npz")
         if not skip_evo:
             render_evolution(dpath_evals, dpath_viz_dyn(dpath_trial, pooled=True), cfg_manifold_viz, viz_context, chkpt, orient=False, fname="projections_pooled.npz")
 
@@ -153,14 +159,16 @@ def render_trial(dpath_trial, evo_only=False, skip_evo=False, cfg_manifold_viz=N
     # the stills: rebuilt now (a no-op unless the arm is complete)
     update_best_coord(dpath_trial.parents[5].name, dpath_arm.name)
 
-    # delete-after-use: this render is the caches' last consumer, so a campaign that doesn't keep them
-    # (store_cache false) drops them here -- only after a FULL render, since a partial one (evo_only /
-    # no_evo) still needs them for the half it skipped
+    # delete-after-use: this render's UMAP fits are the raw embeddings' last consumer, so a campaign that
+    # doesn't keep them (store_cache false) drops each eval's embs.npz here -- only after a FULL render, since
+    # a partial one (evo_only / no_evo) still needs them for the half it skipped. The fitted projections
+    # (+ orientation refs) stay, so any eval's stills can still be re-rendered (a moved selection's on-demand
+    # draw, a hand regen) -- only refits under new tsne.*/umap.* params are off the table.
     if not (evo_only or skip_evo) and not cfg_manifold_viz["store_cache"]:
         for d in dpath_evals.iterdir():
-            dpath_cache = dpath_viz_cache(d)
-            if dpath_cache.exists():
-                shutil.rmtree(dpath_cache)
+            fpath_embs = dpath_viz_cache(d) / "embs.npz"
+            if fpath_embs.exists():
+                fpath_embs.unlink()
 
 def render_campaign(campaign, evo_only=False, skip_evo=False, cfg_manifold_viz=None):
     """Re-render every trial in a campaign, sweeping each phase's planned matrix from its phase_metadata.json

@@ -1,4 +1,6 @@
-datasets: [cub, nymph]
+# mechanistic
+
+datasets: [cub]
 
 n_trials_screen: 1
 n_trials_refine: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the refine phase; (null) no refine phase
@@ -10,13 +12,11 @@ baseline_overrides:
   loss.loss1.xnce.tsm.sm_scale: pinned4
 
 ablation_arms:
-  - - {loss.logits.scale.freeze: false, loss.xnce.block_res: alpha_res, name: LearnedScale-ScaleResBlock}
-    - {loss.logits.scale.freeze: false, loss.xnce.block_res: full_res, name: LearnedScale-ModelResBlock}
-    - {loss.logits.scale.freeze: true, loss.xnce.block_res: full_res, name: FrozenScale-ModelResBlock}
-    - {loss.logits.scale.freeze: true, loss.xnce.block_res: null, name: FrozenScale-ResFul}
+  - - {loss.xnce.block_res: [alpha_res, alpha_ires, alpha_ures, full_res, full_ures]}
 
 hpo_coords:
-  - - {lr.init: [2.0e-5, 6.0e-5, 2.0e-4]}
-  - - {loss.logits.scale.init: [1, 4, 16, 64, 256]}
+  - - {lr.init: [1.0e-x]}
+  - - {loss.logits.scale.init: [x]}
+  - - {loss.logits.scalar_lr_factor: [100]}
 
 suffix: null  # {null, [str]}; no suffix if set to null

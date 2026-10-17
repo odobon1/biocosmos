@@ -1,0 +1,19 @@
+# tuned
+
+datasets: [cub]
+
+n_trials_screen: 3
+n_trials_refine: null  # {null, [int]} >= n_trials_screen; seeds each arm's best coord per dataset is topped up to in the refine phase; (null) no refine phase
+trainval: false  # {true, false}; (true) after the refine phase, retrain each pick on the trainval partition up to its refine-selected checkpoint, one run per refine seed, saving the weights (needs n_trials_refine)
+
+baseline_overrides: {}
+
+ablation_arms:
+  - - {loss.loss1.targ: mp, loss.loss1.xnce.tsm.type: linear, name: SupCon}
+
+hpo_coords:
+  - - {lr.init: [1.0e-6, 1.0e-5]}
+  - - {loss.logits.scale.init: [1, 3, 10, 30, 100]}
+  - - {loss.logits.scalar_lr_factor: [100]}
+
+suffix: null  # {null, [str]}; no suffix if set to null

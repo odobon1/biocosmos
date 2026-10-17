@@ -1,5 +1,18 @@
 campaigns:
-  - camp.grid_skid
-  - camp.res_block_bin
-  - camp.scale_req_hcon
-  - camp.scale_req_res_block_hcon
+  - camp.rg_cub_grid-skid_flyp
+  - camp.rg_cub_grid-skid_hcon-p4
+  - camp.rg_cub_grid-skid_hcon
+  - camp.rg_cub_grid-skid_soft-flyp
+  - camp.rg_cub_grid-skid_soft-supcon
+  - camp.rg_cub_grid-skid_supcon
+  - camp.rg_cub_main_flyp
+  - camp.rg_cub_main_hcon
+  - camp.rg_cub_main_soft-flyp
+  - camp.rg_cub_main_soft-supcon
+  - camp.rg_cub_main_supcon
+  - camp.rg_cub_p14_hcon
+  - camp.rg_cub_p14_soft-flyp
+  - camp.rg_cub_p14_soft-supcon
+  # - camp.rg_cub_res-block_flyp
+  # - camp.rg_cub_res-block_hcon-p4
+  # - camp.rg_cub_res-block_supcon

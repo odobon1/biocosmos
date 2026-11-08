@@ -3,7 +3,7 @@ python -m tools.build_img_cache
 
 Pack each dataset's individual image files into one indexable blob per dataset, so training opens ONE file
 instead of one small file per sample. These datasets are 100k+ tiny images, and the loader does one
-`Image.open()` per sample per epoch (utils/data.py `__getitem__`); collapsing them into a single mmap-indexed
+`Image.open()` per sample per epoch (utils/data.py `__getitem__`); collapsing them into a single offset-indexed
 pack removes that per-sample filesystem overhead. This is a win on any filesystem (fewer inodes, less metadata
 traffic, better read locality, and one big file is trivially staged to node-local disk), and it is *critical* on
 shared parallel filesystems where per-file metadata ops dominate -- see CLUSTER NOTES for the HiPerGator case.
@@ -25,17 +25,18 @@ pointed at the pack. Source images are never modified. The FIRST build of a data
 small source file once (the per-sample cost we are amortizing away) -- and is metadata/IO-bound.
 
 Do NOT rebuild a pack while jobs are training from it: a job that already staged the old pack keeps working
-(deleted inodes persist under its mmap), but one that restages mid-run can pair the new pack.bin with an
+(deleted inodes persist under its open handle), but one that restages mid-run can pair the new pack.bin with an
 already-loaded old index -- misaligned offsets, loud decode errors. Rebuild between campaigns.
 
 Reading a sample later (this is what utils/data.py does when hw.use_img_cache is enabled, after staging the
-pack to node-local scratch -- see stage_img_cache in utils/data.py):
-    import io, mmap, pickle
+pack to node-local scratch -- see stage_img_cache in utils/data.py; os.pread rather than an mmap so pack
+pages never enter process RSS, which SLURM's proc-summed accounting would double-count across workers):
+    import io, os, pickle
     from PIL import Image
     index = pickle.load(open(out_dir / "index.pkl", "rb"))
-    mm = mmap.mmap(open(out_dir / "pack.bin", "rb").fileno(), 0, access=mmap.ACCESS_READ)
+    f = open(out_dir / "pack.bin", "rb")
     off, ln = index[rfpath]
-    img = Image.open(io.BytesIO(mm[off:off + ln])).convert("RGB")
+    img = Image.open(io.BytesIO(os.pread(f.fileno(), ln, off))).convert("RGB")
 
 --------------------------------------------------------------------------------------------------------------
 CLUSTER NOTES (HiPerGator today; what to check when re-running on PACE or elsewhere)

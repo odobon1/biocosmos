@@ -21,7 +21,6 @@ import torchvision.transforms.functional as F
 import random
 import getpass
 import io
-import mmap
 import os
 import shutil
 import tempfile
@@ -415,8 +414,8 @@ def _img_cache_staged_valid(dpath_src, dpath_staged):
         return False
     if fpath_meta.read_bytes() != (dpath_src / "meta.json").read_bytes():
         return False
-    # tolerate partial eviction: a /tmp reaper can age out pack.bin/index.pkl (mmap reads don't refresh
-    # atime) while the frequently-read meta.json survives -- classify as invalid, don't crash
+    # tolerate partial eviction: a /tmp reaper can age out pack.bin/index.pkl (pack reads don't reliably
+    # refresh atime under relatime) while the frequently-read meta.json survives -- classify as invalid, don't crash
     fpath_pack = dpath_staged / "pack.bin"
     if not fpath_pack.exists() or not (dpath_staged / "index.pkl").exists():
         return False
@@ -493,10 +492,13 @@ class ImageTextDataset(Dataset):
             stage_img_cache(self.dataset)
             self._fpath_cache_pack = dpath_img_cache_staged(self.dataset) / "pack.bin"
             self._cache_index = _load_cache_index(self.dataset, dpath_img_cache_staged(self.dataset))
-            # mmap opened lazily per process: DataLoader workers fork after __init__, and an mmap handle
-            # must belong to the process that reads through it
+            # file handle opened lazily per process: DataLoader workers fork after __init__, and a handle
+            # must belong to the process that reads through it. Reads go through os.pread rather than an
+            # mmap: mapped pack pages count toward each worker's RSS, and SLURM's proc-summed MaxRSS
+            # (what the cluster watchdog polices) double-counts them across workers -- a large pack reads
+            # as TBs "used" against the job's request. pread serves from the same page cache without the
+            # pages ever entering process RSS.
             self._cache_file = None
-            self._cache_mm = None
 
         self.n_samples = len(self.index_data)
 
@@ -559,11 +561,10 @@ class ImageTextDataset(Dataset):
 
         # load + preprocess image
         if self.use_img_cache:
-            if self._cache_mm is None:
+            if self._cache_file is None:
                 self._cache_file = open(self._fpath_cache_pack, "rb")
-                self._cache_mm = mmap.mmap(self._cache_file.fileno(), 0, access=mmap.ACCESS_READ)
             offset, length = self._cache_index[self.index_data[idx]["rfpath"]]
-            img = Image.open(io.BytesIO(self._cache_mm[offset:offset + length])).convert("RGB")
+            img = Image.open(io.BytesIO(os.pread(self._cache_file.fileno(), length, offset))).convert("RGB")
         else:
             img = Image.open(paths["imgs"][self.dataset] / self.index_data[idx]["rfpath"]).convert("RGB")
         img_t = self.img_pp(img)

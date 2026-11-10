@@ -999,7 +999,8 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
     print(f"Campaign: '{campaign}' {phase} ({len(trials)} trials)")
     PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
 
-def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done: set) -> str:
+def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done: set,
+               render_proc: subprocess.Popen | None) -> tuple[str, subprocess.Popen | None]:
     """Run one phase's trials under artifacts/<campaign>/_phase/<phase>/, re-planning from the camp yaml between trials: each
     round re-reads it (camp.read), re-derives the phase's plan from it and the earlier phases' results (_plan_phases)
     and, when that differs from the plan applied, applies it (_apply_plan: the tree pruned of what was removed,
@@ -1010,14 +1011,21 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     dirs, the stats trees -- lives under its dir. Returns 'complete' once every planned trial of the phase is complete,
     'incomplete' when the run finished but some trial failed for good (the campaign stops at this phase -- see
     run_campaign), 'replan' when the edited yaml switched the phase off or left an earlier phase with pending trials
-    (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM."""
+    (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM.
+    `render_proc` carries the one in-flight post-trial render across the phase boundary: in, a render handed over
+    from outside this phase (an earlier campaign, or -- riding through on 'replan' -- a later phase of this one);
+    out, whatever render is still running at exit. The phase deliberately does NOT drain it on the way out: a
+    blocking wait parks the GPUs for the render's duration (~1.5 h on lepid), past the cluster's 1-hour
+    0%-utilization cancellation, so the caller overlaps it with the next phase/campaign's trials instead."""
     dpath_phase = _dpath_phase(campaign, phase)
     max_retries = cfg_snapshot["hardware"]["max_retries"]  # consecutive no-progress trial retries before giving up
     del_base_eval_cache = cfg_snapshot["train"]["operational"]["del_base_eval_cache"]  # null / 'campaign' / 'trial'
     # the eval groups every table/plot of the phase is rendered per -- off the FROZEN snapshot, the set
     # its trials actually scored, so a later reporting.yaml edit can't ask for a group never written
     groups = eval_groups(cfg_snapshot["reporting"])
-    render_proc: subprocess.Popen | None = None
+    # the carried-in render (if any): its trial sits outside this phase's plans (another campaign's, or a later
+    # phase's), so re-planning needn't wait on it -- only locally spawned renders can be prune targets
+    render_foreign = render_proc
     plans = None  # the plans applied: the earlier phases', then this one's (_plan_phases)
     trials: list[tuple] = []
 
@@ -1034,7 +1042,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
             # the last trial's render reads and writes its trial dir, which a plan that drops that trial (its seed, coord,
             # arm or dataset) is about to delete (_prune_removed): let it finish first, or its mkdirs resurrect a
             # metadata-less stub of the dir that trips every _trial_dpaths sweep after
-            if render_proc is not None and render_proc.poll() is None:
+            if render_proc is not None and render_proc is not render_foreign and render_proc.poll() is None:
                 render_proc.wait()
             for earlier, plan_earlier in zip(_PHASES, plans_new[:-1]):
                 _phase_metadata(campaign, camp.name, earlier, plan_earlier.seeds, plan_earlier.matrix, groups)
@@ -1113,7 +1121,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                     render_proc.terminate()
                 _render_phase_tables(campaign, phase, groups)
                 PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
-                return "interrupted"
+                return "interrupted", render_proc
             except Exception as e:
                 _log_crash(dpath_trial, e)
                 kind = _classify_crash(e)
@@ -1161,28 +1169,22 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
             render_proc = _spawn_render(f"{campaign}/_phase/{phase}/_dataset/{dataset}/_arm/{arm}/_coord/{coord}/_trial/{dpath_trial.name}")
 
     if plans is None:  # handed back before a plan was ever applied: nothing of the phase was touched
-        return outcome
+        return outcome, render_proc
 
     _render_phase_tables(campaign, phase, groups)
-
-    # let the last trial's render finish before the phase exits
-    if render_proc is not None:
-        try:
-            render_proc.wait()
-        except KeyboardInterrupt:
-            render_proc.terminate()
-            return "interrupted"
+    # the last trial's render is NOT drained here -- it rides out with the outcome so the caller overlaps it
+    # with the next phase/campaign's trials (see the docstring; main drains it when the queue ends)
 
     if outcome == "replan":
-        return outcome
+        return outcome, render_proc
     n_failed = sum(not _check_trial_completion(_dpath_trial(dpath_phase, *trial)) for trial in trials)
     if n_failed:
         print(f"Campaign: '{campaign}' {phase} incomplete -- {n_failed} trial(s) failed (see its manifest.log); "
               f"the next phase is not started. Relaunch to resume them.", flush=True)
-        return "incomplete"
-    return "complete"
+        return "incomplete", render_proc
+    return "complete", render_proc
 
-def run_campaign(campaign: str, name: str) -> bool:
+def run_campaign(campaign: str, name: str, render_proc: subprocess.Popen | None) -> tuple[bool, subprocess.Popen | None]:
     """Run, under artifacts/<campaign>/, the campaign config/campaigns/<name>.yaml defines: the screening phase -- every arm x
     coord on every dataset for n_trials_screen seeds, under _phase/screen/ -- then, unless n_trials_refine is null, the refine
     phase under _phase/refine/: each arm's refine pick per dataset -- its current screening best, replacing any earlier pick
@@ -1197,8 +1199,10 @@ def run_campaign(campaign: str, name: str) -> bool:
     (_run_phase). An addition that needs screening (or refine) trials while a later phase runs hands the campaign back
     to the screening phase, which runs them (completed trials are skipped) before the later phases resume. A phase
     whose trials don't all complete (a trial failed for good) ends the campaign there: the next phase is not started
-    until a relaunch has resumed the failed trials. Returns False when the run was interrupted (Ctrl-C / SIGTERM) --
-    the campaign queue stops on it -- True otherwise (the campaign is over, complete or not)."""
+    until a relaunch has resumed the failed trials. Returns (completed, render_proc): completed False when the run
+    was interrupted (Ctrl-C / SIGTERM) -- the campaign queue stops on it -- True otherwise (the campaign is over,
+    complete or not); render_proc the last trial's still-running render (if any), carried in/out so it overlaps
+    the next campaign's trials instead of idling the GPUs (_run_phase; main drains it when the queue ends)."""
     # Validate the planned matrix before any side effects: every arm / coord name must be unique, and
     # no override key may be claimed by both an arm and a coord.
     cfg = _load_campaign_config(name)
@@ -1220,27 +1224,35 @@ def run_campaign(campaign: str, name: str) -> bool:
     camp = _Camp(campaign, name, cfg_snapshot)
     done: set[tuple] = set()  # the (phase, dataset, arm, coord, seed) trials this run has dealt with (_run_phase)
     while True:  # a later phase hands back ('replan') when a live edit gave an earlier phase trials to run, or switched it off
-        outcome = _run_phase(campaign, "screen", cfg_snapshot, camp, done)
+        outcome, render_proc = _run_phase(campaign, "screen", cfg_snapshot, camp, done, render_proc)
         if outcome != "complete":
-            return outcome != "interrupted"
+            return outcome != "interrupted", render_proc
         cfg, _, _ = camp.read()
         if cfg.n_trials_refine is None:
-            return True
-        outcome = _run_phase(campaign, "refine", cfg_snapshot, camp, done)
+            return True, render_proc
+        # a render never crosses INTO a later phase of its own campaign: that phase's plan application copies and
+        # reconciles the earlier phases' trial dirs (_apply_plan / _copy_refine_picks), racing a render still
+        # writing one -- drain first. (Riding through an EARLIER phase on 'replan' is fine: screening's plans
+        # never touch later phases' trees.)
+        if render_proc is not None:
+            render_proc.wait()
+        outcome, render_proc = _run_phase(campaign, "refine", cfg_snapshot, camp, done, render_proc)
         if outcome == "replan":
             continue
         if outcome != "complete":
-            return outcome != "interrupted"
+            return outcome != "interrupted", render_proc
         cfg, _, _ = camp.read()
         if not cfg.trainval:
-            return True
+            return True, render_proc
         # trainval: the refine matrix once more, on the trainval partition -- one run per refine seed, each stopped at the
         # pick's refine-selected checkpoint. The LR schedule keeps its full n_epochs horizon (warmup a fraction of it,
         # cosine over all of it), so checkpoint k sees the LR it saw in train; only the epochs are longer.
-        outcome = _run_phase(campaign, "trainval", cfg_snapshot, camp, done)
+        if render_proc is not None:  # same cross-phase hazard as before refine
+            render_proc.wait()
+        outcome, render_proc = _run_phase(campaign, "trainval", cfg_snapshot, camp, done, render_proc)
         if outcome == "replan":
             continue
-        return outcome != "interrupted"
+        return outcome != "interrupted", render_proc
 
 
 def _load_campaign_config(name: str) -> CampaignConfig:
@@ -1328,6 +1340,8 @@ def main() -> None:
         raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/campaign_queue.yaml)")
     time_start = time.time()
     runs: list[_Run] = []
+    render_proc: subprocess.Popen | None = None  # the one in-flight post-trial render, carried campaign to campaign
+    render_campaign: str | None = None  # the campaign that spawned it
     while True:
         # a campaign already run whose yaml has since changed its plan is relaunched -- the earliest such first --
         # before the queue's next entry is launched
@@ -1343,12 +1357,32 @@ def main() -> None:
         else:
             print(f"campaign_queue: relaunching '{run.spec}' -- its plan changed since it ran", flush=True)
         try:
-            completed = run_campaign(run.campaign, run.name)
+            # the carried render rides into the next campaign as foreign -- exempt from _run_phase's re-plan
+            # wait on the premise that no plan there can prune its trial. Relaunching its OWN campaign (plan
+            # changed, or a duplicated queue entry) voids that premise: a removal in the new plan may prune the
+            # very trial dir it is writing, so drain first.
+            if render_proc is not None and run.campaign == render_campaign:
+                render_proc.wait()
+                render_proc = None
+            handed = render_proc
+            completed, render_proc = run_campaign(run.campaign, run.name, render_proc)
+            if render_proc is not handed:  # this campaign spawned it (a carried render returned as-is keeps its owner)
+                render_campaign = run.campaign
         except KeyboardInterrupt:
             completed = False
         if not completed:
+            if render_proc is not None and render_proc.poll() is None:
+                render_proc.terminate()
             print(f"campaign_queue: '{run.spec}' interrupted -- exiting queue", flush=True)
             return
+    # nothing is left for the GPUs; drain the last campaign's render -- exiting would kill it mid-write. An
+    # idle-GPU cancellation landing during this wait costs only this render (tools.regen_manifold_viz redoes
+    # it by hand); every campaign is already complete.
+    if render_proc is not None:
+        try:
+            render_proc.wait()
+        except KeyboardInterrupt:
+            render_proc.terminate()
     print(f"campaign_queue: drained -- {len(runs)} campaign(s) run", flush=True)
     print(f"campaign_queue: {datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
     print(f"campaign_queue: total time {timedelta(seconds=int(time.time() - time_start))}\n", flush=True)

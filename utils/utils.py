@@ -7,23 +7,21 @@ import numpy as np
 import torch
 import json
 from typing import List, Any, Dict, Optional
-import math
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from utils.text import get_text_template as get_dataset_text_template
 from utils.ddp import rank0
+from utils.hardware import get_cluster
 
 import pdb
 
 
-# CLUSTER = "pace"  # PACE
-CLUSTER = "hpg"  # HiPerGator
-
+cluster = get_cluster()
 
 dpath_root = Path(os.getcwd())
-if CLUSTER == "pace":
+if cluster == "ice-slurm":  # PACE-ICE
 
     dpath_haag = Path("/storage/ice-shared/cs8903onl")
     dpath_lepid = dpath_haag / "butterflies"
@@ -66,7 +64,7 @@ if CLUSTER == "pace":
             },
         },
     }
-elif CLUSTER == "hpg":
+elif cluster == "hipergator":  # HiPerGator
 
     dpath_group = Path("/lustre/blue2/arthur.porto")
     dpath_data = dpath_group / "data"
@@ -488,28 +486,28 @@ class PrintLog:
         # sim_targ_stats is off -- batch_stats arrives None)
         fields_grad_norm = []
         if diag["emb_logit_grads"]:
-            fields_grad_norm.append(f"img={tensor_grad_l2_norm(embs_img_b):.2e}")
-            fields_grad_norm.append(f"txt={tensor_grad_l2_norm(embs_txt_b):.2e}")
+            fields_grad_norm.append(f"img={tensor_grad_l2_norm(embs_img_b):.4e}")
+            fields_grad_norm.append(f"txt={tensor_grad_l2_norm(embs_txt_b):.4e}")
             # logits: the branch tuple, or None on the chunked path (loss_chunk_size != null), where no
             # full logit matrix exists, so the diagnostic is structurally unavailable -- omit the field
             # rather than log nan
             if logits is not None:
-                fields_grad_norm.append(f"logit={branch_grad_l2_norm(logits):.2e}")
+                fields_grad_norm.append(f"logit={branch_grad_l2_norm(logits):.4e}")
         if diag["grad_norm_model"]:
-            fields_grad_norm.append(f"model={grad_norm_model:.2e}")
+            fields_grad_norm.append(f"model={grad_norm_model:.4e}")
         if diag["delta_norm_model"]:
-            fields_grad_norm.append(f"step={delta_norm_model:.2e}")  # ||delta theta||: the update the optimizer actually applied
+            fields_grad_norm.append(f"step={delta_norm_model:.4e}")  # ||delta theta||: the update the optimizer actually applied
         line_grad_norm = " ".join(fields_grad_norm)
 
         # the pre-step read (batch_logit_scalars), so the line sits on the batch's own alpha / bias
-        line_logits_param = " ".join(f"{key}={value:.2e}" for key, value in logit_scalars.items())
+        line_logits_param = " ".join(f"{key}={value:.4e}" for key, value in logit_scalars.items())
 
         batch_str = f"batch {idx_batch}:"
         if PrintLog.logging:
             PrintLog.log_batch_general.write(
                 f"{batch_str:<10} "
                 f"lr={lr:.2e} "
-                f"loss={loss_batch:.2e} "
+                f"loss={loss_batch:.4e} "
                 # a unitless loss blend's effective lambda (batch_stats: needs reporting.batch_diagnostics.sim_targ_stats)
                 + (f"lambda_eff={batch_stats['lambda_eff']:.4f} " if batch_stats is not None and "lambda_eff" in batch_stats else "")
                 + f"\n"
@@ -543,11 +541,11 @@ class PrintLog:
             if batch_stats is not None and "kl" in batch_stats:
                 PrintLog.log_batch_kl.write(
                     f"{batch_str:<10} "
-                    f"KL={batch_stats['kl']: .4e} "
-                    f"E_U={batch_stats['kl_u']: .4e} "
-                    f"E_R={batch_stats['kl_ur'] + batch_stats['kl_ir']: .4e} "
-                    f"E_UR={batch_stats['kl_ur']: .4e} "
-                    f"E_IR={batch_stats['kl_ir']: .4e}"
+                    f"KL={batch_stats['kl']:.4e} "
+                    f"E_U={batch_stats['kl_u']:.4e} "
+                    f"E_R={batch_stats['kl_ur'] + batch_stats['kl_ir']:.4e} "
+                    f"E_UR={batch_stats['kl_ur']:.4e} "
+                    f"E_IR={batch_stats['kl_ir']:.4e}"
                     f"\n"
                 )
 

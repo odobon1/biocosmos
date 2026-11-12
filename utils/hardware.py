@@ -9,6 +9,10 @@ from typing import Optional
 import torch
 
 
+def get_cluster():
+    """Returns 'hipergator' if on UF HPG, returns 'ice-slurm' if on GATech PACE-ICE"""
+    return os.environ.get("SLURM_CLUSTER_NAME")
+
 def apply_backend_flags(hw):
     # torch backend wall-clock switches from hardware.yaml (semantics-neutral up to cudnn.benchmark's
     # algo choice). cudnn.benchmark is owned here, not by seed_libs. cuDNN conv TF32
@@ -20,7 +24,6 @@ def apply_backend_flags(hw):
     # autocast (mixed_prec), which is unaffected by this.
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.benchmark = hw.cudnn_benchmark
-
 
 def _tres_mem_gib(mem: str) -> float:
     """TRES mem value -> GiB. SLURM prints a K/M/G/T suffix; a bare number is MiB."""

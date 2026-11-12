@@ -8,8 +8,8 @@ pack removes that per-sample filesystem overhead. This is a win on any filesyste
 traffic, better read locality, and one big file is trivially staged to node-local disk), and it is *critical* on
 shared parallel filesystems where per-file metadata ops dominate -- see CLUSTER NOTES for the HiPerGator case.
 
-CLUSTER-AGNOSTIC BY DESIGN: image roots come from utils.utils.paths (which switch on the CLUSTER flag in
-utils/utils.py), IMG_CACHE_DIR is derived relative to the project root, and the only cluster-specific step --
+CLUSTER-AGNOSTIC BY DESIGN: image roots come from utils.utils.paths (which switch on
+utils.hardware.get_cluster()),IMG_CACHE_DIR is derived relative to the project root, and the only cluster-specific step --
 Lustre OST striping of the cache dir -- auto-skips when `lfs` is absent. So this runs as-is on PACE or anywhere.
 
 For each dataset in DATASETS this writes, under <project_root>/../../img_cache/<dataset>/:

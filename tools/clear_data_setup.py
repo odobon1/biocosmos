@@ -2,7 +2,7 @@
 python -m tools.clear_data_setup
 """
 
-from utils.utils import paths
+from utils.paths import paths
 from tools.clear_preprocessing import clear_all_preprocessing, remove_path
 
 

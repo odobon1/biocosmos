@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from utils.utils import RunningMean, PrintLog, get_text_template, save_npz, shuffle_list
+from utils.utils import save_npz, shuffle_list
+from utils.log import PrintLog
+from utils.timing import RunningMean
+from utils.text import get_text_template
 
 
 def test_running_mean_tracks_average() -> None:

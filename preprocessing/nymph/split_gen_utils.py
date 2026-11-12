@@ -2,7 +2,7 @@ import glob
 import pandas as pd
 from tqdm import tqdm
 
-from utils.utils import paths
+from utils.paths import paths
 from preprocessing.common.split_gen import GenSplitDataManager
 
 

@@ -1,7 +1,7 @@
 import os
 from tqdm import tqdm
 
-from utils.utils import paths
+from utils.paths import paths
 from utils.data import truncate_subspecies
 
 import pdb

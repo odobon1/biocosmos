@@ -39,7 +39,8 @@ from utils.report import (
     update_phase_metrics,
 )
 from utils.train import ArtifactManager
-from utils.utils import load_json, paths
+from utils.utils import load_json
+from utils.paths import paths
 
 
 def regen_campaign(campaign, cfg_stats):

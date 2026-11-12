@@ -1,6 +1,8 @@
 
+from utils.paths import paths
+
+
 def build_img_ptrs(genera):
-    from utils.utils import paths
 
     img_ptrs = {}
     for genus in sorted(genera):

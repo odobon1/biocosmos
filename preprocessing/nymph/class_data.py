@@ -19,7 +19,8 @@ class_data = {
 import pandas as pd
 from tqdm import tqdm
 
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 from preprocessing.nymph.species_ids import get_cids_nymph
 
 import pdb

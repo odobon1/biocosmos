@@ -5,7 +5,8 @@ from itertools import combinations
 from typing import Dict, List
 
 from utils.imb import _pair_prob_freqs
-from utils.utils import paths, load_pickle, load_split
+from utils.utils import load_pickle, load_split
+from utils.paths import paths
 
 import pdb
 

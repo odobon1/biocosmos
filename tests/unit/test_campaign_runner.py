@@ -11,7 +11,7 @@ from utils.config import load_aliases_config_dict
 from utils.config import CampaignConfig
 from utils.config import group_path
 from utils.report import fpath_workbook
-from utils.utils import PrintLog
+from utils.log import PrintLog
 
 
 # a single no-override coord: the degenerate no-HPO case, so a campaign's matrix is its arms alone

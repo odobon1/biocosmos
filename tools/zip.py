@@ -19,7 +19,7 @@ import time
 import zipfile
 
 from utils.config import load_zip_config_dict
-from utils.utils import paths
+from utils.paths import paths
 
 
 MANIF_VIZ_CACHE = ("embs.npz", "projections.npz", "projections_pooled.npz", "orient_ref.pkl")

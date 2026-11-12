@@ -40,7 +40,9 @@ from utils.hardware import apply_backend_flags
 from utils.manifold_viz import compute_projections
 from utils.report import update_test_best_coord, update_test_stats
 from utils.train import ArtifactManager, dpath_viz_cache, dpath_viz_plots, format_scores
-from utils.utils import get_text_template, load_json, save_json, paths
+from utils.utils import load_json, save_json
+from utils.paths import paths
+from utils.text import get_text_template
 
 import pdb
 

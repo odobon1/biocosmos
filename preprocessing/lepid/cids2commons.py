@@ -4,7 +4,8 @@ python -m preprocessing.lepid.cids2commons
 
 from itertools import chain
 
-from utils.utils import paths, save_pickle
+from utils.utils import save_pickle
+from utils.paths import paths
 from preprocessing.common.cid2commons import build_cids2commons
 from preprocessing.lepid.species_ids import get_cids_lepid
 

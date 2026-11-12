@@ -9,7 +9,8 @@ import math
 
 from utils.data import spawn_dataloader, spawn_partition_data, spawn_partition_indexes_txts
 from utils.head import compute_sim
-from utils.utils import load_split, Timer
+from utils.utils import load_split
+from utils.timing import Timer
 from utils.config import TrainConfig, eval_groups
 
 import pdb

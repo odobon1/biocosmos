@@ -13,7 +13,8 @@ from pathlib import Path
 import pandas as pd
 
 from utils.data import Split, assemble_data_index
-from utils.utils import paths, save_pickle, seed_libs, load_pickle, DATASET_ALIAS2NAME
+from utils.utils import save_pickle, seed_libs, load_pickle
+from utils.paths import paths, DATASET_ALIAS2NAME
 from utils.config import get_config_splits
 
 

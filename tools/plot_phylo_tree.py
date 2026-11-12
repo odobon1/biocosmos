@@ -16,7 +16,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
-from utils.utils import load_pickle, DATASET_ALIAS2NAME
+from utils.utils import load_pickle
+from utils.paths import DATASET_ALIAS2NAME
 
 
 TREE_PATHS = [

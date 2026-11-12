@@ -4,7 +4,8 @@ python -m pytest tests/integration/test_splits.py
 
 import pytest
 
-from utils.utils import load_pickle, paths
+from utils.utils import load_pickle
+from utils.paths import paths
 
 
 DATASETS = ["bryo", "cub", "lepid", "nymph"]  # all tests run on each dataset

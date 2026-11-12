@@ -1,6 +1,6 @@
 import os
 
-from utils.utils import paths
+from utils.paths import paths
 
 import pdb
 

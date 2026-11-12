@@ -18,7 +18,8 @@ from PIL.GifImagePlugin import getheader, getdata
 
 from utils.data import load_cid_2_penult, load_cid_2_nshot
 from utils.ddp import rank0
-from utils.utils import DATASET_ALIAS2NAME, save_npz, save_pickle, load_pickle
+from utils.utils import save_npz, save_pickle, load_pickle
+from utils.paths import DATASET_ALIAS2NAME
 from utils.config import DATASET2MARKER_SIZE
 from utils.train import dpath_viz_cache, dpath_viz_plots
 

@@ -1,7 +1,8 @@
 import torch
 from typing import List
 
-from utils.utils import paths, load_pickle
+from utils.utils import load_pickle
+from utils.paths import paths
 
 
 def compute_rank_encs(dataset: str, cids: List[str]) -> List[List[int]]:

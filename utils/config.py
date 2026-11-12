@@ -5,7 +5,8 @@ import math
 import yaml
 from decimal import Decimal
 
-from utils.utils import PrintLog, load_split, paths
+from utils.utils import load_split
+from utils.paths import paths
 from utils.hardware import compute_dataloader_workers_prefetch
 
 import pdb

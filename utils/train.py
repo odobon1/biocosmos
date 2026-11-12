@@ -10,15 +10,14 @@ import torch
 import shutil
 
 from utils.utils import (
-    paths,
     save_pickle,
     load_pickle,
     save_json,
     load_json,
     utc_now,
-    TimeTracker,
-    Timer,
 )
+from utils.paths import paths
+from utils.timing import TimeTracker, Timer
 from utils.config import eval_groups, group_path, targ_dependent_loss
 from utils.ddp import rank0
 

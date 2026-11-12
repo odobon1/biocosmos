@@ -29,7 +29,8 @@ from pathlib import Path
 
 
 from utils.text import get_text_generator
-from utils.utils import paths, load_pickle, load_json, load_split, shuffle_list
+from utils.utils import load_pickle, load_json, load_split, shuffle_list
+from utils.paths import paths
 from utils.config import TrainConfig, _aug_cfg_openclip
 
 import pdb

@@ -8,7 +8,8 @@ from Bio.Phylo.BaseTree import Tree
 from tqdm import tqdm
 import requests
 
-from utils.utils import paths, save_pickle, get_subdirectory_names
+from utils.utils import save_pickle, get_subdirectory_names
+from utils.paths import paths
 from preprocessing.common.phylo import augment_tree_with_polytomies
 
 import pdb

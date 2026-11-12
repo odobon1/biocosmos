@@ -16,7 +16,8 @@ from Bio import Phylo
 
 from preprocessing.lepid.phylo import build_tree_lepid, combine_trees_lepid_nymph
 from preprocessing.nymph.phylo import build_tree_nymph
-from utils.utils import paths, load_pickle
+from utils.utils import load_pickle
+from utils.paths import paths
 from preprocessing.common.phylo import (
     augment_tree_with_polytomies,
     rehome_missing_classes_in_represented_higher_rank,

@@ -6,7 +6,7 @@ import os
 import zipfile
 import urllib.request
 
-from utils.utils import paths
+from utils.paths import paths
 
 
 SPLITS_URL = "http://datasets.d2.mpi-inf.mpg.de/xian/xlsa17.zip"

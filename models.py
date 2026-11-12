@@ -13,9 +13,8 @@ import math
 from contextlib import nullcontext
 from typing import List, Tuple, Any, Dict, Optional
 
-from utils.utils import paths
+from utils.paths import paths
 from utils.loss import (
-    Criterion,
     chunked_bce_loss_backward,
     chunked_infonce_loss_backward,
     hard_pair_similarity_margin,

@@ -7,7 +7,8 @@ from Bio.Phylo.BaseTree import Clade, Tree
 from copy import deepcopy
 from typing import Dict, List, Optional, Set, Tuple
 
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 from utils.data import truncate_subspecies
 from preprocessing.nymph.phylo import build_tree_nymph
 from preprocessing.common.phylo import augment_tree_with_polytomies, prune_tree, augment_class_data

@@ -21,7 +21,8 @@ class_data = {
 from tqdm import tqdm
 import pandas as pd
 
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 from preprocessing.lepid.species_ids import get_cids_lepid
 
 import pdb

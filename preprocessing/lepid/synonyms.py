@@ -43,7 +43,8 @@ from preprocessing.common.cid2commons import _get_thread_session
 from preprocessing.common.gbif import gbif_name_candidates, gbif_species_key
 from preprocessing.lepid.phylo import build_tree_lepid
 from preprocessing.nymph.phylo import build_tree_nymph
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 
 import pdb
 

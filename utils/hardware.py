@@ -9,10 +9,6 @@ from typing import Optional
 import torch
 
 
-def get_cluster():
-    """Returns 'hipergator' if on UF HPG, returns 'ice-slurm' if on GATech PACE-ICE"""
-    return os.environ.get("SLURM_CLUSTER_NAME")
-
 def apply_backend_flags(hw):
     # torch backend wall-clock switches from hardware.yaml (semantics-neutral up to cudnn.benchmark's
     # algo choice). cudnn.benchmark is owned here, not by seed_libs. cuDNN conv TF32

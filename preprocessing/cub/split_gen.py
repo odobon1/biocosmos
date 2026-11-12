@@ -14,7 +14,7 @@ from preprocessing.common.split_gen import (
     generate_splits,
 )
 from preprocessing.cub.split_gen_utils import build_img_ptrs, normalize_cub_rfpath
-from utils.utils import paths
+from utils.paths import paths
 
 
 def build_splits() -> None:

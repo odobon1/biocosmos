@@ -13,16 +13,10 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import math
 
-from utils.utils import (
-    seed_libs,
-    get_text_template,
-    RunningMean,
-    Timer,
-    TimeTracker,
-    PrintLog,
-    model_grad_l2_norm,
-    save_npz,
-)
+from utils.utils import seed_libs, model_grad_l2_norm, save_npz
+from utils.log import PrintLog
+from utils.timing import RunningMean, Timer, TimeTracker
+from utils.text import get_text_template
 from models import VLMWrapper
 from utils.config import eval_groups, get_config_stats, load_learning_curves_config_dict
 from utils.data import spawn_dataloader, spawn_partition_data

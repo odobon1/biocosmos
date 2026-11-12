@@ -2,7 +2,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from preprocessing.common.split_gen import truncate_subspecies, GenSplitDataManager
-from utils.utils import paths
+from utils.paths import paths
 
 
 def build_img_ptrs(cids):

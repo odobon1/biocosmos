@@ -67,7 +67,9 @@ from utils.report import (
     pick_best_coords,
 )
 from utils.train import ArtifactManager, dpath_eval_seq, dpath_viz_cache
-from utils.utils import paths, save_pickle, save_json, load_json, utc_now, PrintLog
+from utils.utils import save_pickle, save_json, load_json, utc_now
+from utils.paths import paths
+from utils.log import PrintLog
 
 # Trial subprocesses (torchrun) inherit this env. expandable_segments lets the CUDA caching allocator
 # hand the training step's reserved-but-unallocated pool to the large O(N^2) t-SNE buffers at eval time,

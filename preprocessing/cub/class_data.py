@@ -21,7 +21,8 @@ from scipy.io import loadmat
 from tqdm import tqdm
 import requests
 
-from utils.utils import paths, save_pickle
+from utils.utils import save_pickle
+from utils.paths import paths
 
 import pdb
 

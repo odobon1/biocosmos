@@ -44,7 +44,8 @@ from utils.manifold_viz import (compute_umap_eval, compute_umap_projections, com
                              render_evolution, render_test_eval, VizContext, _eval_marks, _ordered_eval_dirs)
 from utils.report import coord_complete, update_best_coord, update_test_best_coord
 from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, dpath_viz_cache, dpath_viz_dyn, dpath_viz_plots
-from utils.utils import load_json, paths
+from utils.utils import load_json
+from utils.paths import paths
 
 
 def _viz_context(dpath_trial):

@@ -2,7 +2,8 @@
 python -m preprocessing.nymph.cids2commons
 """
 
-from utils.utils import paths, save_pickle
+from utils.utils import save_pickle
+from utils.paths import paths
 from preprocessing.common.cid2commons import build_cids2commons
 from preprocessing.nymph.species_ids import get_cids_nymph
 

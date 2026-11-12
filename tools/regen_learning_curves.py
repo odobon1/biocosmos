@@ -24,7 +24,8 @@ import utils.hardware
 from utils.config import eval_groups, get_config_train, inject_snapshots, load_learning_curves_config_dict
 from utils.report import plot_metrics, update_best_coord
 from utils.train import ArtifactManager
-from utils.utils import load_json, load_split, paths
+from utils.utils import load_json, load_split
+from utils.paths import paths
 
 
 def regen_learning_curves(campaign):

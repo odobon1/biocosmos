@@ -17,7 +17,8 @@ from tqdm import tqdm
 from models import VLMWrapper
 from utils.config import get_config_train, load_train_config_dict
 from utils.ddp import setup_ddp, cleanup_ddp
-from utils.utils import load_split, save_pickle, paths
+from utils.utils import load_split, save_pickle
+from utils.paths import paths
 
 import pdb
 

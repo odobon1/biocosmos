@@ -27,7 +27,8 @@ import requests
 
 from preprocessing.common.gbif import gbif_name_candidates
 from preprocessing.common.phylo import prune_tree, augment_tree_with_polytomies
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 
 import pdb
 

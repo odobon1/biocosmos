@@ -6,7 +6,8 @@ from Bio import Phylo
 from Bio.Phylo.BaseTree import Tree
 
 from preprocessing.common.phylo import augment_class_data, prune_tree, augment_tree_with_polytomies
-from utils.utils import paths, load_pickle, save_pickle
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 
 import pdb
 

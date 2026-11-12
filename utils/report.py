@@ -55,14 +55,13 @@ from utils.ddp import rank0
 from utils.manifold_viz import VizContext, render_eval
 from utils.train import ArtifactManager, arm_lock, copy_viz, dpath_eval_seq, dpath_viz_cache, dpath_viz_plots, fpath_eval_scores
 from utils.utils import (
-    paths,
     save_json,
     save_json_listview,
     save_pickle,
     load_pickle,
     load_json,
-    DATASET_ALIAS2NAME,
 )
+from utils.paths import paths, DATASET_ALIAS2NAME
 
 import pdb
 

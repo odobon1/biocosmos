@@ -15,7 +15,8 @@ from PIL import Image
 from models import CLIP_MODELS, SIGLIP_MODELS
 from utils.data import MaybeConvertMode, build_train_augmentation_transforms
 from utils.config import get_config_train, load_train_config_dict
-from utils.utils import load_split, paths
+from utils.utils import load_split
+from utils.paths import paths
 
 
 NUM_IMAGES = 10

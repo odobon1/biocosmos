@@ -10,7 +10,8 @@ from openpyxl import load_workbook
 from utils import report
 from utils.config import StatsConfig, group_path
 from utils.train import ArtifactManager
-from utils.utils import load_pickle, save_pickle, paths
+from utils.utils import load_pickle, save_pickle
+from utils.paths import paths
 
 
 # {group key: reported name} for the groups in play, the shape utils.config.eval_groups hands the

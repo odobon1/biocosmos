@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from utils.utils import paths
+from utils.paths import paths
 
 
 DATASETS = ("bryo", "cub", "lepid", "nymph")

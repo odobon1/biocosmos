@@ -1,8 +1,5 @@
-from contextlib import contextmanager
 from dataclasses import asdict
 import math
-import os
-import platform
 import time
 import random
 import numpy as np
@@ -10,12 +7,16 @@ import torch
 import shutil
 
 from utils.utils import (
+    atomic_write,
+    dir_lock,
     save_pickle,
     load_pickle,
     save_json,
     load_json,
+    update_json,
     utc_now,
 )
+from utils import chkpt
 from utils.paths import paths
 from utils.timing import TimeTracker, Timer
 from utils.config import eval_groups, group_path, targ_dependent_loss
@@ -275,7 +276,7 @@ class TrialData:
     @classmethod
     def resume(cls, dpath_trial, trial_state):
         obj = cls(dpath_trial)
-        obj.data = load_pickle(obj.fpath_data)
+        obj.data = trial_state["data"]  # the checkpoint's own copy of the series (ArtifactManager.load_trial_state), not data_trial.pkl's
         obj.data_epoch = obj.data["epoch"]
         obj.data_eval = obj.data["eval"]
         obj.n_evals = trial_state["n_evals"]
@@ -324,17 +325,13 @@ def copy_viz(dpath_eval, dpath_dest):
         if dpath_viz_plots(dpath_eval, pooled).exists():
             shutil.copytree(dpath_viz_plots(dpath_eval, pooled), dpath_viz_plots(dpath_dest, pooled))
 
-@contextmanager
 def arm_lock(dpath_arm):
     """Exclusive flock on `dpath_arm` (_dataset/<dataset>/_arm/<arm>/), held by every writer of the arm's trials'
     eval/{sel,best}/ (report.update_chkpt_selection, tools.regen_manifold_viz's re-copy) and of its
     arm_summary/best_coord/ mirror, which copies them (report.update_best_coord) -- the train process, the runner
     and the detached render worker (which overlaps the next trial) each do some of this, so they take turns. Not
     reentrant: never nest two holds in one process. Released by the OS if the holder dies."""
-    import fcntl  # Unix-only; imported here so utils.train stays importable on Windows
-    with open(dpath_arm / ".lock", "w") as lockf:
-        fcntl.flock(lockf, fcntl.LOCK_EX)
-        yield
+    return dir_lock(dpath_arm)
 
 class ArtifactManager:
 
@@ -343,7 +340,9 @@ class ArtifactManager:
     dpath_trial = None
     fpath_metadata_trial = None
     dpath_eval_final = None
-    dpath_model_checkpoint = None
+    dpath_model_checkpoint = None  # <trial>/chkpts/in_progress: the trial's checkpoint generations (utils.chkpt)
+    dpath_resume = None  # the dir the resume state is loaded from: the committed generation's
+    resume_gen = 0  # that generation's number; 0 on a fresh start
     resuming = False
     dataset = None
     split = None
@@ -364,20 +363,30 @@ class ArtifactManager:
         ArtifactManager.dpath_eval_final = dpath_eval_seq(ArtifactManager.dpath_trial) / str(cfg_train.n_chkpts)
         ArtifactManager.dpath_model_checkpoint = ArtifactManager.dpath_trial / "chkpts/in_progress"
 
-        if ArtifactManager.dpath_trial.exists():
-            if (ArtifactManager.dpath_model_checkpoint / "train_state.pt").exists():
-                ArtifactManager.resuming = True
-            else:
-                shutil.rmtree(ArtifactManager.dpath_trial, ignore_errors=True)
-                ArtifactManager.resuming = False
-        else:
-            ArtifactManager.resuming = False
+        # A trial with a checkpoint resumes from it (utils.chkpt.resume_point). A trial dir WITHOUT one is restarted
+        # from scratch (create_trial_dirs wipes it) only when it never got anywhere. trial_metadata.json's progress
+        # is written once a checkpoint has committed (TrainPipeline._checkpoint_commit), so progress past zero with
+        # no checkpoint to show for it means the checkpoint has gone missing -- deleted, unreadable, on storage that
+        # is misbehaving -- and that is no grounds for deleting the rest of the trial: it is reported and left alone.
+        point = chkpt.resume_point(ArtifactManager.dpath_model_checkpoint)
+        if point is None and ArtifactManager.fpath_metadata_trial.exists():
+            n_samps_seen = load_json(ArtifactManager.fpath_metadata_trial)["progress"]["n_samps_seen"]
+            if n_samps_seen > 0:
+                raise chkpt.ChkptError(
+                    f"{ArtifactManager.dpath_trial} records progress ({n_samps_seen:,} samples) but holds no checkpoint "
+                    f"under {ArtifactManager.dpath_model_checkpoint} -- its state is uncertain, so it is left as it is "
+                    f"and not restarted. If the checkpoint is really gone, delete the trial dir to rerun the trial."
+                )
+        ArtifactManager.dpath_resume, ArtifactManager.resume_gen = point if point is not None else (None, 0)
+        ArtifactManager.resuming = point is not None
 
     @staticmethod
     @rank0
     def create_trial_dirs():
         if ArtifactManager.resuming:
             return
+        # a leftover dir that never reached a checkpoint (set_paths) is restarted clean
+        shutil.rmtree(ArtifactManager.dpath_trial, ignore_errors=True)
         for subdir in ("logs", "chkpts/in_progress"):
             (ArtifactManager.dpath_trial / subdir).mkdir(parents=True)
 
@@ -394,41 +403,38 @@ class ArtifactManager:
         
         fpath_pkl = ArtifactManager.dpath_phase / "time.pkl"
         fpath_json = ArtifactManager.dpath_phase / "phase_metadata.json"
-
-        time_data = load_pickle(fpath_pkl)
-
-        time_last_updated = time_data["last_updated"]
-        time_curr = time.time()
-
-        time_elapsed = time_data["elapsed"]
-        time_elapsed = time_elapsed + (time_curr - time_last_updated)
-
-        time_data["last_updated"] = time_curr
-        time_data["elapsed"] = time_elapsed
-        save_pickle(time_data, fpath_pkl)
-        
         now = utc_now()
-        metadata_camp = load_json(ArtifactManager.dpath_phase / "phase_metadata.json")
-        metadata_camp["duration"] = format_duration(time_elapsed)
-        metadata_camp["datetime_last_seen"] = now
-        save_json(metadata_camp, fpath_json)
+
+        # one critical section under the phase dir's lock (update_json): time.pkl's read-modify-write rides in it
+        with update_json(fpath_json) as metadata_camp:
+            time_data = load_pickle(fpath_pkl)
+
+            time_last_updated = time_data["last_updated"]
+            time_curr = time.time()
+
+            time_elapsed = time_data["elapsed"]
+            time_elapsed = time_elapsed + (time_curr - time_last_updated)
+
+            time_data["last_updated"] = time_curr
+            time_data["elapsed"] = time_elapsed
+            save_pickle(time_data, fpath_pkl)
+
+            metadata_camp["duration"] = format_duration(time_elapsed)
+            metadata_camp["datetime_last_seen"] = now
 
         # the campaign-level file (campaign_runner._campaign_metadata): its last_seen tracks the
         # campaign's latest trial progress, whichever phase that trial is in
         fpath_campaign = ArtifactManager.dpath_phase.parent.parent / "campaign_metadata.json"
-        metadata_campaign = load_json(fpath_campaign)
-        metadata_campaign["datetime_last_seen"] = now
-        save_json(metadata_campaign, fpath_campaign)
+        with update_json(fpath_campaign) as metadata_campaign:
+            metadata_campaign["datetime_last_seen"] = now
 
     @staticmethod
     @rank0
     def update_campaign_memory(mem):
         # campaign-level memory = running max across every trial's snapshots (== max across
         # trial-level values, maintained incrementally so it survives an OOM-killed trial)
-        fpath_meta = ArtifactManager.dpath_phase / "phase_metadata.json"
-        metadata_camp = load_json(fpath_meta)
-        metadata_camp["memory"] = merge_mem(metadata_camp["memory"], format_mem(mem))
-        save_json(metadata_camp, fpath_meta)
+        with update_json(ArtifactManager.dpath_phase / "phase_metadata.json") as metadata_camp:
+            metadata_camp["memory"] = merge_mem(metadata_camp["memory"], format_mem(mem))
 
     @staticmethod
     @rank0
@@ -553,17 +559,6 @@ class ArtifactManager:
             save_json(metadata, fpath_config)
 
         fpath_meta = ArtifactManager.dpath_coord / "coord_metadata.json"
-        if not fpath_meta.exists():
-            # sel_chkpt: the checkpoint (native's pick) every trial of this
-            # coord is scored at -- filled in at each trial end by report.update_chkpt_selection
-            save_json(
-                {
-                    "n_crashes": {"ram": 0, "vram": 0, "other": 0},
-                    "horizon": {},
-                    "sel_chkpt": {},
-                },
-                fpath_meta,
-            )
         # horizon: the trial duration in optimizer steps and the samples those steps actually consume, with
         # the LR warmup's share OF each total (not additional to it). Sample volume is data-derived
         # (train-set size); identical across trials of a coord/dataset, so overwriting is idempotent. Every
@@ -572,15 +567,27 @@ class ArtifactManager:
         # (the targets themselves need not be batch-aligned: chain-shuffle's nominal epochs, the warmup
         # fraction). The warmup converts the way the trainer does (warmup fraction -> samples -> steps,
         # train.py's scheduler warmup-step count). samps_per_epoch converts n_samps_seen to epochs.
-        metadata_coord = load_json(fpath_meta)
         n_steps = math.ceil(cfg_train.sample_volume / cfg_train.batch_size)
         n_steps_warmup = math.ceil(round(cfg_train.lr["warmup"] * cfg_train.sample_volume) / cfg_train.batch_size)
-        metadata_coord["horizon"] = {
-            "n_samps": {"total": n_steps * cfg_train.batch_size, "warmup": n_steps_warmup * cfg_train.batch_size},
-            "n_steps": {"total": n_steps, "warmup": n_steps_warmup},
-            "samps_per_epoch": cfg_train.samps_per_epoch,
-        }
-        save_json(metadata_coord, fpath_meta)
+        # created or updated as one section under the coord dir's lock: the file is shared with the runner's crash
+        # counts and every trial's reselection (update_json), and two trials of the coord can start together
+        with dir_lock(ArtifactManager.dpath_coord):
+            if fpath_meta.exists():
+                metadata_coord = load_json(fpath_meta)
+            else:
+                # sel_chkpt: the checkpoint (native's pick) every trial of this
+                # coord is scored at -- filled in at each trial end by report.update_chkpt_selection
+                metadata_coord = {
+                    "n_crashes": {"ram": 0, "vram": 0, "other": 0},
+                    "horizon": {},
+                    "sel_chkpt": {},
+                }
+            metadata_coord["horizon"] = {
+                "n_samps": {"total": n_steps * cfg_train.batch_size, "warmup": n_steps_warmup * cfg_train.batch_size},
+                "n_steps": {"total": n_steps, "warmup": n_steps_warmup},
+                "samps_per_epoch": cfg_train.samps_per_epoch,
+            }
+            save_json(metadata_coord, fpath_meta)
 
     @staticmethod
     def _get_trial_runtime_data(data: TrialData, idx_epoch: int, time_tracker: TimeTracker):
@@ -637,14 +644,14 @@ class ArtifactManager:
                 "base_selected": base_selected,  # a trainval trial at chkpt_stop 0: model.pt is the pretrained model, saved untrained, with no training behind the telemetry (train.py's _deliver_base_model)
                 "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # crashes this trial has recovered from, bucketed by cause; bumped by campaign_runner._bump_crash_counts
             }
+            save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
         else:
-            metadata_trial = load_json(ArtifactManager.fpath_metadata_trial)
-            metadata_trial["runtime"] = runtime_data
-            metadata_trial["progress"] = progress_data
-            metadata_trial["memory"] = merge_mem(metadata_trial["memory"], format_mem(mem))
-            metadata_trial["datetime_last_seen"] = now
-            metadata_trial["killed"] = killed
-        save_json(metadata_trial, ArtifactManager.fpath_metadata_trial)
+            with update_json(ArtifactManager.fpath_metadata_trial) as metadata_trial:
+                metadata_trial["runtime"] = runtime_data
+                metadata_trial["progress"] = progress_data
+                metadata_trial["memory"] = merge_mem(metadata_trial["memory"], format_mem(mem))
+                metadata_trial["datetime_last_seen"] = now
+                metadata_trial["killed"] = killed
 
     @staticmethod
     @rank0
@@ -736,14 +743,20 @@ class ArtifactManager:
                 entry[name] = dict(np.load(fpath_npz))
         fpath = ArtifactManager.base_eval_cache_fpath(cfg_train)
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath_tmp = fpath.with_name(f"{fpath.name}.{platform.node()}.{os.getpid()}.tmp")  # node+pid: campaigns on different nodes can share a pid
-        save_pickle(entry, fpath_tmp)
-        fpath_tmp.replace(fpath)
+        save_pickle(entry, fpath)
         return entry
 
     @staticmethod
+    def dpath_gen(gen):
+        """Checkpoint generation `gen`'s dir (utils.chkpt), created on demand: rank 0 and every rank's RNG save each
+        write into it."""
+        dpath = chkpt.dpath_gen(ArtifactManager.dpath_model_checkpoint, gen)
+        dpath.mkdir(parents=True, exist_ok=True)
+        return dpath
+
+    @staticmethod
     @rank0
-    def save_train_state(train_pipe, idx_batch):
+    def save_train_state(train_pipe, idx_batch, gen):
         state = {
             "model": train_pipe.modelw._unwrapped_model.state_dict(),
             "optimizer": train_pipe.opt.state_dict(),
@@ -756,7 +769,8 @@ class ArtifactManager:
             "killed": train_pipe._killed,
             "times": train_pipe.time_tracker.state_dict(),
         }
-        torch.save(state, ArtifactManager.dpath_model_checkpoint / "train_state.pt")
+        with atomic_write(ArtifactManager.dpath_gen(gen) / "train_state.pt") as f:
+            torch.save(state, f)
 
     @staticmethod
     @rank0
@@ -764,31 +778,45 @@ class ArtifactManager:
         """The trial's product weights: the full state of the unwrapped model (encoders + logit scalars) as
         <trial>/model.pt -- the trainval phase's deliverable, taken at its chkpt_stop (at chkpt_stop 0, the
         untrained pretrained model itself); loads back into VLMWrapper.build(cfg)'s model via load_state_dict."""
-        torch.save(modelw._unwrapped_model.state_dict(), ArtifactManager.dpath_trial / "model.pt")
+        with atomic_write(ArtifactManager.dpath_trial / "model.pt") as f:
+            torch.save(modelw._unwrapped_model.state_dict(), f)
 
     @staticmethod
-    def save_rng_states(rank):
+    def save_rng_states(rank, gen):
         rng_state = {
             "rng_cpu": torch.get_rng_state(),
             "rng_cuda": torch.cuda.get_rng_state_all(),
             "rng_numpy": np.random.get_state(),
             "rng_random": random.getstate(),
         }
-        torch.save(rng_state, ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt")
+        with atomic_write(ArtifactManager.dpath_gen(gen) / f"rng_state_rank{rank}.pt") as f:
+            torch.save(rng_state, f)
 
     @staticmethod
     @rank0
-    def save_trial_state(data):
+    def save_trial_state(data, gen):
+        # data: the trial's recorded series as of THIS checkpoint -- what a resume restores (TrialData.resume).
+        # data_trial.pkl at the trial root is the copy the reports read, rewritten at every checkpoint attempt
+        # whether or not it commits, so it can run ahead of the checkpoint a resume lands on
         state = {
             "n_evals": data.n_evals,
             "timer_trial_elapsed": data.timer_trial.get_elapsed_time(),
+            "data": data.data,
         }
-        save_pickle(state, ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
+        save_pickle(state, ArtifactManager.dpath_gen(gen) / "trial_state.pkl")
+
+    @staticmethod
+    @rank0
+    def commit_checkpoint(gen, world_size, n_samps_seen):
+        """Publish generation `gen` as the trial's resume point in place of the last one (utils.chkpt.commit): rank
+        0's train + trial state and every rank's RNG state, all of which must be on disk by now."""
+        fnames = ["train_state.pt", "trial_state.pkl", *(f"rng_state_rank{rank}.pt" for rank in range(world_size))]
+        chkpt.commit(ArtifactManager.dpath_model_checkpoint, gen, fnames, n_samps_seen)
 
     @staticmethod
     def load_train_state():
         return torch.load(
-            ArtifactManager.dpath_model_checkpoint / "train_state.pt",
+            ArtifactManager.dpath_resume / "train_state.pt",
             map_location="cpu",
             weights_only=False,
         )
@@ -796,11 +824,11 @@ class ArtifactManager:
     @staticmethod
     def load_rng_state(rank):
         return torch.load(
-            ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{rank}.pt",
+            ArtifactManager.dpath_resume / f"rng_state_rank{rank}.pt",
             map_location="cpu",
             weights_only=False,
         )
 
     @staticmethod
     def load_trial_state():
-        return load_pickle(ArtifactManager.dpath_model_checkpoint / "trial_state.pkl")
+        return load_pickle(ArtifactManager.dpath_resume / "trial_state.pkl")

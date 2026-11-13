@@ -1,5 +1,7 @@
+import errno
 import json
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -8,9 +10,12 @@ import numpy as np
 import pytest
 import torch
 
+import train
 from train import TrainPipeline, _deliver_base_model, kill_chkpt, pass_epoch_span, samps_stop
+from utils import chkpt
+from utils.timing import TimeTracker
 from utils.train import ArtifactManager, TrialData, format_mem, merge_mem
-from utils.utils import save_pickle, load_pickle
+from utils.utils import save_json, save_pickle, load_pickle
 
 
 def _full_loss_cfg(crit="bce", lambda_=0.0):
@@ -648,3 +653,210 @@ def test_lr_warmup_hands_the_full_base_lrs_to_the_cosine(lr_warmup) -> None:
             frac = (1 + math.cos(math.pi * (k - n_warmup) / t_max)) / 2
         assert lr == pytest.approx(lr_init * frac, rel=1e-9)
         assert lr_scalar == pytest.approx(lr_init * factor * frac, rel=1e-9)
+
+
+# ---- checkpoint generations, resume and the requested stop (utils.chkpt / utils.stop), through the trainer's own
+# ---- checkpoint path: a TrainPipeline carrying just the state that path touches, over a real trial dir
+
+_CHKPT_CFG = dict(campaign="cmp", phase="screen", dataset="cub", arm="sp", coord="base", idx_seed=0,
+                  split={"split": "D10", "train_pt": "train"}, n_chkpts=5, n_epochs=5, samps_per_epoch=1_000,
+                  device=torch.device("cpu"),
+                  reporting={"plot_every": "chkpt", "learning_curves": {"hpsm": {"kappas": [0.0], "multimodal": False}},
+                             "eval": {"native_macro": False, "joint": False, "joint_macro": False}})
+
+
+@pytest.fixture
+def trial(tmp_path, monkeypatch):
+    """The trial dir tmp_path/cmp/_phase/screen/.../_trial/1 (not created) under a phase and campaign whose
+    metadata files exist, with ArtifactManager's class-level state, the DDP calls of the checkpoint path and the
+    plotting stubbed -- every patch undone at teardown. Returns (cfg, dpath_trial, plots): `plots` collects one
+    entry per learning-curve render."""
+    for name in ("dpath_phase", "dpath_coord", "dpath_trial", "fpath_metadata_trial", "dpath_eval_final",
+                 "dpath_model_checkpoint", "dpath_resume", "resume_gen", "resuming", "dataset", "split"):
+        monkeypatch.setattr(ArtifactManager, name, getattr(ArtifactManager, name))
+    monkeypatch.setattr("utils.train.paths", {"artifacts": tmp_path})
+    monkeypatch.setattr(train, "snapshot_memory", lambda device: {"ram": (1 << 30, 2 << 30), "vram": (3 << 30, 4 << 30)})
+    monkeypatch.setattr(torch.distributed, "barrier", lambda: None)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 1)
+    plots = []
+    monkeypatch.setattr(train, "plot_metrics", lambda *args: plots.append(args))
+    monkeypatch.setattr(train, "load_learning_curves_config_dict", lambda: {"dpi": 50})
+
+    dpath_phase = tmp_path / "cmp" / "_phase" / "screen"
+    dpath_phase.mkdir(parents=True)
+    stamps = {"datetime_start": "2020-01-01T00:00:00Z", "datetime_last_seen": "2020-01-01T00:00:00Z"}
+    save_json(stamps, tmp_path / "cmp" / "campaign_metadata.json")
+    save_json({**stamps, "duration": "0-00:00:00", "memory": {"ram": None, "vram": None}}, dpath_phase / "phase_metadata.json")
+    save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
+    cfg = SimpleNamespace(**_CHKPT_CFG)
+    return cfg, dpath_phase / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "base" / "_trial" / "1", plots
+
+
+def _launch(cfg):
+    """A trial process's startup, as run_training runs it (resolve the trial dir, then build the pipeline over
+    it), down to the state the checkpoint path touches. Returns the pipeline; a fresh start also writes the
+    trial's first metadata, as train() does."""
+    ArtifactManager.set_paths(cfg)
+    ArtifactManager.create_trial_dirs()
+    model = torch.nn.Linear(2, 1)
+    pipe = object.__new__(TrainPipeline)
+    pipe.cfg = cfg
+    pipe.modelw = SimpleNamespace(_unwrapped_model=model)
+    pipe.opt = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    pipe.lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(pipe.opt, T_max=10)
+    pipe.time_tracker = TimeTracker()
+    pipe.eval_enabled = False
+    pipe.eval_pipe = None
+    pipe._local_rank = 0
+    pipe._killed = False
+    pipe._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}
+    pipe._chkpt_gen = ArtifactManager.resume_gen
+    pipe._n_batches_chkpt = None
+    pipe.n_samps_seen, pipe.n_batches_seen, pipe.idx_epoch, pipe.chkpt_thresh = 0, 0, 0, 1_000
+    if ArtifactManager.resuming:
+        state = ArtifactManager.load_train_state()
+        model.load_state_dict(state["model"])
+        pipe.n_samps_seen, pipe.n_batches_seen, pipe.idx_epoch = state["n_samps_seen"], state["n_batches_seen"], state["idx_epoch"]
+        pipe.data = TrialData.resume(ArtifactManager.dpath_trial, ArtifactManager.load_trial_state())
+    else:
+        pipe.data = TrialData(ArtifactManager.dpath_trial)
+        ArtifactManager.save_metadata_trial(pipe.data, 0, pipe.time_tracker, 0, cfg.n_epochs, cfg.n_chkpts, 0,
+                                            train.snapshot_memory(None), False, init_flag=True)
+    return pipe
+
+
+def _train_to(pipe, n_samps_seen):
+    """Stand-in for training up to `n_samps_seen`: the counters move, one batch is recorded, the weights change."""
+    pipe.n_samps_seen, pipe.n_batches_seen, pipe.idx_epoch = n_samps_seen, n_samps_seen // 100, 1
+    pipe.data.update_train_batch(n_samps_seen, loss_train=1.0 / n_samps_seen)
+    with torch.no_grad():
+        pipe.modelw._unwrapped_model.weight.fill_(float(n_samps_seen))
+
+
+def _progress(dpath_trial):
+    return json.loads((dpath_trial / "trial_metadata.json").read_text())["progress"]["n_samps_seen"]
+
+
+def test_checkpoint_is_one_committed_generation_and_a_resume_loads_all_of_it(trial) -> None:
+    cfg, dpath_trial, plots = trial
+    pipe = _launch(cfg)
+    assert not ArtifactManager.resuming
+    _train_to(pipe, 1_000)
+
+    pipe._checkpoint(header="1/5", idx_batch=9)
+
+    dpath_chkpt = dpath_trial / "chkpts" / "in_progress"
+    assert [p.name for p in dpath_chkpt.iterdir()] == ["gen-000001"]
+    manifest = json.loads((dpath_chkpt / "gen-000001" / "manifest.json").read_text())
+    assert manifest["n_samps_seen"] == 1_000
+    assert sorted(manifest["files"]) == ["rng_state_rank0.pt", "train_state.pt", "trial_state.pkl"]  # rank 0's state + every rank's RNG
+    assert _progress(dpath_trial) == 1_000  # the metadata's progress follows the commit
+    assert len(plots) == 1  # plot_every: chkpt
+
+    pipe = _launch(cfg)  # a relaunch resumes it
+    assert ArtifactManager.resuming and ArtifactManager.dpath_resume == dpath_chkpt / "gen-000001"
+    assert (pipe.n_samps_seen, pipe.n_batches_seen, pipe._chkpt_gen) == (1_000, 10, 1)
+    assert pipe.modelw._unwrapped_model.weight.tolist() == [[1_000.0, 1_000.0]]
+    assert pipe.data.data["epoch"]["n_samps_seen"] == [1_000]
+    assert set(ArtifactManager.load_rng_state(0)) == {"rng_cpu", "rng_cuda", "rng_numpy", "rng_random"}
+
+    _train_to(pipe, 2_000)
+    pipe._checkpoint(header="2/5", idx_batch=19)
+    assert [p.name for p in dpath_chkpt.iterdir()] == ["gen-000002"]  # the new one in, the old one out: retention is bounded
+
+
+@pytest.mark.parametrize("failing", ["save_train_state", "save_rng_states", "commit_checkpoint"])
+def test_failed_checkpoint_write_leaves_the_last_checkpoint_as_the_resume_point(trial, monkeypatch, failing) -> None:
+    # the disk fills during the second checkpoint -- under rank 0's state, under a rank's RNG save, or under the
+    # commit itself: the error surfaces with its errno, nothing is published, and a relaunch resumes the FIRST
+    # checkpoint whole -- weights, counters, recorded series and RNG state all from that one save point, though the
+    # trial root's data_trial.pkl (and, for the later failures, the abandoned generation) already hold the second's
+    cfg, dpath_trial, _ = trial
+    pipe = _launch(cfg)
+    _train_to(pipe, 1_000)
+    pipe._checkpoint(header="1/5", idx_batch=9)
+    _train_to(pipe, 2_000)
+
+    def enospc(*args, **kwargs):
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ArtifactManager, failing, staticmethod(enospc))
+        with pytest.raises(OSError) as exc:
+            pipe._checkpoint(header="2/5", idx_batch=19)
+    assert exc.value.errno == errno.ENOSPC
+
+    assert chkpt.resume_point(dpath_trial / "chkpts" / "in_progress") == (dpath_trial / "chkpts" / "in_progress" / "gen-000001", 1)
+    assert _progress(dpath_trial) == 1_000  # still the committed checkpoint's
+    assert load_pickle(dpath_trial / "data_trial.pkl")["epoch"]["n_samps_seen"] == [1_000, 2_000]  # the reports' copy ran ahead
+
+    pipe = _launch(cfg)
+    assert (pipe.n_samps_seen, pipe.n_batches_seen, pipe._chkpt_gen) == (1_000, 10, 1)
+    assert pipe.modelw._unwrapped_model.weight.tolist() == [[1_000.0, 1_000.0]]
+    assert pipe.data.data["epoch"]["n_samps_seen"] == [1_000]  # the checkpoint's own series, not data_trial.pkl's
+
+
+def test_stop_checkpoint_saves_the_resume_state_and_nothing_else(trial) -> None:
+    # a requested stop's checkpoint (utils.stop) lands mid-interval, with no eval behind it: it must commit a
+    # generation a resume picks up from, and must not record an eval, log one, or plot -- an eval-enabled pipeline
+    # whose eval state would crash any of those if they ran
+    cfg, dpath_trial, plots = trial
+    pipe = _launch(cfg)
+    pipe.eval_enabled = True  # data.eval_metrics is None: update_eval / the eval printout / the score files would all raise
+    _train_to(pipe, 700)
+
+    pipe._checkpoint(header=None, idx_batch=6, stop=True)
+
+    assert plots == []
+    assert pipe.data.n_evals == 0 and pipe.data.data["eval"] == {"n_samps_seen": []}
+    dpath_gen = dpath_trial / "chkpts" / "in_progress" / "gen-000001"
+    assert sorted(p.name for p in dpath_gen.iterdir()) == ["manifest.json", "rng_state_rank0.pt", "train_state.pt", "trial_state.pkl"]
+    metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert metadata["progress"]["n_samps_seen"] == 700 and metadata["complete"] is False and metadata["killed"] is False
+    assert pipe._n_batches_chkpt == pipe.n_batches_seen  # nothing new to save: a stop at this batch writes no second checkpoint
+
+    pipe = _launch(cfg)
+    state = ArtifactManager.load_train_state()
+    assert (state["n_samps_seen"], state["idx_epoch"], state["idx_batch"]) == (700, 1, 6)  # mid-pass, where the resume replays to
+    assert pipe.data.data["epoch"]["n_samps_seen"] == [700]
+
+
+def test_trial_dir_that_never_checkpointed_is_restarted_clean(trial) -> None:
+    # a crash before the first checkpoint leaves a trial dir with nothing to resume and no progress recorded: the
+    # next launch starts it over from an empty dir, as it always has -- an abandoned half-written generation included
+    cfg, dpath_trial, _ = trial
+    pipe = _launch(cfg)
+    ArtifactManager.dpath_gen(1)
+    (dpath_trial / "chkpts" / "in_progress" / "gen-000001" / "train_state.pt").write_text("half a checkpoint")
+    (dpath_trial / "logs" / "epoch.log").write_text("the dead attempt's")
+
+    ArtifactManager.set_paths(cfg)
+    assert not ArtifactManager.resuming
+    ArtifactManager.create_trial_dirs()
+
+    assert sorted(p.name for p in dpath_trial.iterdir()) == ["chkpts", "logs"]
+    assert list((dpath_trial / "logs").iterdir()) == [] and list((dpath_trial / "chkpts" / "in_progress").iterdir()) == []
+
+
+@pytest.mark.parametrize("left", ["no chkpts dir", "an uncommitted generation"])
+def test_trial_with_progress_but_no_checkpoint_is_left_alone(trial, left) -> None:
+    # progress on record and no checkpoint to resume it from: the checkpoint is missing (deleted, unreadable,
+    # lost), which is uncertain state -- the launch refuses, and neither deletes the trial nor restarts it
+    cfg, dpath_trial, _ = trial
+    pipe = _launch(cfg)
+    _train_to(pipe, 1_000)
+    pipe._checkpoint(header="1/5", idx_batch=9)
+    for p in (dpath_trial / "chkpts" / "in_progress" / "gen-000001").iterdir():
+        if left == "no chkpts dir" or p.name == "manifest.json":
+            p.unlink()
+    if left == "no chkpts dir":
+        (dpath_trial / "chkpts" / "in_progress" / "gen-000001").rmdir()
+        (dpath_trial / "chkpts" / "in_progress").rmdir()
+        (dpath_trial / "chkpts").rmdir()
+    before = sorted(p.relative_to(dpath_trial) for p in dpath_trial.rglob("*"))
+
+    with pytest.raises(chkpt.ChkptError, match="records progress .1,000 samples. but holds no checkpoint"):
+        ArtifactManager.set_paths(cfg)
+
+    assert sorted(p.relative_to(dpath_trial) for p in dpath_trial.rglob("*")) == before
+    assert load_pickle(dpath_trial / "data_trial.pkl")["epoch"]["n_samps_seen"] == [1_000]

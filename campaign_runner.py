@@ -67,7 +67,8 @@ from utils.report import (
     pick_best_coords,
 )
 from utils.train import ArtifactManager, dpath_eval_seq, dpath_viz_cache
-from utils.utils import save_pickle, save_json, load_json, utc_now
+from utils.utils import atomic_write, dir_lock, save_pickle, save_json, load_json, update_json, utc_now
+from utils import chkpt, stop
 from utils.paths import paths
 from utils.log import PrintLog
 
@@ -151,6 +152,27 @@ def _classify_crash(exc: Exception) -> str:
         return "ram"
     return "other"
 
+def _halt_code(exc: Exception) -> int | None:
+    """The exit code a failed trial ends the whole run with, or None for an ordinary crash (retried): the trial
+    process reported a requested stop it has checkpointed, or a confirmed storage-full failure, by its marker line
+    on stderr (utils.stop.exit_protocol -- torchrun flattens the worker's own exit code to 1, so the marker is what
+    gets through). A storage-full error of the runner's own, launching the trial, counts the same."""
+    stderr = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else None
+    if stderr and stop.MARKER_STOPPED in stderr:
+        return stop.EXIT_STOPPED
+    if (stderr and stop.MARKER_STORAGE in stderr) or stop.storage_full(exc):
+        return stop.EXIT_STORAGE
+    return None
+
+def _halt(code: int, reason: str, render_proc: subprocess.Popen | None) -> None:
+    """End the run here, short of its queue, for a reason that is not an interrupt (utils.stop: a requested stop, a
+    full disk): terminate the in-flight render as an interrupt does, say why, and exit with `code` -- what whoever
+    launched the runner tells the endings apart by."""
+    if render_proc is not None and render_proc.poll() is None:
+        render_proc.terminate()
+    print(f"campaign_queue: {reason} -- exiting queue (exit code {code})", flush=True)
+    sys.exit(code)
+
 def _render_phase_tables(campaign: str, phase: str, groups: dict) -> None:
     """Re-render every cross-coord level's tables/plots/workbooks (arm_summary, dataset_summary, phase_summary) of
     the phase from whatever is on disk, over its recorded matrix. A trial renders its own arm's and dataset's
@@ -176,7 +198,8 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
     from the trials, so the coord and campaign totals stay accurate even when a no-progress restart
     wipes the trial dir (which resets that trial's own counts). Each file seeds the zeroed dict at
     creation (campaign at kickoff, coord/trial by the subprocess), so a bump is a plain
-    read-increment-save; the coord/trial files are guarded because a crash can precede the
+    read-increment-save -- one critical section per file, under the lock its other writers take (update_json);
+    the coord/trial files are guarded because a crash can precede the
     subprocess writing them, whereas phase_metadata.json always exists by the time any trial runs."""
     dpath_coord = dpath_trial.parents[1]
     for fpath in (
@@ -185,9 +208,8 @@ def _bump_crash_counts(dpath_trial: Path, dpath_phase: Path, kind: str) -> None:
         dpath_phase / "phase_metadata.json",
     ):
         if fpath.exists():
-            metadata = load_json(fpath)
-            metadata["n_crashes"][kind] += 1
-            save_json(metadata, fpath)
+            with update_json(fpath) as metadata:
+                metadata["n_crashes"][kind] += 1
 
 def _dpath_campaign(campaign: str) -> Path:
     """The campaign's root dir, artifacts/<campaign>/ -- holds campaign_metadata.json and, under _phase/, the phase dirs
@@ -448,7 +470,7 @@ def _write_overrides(dpath_coord: Path, arm_payload: dict, coord_payload: dict, 
     yaml's, combo groups first to last (_expand_combo_groups' payload order): the arm's hpo2d tables take their axes off
     the coord side's two keys (report._render_hpo2d_tables)."""
     dpath_coord.mkdir(parents=True, exist_ok=True)
-    with open(dpath_coord / "overrides.json", "w") as f:
+    with atomic_write(dpath_coord / "overrides.json", "w") as f:  # rewritten at every trial launch of the coord, under its readers
         json.dump({"arm": arm_payload, "coord": coord_payload, "baseline": baseline_payload}, f, indent=2)
 
 def _iter_seeds(n_trials: int) -> list[int]:
@@ -662,7 +684,17 @@ def _run_trial_subprocess(cfg_dict: dict, spare_render_pid: int | None = None) -
     reader.start()
 
     try:
-        return_code = proc.wait()
+        if stop.stop_enabled():
+            # opt-in checkpoint-and-stop (utils.stop): wake every second to pass a stop signalled to this process
+            # on to the trial, which checkpoints at its next batch boundary and exits on its own
+            while True:
+                try:
+                    return_code = proc.wait(timeout=1.0)
+                    break
+                except subprocess.TimeoutExpired:
+                    stop.relay_stop()
+        else:
+            return_code = proc.wait()
     finally:
         # Tear down the entire descendant subtree on any exit from the wait.
         # Covers normal crash recovery (orphaned DataLoader workers left by a
@@ -692,12 +724,25 @@ def _check_trial_completion(dpath_trial: Path) -> bool:
     return complete
 
 def _mark_trial_complete(dpath_trial: Path) -> None:
-    # marked only after a clean subprocess exit + cleanup, so a mid-finalization crash never leaves a
-    # trial falsely flagged complete (which would make a re-run skip it instead of resuming)
-    fpath_metadata_trial = dpath_trial / "trial_metadata.json"
-    metadata_trial = load_json(fpath_metadata_trial)
-    metadata_trial["complete"] = True
-    save_json(metadata_trial, fpath_metadata_trial)
+    # marked only after a clean subprocess exit, so a mid-finalization crash never leaves a
+    # trial falsely flagged complete (which would make a re-run skip it instead of resuming) -- and BEFORE its
+    # recovery checkpoints are deleted (_remove_chkpts), so no crash in between leaves a finished trial that
+    # reads as an unfinished one with nothing to resume from
+    with update_json(dpath_trial / "trial_metadata.json") as metadata_trial:
+        metadata_trial["complete"] = True
+
+def _remove_chkpts(dpath_trial: Path) -> None:
+    """Delete a completed trial's recovery checkpoints (chkpts/: it only holds in_progress/ -- no weights are saved
+    there). Called once the trial is recorded complete, and again whenever a completed trial is found still
+    carrying them (_run_phase), so a deletion that fails -- or a run that dies before it -- costs disk until the
+    next launch, never the trial: the failure is reported and the trial stays complete."""
+    try:
+        shutil.rmtree(dpath_trial / "chkpts")
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"WARNING: could not delete {dpath_trial / 'chkpts'} ({e!r}) -- the trial is complete regardless; "
+              f"a relaunch retries the deletion.", flush=True)
 
 def _spawn_render(trial_rel: str) -> subprocess.Popen:
     """Spawn the post-trial manifold-viz render as a detached, CPU-only process so it overlaps the next
@@ -747,9 +792,10 @@ def _campaign_metadata(campaign: str) -> None:
     dpath_campaign = _dpath_campaign(campaign)
     dpath_campaign.mkdir(parents=True, exist_ok=True)
     fpath = dpath_campaign / "campaign_metadata.json"
-    if not fpath.exists():
-        now = utc_now()
-        save_json({"datetime_start": now, "datetime_last_seen": now}, fpath)
+    with dir_lock(dpath_campaign):  # the lock its updates hold (update_json): checked and created as one section
+        if not fpath.exists():
+            now = utc_now()
+            save_json({"datetime_start": now, "datetime_last_seen": now}, fpath)
 
 def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matrix: dict, groups: dict) -> tuple[dict, Path]:
     """Load (or, on the phase's first launch, create) the phase's phase_metadata.json and record its plan: `seeds` and
@@ -777,6 +823,12 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
             if added:
                 print(f"Campaign: '{campaign}' {phase}: {kind} added: {added}", flush=True)
         pruned = _prune_removed(campaign, phase, metadata["seeds"], seeds, metadata["matrix"], matrix, groups)
+        # record the planned matrix so the next read can tell what it added or dropped -- into the file as it reads
+        # NOW, under its lock (update_json), not over the copy read above: the pruning in between can take a while,
+        # and whatever a trial process added to the file meanwhile (its duration, memory, a crash count) must survive
+        with update_json(fpath_meta) as metadata:
+            metadata["seeds"] = seeds
+            metadata["matrix"] = matrix
     else:
         now = utc_now()
         metadata = {
@@ -790,11 +842,10 @@ def _phase_metadata(campaign: str, name: str, phase: str, seeds: list[int], matr
             "ram": slurm_alloc["ram"],
             "memory": {"ram": None, "vram": None},  # peak used/total, max-merged across trials
             "n_crashes": {"ram": 0, "vram": 0, "other": 0},  # running totals of crashes across all trials, bucketed by cause (see _classify_crash / _bump_crash_counts)
+            "seeds": seeds,
+            "matrix": matrix,
         }
-    # record the planned matrix so the next read can tell what it added or dropped
-    metadata["seeds"] = seeds
-    metadata["matrix"] = matrix
-    save_json(metadata, fpath_meta)
+        save_json(metadata, fpath_meta)
     if pruned:  # the tables' rows changed: render them over the recorded matrix now rather than at the next trial end (the workbooks a sweep later)
         _render_phase_tables(campaign, phase, groups)
     return metadata, fpath_meta
@@ -966,7 +1017,7 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
         _copy_refine_picks(campaign, plan.matrix, cfg_snapshot)
     elif phase == "trainval":
         _write_phase_snapshot(dpath_phase, cfg_snapshot)
-    metadata, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix, eval_groups(cfg_snapshot["reporting"]))
+    _, fpath_meta = _phase_metadata(campaign, name, phase, plan.seeds, plan.matrix, eval_groups(cfg_snapshot["reporting"]))
 
     # a plan that grows an arm (a coord or a seed added) leaves it short of its trials again: its arm_summary/best_coord/ mirror
     # goes here, the moment the edit is applied, rather than surviving until the arm's next completed trial -- the
@@ -982,7 +1033,7 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
     # override, so an override-level enable is still checked/staged at startup rather than erroring
     # mid-campaign.
     cfg_hardware = cfg_snapshot["hardware"]
-    metadata["runtime_img_cache"] = {ds: None for ds in sorted(paths["imgs"])}
+    runtime_img_cache = {ds: None for ds in sorted(paths["imgs"])}
     use_img_cache = any(
         payload.get("hw.use_img_cache", cfg_hardware["use_img_cache"]) for _, payload in [*plan.arms, *plan.coords]
     )
@@ -994,8 +1045,9 @@ def _apply_plan(campaign: str, name: str, phase: str, cfg_snapshot: dict, plan: 
                 f"-- build first: python -m tools.build_img_cache"
             )
         for dataset in plan.datasets:
-            metadata["runtime_img_cache"][dataset] = round(stage_img_cache(dataset), 2)
-    save_json(metadata, fpath_meta)
+            runtime_img_cache[dataset] = round(stage_img_cache(dataset), 2)
+    with update_json(fpath_meta) as metadata:  # staging can take minutes: the file is updated as it reads now, not as it read before
+        metadata["runtime_img_cache"] = runtime_img_cache
 
     trials = plan.trials()
     print(f"Campaign: '{campaign}' {phase} ({len(trials)} trials)")
@@ -1013,7 +1065,9 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     dirs, the stats trees -- lives under its dir. Returns 'complete' once every planned trial of the phase is complete,
     'incomplete' when the run finished but some trial failed for good (the campaign stops at this phase -- see
     run_campaign), 'replan' when the edited yaml switched the phase off or left an earlier phase with pending trials
-    (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM.
+    (run_campaign starts over from the screening phase), 'interrupted' on Ctrl-C / SIGTERM. Two endings don't return
+    at all but exit the process with their own code (_halt; utils.stop): a requested stop -- between trials, or once
+    the running trial has checkpointed and exited for it -- and a trial lost to a confirmed full disk.
     `render_proc` carries the one in-flight post-trial render across the phase boundary: in, a render handed over
     from outside this phase (an earlier campaign, or -- riding through on 'replan' -- a later phase of this one);
     out, whatever render is still running at exit. The phase deliberately does NOT drain it on the way out: a
@@ -1032,6 +1086,8 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
     trials: list[tuple] = []
 
     while True:
+        if stop.stop_requested():  # opt-in (utils.stop): requested between trials -- none is running, none is launched
+            _halt(stop.EXIT_STOPPED, "stop requested", render_proc)
         cfg, arms, coords = camp.read()
         plans_new = _plan_phases(campaign, phase, cfg, arms, coords)
         if plans_new is None:
@@ -1040,7 +1096,8 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         if plans_new != plans:
             if plans is None:  # phase entry
                 dpath_phase.mkdir(parents=True, exist_ok=True)
-                save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
+                with dir_lock(dpath_phase):  # the lock a trial's read-modify-write of it holds (ArtifactManager.update_campaign_time)
+                    save_pickle({"last_updated": time.time(), "elapsed": 0.0}, dpath_phase / "time.pkl")
             # the last trial's render reads and writes its trial dir, which a plan that drops that trial (its seed, coord,
             # arm or dataset) is about to delete (_prune_removed): let it finish first, or its mkdirs resurrect a
             # metadata-less stub of the dir that trips every _trial_dpaths sweep after
@@ -1062,6 +1119,7 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 continue
             if _check_trial_completion(_dpath_trial(dpath_phase, *trial)):
                 print(f"[{idx_trial}/{len(trials)}] SKIP (completed): {'/'.join(map(str, trial))}")
+                _remove_chkpts(_dpath_trial(dpath_phase, *trial))  # still there if the run that completed it never got to them
                 done.add((phase, *trial))
                 continue
             pending = idx_trial, trial
@@ -1101,19 +1159,15 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
         # Retry-with-resume loop: a crash mid-training costs only the work since the last checkpoint,
         # not the whole trial. `stalled` counts consecutive attempts that didn't advance the
         # checkpoint; any attempt that does reset it, so distinct flakes recover indefinitely.
-        fpath_ckpt = dpath_trial / "chkpts/in_progress/train_state.pt"
+        # The checkpoint advances when a newer one is COMMITTED at a later training position (utils.chkpt.progress).
+        dpath_chkpt = dpath_trial / "chkpts/in_progress"
         stalled = 0
         crash_kinds = []  # every crash kind across this trial's retry loop, for the fatal failure= label
         succeeded = False
         while True:
-            ckpt_mtime = fpath_ckpt.stat().st_mtime if fpath_ckpt.exists() else -1.0
+            chkpt_progress = chkpt.progress(dpath_chkpt)
             try:
                 _run_trial_subprocess(cfg_dict, spare_render_pid=spare_pid)
-                shutil.rmtree(dpath_trial / "chkpts")  # only holds in_progress/ -- no weights are saved
-                _mark_trial_complete(dpath_trial)
-                PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
-                succeeded = True
-                break
             except KeyboardInterrupt:
                 print(
                     f"\n[{idx_trial}/{n_trials_total}] INTERRUPTED — terminated trial process group; exiting campaign.",
@@ -1125,11 +1179,28 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                 PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
                 return "interrupted", render_proc
             except Exception as e:
+                halt = _halt_code(e)
+                if halt == stop.EXIT_STOPPED:
+                    # a requested stop (utils.stop): the trial has checkpointed and exited unfinished -- it is not
+                    # complete, not failed and not retried; the next launch resumes it
+                    PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
+                    _halt(halt, f"'{trial_id}' checkpointed and stopped on request", render_proc)
+                if halt == stop.EXIT_STORAGE:
+                    # a confirmed full disk / exceeded quota: the trial's last committed checkpoint stands, and
+                    # no retry can get past it until space is freed -- nor can the next trial. The crash log is
+                    # best effort: it has the same disk to land on.
+                    try:
+                        _log_crash(dpath_trial, e)
+                        PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
+                    except OSError:
+                        pass
+                    _halt(halt, f"'{trial_id}' failed on a full disk or an exceeded quota (not retried; its last "
+                                f"committed checkpoint is intact) -- free space, then relaunch", render_proc)
                 _log_crash(dpath_trial, e)
                 kind = _classify_crash(e)
                 _bump_crash_counts(dpath_trial, dpath_phase, kind)
                 crash_kinds.append(kind)
-                made_progress = fpath_ckpt.exists() and fpath_ckpt.stat().st_mtime > ckpt_mtime
+                made_progress = chkpt.progress(dpath_chkpt) > chkpt_progress
                 stalled = 0 if made_progress else stalled + 1
                 if stalled > max_retries:
                     # a no-progress restart wipes the trial dir (metadata + errors/), so the
@@ -1149,12 +1220,23 @@ def _run_phase(campaign: str, phase: str, cfg_snapshot: dict, camp: _Camp, done:
                     )
                     PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
                     break
+                if stop.stop_requested():  # the trial crashed with a stop pending: nothing is relaunched
+                    PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
+                    _halt(1, f"'{trial_id}' crashed while a stop was requested (not retried; a relaunch resumes it "
+                             f"from its last committed checkpoint)", render_proc)
                 reason = "resumed past last checkpoint" if made_progress else f"no progress {stalled}/{max_retries}"
                 print(
                     f"\n[{idx_trial}/{n_trials_total}] TRIAL FAILED ({reason}) — retrying with resume: {trial_id}",
                     flush=True,
                 )
                 PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=(dataset, arm, coord, seed))
+            else:
+                # outside the try: a failure here is the runner's own, not a crash of the (finished) trial to retry
+                _mark_trial_complete(dpath_trial)
+                _remove_chkpts(dpath_trial)
+                PrintLog.manifest(dpath_phase, trials, plan.seeds, in_progress=None)
+                succeeded = True
+                break
 
         done.add((phase, dataset, arm, coord, seed))
         if not succeeded:
@@ -1337,9 +1419,17 @@ def _next_queue_entry(executed: list[str]) -> str | None:
     _validate_queue_entry(pending[0])
     return pending[0]
 
+@stop.exit_protocol()  # a full disk under the runner's own writes leaves as the storage marker + exit code too
 def main() -> None:
     if sys.argv[1:]:
         raise SystemExit("Usage: python -m campaign_runner (no arguments; campaigns are queued in config/campaign_queue.yaml)")
+    if stop.stop_enabled():  # opt-in checkpoint-and-stop (utils.stop; README): SIGUSR1, or the stop file itself, requests it
+        if torch.cuda.device_count() != 1:
+            raise SystemExit(f"{stop.ENV_STOP_FILE} (checkpoint-and-stop) supports single-GPU runs only; "
+                             f"{torch.cuda.device_count()} GPUs are visible. Unset it to run multi-GPU.")
+        if not Path(os.environ[stop.ENV_STOP_FILE]).parent.is_dir():  # found out now, not when a request can't be passed on
+            raise SystemExit(f"{stop.ENV_STOP_FILE}={os.environ[stop.ENV_STOP_FILE]}: its directory does not exist.")
+        stop.install_stop_handler()
     time_start = time.time()
     runs: list[_Run] = []
     render_proc: subprocess.Popen | None = None  # the one in-flight post-trial render, carried campaign to campaign

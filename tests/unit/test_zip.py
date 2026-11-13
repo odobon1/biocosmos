@@ -27,7 +27,7 @@ CORE = {  # always included, whatever the toggles
     f"{TEST_BEST}/eval/sel/scores.json",
 }
 BULKY = {  # toggle -> the files it governs
-    "weights": {f"{TRIAL}/model.pt", f"{TRIAL}/chkpts/in_progress/train_state.pt"},
+    "weights": {f"{TRIAL}/model.pt", f"{TRIAL}/chkpts/in_progress/gen-000003/train_state.pt"},
     "manifold_viz": {
         f"{TRIAL}/eval/all/1/viz/vanilla/6panel/joint.png",
         f"{TRIAL}/eval/all/1/viz/pooled/6panel/joint.png",

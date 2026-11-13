@@ -7,6 +7,7 @@ import json
 
 from train import run_training
 from utils.config import get_config_train
+from utils.stop import exit_protocol
 
 
 def _parse_args() -> ArgumentParser:
@@ -15,6 +16,7 @@ def _parse_args() -> ArgumentParser:
     return parser
 
 
+@exit_protocol()  # a requested stop / a full disk leave as their own marker + exit code, not as a crash
 def main() -> None:
     parser = _parse_args()
     args = parser.parse_args()

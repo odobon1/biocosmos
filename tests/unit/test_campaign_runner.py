@@ -1,17 +1,23 @@
 from pathlib import Path
 from datetime import datetime
+import errno
 import json
+import multiprocessing
 import os
 import pytest
 import subprocess
+import time
 import yaml
 
 import campaign_runner as cr
+from utils import chkpt, stop
 from utils.config import load_aliases_config_dict
 from utils.config import CampaignConfig
 from utils.config import group_path
 from utils.report import fpath_workbook
 from utils.log import PrintLog
+from utils.train import ArtifactManager
+from utils.utils import load_pickle, save_json, save_pickle, update_json
 
 
 # a single no-override coord: the degenerate no-HPO case, so a campaign's matrix is its arms alone
@@ -45,6 +51,15 @@ def _stub_kickoff_config_validation(monkeypatch):
 def _dpath_trial(tmp_path, cfg_dict) -> Path:
     return (tmp_path / cfg_dict["campaign"] / "_phase" / cfg_dict["phase"] / "_dataset" / cfg_dict["dataset"] / "_arm" / cfg_dict["arm"] / "_coord"
             / cfg_dict["coord"] / "_trial" / str(cfg_dict["idx_seed"] + 1))
+
+
+def _commit_gen(dpath_chkpt, gen, n_samps_seen) -> None:
+    """Commit checkpoint generation `gen` under a trial's chkpts/in_progress/, the way a trial subprocess does
+    (utils.chkpt): one stand-in state file, published by its manifest at training position `n_samps_seen`."""
+    dpath_gen = chkpt.dpath_gen(dpath_chkpt, gen)
+    dpath_gen.mkdir(parents=True, exist_ok=True)
+    (dpath_gen / "train_state.pt").write_text(f"state-{gen}")
+    chkpt.commit(dpath_chkpt, gen, ["train_state.pt"], n_samps_seen)
 
 
 def _leave_completed_trial(tmp_path, cfg_dict) -> None:
@@ -739,7 +754,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     _stub_campaign_config(monkeypatch)
 
     dpath_trial = tmp_path / "cmp_flaky" / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "base" / "_trial" / "1"
-    fpath_ckpt = dpath_trial / "chkpts" / "in_progress" / "train_state.pt"
+    dpath_chkpt = dpath_trial / "chkpts" / "in_progress"
 
     # flake on max_retries+1 attempts (more than the no-progress cap of 2 injected above), but advance the
     # checkpoint before each crash; succeed on the next. Each flake made progress, so none count as stalled.
@@ -747,9 +762,7 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     calls = {"n": 0}
     def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
         calls["n"] += 1
-        fpath_ckpt.parent.mkdir(parents=True, exist_ok=True)
-        fpath_ckpt.write_text(f"state-{calls['n']}")
-        os.utime(fpath_ckpt, (calls["n"] * 1000, calls["n"] * 1000))  # strictly-increasing mtime = progress
+        _commit_gen(dpath_chkpt, calls["n"], n_samps_seen=calls["n"] * 1000)  # a newer checkpoint, further along = progress
         with open(dpath_trial / "trial_metadata.json", "w") as f:
             json.dump({"dataset": "cub", "complete": False, "killed": False, "runtime": {"trial": "3661.0"}, "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}, f)
         if calls["n"] <= n_flakes:
@@ -769,10 +782,389 @@ def test_run_campaign_retries_recover_across_flakes_that_make_progress(tmp_path,
     assert calls["n"] == n_flakes + 1  # every progressing flake was retried; final attempt completed
     with open(dpath_trial / "trial_metadata.json") as f:
         assert json.load(f)["complete"] is True
-    assert not fpath_ckpt.parent.exists()  # chkpts/in_progress removed on success
+    assert not dpath_chkpt.exists()  # chkpts/in_progress removed on success
     assert not (dpath_trial / "error.log").exists()
     with open(tmp_path / "cmp_flaky" / "_phase" / "screen" / "phase_metadata.json") as f:
         assert json.load(f)["n_crashes"] == {"ram": 0, "vram": 0, "other": n_flakes}  # each recovered flake is counted at the campaign level
+
+
+_TRIAL_METADATA = {"dataset": "cub", "complete": False, "killed": False, "runtime": {"trial": "3661.0"},
+                   "progress": {"epoch": 1, "n_epochs": 35, "n_samps_seen": 200_000}, "n_crashes": {"ram": 0, "vram": 0, "other": 0}}
+
+
+def _two_trial_campaign(tmp_path, monkeypatch, campaign) -> Path:
+    """Wire a campaign of two trials, the same arm / coord / seed on cub then lepid, over tmp_path; returns the
+    FIRST trial's dir (cub)."""
+    monkeypatch.setattr(cr, "SEED0", 42)
+    monkeypatch.setattr(cr, "paths", {"artifacts": tmp_path, "imgs": {}, "img_cache": tmp_path / "img_cache"})
+    _stub_campaign_config(monkeypatch)
+    _set_camp(
+        monkeypatch,
+        n_trials_screen=1, n_trials_refine=None, trainval=False,
+        datasets=("cub", "lepid"),
+        ablation_arms=[[{"loss.loss1.targ": "sp", "name": "sp"}]],
+        hpo_coords=_BASE_COORD,
+    )
+    return tmp_path / campaign / "_phase" / "screen" / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "base" / "_trial" / "1"
+
+
+def _enospc(*args, **kwargs):
+    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+
+def test_run_campaign_records_completion_before_deleting_the_checkpoints(tmp_path, monkeypatch) -> None:
+    # the order that makes the window between the two harmless: a trial is recorded complete FIRST and only then
+    # loses its recovery checkpoints, so a run that dies in between leaves a completed trial with stale checkpoints
+    # (cleared at the next launch) -- never an unfinished-looking one with nothing to resume from
+    dpath_trial = _two_trial_campaign(tmp_path, monkeypatch, "cmp_order")
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        d = _dpath_trial(tmp_path, cfg_dict)
+        _commit_gen(d / "chkpts" / "in_progress", 1, n_samps_seen=200_000)
+        save_json(_TRIAL_METADATA, d / "trial_metadata.json")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    complete_at_deletion = []
+    rmtree = cr.shutil.rmtree
+
+    def _spying_rmtree(path, *args, **kwargs):
+        if Path(path).name == "chkpts":
+            complete_at_deletion.append(json.loads((Path(path).parent / "trial_metadata.json").read_text())["complete"])
+        rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(cr.shutil, "rmtree", _spying_rmtree)
+    cr.run_campaign("cmp_order", "camp", None)
+
+    assert complete_at_deletion == [True, True]
+    assert not (dpath_trial / "chkpts").exists()
+
+
+def test_run_campaign_failed_cleanup_does_not_restart_the_completed_trial(tmp_path, monkeypatch, capsys) -> None:
+    # the checkpoints of a finished trial can't be deleted (storage trouble): the trial is complete all the same --
+    # it is not retried, not failed, and the campaign goes on; the next launch skips it and retries the deletion
+    dpath_trial = _two_trial_campaign(tmp_path, monkeypatch, "cmp_cleanup")
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        d = _dpath_trial(tmp_path, cfg_dict)
+        _commit_gen(d / "chkpts" / "in_progress", 1, n_samps_seen=200_000)
+        save_json(_TRIAL_METADATA, d / "trial_metadata.json")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    rmtree = cr.shutil.rmtree
+
+    def _failing_rmtree(path, *args, **kwargs):
+        if Path(path) == dpath_trial / "chkpts":
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cr.shutil, "rmtree", _failing_rmtree)
+        completed, _ = cr.run_campaign("cmp_cleanup", "camp", None)
+
+    assert completed is True and calls == ["cub", "lepid"]  # ran once, and the campaign moved on to the next trial
+    assert json.loads((dpath_trial / "trial_metadata.json").read_text())["complete"] is True
+    assert (dpath_trial / "chkpts").exists() and not (dpath_trial / "error.log").exists()
+    assert "could not delete" in capsys.readouterr().out
+    manifest = (tmp_path / "cmp_cleanup" / "_phase" / "screen" / "manifest.log").read_text(encoding="utf-8")
+    assert "\u2705 Completed:\ncub/sp/base/42" in manifest
+
+    cr.run_campaign("cmp_cleanup", "camp", None)  # the relaunch: storage is back
+
+    assert calls == ["cub", "lepid"]  # nothing rerun
+    assert not (dpath_trial / "chkpts").exists()
+
+
+@pytest.mark.parametrize("logging_fails", [False, True])
+def test_run_campaign_halts_on_a_full_disk_without_retrying(tmp_path, monkeypatch, logging_fails) -> None:
+    # the trial dies on a confirmed full disk (its storage marker on stderr): no retry -- none can succeed -- no
+    # failure recorded against the trial, no further trial launched; the run ends with the storage exit code and
+    # the trial's last committed checkpoint is still its resume point. All of it holds when the crash log can't be
+    # written either, the disk being full for the runner too.
+    dpath_trial = _two_trial_campaign(tmp_path, monkeypatch, "cmp_full")
+    dpath_chkpt = dpath_trial / "chkpts" / "in_progress"
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        _commit_gen(dpath_chkpt, 1, n_samps_seen=200_000)
+        save_json(_TRIAL_METADATA, dpath_trial / "trial_metadata.json")
+        chkpt.dpath_gen(dpath_chkpt, 2).mkdir()  # the checkpoint the disk filled under
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr=(
+            "Traceback (most recent call last):\nOSError: [Errno 28] No space left on device\n" + stop.MARKER_STORAGE + "\n"))
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    if logging_fails:
+        monkeypatch.setattr(cr, "_log_crash", _enospc)
+
+    with pytest.raises(SystemExit) as exc:
+        cr.run_campaign("cmp_full", "camp", None)
+
+    assert exc.value.code == stop.EXIT_STORAGE
+    assert calls == ["cub"]  # one attempt: not retried, and the lepid trial never launched
+    assert chkpt.resume_point(dpath_chkpt) == (dpath_chkpt / "gen-000001", 1)
+    metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert metadata["complete"] is False and not (dpath_trial / "error.log").exists()  # neither complete nor failed for good
+    assert (dpath_trial / "errors").exists() is not logging_fails
+
+
+def test_run_campaign_stops_retrying_when_logging_a_crash_hits_a_full_disk(tmp_path, monkeypatch) -> None:
+    # an ordinary crash, but the disk is full by the time the runner logs it: the storage error leaves the retry
+    # loop as it is (main turns it into the storage exit code) instead of being retried as one more trial crash
+    _two_trial_campaign(tmp_path, monkeypatch, "cmp_full_log")
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    monkeypatch.setattr(cr, "_log_crash", _enospc)
+
+    with pytest.raises(OSError) as exc:
+        cr.run_campaign("cmp_full_log", "camp", None)
+
+    assert exc.value.errno == errno.ENOSPC and calls == ["cub"]
+
+
+def test_main_exits_with_the_storage_code_on_a_full_disk_of_its_own(tmp_path, monkeypatch, capsys) -> None:
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a")
+    _write_queue(dpath_config, ["camp.a"])
+    monkeypatch.setattr(cr, "run_campaign", _enospc)
+
+    with pytest.raises(SystemExit) as exc:
+        cr.main()
+
+    assert exc.value.code == stop.EXIT_STORAGE
+    assert stop.MARKER_STORAGE in capsys.readouterr().err
+
+
+def test_halt_code_reads_the_trial_markers() -> None:
+    def cpe(stderr):
+        return subprocess.CalledProcessError(1, ["torchrun"], stderr=stderr)
+
+    assert cr._halt_code(cpe(f"...\n{stop.MARKER_STOPPED}\nChildFailedError: exitcode  : 75")) == stop.EXIT_STOPPED
+    assert cr._halt_code(cpe(f"OSError: [Errno 122] Disk quota exceeded\n{stop.MARKER_STORAGE}\n")) == stop.EXIT_STORAGE
+    assert cr._halt_code(OSError(errno.EDQUOT, os.strerror(errno.EDQUOT))) == stop.EXIT_STORAGE  # the runner's own, launching the trial
+    # a crash is a crash: the words alone -- a traceback that merely mentions the disk -- confirm nothing
+    assert cr._halt_code(cpe("OSError: [Errno 28] No space left on device")) is None
+    assert cr._halt_code(cpe("boom")) is None
+    assert cr._halt_code(cpe(None)) is None
+    assert cr._halt_code(RuntimeError("crashed before the subprocess produced stderr")) is None
+
+
+def test_run_campaign_checkpointed_stop_is_neither_completion_nor_failure(tmp_path, monkeypatch) -> None:
+    # a requested stop (utils.stop): the trial checkpoints, says so (its stop marker) and exits. The run ends with
+    # the stop exit code; the trial is not marked complete, not counted as crashed, not logged as failed and not
+    # retried, its checkpoint stays for the next launch to resume, and no further trial is launched
+    dpath_trial = _two_trial_campaign(tmp_path, monkeypatch, "cmp_stop")
+    dpath_phase = tmp_path / "cmp_stop" / "_phase" / "screen"
+    dpath_chkpt = dpath_trial / "chkpts" / "in_progress"
+    monkeypatch.setenv(stop.ENV_STOP_FILE, str(tmp_path / "stop"))
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        _commit_gen(dpath_chkpt, 1, n_samps_seen=200_000)
+        save_json(_TRIAL_METADATA, dpath_trial / "trial_metadata.json")
+        (tmp_path / "stop").touch()  # the request arrives mid-trial...
+        _commit_gen(dpath_chkpt, 2, n_samps_seen=260_000)  # ...and the trial checkpoints where it is
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr=f"{stop.MARKER_STOPPED}\nChildFailedError: exitcode  : 75")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    with pytest.raises(SystemExit) as exc:
+        cr.run_campaign("cmp_stop", "camp", None)
+
+    assert exc.value.code == stop.EXIT_STOPPED
+    assert calls == ["cub"]
+    metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert metadata["complete"] is False and metadata["n_crashes"] == {"ram": 0, "vram": 0, "other": 0}
+    assert not (dpath_trial / "error.log").exists() and not (dpath_trial / "errors").exists()
+    assert json.loads((dpath_phase / "phase_metadata.json").read_text())["n_crashes"] == {"ram": 0, "vram": 0, "other": 0}
+    assert chkpt.resume_point(dpath_chkpt) == (dpath_chkpt / "gen-000002", 2)
+    assert (dpath_phase / "manifest.log").read_text(encoding="utf-8") == (
+        "\u274c Failed:\n"
+        "\n"
+        "\u2705 Completed:\n"
+        "\n"
+        "\U0001f3c3 In Progress:\n"
+        "\n"
+        "\u23f3 Queued:\n"
+        "cub/sp/base/42\n"
+        "lepid/sp/base/42\n"
+    )
+
+    # the next launch (the request gone) resumes that trial, where a stop left it, and runs the campaign out
+    (tmp_path / "stop").unlink()
+
+    def _fake_resumed_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        _dpath_trial(tmp_path, cfg_dict).mkdir(parents=True, exist_ok=True)
+        save_json(_TRIAL_METADATA, _dpath_trial(tmp_path, cfg_dict) / "trial_metadata.json")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_resumed_trial_subprocess)
+    completed, _ = cr.run_campaign("cmp_stop", "camp", None)
+
+    assert completed is True and calls == ["cub", "cub", "lepid"]
+    assert json.loads((dpath_trial / "trial_metadata.json").read_text())["complete"] is True
+
+
+def test_run_campaign_launches_nothing_once_a_stop_is_requested(tmp_path, monkeypatch) -> None:
+    # requested between trials (here: before the first): nothing is running, so there is nothing to checkpoint --
+    # and nothing more is launched. Any number of requests is one stop.
+    _two_trial_campaign(tmp_path, monkeypatch, "cmp_stop_idle")
+    monkeypatch.setenv(stop.ENV_STOP_FILE, str(tmp_path / "stop"))
+    (tmp_path / "stop").touch()
+    (tmp_path / "stop").touch()
+    monkeypatch.setattr(stop, "_signaled", True)
+    calls = []
+    monkeypatch.setattr(cr, "_run_trial_subprocess", lambda cfg_dict, spare_render_pid=None: calls.append(cfg_dict["dataset"]))
+
+    with pytest.raises(SystemExit) as exc:
+        cr.run_campaign("cmp_stop_idle", "camp", None)
+
+    assert exc.value.code == stop.EXIT_STOPPED and calls == []
+
+
+def test_run_campaign_ignores_the_stop_file_unless_opted_in(tmp_path, monkeypatch) -> None:
+    # default behavior: without BC_STOP_FILE in the environment nothing reads as a stop request
+    _two_trial_campaign(tmp_path, monkeypatch, "cmp_stop_off")
+    monkeypatch.delenv(stop.ENV_STOP_FILE, raising=False)
+    monkeypatch.setattr(stop, "_signaled", True)
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        _leave_completed_trial(tmp_path, cfg_dict)
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+    completed, _ = cr.run_campaign("cmp_stop_off", "camp", None)
+
+    assert completed is True and calls == ["cub", "lepid"]
+
+
+def test_run_campaign_does_not_retry_a_crash_while_a_stop_is_pending(tmp_path, monkeypatch) -> None:
+    # the trial crashes instead of checkpointing while a stop is requested: it is a crash -- logged and counted, the
+    # exit code a failure's, not the stop's -- but it is not relaunched: the run was asked to end
+    dpath_trial = _two_trial_campaign(tmp_path, monkeypatch, "cmp_stop_crash")
+    monkeypatch.setenv(stop.ENV_STOP_FILE, str(tmp_path / "stop"))
+    calls = []
+
+    def _fake_run_trial_subprocess(cfg_dict: dict, spare_render_pid=None):
+        calls.append(cfg_dict["dataset"])
+        dpath_trial.mkdir(parents=True, exist_ok=True)
+        save_json(_TRIAL_METADATA, dpath_trial / "trial_metadata.json")
+        (tmp_path / "stop").touch()
+        raise subprocess.CalledProcessError(1, ["torchrun"], stderr="boom")
+
+    monkeypatch.setattr(cr, "_run_trial_subprocess", _fake_run_trial_subprocess)
+
+    with pytest.raises(SystemExit) as exc:
+        cr.run_campaign("cmp_stop_crash", "camp", None)
+
+    assert exc.value.code == 1 and calls == ["cub"]
+    metadata = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert metadata["complete"] is False and metadata["n_crashes"] == {"ram": 0, "vram": 0, "other": 1}
+    assert [p.name for p in (dpath_trial / "errors").iterdir()] == ["error-200000-0.log"]
+    assert not (dpath_trial / "error.log").exists()  # retries not exhausted: not failed for good
+
+
+def test_main_refuses_checkpoint_and_stop_on_multi_gpu(tmp_path, monkeypatch) -> None:
+    # the stop mechanism is single-GPU only: opting in on a multi-GPU allocation is refused before anything is
+    # launched, rather than running with a stop that the ranks would not act on together
+    dpath_config = _wire_queue(tmp_path, monkeypatch)
+    _add_camp_config(dpath_config, "a")
+    _write_queue(dpath_config, ["camp.a"])
+    launched = []
+    monkeypatch.setattr(cr, "run_campaign", lambda *args: launched.append(args))
+    monkeypatch.setenv(stop.ENV_STOP_FILE, str(tmp_path / "stop"))
+    monkeypatch.setattr(cr.torch.cuda, "device_count", lambda: 2)
+
+    with pytest.raises(SystemExit, match="single-GPU runs only; 2 GPUs are visible"):
+        cr.main()
+
+    monkeypatch.setattr(cr.torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setenv(stop.ENV_STOP_FILE, str(tmp_path / "no_such_dir" / "stop"))
+    with pytest.raises(SystemExit, match="its directory does not exist"):
+        cr.main()
+    assert launched == []
+
+
+def _crash_bumper(dpath_trial, dpath_phase, kind, n) -> None:
+    for _ in range(n):
+        cr._bump_crash_counts(dpath_trial, dpath_phase, kind)
+
+
+def _checkpoint_stamper(dpath_phase, n) -> None:
+    ArtifactManager.dpath_phase = dpath_phase
+    for i in range(n):
+        ArtifactManager.update_campaign_time()
+        ArtifactManager.update_campaign_memory({"ram": ((i + 1) << 30, 512 << 30), "vram": ((i + 1) << 30, 141 << 30)})
+
+
+def _reselector(dpath_trial, n) -> None:
+    for i in range(n):
+        with update_json(dpath_trial / "trial_metadata.json") as metadata:
+            metadata["chkpt"] = {"sel": i, "best": i}
+        with update_json(dpath_trial.parents[1] / "coord_metadata.json") as metadata:
+            metadata["sel_chkpt"] = {"idx": i, "n_trials": 1, "mean_score": "0.5000"}
+
+
+def _plan_recorder(dpath_phase, n) -> None:
+    for i in range(n):
+        with update_json(dpath_phase / "phase_metadata.json") as metadata:
+            metadata["seeds"] = [42, 43 + i]
+
+
+def test_shared_metadata_loses_no_update_to_concurrent_writers(tmp_path) -> None:
+    # every writer of the shared metadata at once, each in its own process: the runner counting crashes (two of
+    # them, different causes), a trial process stamping its checkpoints (duration, last-seen, peak memory), a
+    # reselection writing the trial's and the coord's picks, the runner recording a plan. Each file's whole
+    # read-modify-write is one critical section under one lock, so every count is exact and every field survives.
+    dpath_phase = tmp_path / "cmp" / "_phase" / "screen"
+    dpath_trial = dpath_phase / "_dataset" / "cub" / "_arm" / "sp" / "_coord" / "base" / "_trial" / "1"
+    dpath_trial.mkdir(parents=True)
+    zeros = {"ram": 0, "vram": 0, "other": 0}
+    stamps = {"datetime_start": "2020-01-01T00:00:00Z", "datetime_last_seen": "2020-01-01T00:00:00Z"}
+    save_json(stamps, tmp_path / "cmp" / "campaign_metadata.json")
+    save_json({**stamps, "duration": "0-00:00:00", "memory": {"ram": None, "vram": None}, "n_crashes": dict(zeros),
+               "seeds": [42], "matrix": {"cub": {"sp": ["base"]}}}, dpath_phase / "phase_metadata.json")
+    save_pickle({"last_updated": time.time() - 3661.0, "elapsed": 0.0}, dpath_phase / "time.pkl")
+    save_json({"n_crashes": dict(zeros), "horizon": {"samps_per_epoch": 1_000}, "sel_chkpt": {}}, dpath_trial.parents[1] / "coord_metadata.json")
+    save_json({**_TRIAL_METADATA, "chkpt": {"sel": None, "best": None}}, dpath_trial / "trial_metadata.json")
+
+    n = 100
+    ctx = multiprocessing.get_context("fork")
+    procs = [
+        ctx.Process(target=_crash_bumper, args=(dpath_trial, dpath_phase, "ram", n)),
+        ctx.Process(target=_crash_bumper, args=(dpath_trial, dpath_phase, "other", n)),
+        ctx.Process(target=_checkpoint_stamper, args=(dpath_phase, n)),
+        ctx.Process(target=_reselector, args=(dpath_trial, n)),
+        ctx.Process(target=_plan_recorder, args=(dpath_phase, n)),
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join()
+    assert [proc.exitcode for proc in procs] == [0] * len(procs)
+
+    counts = {"ram": n, "vram": 0, "other": n}
+    phase = json.loads((dpath_phase / "phase_metadata.json").read_text())
+    assert phase["n_crashes"] == counts
+    assert phase["seeds"] == [42, 43 + n - 1] and phase["matrix"] == {"cub": {"sp": ["base"]}}
+    assert phase["memory"] == {"ram": f"{n}.0/512.0 GB", "vram": f"{n}.0/141.0 GB"}  # the running max, every reading in
+    assert phase["duration"].startswith("0-01:01:") and phase["datetime_last_seen"] != stamps["datetime_last_seen"]
+    assert load_pickle(dpath_phase / "time.pkl")["elapsed"] >= 3661.0
+    coord = json.loads((dpath_trial.parents[1] / "coord_metadata.json").read_text())
+    assert coord == {"n_crashes": counts, "horizon": {"samps_per_epoch": 1_000},
+                     "sel_chkpt": {"idx": n - 1, "n_trials": 1, "mean_score": "0.5000"}}
+    trial = json.loads((dpath_trial / "trial_metadata.json").read_text())
+    assert trial == {**_TRIAL_METADATA, "n_crashes": counts, "chkpt": {"sel": n - 1, "best": n - 1}}
+    campaign = json.loads((tmp_path / "cmp" / "campaign_metadata.json").read_text())
+    assert campaign["datetime_start"] == stamps["datetime_start"] and campaign["datetime_last_seen"] != stamps["datetime_last_seen"]
 
 
 def test_expand_combo_groups_raises_on_duplicate_names() -> None:

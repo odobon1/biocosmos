@@ -5,7 +5,7 @@ from typing import List, Any, Dict, Optional
 import torch
 
 from utils.ddp import rank0
-from utils.utils import load_json
+from utils.utils import atomic_write, load_json
 
 
 class PrintLog:
@@ -99,7 +99,8 @@ class PrintLog:
             else:
                 lines.extend(buckets[title])
             lines.append("")
-        (dpath_phase / "manifest.log").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        with atomic_write(dpath_phase / "manifest.log", "w", encoding="utf-8") as f:  # a reader never sees it half-rewritten
+            f.write("\n".join(lines).rstrip() + "\n")
 
     @staticmethod
     @rank0

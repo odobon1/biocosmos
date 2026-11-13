@@ -35,6 +35,7 @@ from utils.report import (
 )
 from utils.hardware import apply_backend_flags, read_cgroup_ram, start_ram_peak_tracker
 from utils.ddp import setup_ddp, cleanup_ddp, rank0
+from utils.stop import TrialStopped, stop_enabled, stop_requested
 
 import pdb
 
@@ -163,6 +164,8 @@ class TrainPipeline:
         self._block_tally = {"batches": 0, "batches_skipped": 0, "coverage": {}}  # block_res coverage since the last checkpoint (_print_block_coverage)
         self.chkpt_thresh = self.cfg.chkpt_interval
         self.samps_stop = samps_stop(self.cfg)
+        self._chkpt_gen = ArtifactManager.resume_gen  # the last checkpoint's generation (utils.chkpt); every rank counts alike
+        self._n_batches_chkpt = None  # n_batches_seen at the last checkpoint this run wrote
         self._kill_chkpt = kill_chkpt(self.cfg)
         self._killed = False  # whether the trial was killed at its kill checkpoint (kill_thresh)
         self.lr_init_nom = self.cfg.lr["init"]
@@ -429,29 +432,47 @@ class TrainPipeline:
             time_eval_avg=self.time_tracker.mean("eval"),
         )
 
-    def _checkpoint(self, header, idx_batch, final=False):
+    def _checkpoint(self, header, idx_batch, final=False, stop=False):
+        """One checkpoint = one generation (utils.chkpt): rank 0's state (_checkpoint_writes), then every rank's
+        own RNG state, go into a new generation dir beside the last committed one, and only once all of it is on
+        disk -- the barrier -- does rank 0 publish it as the resume point (_checkpoint_commit). A kill, or a failed
+        write on any rank, anywhere before that leaves the last committed checkpoint as it was.
+        `stop`: a requested stop's checkpoint (utils.stop) -- the resume state alone, with no eval behind it."""
         # the memory snapshot all-reduces across ranks, so every rank must enter; the writes are @rank0
         mem = snapshot_memory(self.cfg.device)
-        self._checkpoint_writes(header, idx_batch, mem, final)
+        self._chkpt_gen += 1
+        self._checkpoint_writes(header, idx_batch, final, stop)
+        ArtifactManager.save_rng_states(self._local_rank, self._chkpt_gen)
+        dist.barrier()  # every rank's part of the generation is on disk
+        self._checkpoint_commit(mem)
+        dist.barrier()  # the checkpoint is committed before any rank moves on
+        self._n_batches_chkpt = self.n_batches_seen
 
     @rank0
-    def _checkpoint_writes(self, header, idx_batch, mem, final):
-        if self.eval_enabled:
-            self.data.update_eval(self.n_samps_seen)
-            self._print_log_eval(header)
-            self._save_eval_data(ArtifactManager.dpath_model_checkpoint)
-        self._print_block_coverage(header)
-        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.cfg.n_chkpts, self.n_samps_seen, mem, self._killed)
-        ArtifactManager.update_campaign_time()
-        ArtifactManager.update_campaign_memory(mem)
+    def _checkpoint_writes(self, header, idx_batch, final, stop):
+        if not stop:  # a stop's checkpoint follows no eval: nothing to record, log or plot
+            if self.eval_enabled:
+                self.data.update_eval(self.n_samps_seen)
+                self._print_log_eval(header)
+                self._save_eval_data(ArtifactManager.dpath_gen(self._chkpt_gen))
+            self._print_block_coverage(header)
 
         self.data.save()
-        ArtifactManager.save_train_state(self, idx_batch)
-        ArtifactManager.save_trial_state(self.data)
-        if final or self.cfg.reporting["plot_every"] == "chkpt":
+        ArtifactManager.save_train_state(self, idx_batch, self._chkpt_gen)
+        ArtifactManager.save_trial_state(self.data, self._chkpt_gen)
+        if not stop and (final or self.cfg.reporting["plot_every"] == "chkpt"):
             plot_metrics(self.data, ArtifactManager.dpath_trial, self.eval_pipe.nshot_bucket_names if self.eval_enabled else [], self.cfg.samps_per_epoch,
                          self.cfg.reporting["learning_curves"]["hpsm"], eval_groups(self.cfg.reporting),
                          load_learning_curves_config_dict()["dpi"])
+
+    @rank0
+    def _checkpoint_commit(self, mem):
+        ArtifactManager.commit_checkpoint(self._chkpt_gen, dist.get_world_size(), self.n_samps_seen)
+        # the trial's and the campaign's metadata follow the commit: the progress trial_metadata.json records is
+        # then always a committed checkpoint's, which ArtifactManager.set_paths holds a checkpoint-less trial dir to
+        ArtifactManager.save_metadata_trial(self.data, self.idx_epoch, self.time_tracker, self.n_samps_seen // self.cfg.samps_per_epoch, self.cfg.n_epochs, self.cfg.n_chkpts, self.n_samps_seen, mem, self._killed)
+        ArtifactManager.update_campaign_time()
+        ArtifactManager.update_campaign_memory(mem)
 
     def _print_block_coverage(self, header):
         """One line per checkpoint (rank 0, from _checkpoint_writes) on loss.xnce.block_res' coverage since
@@ -580,18 +601,14 @@ class TrainPipeline:
                 self._record_eval(eval_metrics, time_eval)
                 header = f"0/{self.cfg.n_chkpts}" + (" - Cached" if hit else "")
                 self._checkpoint(header=header, idx_batch=-1)
-                dist.barrier()  # wait for rank0 to finish _checkpoint (creates checkpoint dir) before all ranks write rng state
-                ArtifactManager.save_rng_states(self._local_rank)
-                dist.barrier()
             elif self._resume_state is not None:
                 # Resuming from base-eval checkpoint (no training done yet): restore RNG before epoch loop
                 if self._resume_state["idx_epoch"] == 0 and self._resume_state["idx_batch"] == -1:
-                    if (ArtifactManager.dpath_model_checkpoint / f"rng_state_rank{self._local_rank}.pt").exists():
-                        rng = ArtifactManager.load_rng_state(self._local_rank)
-                        torch.set_rng_state(rng["rng_cpu"])
-                        torch.cuda.set_rng_state_all(rng["rng_cuda"])
-                        np.random.set_state(rng["rng_numpy"])
-                        random.setstate(rng["rng_random"])
+                    rng = ArtifactManager.load_rng_state(self._local_rank)
+                    torch.set_rng_state(rng["rng_cpu"])
+                    torch.cuda.set_rng_state_all(rng["rng_cuda"])
+                    np.random.set_state(rng["rng_numpy"])
+                    random.setstate(rng["rng_random"])
                     self._resume_state = None
 
             for _ in range(self.cfg.n_passes - self.idx_epoch):
@@ -725,11 +742,22 @@ class TrainPipeline:
                                 idx_batch=idx_batch,
                                 final=self._killed,
                             )
-                            ArtifactManager.save_rng_states(self._local_rank)
-                            dist.barrier()
 
                         self.timer_train.start()
                         pbar.refresh()
+
+                    # REQUESTED STOP (opt-in: utils.stop) -- honored here, at a batch boundary, after whatever eval +
+                    # checkpoint this batch owed: the state is saved as a checkpoint a resume picks up mid-pass (no
+                    # eval, no plots; the eval schedule, the kill check and the stop thresholds are untouched), unless
+                    # this batch's own checkpoint just saved it, and the trial exits unfinished. A killed trial is
+                    # over already and runs out instead.
+                    if stop_requested() and not self._killed:
+                        pbar.clear()
+                        if self._n_batches_chkpt != self.n_batches_seen:
+                            self._checkpoint(header=None, idx_batch=idx_batch, stop=True)
+                        print(f"\nStop requested: checkpointed at {self.n_samps_seen:,} samples (batch {idx_batch + 1} of this "
+                              f"pass); exiting unfinished -- the next launch resumes here.", flush=True)
+                        raise TrialStopped
 
                     if self._killed or self.n_samps_seen >= self.samps_stop:
                         break
@@ -781,7 +809,6 @@ class TrainPipeline:
                     idx_batch=-1,
                     final=True,
                 )
-                ArtifactManager.save_rng_states(self._local_rank)
             dist.barrier()  # all per-eval caches (incl. final) now on disk -> safe to pool them
 
             if self._pooled_manifold_viz:
@@ -812,6 +839,10 @@ def _deliver_base_model(cfg, modelw, mem):
 
 def run_training(cfg):
     local_gpu_rank, device = setup_ddp(cfg.hw.pg_timeout)
+    if stop_enabled() and dist.get_world_size() > 1:
+        # the ranks would each have to see the request at the same batch, which takes a collective this does not run
+        raise RuntimeError("BC_STOP_FILE (checkpoint-and-stop, utils.stop) supports single-GPU trials only; "
+                           f"this one has {dist.get_world_size()} ranks. Unset it to run multi-GPU.")
     start_ram_peak_tracker(cfg.hw.ram_poll_interval)
     cfg.device = device  # set local device
     seed_libs(cfg.seed)
@@ -820,6 +851,7 @@ def run_training(cfg):
                           cfg.htarg["kernel"], cfg.htarg["exp"]["beta"], cfg.htarg["shuffle"], cfg.seed)
 
     ArtifactManager.set_paths(cfg)
+    dist.barrier()  # every rank has read the trial dir's state before rank0 clears a leftover one
     ArtifactManager.create_trial_dirs()
     dist.barrier()  # ensure rank0 finishes creating dirs before other ranks proceed
     ArtifactManager.save_metadata_coord(cfg)
@@ -857,7 +889,11 @@ def run_training(cfg):
         trial_state=trial_state, 
         local_rank=local_gpu_rank,
     )
-    train_pipe.train()
+    try:
+        train_pipe.train()
+    except TrialStopped:  # a requested stop, checkpointed: the trial is neither finished nor failed (utils.stop)
+        cleanup_ddp()
+        raise
     if cfg.phase == "trainval":
         # the trainval phase's product: the weights at the refine-selected checkpoint (chkpt_stop); it runs no evals,
         # so there is nothing to select or aggregate

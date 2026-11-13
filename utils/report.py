@@ -60,6 +60,7 @@ from utils.utils import (
     save_pickle,
     load_pickle,
     load_json,
+    update_json,
 )
 from utils.paths import paths, DATASET_ALIAS2NAME
 
@@ -499,8 +500,8 @@ def update_chkpt_selection(eval_groups, cfg_stats):
                     shutil.copyfile(fpath_eval_scores(dpaths_chkpt[idx], group_key), fpath_dest)
                 _render_missing_stills(dpaths_chkpt[idx], idxs, metadata)
                 copy_viz(dpaths_chkpt[idx], dpath_dest)
-            metadata["chkpt"] = idxs
-            save_json(metadata, dpath_trial / "trial_metadata.json")
+            with update_json(dpath_trial / "trial_metadata.json") as metadata_trial:  # re-read under its lock: `metadata` predates the arm lock
+                metadata_trial["chkpt"] = idxs
 
     dpath_metrics = dpath_coord / "coord_summary"
     for group_key, group_name in eval_groups.items():
@@ -527,10 +528,8 @@ def update_chkpt_selection(eval_groups, cfg_stats):
         _plot_chkpt_means(epochs, means, spreads, idx_group, n_trials, cfg_stats.spread_type, "Composite mAP", title,
                           group_path(dpath_metrics, group_key, "chkpt_means", ".png"), cfg_stats.dpi)
 
-    fpath_meta = dpath_coord / "coord_metadata.json"
-    metadata = load_json(fpath_meta)
-    metadata["sel_chkpt"] = {"idx": idx_best, "n_trials": n_trials, "mean_score": f"{means_native[idx_best]:.4f}"}
-    save_json(metadata, fpath_meta)
+    with update_json(dpath_coord / "coord_metadata.json") as metadata:
+        metadata["sel_chkpt"] = {"idx": idx_best, "n_trials": n_trials, "mean_score": f"{means_native[idx_best]:.4f}"}
 
 def _score_cells(score_maps, labels, spread_type, mult=100.0):
     """One data cell per label, aggregated across `score_maps` (one score dict per completed trial),
